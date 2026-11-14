@@ -185,13 +185,20 @@ Ticket `T-20261105-agent-stack-v2-worker-agent-runtime-plus`, part B.
      by editing it).
    - Dangerous tools stay approval-gated and effect classes still apply; a grant never
      bypasses them.
+   - Contributed tools (ADR-0127, since 2026-11-15): a profile may list `local:*` or
+     `local:<machine id or *>/<tool glob>`. That only lets its CEILING admit those tools —
+     contributed tools are not in the registry, so the glob expands to no grant; the
+     agent reaches them only with the operator's explicit `local:*` fleet grant
+     (decisions/local-fleet-grant-holders.md: only agents whose input is the owner's own
+     words), and the fleet is always the run beneficiary's own machines.
 3. **Model preference** is bound at the LLM gateway: the generator is the first rung of
    the model chain of every lease bound to the agent (resolved per call, so a role
    reassignment is live). A dangling id or an unassigned role is a boot WARN with
    `resolved=false`, and the agent runs on the step allocation and the default.
-4. **Trust tier** is stored on the definition for the agent card and the console. The
-   ADR-0139 D8 containment mapping at launch is **not built**: every profile agent runs
-   in the standard SEC-01 sandbox, and the boot log says so.
+4. **Trust tier** is stored on the definition for the agent card and the console, and read
+   at launch (ADR-0139 D8 stage 1, `execution.agents.sandbox`): first-party agents launch
+   as before (env allowlist + SEC-01 cap); a `third-party` profile is refused unless
+   `execution.agents.sandbox.third_party.on_unavailable` is `degrade`.
 
 Only profiles get allowlist grants. A `tool_allowlist` in an ordinary agent's own
 `AGENT_MANIFEST` is not turned into grants: that would be a self-asserted privilege.

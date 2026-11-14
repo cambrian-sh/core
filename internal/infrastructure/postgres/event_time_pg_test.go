@@ -15,10 +15,9 @@ import (
 )
 
 // ADR-0134 against a real, migrated Postgres (PG_TEST_DSN; the schema comes from
-// `orchestrator migrate up` with CAMBRIAN_EMBEDDER__DIMENSIONS=1536, as in CI).
+// `orchestrator migrate up` — CI migrates at CAMBRIAN_EMBEDDER__DIMENSIONS=1536, but
+// any dimension works: eventTestDim follows the database, see testdim_test.go).
 // Rows use the id prefix "adr0134-" and are deleted before and after.
-
-const eventTestDim = 1536
 
 func newEventTimeAdapter(t *testing.T) (*PgVectorAdapter, context.Context) {
 	t.Helper()

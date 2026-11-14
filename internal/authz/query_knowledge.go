@@ -110,3 +110,31 @@ func (s scopedOntology) Violations(ctx context.Context, principal domain.Princip
 	}
 	return s.OntologyStore.Violations(ctx, pred, namespace, limit)
 }
+
+// MayReadEvidence reports whether principal may read the evidence row ev, by the
+// same predicate the knowledge query seam resolves for that principal
+// (readScope: the effective Authorizer and the transport surface on ctx) and the
+// same row test the query plane's node guard applies (TagPredicate.AllowsRow over
+// the row's classification and parties). A principal with no read predicate, or a
+// nil row, may read nothing.
+//
+// A write that cites evidence as its support (an agent's knowledge or link
+// proposal) uses it so that a principal cannot attach claims to evidence it could
+// not read, nor learn which evidence ids exist
+// (T-20261107-propose-knowledge-link-proposals-do-not-check).
+func MayReadEvidence(ctx context.Context, authorizer domain.Authorizer, principal domain.PrincipalRef, ev *domain.Evidence, log *slog.Logger) bool {
+	if ev == nil {
+		return false
+	}
+	if authorizer == nil {
+		authorizer = domain.AllowAllAuthorizer{}
+	}
+	pred, err := readScope(ctx, authorizer, principal, log, "evidence citation")
+	if err != nil {
+		return false
+	}
+	if pred.Unfiltered() {
+		return true
+	}
+	return pred.AllowsRow(ev.Classification, ev.Parties)
+}

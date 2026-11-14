@@ -10,15 +10,11 @@ import "testing"
 func TestDefaults_ExperienceArms(t *testing.T) {
 	cfg := DefaultConfig()
 
-	// ON: the abstraction-only experiential records (ADR-0049 A2.2, ADR-0095): action
-	// events and the plan-outcome hook, no raw payload, behind the A2.4 lane guard.
+	// ON: the plan-outcome hook (ADR-0049 A2.2, ADR-0095): episode open/close and
+	// procedure feedback. The action events and the A2.3 failure record it once also
+	// gated were stopped 2026-11-14 (owner decision, ENG-1595), and their surprise
+	// floor key retired.
 	if !cfg.Execution.Memory.ExperienceRecordsEnabled {
 		t.Error("experience_records_enabled must default TRUE (owner decision 2026-07-28)")
-	}
-
-	// The gates the enabled arm depends on must be sane, or "on" means something else.
-	if cfg.Execution.Memory.ExperienceSurpriseFloor <= 0 || cfg.Execution.Memory.ExperienceSurpriseFloor > 1 {
-		t.Errorf("surprise floor must be a usable probability, got %v",
-			cfg.Execution.Memory.ExperienceSurpriseFloor)
 	}
 }

@@ -80,15 +80,11 @@ def test_decide_continue_and_unknown_and_malformed_ops():
     a = agent_with(FakeSubstrate('{"must_terms": []}'))
     assert json.loads(a.run(task({"op": "decide_continue", "query": "q", "chunks": ["x"]})))["decision"] == "stop_answer"
     assert "error" in json.loads(a.run(task({"op": "bogus"})))
+    # Deleted ops (owner decisions 2026-11-15): IRCoT reason_step (ENG-1321) and the
+    # never-called extract_provenance (ENG-641) are unknown ops now.
+    assert "error" in json.loads(a.run(task({"op": "reason_step", "query": "q"})))
+    assert "error" in json.loads(a.run(task({"op": "extract_provenance", "text": "x"})))
     assert "error" in json.loads(a.run(task(b"not json")))
-
-
-def test_extract_provenance_passes_the_callers_event_time():
-    sub = FakeSubstrate('{"valid_time": "2026-03-03", "actors": [], "source_type": ""}')
-    out = json.loads(agent_with(sub).run(task({"op": "extract_provenance", "text": "done yesterday",
-                                               "event_time": "2026-03-04T09:00:00Z"})))
-    assert out["valid_time"] == "2026-03-03"
-    assert "<reference_date>\n2026-03-04\n</reference_date>" in sub.calls[0]["messages"][0]["content"]
 
 
 def test_decompose_op_routes_switch_prompt_and_shape():

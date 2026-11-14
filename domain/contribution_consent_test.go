@@ -102,7 +102,7 @@ func answerPrompts(ctrl WorkerConsentHub, kind ConsentPromptKind,
 					// The surface answers AS the beneficiary — the prompt's
 					// addressee under the default self rule (ADR-0142 D11).
 					ans.By = Approver{Principal: p.Beneficiary}
-					ctrl.Submit(p.ID, ans)
+					ctrl.Submit(context.Background(), p.ID, ans)
 				}
 			case <-done:
 				return
@@ -173,12 +173,12 @@ func TestConsentHub_BothPromptKindsAnsweredThroughSubscriber(t *testing.T) {
 			switch p.Kind {
 			case ConsentPromptApprove:
 				if p.Machine != "a-machine" || p.Object != "C:/secret/report.txt" {
-					ctrl.Submit(p.ID, ConsentAnswer{Approved: false, By: standIn})
+					ctrl.Submit(context.Background(), p.ID, ConsentAnswer{Approved: false, By: standIn})
 					return
 				}
-				ctrl.Submit(p.ID, ConsentAnswer{Approved: true, By: standIn})
+				ctrl.Submit(context.Background(), p.ID, ConsentAnswer{Approved: true, By: standIn})
 			case ConsentPromptChooseMachine:
-				ctrl.Submit(p.ID, ConsentAnswer{Approved: true, Machine: p.Candidates[1], By: standIn})
+				ctrl.Submit(context.Background(), p.ID, ConsentAnswer{Approved: true, Machine: p.Candidates[1], By: standIn})
 			}
 		}
 	}()

@@ -885,20 +885,16 @@ class ChatAgent(CognitiveAgent):
         """Honour the conversation's recall posture (ADR-0084 D7).
 
         The kernel sends ``recall_lookup`` per turn, derived from the conversation's profile
-        (``domain.ConversationProfile.Recall``, ``internal/chat/service.go`` buildHandoff):
-        customer-facing conversations are tools-only, so an external user cannot pull on the
-        deployment's shared memory. Reading it here — rather than hardcoding a class default —
-        is what makes that posture a property of the CONVERSATION instead of a setting someone
-        can flip once and forget.
+        (``domain.ConversationProfile.Recall``, ``internal/chat/service.go`` buildHandoff).
+        Since ENG-614 (owner decision 2026-11-14) a CUSTOMER conversation may recall too: the
+        KERNEL narrows every read made under its lease to customer-visible tags
+        (``execution.chat.customer_visible_tags``, default ``["public"]``;
+        ``authz.ProfileNarrowingAuthorizer``), so the posture no longer depends on this
+        worker refusing — a different or third-party worker gets the same narrowing.
 
-        Fail-closed: recall needs an explicit ``recall_lookup=true``; an absent value, or a
-        ``profile`` of ``customer`` (defence in depth, should the two ever disagree), is
-        tools-only. The kernel does NOT enforce this posture server-side (no QueryMemory clamp
-        exists for a chat lease), so this agent is the enforcement point: it governs both the
-        seed recall and whether memory_query is on the menu at all.
+        Fail-closed: recall needs an explicit ``recall_lookup=true``; an absent value is
+        tools-only. It governs both the seed recall and whether memory_query is on the menu.
         """
-        if self._meta(task, "profile").strip().lower() == "customer":
-            return False
         return self._meta(task, "recall_lookup", "false").strip().lower() == "true"
 
     def _seed_memories(self, task: "AgentTask", query: str) -> str:

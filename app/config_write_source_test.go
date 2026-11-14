@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/internal/config"
@@ -637,7 +638,7 @@ func TestSaveMCPServer_AppendsWithoutLosingTheBootedList(t *testing.T) {
 	src := mcpSource(t, applied)
 
 	out, err := src.SaveMCPServer(operator.MCPServerSpec{
-		ID: "firecrawl", Transport: "http", Endpoint: "http://localhost:3002/mcp",
+		ID: "firecrawl", Transport: "http", Endpoint: "https://mcp.example.com/mcp",
 	})
 	if err != nil {
 		t.Fatalf("SaveMCPServer: %v", err)
@@ -675,6 +676,31 @@ func TestSaveMCPServer_ReplaceKeepsToolPolicyAndTokenEnv(t *testing.T) {
 	}
 	if len(got[0].Tools) != 1 || !got[0].Tools[0].Dangerous {
 		t.Fatalf("per-tool policy was erased: %+v", got[0].Tools)
+	}
+}
+
+// ADR-0153 (ENG-1419): an http/sse endpoint on loopback / private / link-local
+// space is refused at save unless its entry carries the explicit
+// allow_private_network opt-in, which a console save (whose wire does not carry
+// it) preserves.
+func TestSaveMCPServer_PrivateEndpointNeedsTheOptIn(t *testing.T) {
+	src := mcpSource(t, nil)
+	for _, ep := range []string{"http://localhost:3002/mcp", "http://169.254.169.254/", "http://10.1.2.3:8080/sse"} {
+		out, err := src.SaveMCPServer(operator.MCPServerSpec{ID: "priv", Transport: "http", Endpoint: ep})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Set || out.Effect != operator.EffectRejected || !strings.Contains(out.Error, "allow_private_network") {
+			t.Fatalf("%s: want a rejection naming the opt-in, got %+v", ep, out)
+		}
+	}
+	prior := config.MCPServerConfig{ID: "priv", Transport: "http", Endpoint: "http://localhost:3002/mcp", AllowPrivateNetwork: true}
+	entry := mcpConfigFromSpec(operator.MCPServerSpec{ID: "priv", Transport: "http", Endpoint: "http://localhost:3003/mcp"}, &prior)
+	if !entry.AllowPrivateNetwork {
+		t.Fatal("a console save dropped the private-network opt-in")
+	}
+	if out := src.saveMCPEntry(entry); out.Effect == operator.EffectRejected {
+		t.Fatalf("opted-in private endpoint refused: %+v", out)
 	}
 }
 
@@ -822,5 +848,20 @@ func TestSetRoleAssignment_AcceptsTheThoughtRole(t *testing.T) {
 	}
 	if !out.Set || applied["thought"] != "fast" {
 		t.Fatalf("thought role not stored/applied: %+v %+v", out, applied)
+	}
+}
+
+// "retrieval_planner" is an assignable role: unbound it borrows the memory role's
+// generator (llm.RoleFallbacks); binding it moves only the agentic retrieval planner
+// (T-20261102-agentic-planner-model-names-a-generator-id).
+func TestSetRoleAssignment_AcceptsTheRetrievalPlannerRole(t *testing.T) {
+	applied := map[string]string{}
+	src := rolesSource(t, applied)
+	out, err := src.SetRoleAssignment("retrieval_planner", "fast")
+	if err != nil {
+		t.Fatalf("SetRoleAssignment: %v", err)
+	}
+	if !out.Set || applied["retrieval_planner"] != "fast" {
+		t.Fatalf("retrieval_planner role not stored/applied: %+v %+v", out, applied)
 	}
 }

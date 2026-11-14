@@ -82,11 +82,17 @@ type Subtasks struct {
 
 // NewSubtasks builds an empty registry; side-effecting subtask calls are kept
 // for idemTTL (<= 0: 24 hours) so a resume within it never repeats one.
-func NewSubtasks(idemTTL time.Duration) *Subtasks {
+//
+// actions is the ADR-0154 durable action record (ENG-1428): with it, every
+// side-effecting subtask call is recorded proposed → dispatched → accepted under
+// its deterministic key, and a resume after a kernel restart is answered from
+// the record. nil keeps the results in memory only (no database, or migration
+// 0046 not applied), exactly as before.
+func NewSubtasks(idemTTL time.Duration, actions ActionRecordStore) *Subtasks {
 	return &Subtasks{
 		parents:  map[string]*subtaskParent{},
 		children: map[string]*subtaskState{},
-		idem:     NewIdempotencyCache(idemTTL),
+		idem:     NewDurableIdempotencyCache(idemTTL, actions),
 	}
 }
 

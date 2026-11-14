@@ -27,8 +27,8 @@ import (
 //     (domain.ProfileToolCeiling), which holds under tools_unrestricted too;
 //   - model: the LLM gateway puts the preferred generator first on the agent's
 //     lease chain (profileModelPreference);
-//   - trust_tier: stored on the definition; the ADR-0139 D8 containment mapping
-//     is not built, which boot logs say.
+//   - trust_tier: stored on the definition and read at launch (ADR-0139 D8,
+//     execution.agents.sandbox; agentmgr containment.go).
 
 // profileAgent is one registered profile agent, as the composition root binds it.
 type profileAgent struct {
@@ -81,9 +81,11 @@ func collectProfileAgents(registered []DiscoveredAgent) []profileAgent {
 		for _, p := range out {
 			tiers = append(tiers, p.ID+"="+p.TrustTier)
 		}
-		// Say it at boot rather than let a declared tier look enforced.
-		slog.Warn("agent profiles: trust_tier is recorded but NOT yet enforced as process containment "+
-			"(ADR-0139 D8 containment tiers are not built); every profile agent runs in the standard SEC-01 sandbox",
+		// Say at boot what each declared tier means at launch (ADR-0139 D8 stage 1:
+		// third-party agents are refused, or run degraded, until the launch path
+		// confines writes, network and identity; agentmgr containment.go).
+		slog.Info("agent profiles: trust_tier decides launch containment (first-party/system: env allowlist + SEC-01 cap; "+
+			"third-party: refused unless execution.agents.sandbox.third_party.on_unavailable=degrade)",
 			"profiles", strings.Join(tiers, ","))
 	}
 	return out

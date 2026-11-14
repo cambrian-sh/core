@@ -45,8 +45,10 @@ type WorkerComposition struct {
 	// load on demand with use_skill. Nothing outside it is ever served.
 	Skills []string `json:"skills"`
 	// Tools are the tool names the worker may call (sorted): the professions'
-	// allowlists ∩ the step's effects ∩ the act-for person's scope ∩ the live
-	// catalogue. Kernel tools (ledger, calculation) are always available besides.
+	// allowlists ∩ the act-for person's scope ∩ the live catalogue, minus tools
+	// with resource arguments (compose.Composer.tools; the step's effects no longer narrow it — ADR-0145
+	// D14 removed the per-step effect menu). Kernel tools (ledger, calculation)
+	// are always available besides.
 	Tools []string `json:"tools"`
 	// Brief is the step's task text (data).
 	Brief string `json:"brief"`

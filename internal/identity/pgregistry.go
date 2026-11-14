@@ -144,6 +144,17 @@ func (r *PgRegistry) SetRoles(ctx context.Context, id string, roles []string) er
 		domain.NormalizePrincipalID(id), normalizeRoles(roles), r.now().UTC())
 }
 
+// UpdateProfile implements domain.PrincipalRegistry (empty argument = keep).
+// updated_at moves only when a value actually changes, so a directory resync
+// that repeats the same profile is a no-op.
+func (r *PgRegistry) UpdateProfile(ctx context.Context, id, displayName, email string) error {
+	return r.updateOne(ctx, `UPDATE principals SET
+		display_name = CASE WHEN $2 <> '' THEN $2 ELSE display_name END,
+		email        = CASE WHEN $3 <> '' THEN $3 ELSE email END,
+		updated_at   = CASE WHEN ($2 <> '' AND $2 <> display_name) OR ($3 <> '' AND $3 <> email) THEN $4 ELSE updated_at END
+		WHERE id = $1`, domain.NormalizePrincipalID(id), strings.TrimSpace(displayName), strings.TrimSpace(email), r.now().UTC())
+}
+
 func isFKViolation(err error) bool {
 	var pg *pgconn.PgError
 	return errors.As(err, &pg) && pg.Code == "23503"

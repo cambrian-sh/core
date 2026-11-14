@@ -251,3 +251,48 @@ func TestPg_NilScopeRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ENG-1109 (owner decision 2026-11-15): GetObject shows an open kind's undeclared
+// (extra) properties read-only, each fenced by its own classification; they are
+// not filterable in ListObjects and do not make an object exist for a caller.
+func TestPg_GetObjectShowsFencedExtras(t *testing.T) {
+	e := newLPEnv(t, "lptest-extra")
+	e.seedEvidence("ext-")
+	e.mustObserve("lporder/o1", "status", txt("open"), 0, "ext-south", "x1")
+	e.mustObserve("lporder/o1", "weight", num(7), 0, "ext-south", "x2")     // undeclared → extra, south
+	e.mustObserve("lporder/o1", "carrier", txt("dhl"), 0, "ext-north", "x3") // undeclared → extra, north only
+	e.mustObserve("lporder/o1", "hazmat", txt("no"), 0, "ext-restr", "x4")   // undeclared → extra, restricted
+
+	names := func(ps []domain.ObjectProperty) string {
+		var out []string
+		for _, p := range ps {
+			out = append(out, p.Property)
+		}
+		return fmt.Sprint(out)
+	}
+	v, err := e.reader.Get(e.ctx, domain.ScopeMaintenance, e.ns, "lporder/o1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names(v.Extras) != "[carrier hazmat weight]" {
+		t.Fatalf("maintenance extras: %+v", v.Extras)
+	}
+	v, err = e.reader.Get(e.ctx, southOnly, e.ns, "lporder/o1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names(v.Extras) != "[weight]" || v.Extras[0].Value.Type != "number" || v.Extras[0].Value.Number != 7 ||
+		v.Extras[0].Source != "erp" || v.Extras[0].EvidenceID != "ext-south" {
+		t.Fatalf("south extras (carrier is north's, hazmat restricted): %+v", v.Extras)
+	}
+	for _, p := range v.Properties {
+		if p.Property == "weight" || p.Property == "carrier" {
+			t.Fatalf("an extra leaked into the declared properties: %+v", p)
+		}
+	}
+	// Not filterable: ListObjects refuses an undeclared property (D6).
+	if _, err := e.reader.List(e.ctx, domain.ScopeMaintenance, domain.ObjectsQuery{Namespace: e.ns, Kind: lpOrder,
+		Where: []domain.ObjectCondition{{Property: "weight", Op: domain.ObjectOpGt, Values: []domain.StatementValue{num(1)}}}}); err == nil {
+		t.Fatal("ListObjects accepted a filter on an undeclared property")
+	}
+}

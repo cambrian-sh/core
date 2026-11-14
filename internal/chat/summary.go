@@ -22,16 +22,6 @@ var summaryPrompts = prompts.MustPair("conversation_summary", "conversation_summ
 
 var summaryDataTags = []string{"previous", "messages"}
 
-func init() {
-	h := summaryPrompts.StaticHash()
-	domain.PromptRegistry[h] = domain.PromptEntry{
-		ID: "chat.conversation_summary",
-		Version: fmt.Sprintf("%s.v%d+%s.v%d", summaryPrompts.System.ID, summaryPrompts.System.Version,
-			summaryPrompts.Input.ID, summaryPrompts.Input.Version),
-		Hash: h,
-	}
-}
-
 // NewSummarizer returns the Summarizer that calls gen (a kernel organ generator).
 func NewSummarizer(gen domain.Generator) Summarizer {
 	if gen == nil {

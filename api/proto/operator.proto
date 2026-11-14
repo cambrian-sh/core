@@ -29,6 +29,13 @@ service OperatorConsole {
   // at the auth gate, and the token stays revoked. Capability "logout".
   rpc Logout(LogoutRequest) returns (LogoutResponse);
 
+  // WhoAmI returns the principal the caller's bearer resolved to, its display
+  // name and its full role set (contract 0102; ADR-0142 D1). An OIDC-signed-in
+  // console never calls Login, so this is how it learns who the kernel thinks it
+  // is — the role is the KERNEL's answer, not a probe or an ID-token claim. Open to
+  // every authenticated role, member included.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+
   // StreamEvents drains the sequenced operator feed. The client resumes from
   // last_seq; every OperatorEvent carries a global monotonic seq (the cursor).
   rpc StreamEvents(SubscribeRequest) returns (stream OperatorEvent);
@@ -62,6 +69,17 @@ service OperatorConsole {
   // had: without it nothing ever left "active", so episodic consolidation (ADR-0012/0030)
   // was gated on a state no code could reach. Idempotent via command_id; audited.
   rpc CloseSession(SessionCommandRequest) returns (CommandAck);
+
+  // CancelRun ends a live run TERMINALLY (contract 0102; owner decision 2026-11-14,
+  // T-20261106-operator-closesession-only-pauses-a-live-plan). Unlike CloseSession's
+  // pause, it cancels the run's context, so in-flight steps and agent calls stop on
+  // both execution lanes (single-agent and planner), and the run is recorded as
+  // cancelled: it is not resumable. Writes already dispatched are NOT rolled back
+  // (their ActionRecords keep their dispatched/accepted state). Operator-only,
+  // mandatory reason, idempotent via command_id, audited with actor and reason.
+  // Name the run by session_id (every live run of that session) and/or run_id.
+  // FailedPrecondition when nothing matching is live. Capability "run-cancel".
+  rpc CancelRun(CancelRunRequest) returns (CommandAck);
 
   // Remaining mutations (Operator-only, idempotent, audited). ADR-0047 0047-07.
   rpc TagMemory(TagMemoryRequest) returns (CommandAck);
@@ -102,6 +120,18 @@ service OperatorConsole {
   // Pause/resume/delete reuse SetWatchActive / DeleteWatch on the same id — a
   // scheduled task IS a premium schedule watch. Capability "scheduled-tasks".
   rpc ListScheduledTasks(ListScheduledTasksOpRequest) returns (ListScheduledTasksOpResponse);
+  // Contract 0103 (owner decision 2026-11-14,
+  // T-20261103-operator-plane-cannot-inspect-facts-no-rpc): read-only inspection of the
+  // ADR-0136 fact layer, which is ON by default. Every content read runs at the
+  // operator plane's system scope through the fail-closed fact chokepoint (the owner
+  // fence still applies: another person's private facts are absent). No override,
+  // backfill or reset controls. Capability "facts-inspect".
+  // ListFacts: stored memory_fact items (stated bounds), newest assertion first, paged.
+  rpc ListFacts(ListFactsOpRequest) returns (ListFactsOpResponse);
+  // GetFactChain: the DERIVED supersession chain of one fact's resolution key.
+  rpc GetFactChain(GetFactChainOpRequest) returns (GetFactChainOpResponse);
+  // GetFactCoverage: extraction coverage of the corpus (counts only).
+  rpc GetFactCoverage(GetFactCoverageOpRequest) returns (GetFactCoverageOpResponse);
 
   // ── ADR-0047 Amendment A2 (CORE-OPS-1): operator-plane read/exec/approval
   // surface. Distinct messages from the agent-plane equivalents (D1): the CLI
@@ -672,6 +702,14 @@ service OperatorConsole {
   // (capability "watch-deadletter"); OSS returns Unimplemented.
   rpc RetryWatchDeadLetter(RetryWatchDeadLetterOpRequest) returns (CommandAck);
 
+  // DeleteWatchDeadLetter removes one dead letter an operator has dealt with
+  // (ENG-472). A dead letter embeds the full signal, personal content included;
+  // besides this delete, the premium JournalGC prunes entries older than
+  // CAMBRIAN_REACTIVE_DEADLETTER_RETENTION (default 30 days). Mutating:
+  // command_id + reason, audited. Capability "watch-deadletter-delete"; a kernel
+  // without the reactive journal returns Unimplemented, an unknown id NotFound.
+  rpc DeleteWatchDeadLetter(DeleteWatchDeadLetterOpRequest) returns (CommandAck);
+
   // ── ADR-0139 D14: principal memory notes (capability "memory-notes") ───────
   //
   // The operator half of the notes the agent plane reads as a run-start snapshot
@@ -918,6 +956,70 @@ message ScheduledTaskOp {
   string approved_by = 12;   // who approved the proposal
 }
 
+// ── Contract 0103: fact-layer inspection (ADR-0136) ──────────────────────────
+
+// FactOp is one memory_fact item. In ListFacts the bounds are the STATED ones and
+// current / superseded_by are unset; in GetFactChain they are the DERIVED interval.
+message FactOp {
+  string id = 1;                 // knowledge item id (ki_fact:…)
+  string entity_id = 2;          // <scope_key>/<subject_key>/<predicate_key>
+  string subject = 3;
+  string attribute = 4;
+  string value = 5;
+  string actor = 6;              // the writing principal (asserted_by)
+  string asserted_at = 7;        // RFC3339; the session event time
+  string valid_from = 8;         // RFC3339; "" = unbounded
+  string valid_to = 9;           // RFC3339; "" = open
+  bool valid_empty = 10;         // overtaken at its own start
+  bool current = 11;             // derived: holds now (GetFactChain only)
+  string superseded_by = 12;     // derived: the item that closed it (GetFactChain only)
+  string polarity = 13;          // "positive" | "negative"
+  string cardinality = 14;       // the predicate's cardinality ("" when not derived)
+  string source_chunk_id = 15;
+  string source_document_id = 16;
+  string quote = 17;             // the verbatim span the extractor cited
+  string speaker = 18;
+  repeated string tags = 19;     // the item's classification
+}
+
+message ListFactsOpRequest {
+  string subject = 1;            // optional; compared after normalisation
+  string attribute = 2;          // optional; compared after normalisation
+  string actor = 3;              // optional; the writing principal
+  int32 limit = 4;               // <= 0: 50; capped at 200
+  string page_token = 5;         // next_page_token of the previous page
+}
+
+message ListFactsOpResponse {
+  repeated FactOp facts = 1;
+  string next_page_token = 2;    // "" on the last page
+}
+
+message GetFactChainOpRequest {
+  string fact_id = 1;
+}
+
+message GetFactChainOpResponse {
+  repeated FactOp chain = 1;     // chain order, derived intervals; empty when the fact is absent
+}
+
+message GetFactCoverageOpRequest {}
+
+message FactVersionCoverageOp {
+  string extractor_version = 1;  // `<prompt id>/<generator model>`; "" for pre-version markers
+  int64 documents_complete = 2;
+  int64 documents_partial = 3;
+  string last_extracted_at = 4;  // RFC3339
+}
+
+message GetFactCoverageOpResponse {
+  int64 documents_with_chunks = 1;
+  int64 documents_extracted = 2; // documents carrying any memory_fact marker
+  int64 fact_items = 3;
+  string last_extracted_at = 4;  // RFC3339; "" when nothing was extracted
+  repeated FactVersionCoverageOp versions = 5;
+}
+
 message ListConversationMessagesOpResponse {
   repeated MessageOp messages = 1;
 }
@@ -995,6 +1097,15 @@ message SessionCommandRequest {
   string session_id = 3;
 }
 
+// CancelRunRequest names the run(s) to cancel (contract 0102). At least one of
+// session_id / run_id is required; with both, only that run of that session.
+message CancelRunRequest {
+  string command_id = 1; // client-generated idempotency key (UUID)
+  string reason = 2;     // mandatory; recorded in the audit entry and the run's cause
+  string session_id = 3;
+  string run_id = 4;
+}
+
 message QueryAuditRequest {
   string actor = 1;
   string target_type = 2;
@@ -1048,6 +1159,26 @@ message DescribeAuthResponse {
   // and presents the resulting access/ID token as its bearer.
   string oidc_issuer = 2;
   string oidc_client_id = 3;
+}
+
+// WhoAmIRequest carries nothing: the caller is the call's own bearer.
+message WhoAmIRequest {}
+
+// WhoAmIResponse is the kernel's view of the caller (contract 0102).
+message WhoAmIResponse {
+  // principal is the registry person, rendered "user:<id>" (ADR-0142 D3).
+  string principal = 1;
+  // display_name is the person's name from the registry; empty when unknown.
+  string display_name = 2;
+  // role is the operator-plane role derived from roles: operator | viewer | member.
+  string role = 3;
+  // roles is the person's full role SET (ADR-0142 D1).
+  repeated string roles = 4;
+  // role_source says who decided the role: always "kernel" here — a client shows it
+  // so nobody mistakes an ID-token claim for authority.
+  string role_source = 5;
+  // issuer names the backend that verified the bearer: "local" or the OIDC issuer URL.
+  string issuer = 6;
 }
 
 // LogoutRequest carries nothing: the token to revoke is the call's own bearer.
@@ -1175,9 +1306,14 @@ message OperatorEvent {
   uint64 seq = 1;
   google.protobuf.Timestamp ts = 2;
   string session_id = 3;
+  // 10 was `AuctionEventOp auction`: the auction was deleted (ADR-0100) and its
+  // wire names went with it in contract 0102 (owner decision 2026-11-14,
+  // T-20261113-operator-feed-still-names-dispatch-decisions). The dispatch
+  // decision now rides `selection` (35). Never reuse 10 or the name.
+  reserved 10;
+  reserved "auction";
   oneof payload {
     ResyncRequired resync = 9;
-    AuctionEventOp auction = 10;
     AgentReadyOp agent_ready = 11;
     SessionDormantOp session_dormant = 12;
     SessionCompletedOp session_completed = 13 [deprecated = true]; // no producer since consolidation was removed
@@ -1220,6 +1356,12 @@ message OperatorEvent {
     // expired, withdrawn (its requester stopped waiting), needs_hierarchy or
     // unroutable. Keyed by HITLRaisedOp.intervention_id. Sequenced and replayed.
     HITLResolvedOp hitl_resolved = 34;
+    // The planner lane's dispatch decision for one step (ADR-0100): who was
+    // considered, how they ranked, who was dispatched, what deciding cost.
+    // Contract 0102 replaces the auction-named slot 10 with this one. The
+    // single-agent lane (ADR-0150) makes no per-step decision and emits none.
+    // Capabilities "routing-trace" (the funnel) and "selection-cost".
+    SelectionEventOp selection = 35;
   }
 }
 
@@ -1411,51 +1553,54 @@ message ResyncRequired {
   uint64 latest_seq = 1; // the feed head at the time resync was signalled
 }
 
-message AuctionEventOp {
+// SelectionEventOp is one dispatch decision (ADR-0100 capability-typed
+// dispatch): the Gatekeeper ranked the eligible agents by merit and the
+// dispatcher sent the step to one of them. Nobody bid; `candidates` are the
+// ranked candidates, and `merit` is the ranking score, not a self-reported
+// confidence. Contract 0102 (replaces AuctionEventOp).
+message SelectionEventOp {
   string task_id = 1;
   string task_desc = 2;
-  string status = 3;
-  string winner_id = 4;
-  repeated BidEntryOp bids = 5;
+  string status = 3;     // started | completed | failed
+  string winner_id = 4;  // the dispatched agent ("" when none was eligible)
+  repeated SelectionCandidateOp candidates = 5;
   string error_msg = 6;
-  // winner_margin is the winning bid's confidence minus the best losing bid
-  // (0 when no runner-up). ROUTE-02: a near-zero margin flags a coin-flip.
+  // winner_margin is the dispatched candidate's merit minus the best runner-up's
+  // (0 when there is no runner-up). A near-zero margin flags a coin-flip.
   float winner_margin = 7;
   // funnel is the Gatekeeper's Declaration->Semantic->Merit candidate trace for
-  // this auction (ROUTE-02). Absent when routing tracing is disabled or on the
+  // this decision (ROUTE-02). Absent when routing tracing is disabled or on the
   // 'started' event.
   GatekeeperFunnelOp funnel = 8;
-  // ADR-0100 P2 selection cost, reported identically by BOTH selection arms so
-  // they are directly comparable.
   // selection_latency_ms is the wall-time spent DECIDING who runs this step
-  // (candidate discovery + the bid round on the auction arm); it excludes the
-  // winner's execution.
+  // (candidate discovery and ranking); it excludes the dispatched agent's work.
   int32 selection_latency_ms = 9;
-  // selection_boots is how many agent processes were cold-started to reach that
-  // decision. The auction booted every candidate to ask for a bid; dispatch
-  // boots nothing to decide.
+  // selection_boots is how many agent processes were cold-started to reach the
+  // decision. Dispatch boots nothing to decide, so this is 0 unless a future
+  // selection strategy has to.
   int32 selection_boots = 10;
 }
 
-message BidEntryOp {
+// SelectionCandidateOp is one ranked candidate of a dispatch decision.
+message SelectionCandidateOp {
   string agent_id = 1;
-  float confidence = 2;
+  float merit = 2;        // the Gatekeeper's merit score (higher ranks first)
   string rationale = 3;
   int32 latency_ms = 4;
   // requirements are dependencies the agent declared it needs satisfied before
-  // executing (ROUTE-02 auction-proposal record).
+  // executing.
   repeated string requirements = 5;
 }
 
-// GatekeeperFunnelOp is the per-auction candidate funnel: every agent the
+// GatekeeperFunnelOp is the per-decision candidate funnel: every agent the
 // Gatekeeper considered and the layer that admitted or eliminated it (ROUTE-02).
 // It lets a benchmark row reconstruct why a step routed the way it did, from the
 // persisted event alone.
 message GatekeeperFunnelOp {
   repeated DeclarationResultOp l1 = 1; // Layer 1: Declaration pass-set
-  repeated InterviewResultOp l2 = 2;   // Layer 2: semantic (profile-vector) survivors/eliminated
+  repeated SemanticGateOp l2 = 2;      // Layer 2: semantic (profile-vector) survivors/eliminated
   double l2_threshold = 3;             // similarity floor applied in Layer 2 (0 if L2 skipped)
-  repeated MeritResultOp l3 = 4;       // Layer 3: Merit ranking, highest-first (as presented to the auction)
+  repeated MeritResultOp l3 = 4;       // Layer 3: Merit ranking, highest-first (as dispatched from)
   int32 max_candidates = 5;            // GatekeeperMaxCandidates cap applied after ranking (0 = uncapped)
 }
 
@@ -1465,11 +1610,11 @@ message DeclarationResultOp {
   string reason = 3; // why it failed (empty when passed)
 }
 
-// InterviewResultOp is one agent's Layer-2 SEMANTIC gate verdict. The name is
-// historical and kept for wire compatibility: the profile vector it is matched
-// against is embedded from the agent's declared description at registration; the
-// LLM interview that once wrote it was deleted 2026-11-05.
-message InterviewResultOp {
+// SemanticGateOp is one agent's Layer-2 SEMANTIC gate verdict: the task
+// matched against the agent's profile vector, embedded from its declared
+// description at registration. (Contract 0102 renamed it from InterviewResultOp;
+// the LLM interview that name came from was deleted 2026-11-05.)
+message SemanticGateOp {
   string agent_id = 1;
   double similarity = 2;          // best profile->task similarity; 0 when below threshold (not returned by the searcher)
   bool survived = 3;
@@ -1870,6 +2015,14 @@ message MemoryOp {
   google.protobuf.Timestamp event_time_end = 10;
   string time_source = 11;
   string time_precision = 12;
+  // Contract 0104 (ADR-0136, T-20261103-operator-querymemory-drops-fact-match-fact):
+  // why the fact lane reached this hit. fact_matches are the matched fact lines (the
+  // reader-facing description of each fact naming this chunk), fact_match the best
+  // fact cosine to the query, fact_current whether a matched fact holds now. All
+  // unset for a hit the fact lane did not touch.
+  repeated string fact_matches = 13;
+  double fact_match = 14;
+  bool fact_current = 15;
 }
 message QueryMemoryResponse {
   repeated MemoryOp results = 1;
@@ -2010,6 +2163,16 @@ message IngestMemoryOpRequest {
   // time_precision: "year" | "month" | "day" | "hour" | "minute" | "second".
   // Empty means "second" when a time is given. Unknown is INVALID_ARGUMENT.
   string time_precision = 14;
+  // Contract 0104 (ADR-0136 A3.5, T-20261103-operator-plane-ingestrequest-cannot-carry):
+  // descriptive source metadata, the operator-plane twin of the agent plane's
+  // IngestMemoryRequest 9-11, under the same rules — DESCRIPTIVE ONLY (source_kind
+  // never becomes the routing source type; author never replaces the authenticated
+  // operator stamped as writer), trimmed, a control character is INVALID_ARGUMENT,
+  // cut to execution.ingestion.source_*_max_chars. title, when set, replaces the
+  // filename-derived title. All optional.
+  string source_kind = 15;
+  string title = 16;
+  string author = 17;
 }
 // MemoryPartOp is one timed part of a multi-part upload (ADR-0134 D1). The
 // operator-plane twin of the agent plane's MemoryPart (distinct messages per
@@ -2017,6 +2180,9 @@ message IngestMemoryOpRequest {
 message MemoryPartOp {
   string text = 1;
   google.protobuf.Timestamp occurred_at = 2; // optional
+  // Contract 0104: who said this part (descriptive, as MemoryPart.speaker on the
+  // agent plane; capped by execution.ingestion.part_speaker_max_chars).
+  string speaker = 3;
 }
 message IngestMemoryOpResponse {
   string command_id = 1;
@@ -2249,9 +2415,11 @@ message WatchConfigOp {
   // reactive plane: an operator sees a healthy row for a rule that has not run
   // in days.
   //
-  // source_stream_state is "live" | "unavailable" | "unknown". "unknown" is NOT
-  // "unavailable": a kernel with no stream registry cannot tell, and reporting a
-  // guess as a fact here would raise false alarms on every watch.
+  // source_stream_state is "live" | "unavailable" | "quarantined" | "unknown".
+  // "quarantined" means the stream's daemon crash-looped and will NOT restart by
+  // itself (ADR-0070) — an operator must act. "unknown" is NOT "unavailable": a
+  // kernel with no stream registry cannot tell, and reporting a guess as a fact
+  // here would raise false alarms on every watch.
   string source_stream_state = 20;
   // source_stream_refcount is how many watches hold this stream. It answers the
   // question that follows the first: fixing a dead daemon un-breaks N rules, not
@@ -2863,6 +3031,13 @@ message RetryWatchDeadLetterOpRequest {
   string dead_letter_id = 3;
 }
 
+message DeleteWatchDeadLetterOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // dead_letter_id identifies the entry to delete.
+  string dead_letter_id = 3;
+}
+
 message GetConfigSchemaOpRequest {}
 
 message ConfigSchemaOp {
@@ -2894,6 +3069,15 @@ message ConfigSchemaOp {
   // at write time rather than leaving this read to be the only signal, because an
   // operator who sees "saved" learns the truth otherwise only if they look.
   map<string, string> value_source = 7;
+
+  // Contract 0104 (ADR-0101 D8 read side, T-20261101-getconfigschema-does-not-name-the-file-a-stored):
+  // for a key whose value_source is "store" and that a config FILE also states,
+  // overrides_file names that file layer ("tuning.json", "config.json", …) and
+  // overrides_file_value its value there (display form) — the "you edited the file
+  // and nothing happened" case, readable without a write ack. Absent for keys no
+  // file states. Secret-shaped keys never carry a value.
+  map<string, string> overrides_file = 8;
+  map<string, string> overrides_file_value = 9;
 }
 
 message SetConfigOpRequest {
@@ -2995,7 +3179,10 @@ message AuthoredStepOp {
   // authored plan overrode that decision. Field number retained, never reused.
   string recommended_model = 5 [deprecated = true];
   bool   checkpoint_after = 6;
-  string checkpoint_query = 7;
+  // 7 was checkpoint_query (ADR-0013): domain.Step.CheckpointQuery was deleted
+  // 2026-11-14 (ENG-1313) and the field reserved in contract 0102. Never reuse.
+  reserved 7;
+  reserved "checkpoint_query";
   bool   is_thought = 8;
 
   // preferred_agent is the SOFT pin: this agent goes first, but ranking still

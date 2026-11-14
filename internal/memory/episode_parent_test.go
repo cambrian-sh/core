@@ -26,15 +26,14 @@ import (
 func episodeAgent() (*multiCaptureStore, *fakeExperienceStore, *Agent) {
 	docs := &multiCaptureStore{}
 	exps := &fakeExperienceStore{}
-	a := NewAgent(NewMemoryManager(docs, &recordingEmbedder{}), 0.7, 5, 3)
+	a := NewAgent(NewMemoryManager(docs, &recordingEmbedder{}), 3)
 	a.RecordOutcomes = true
-	a.SurpriseFloor = 0.5
 	a.ExperienceStore = exps
 	return docs, exps, a
 }
 
-// engagePlan runs one mutation through the real tool-output path, which writes the
-// mid-plan action record.
+// engagePlan runs one mutation through the real tool-output path, which since
+// ENG-1595 writes nothing (it used to write the mid-plan action record).
 func engagePlan(a *Agent, planID string) {
 	_ = a.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
 		ToolName: "write_file", ArgsJSON: []byte(`{"path":"/tmp/ep.md"}`),
@@ -144,14 +143,10 @@ func TestExperience_CompletionClosesWithoutErasingItsStart(t *testing.T) {
 	if !closed.StartedAt.Equal(begun.StartedAt) {
 		t.Errorf("closing an episode must carry its start forward: %v → %v", begun.StartedAt, closed.StartedAt)
 	}
-	actions := docsOfType(docs, domain.DocTypeMnemonicAction)
-	if len(actions) != 1 || actions[0].ExperienceID != "exp-p-life" {
-		t.Errorf("the plan's action record must hang from the episode, got %+v", actions)
-	}
-	// 2026-11-05: no plan-level chunk is written any more (scenes cancelled). The
-	// successful plan's only rows are its action records.
-	if len(docs.saved) != 1 {
-		t.Errorf("a successful plan writes only its action records, got %d docs: %+v", len(docs.saved), docs.saved)
+	// No plan-level chunk (scenes cancelled 2026-11-05) and no action record
+	// (ENG-1595, 2026-11-14): the episode row is all a plan leaves.
+	if len(docs.saved) != 0 {
+		t.Errorf("a plan writes no chunk, got %d docs: %+v", len(docs.saved), docs.saved)
 	}
 }
 
@@ -177,79 +172,23 @@ func TestRecordPlanOutcome_PlanWithNoActionsStillClosesItsEpisode(t *testing.T) 
 	}
 }
 
-// The action record is written MID-plan, and is what exposed the defect: it carried
-// plan_id in metadata and no parent at all, so the cascade that defines the episode
-// skipped the whole action path.
-func TestActionRecord_HangsFromTheEpisode(t *testing.T) {
-	t.Parallel()
-	t.Run("arm on: parented", func(t *testing.T) {
-		docs, _, a := episodeAgent()
-		_ = a.BeginExperience(context.Background(), "p-act")
-		engagePlan(a, "p-act")
-
-		actions := docsOfType(docs, domain.DocTypeMnemonicAction)
-		if len(actions) != 1 {
-			t.Fatalf("expected one action record, got %d", len(actions))
-		}
-		if actions[0].ExperienceID != "exp-p-act" {
-			t.Errorf("a mid-plan action must hang from its episode, got %q", actions[0].ExperienceID)
-		}
-		if got, _ := actions[0].Metadata["plan_id"].(string); got != "p-act" {
-			t.Errorf("the join key must survive alongside the parent, got %q", got)
-		}
-	})
-
-	// With the arm off nothing is written at all — not "written unparented".
-	t.Run("arm off: nothing written", func(t *testing.T) {
-		docs := &multiCaptureStore{}
-		a := NewAgent(NewMemoryManager(docs, &recordingEmbedder{}), 0.7, 5, 3)
-		engagePlan(a, "p-off")
-		if len(docs.saved) != 0 {
-			t.Errorf("both arms off must write nothing, got %+v", docs.saved)
-		}
-	})
-}
-
-// The failure record belongs to its episode and must be deletable with it. The other
-// negative-edge callers do NOT: a reported agent fault is not one plan execution, and inventing a parent for it would be a claim about something
-// that never happened.
-func TestFailurePrecedent_HangsFromTheEpisodeAndOtherEdgesDoNot(t *testing.T) {
+// ENG-1595 (owner decision 2026-11-14): an episode still opens and closes, but no
+// chunk hangs from it any more — neither the mid-plan action record nor the failure
+// record is written.
+func TestEpisode_NoRawRecordsHangFromIt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	docs, _, a := episodeAgent()
-
+	docs, exps, a := episodeAgent()
 	_ = a.BeginExperience(ctx, "p-fail")
 	engagePlan(a, "p-fail")
 	_ = a.RecordPlanOutcome(ctx, domain.PlanRecord{
-		PlanID: "p-fail", Goal: "migrate", Success: false, Surprise: 0.9,
+		PlanID: "p-fail", Goal: "migrate", Success: false, Surprise: 0.9, ReplanExhausted: true,
 		FailureSummary: `step 2 (apply the migration): relation "documents" does not exist`,
 	})
-
-	edges := docsOfType(docs, domain.DocTypeNegativeEdge)
-	if len(edges) != 1 {
-		t.Fatalf("expected exactly one failure precedent, got %d", len(edges))
+	if len(docs.saved) != 0 {
+		t.Fatalf("no chunk may be written for the episode, got %+v", docs.saved)
 	}
-	if edges[0].ExperienceID != "exp-p-fail" {
-		t.Errorf("the failure precedent must hang from its episode, got %q", edges[0].ExperienceID)
-	}
-	if got, _ := edges[0].Metadata["plan_id"].(string); got != "p-fail" {
-		t.Errorf("the precedent must be joinable to its plan, got %q", got)
-	}
-
-	// The port-level call is unchanged: no parent, no plan_id.
-	bare := &multiCaptureStore{}
-	other := NewAgent(NewMemoryManager(bare, &recordingEmbedder{}), 0.7, 5, 3)
-	if err := other.IngestNegativeEdge(ctx, "agent fault", "last output", "agent-1"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	loose := docsOfType(bare, domain.DocTypeNegativeEdge)
-	if len(loose) != 1 {
-		t.Fatalf("expected one negative edge, got %d", len(loose))
-	}
-	if loose[0].ExperienceID != "" {
-		t.Errorf("a failure that is not one plan execution must stay unparented, got %q", loose[0].ExperienceID)
-	}
-	if _, ok := loose[0].Metadata["plan_id"]; ok {
-		t.Errorf("no plan_id may be invented for it, got %v", loose[0].Metadata["plan_id"])
+	if len(exps.saved) != 2 {
+		t.Fatalf("the episode must still open and close, got %d experience writes", len(exps.saved))
 	}
 }

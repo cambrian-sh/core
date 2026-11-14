@@ -227,11 +227,31 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 				}
 				ctx = domain.WithPrincipal(ctx, domain.PersonPrincipal(binding.BoundToID))
 			}
-		} else if pol := s.identities.StrangerPolicyFor(ctx, surface); pol.Mode == domain.StrangerRefuseUntilBound {
-			// Refused, and the caller REPLIES once rather than ignoring: silent
-			// ignoring is indistinguishable from a broken bot, so the person
-			// retries instead of asking an operator to bind them.
-			return ErrSenderNotBound
+		} else {
+			// An unbound sender: the surface's stranger policy, all three modes,
+			// exactly as the MCP door's identity hop applies them (mcpserve
+			// middleware principalFor) — this door used to honour only
+			// refuse_until_bound, so a configured guest bucket silently became the
+			// chat worker's own reach (T-20261113-chat-ingress-ignores-the-stranger-guest).
+			switch pol := s.identities.StrangerPolicyFor(ctx, surface); pol.Mode {
+			case domain.StrangerRefuseUntilBound:
+				// Refused, and the caller REPLIES once rather than ignoring: silent
+				// ignoring is indistinguishable from a broken bot, so the person
+				// retries instead of asking an operator to bind them.
+				return ErrSenderNotBound
+			case domain.StrangerGuestPrincipal:
+				if pol.GuestPrincipalID == "" {
+					// A guest mode with no guest named must not fall back to the
+					// worker's reach — the opposite of what was configured.
+					return ErrSenderNotBound
+				}
+				// The guest is a shared bucket, not a person: it stays an agent,
+				// as on the MCP door.
+				ctx = domain.WithPrincipal(ctx, domain.AgentPrincipal(pol.GuestPrincipalID))
+			default:
+				// StrangerSurfaceDefault (and any future mode): the surface is the
+				// identity — the pre-binding behaviour.
+			}
 		}
 	}
 

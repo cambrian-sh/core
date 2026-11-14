@@ -89,14 +89,19 @@ type ToolRegistry interface {
 }
 
 // ToolCall is a fully-authorized invocation handed to a handler. By the time a
-// handler sees it, the executor has already validated the schema, the grant,
-// the resource policy, the scope regime, and (if dangerous) approval.
+// handler sees it, the executor has checked the grant, the resource policy, the
+// scope regime, and (if dangerous) approval, and — when ToolExecutor.ArgValidator
+// is set, which execution.tools.validate_args (default true, ADR-0145 D9) does —
+// has validated and coerced ArgsJSON against the tool's schema. An operator who
+// turns the flag off hands handlers unvalidated arguments, so a handler must
+// still not trust ArgsJSON blindly.
 type ToolCall struct {
 	ToolName string
 	ArgsJSON []byte
 	Policy   ToolResourcePolicy // passed for in-handler confinement (backstop, not the gate)
 	// Meta is request metadata only the executor sets (the staged-inputs folders,
-	// domain/staged_inputs.go); the MCP handler sends it as the request's _meta.
+	// domain/staged_inputs.go; the ADR-0154 action key, ActionKeyMetaKey); the
+	// MCP handler sends it as the request's _meta.
 	// Never built from model-written arguments. nil ⇒ none.
 	Meta map[string]any
 }

@@ -13,9 +13,12 @@ import (
 // ConfigSchemaVersion versions the tunable catalogue below. Bump it when a field
 // is added, removed or changes meaning — a console caches the schema by hash and
 // this is how it learns to refetch.
-const ConfigSchemaVersion = "2" // 2: + execution.tools.tool_menu_k (2026-08-11)
+// 3: + per-property "x-param" / "x-runtime" annotations (2026-11-14, ENG-1456).
+// 4: + the ADR-0136 fact layer (execution.facts.*) and boolean fields
+// (2026-11-15, T-20261103-execution-facts-is-absent-from-the-operator).
+const ConfigSchemaVersion = "4" // 2: + execution.tools.tool_menu_k (2026-08-11)
 
-// tunable is one numerically-editable kernel setting.
+// tunable is one kernel setting the console can show (and, with Param, edit).
 type tunable struct {
 	// Key is the flat Koanf path, which is ALSO the provenance key. They must
 	// match exactly or value_source silently reports nothing for the field.
@@ -38,6 +41,10 @@ type tunable struct {
 	// be wrong in the one direction that matters: it would tell an operator a
 	// hot-applied weight is untouched.
 	Runtime bool
+	// Bool marks an on/off switch. Its schema type is "boolean" and its current
+	// value is reported as 1 (on) or 0 (off), because current_values is a map of
+	// numbers on the wire. Min/Max are ignored for it.
+	Bool bool
 }
 
 // tunables is the catalogue the operator console renders.
@@ -135,6 +142,52 @@ var tunables = []tunable{
 		Description: "Scales the estimated latency to produce each step's timeout.",
 		Consequence: "Too low kills slow-but-correct steps; too high lets a hung step hold the plan open. Restart required.",
 	},
+
+	// The ADR-0136 fact layer (execution.facts.*). Read-only: the extractor, the
+	// lane and the supersession seeding are wired at boot, and SetRuntimeConfig
+	// applies none of them, so each one is a restart.
+	{
+		Key: "execution.facts.extract_enabled", Bool: true,
+		Title:       "Fact extraction",
+		Description: "Extract facts from every ingested document with the facts generator, after its chunks are stored.",
+		Consequence: "On: every ingested document costs LLM calls (bounded by the budgets below) and feeds the fact lane. Off: no new facts; existing ones stay. Restart required.",
+	},
+	{
+		Key: "execution.facts.lane_enabled", Bool: true,
+		Title:       "Fact lane in retrieval",
+		Description: "Search the stored facts at query time and add their source chunks as hits.",
+		Consequence: "On: questions phrased differently from the source text still reach it through its facts. Off: retrieval ignores facts entirely. Restart required.",
+	},
+	{
+		Key: "execution.facts.supersession_enabled", Bool: true,
+		Title:       "Fact supersession",
+		Description: "Close an older fact value by valid time when a newer one arrives, and rank current/latest questions by the current value.",
+		Consequence: "On: \"what is X now\" prefers the latest value; history is kept, never deleted. Off: every value ranks alike. Restart required.",
+	},
+	{
+		Key: "execution.facts.assessments_enabled", Bool: true,
+		Title:       "Fact supersession judge",
+		Description: "Ask the model whether two facts about the same attribute conflict, and learn attribute cardinality. Needs supersession.",
+		Consequence: "On: catches conflicts the cue words miss, at one batched LLM call per new fact group. Off: only exact keys and change-language cues supersede. Restart required.",
+	},
+	{
+		Key: "execution.facts.max_calls_per_document", Min: 0, Max: 1000,
+		Title:       "Extraction calls per document",
+		Description: "How many extraction windows one ingest may spend. 0 = no cap.",
+		Consequence: "Higher covers more of a long document and costs more LLM calls per ingest; the rest of a capped document is marked partially covered. Restart required.",
+	},
+	{
+		Key: "execution.facts.max_facts_per_document", Min: 1, Max: 10000,
+		Title:       "Facts per extraction window",
+		Description: "The most facts kept from one extraction window.",
+		Consequence: "Lower drops the tail of a dense window; higher keeps more, including weaker facts. Restart required.",
+	},
+	{
+		Key: "execution.facts.max_facts_per_source", Min: 1, Max: 100000,
+		Title:       "Facts per source",
+		Description: "The most facts kept for one source document across all its windows.",
+		Consequence: "Once reached, the rest of the source is not extracted. Raise it for long reference documents. Restart required.",
+	},
 }
 
 // configSchemaSource implements operator.ConfigSchemaReporter.
@@ -146,12 +199,42 @@ type configSchemaSource struct {
 	// — showing a stale number as if it were live, which is the exact failure
 	// GetConfigSchema exists to remove.
 	live func(param string) (float64, bool)
+	// overrides lists the durable store's overrides against the config files as they
+	// are on disk now (config.StoreOverrideReport). nil ⇒ no store: no overrides.
+	overrides func() []config.StoreOverride
+}
+
+// FileOverrides implements operator.ConfigSchemaReporter (ADR-0101 D8 read side,
+// contract 0104): for each catalogued tunable the store overrides and a config file
+// also states, the file layer and the file's value — what the console needs to say
+// "stored value; overrides tuning.json (file value 0.3)" without a write ack.
+func (c configSchemaSource) FileOverrides() (files, values map[string]string) {
+	if c.overrides == nil {
+		return nil, nil
+	}
+	known := make(map[string]bool, len(tunables))
+	for _, t := range tunables {
+		known[t.Key] = true
+	}
+	for _, o := range c.overrides() {
+		if !known[o.Key] || o.File == "" {
+			continue
+		}
+		if files == nil {
+			files, values = map[string]string{}, map[string]string{}
+		}
+		files[o.Key] = o.File
+		if !o.Secret {
+			values[o.Key] = config.DisplayValue(o.FileValue, false)
+		}
+	}
+	return files, values
 }
 
 func (c configSchemaSource) SchemaJSON() (schema, version, hash string) {
 	props := map[string]any{}
 	for _, t := range tunables {
-		props[t.Key] = map[string]any{
+		prop := map[string]any{
 			"type":        "number",
 			"title":       t.Title,
 			"description": t.Description,
@@ -161,7 +244,22 @@ func (c configSchemaSource) SchemaJSON() (schema, version, hash string) {
 			// the part of the field an operator actually needs.
 			"x-consequence": t.Consequence,
 			"x-writable":    t.Param != "",
+			// The name SetRuntimeConfig takes for this field ("" when not
+			// writable) and whether it is a live-only runtime value. Published so
+			// a client (the benchmark harness's operator sweep, ENG-1456) reads the
+			// runtime-settable params from the kernel instead of keeping a copy or
+			// re-deriving the name from the config key. Annotations, not a proto
+			// field: schema_json is already the per-field description.
+			"x-param":   t.Param,
+			"x-runtime": t.Runtime,
 		}
+		if t.Bool {
+			// current_values reports it as 1/0 (a numeric map on the wire).
+			prop["type"] = "boolean"
+			delete(prop, "minimum")
+			delete(prop, "maximum")
+		}
+		props[t.Key] = prop
 	}
 	doc := map[string]any{
 		"$schema":    "https://json-schema.org/draft/2020-12/schema",
@@ -235,8 +333,30 @@ func (c configSchemaSource) bootValue(key string) (float64, bool) {
 		return float64(e.Tools.ToolMenuK), true
 	case "execution.step_timeout_multiplier":
 		return e.Plan.StepTimeoutMultiplier, true
+	case "execution.facts.extract_enabled":
+		return boolNum(e.Facts.ExtractEnabled), true
+	case "execution.facts.lane_enabled":
+		return boolNum(e.Facts.LaneEnabled), true
+	case "execution.facts.supersession_enabled":
+		return boolNum(e.Facts.SupersessionEnabled), true
+	case "execution.facts.assessments_enabled":
+		return boolNum(e.Facts.AssessmentsEnabled), true
+	case "execution.facts.max_calls_per_document":
+		return float64(e.Facts.MaxCallsPerDocument), true
+	case "execution.facts.max_facts_per_document":
+		return float64(e.Facts.MaxFactsPerDocument), true
+	case "execution.facts.max_facts_per_source":
+		return float64(e.Facts.MaxFactsPerSource), true
 	}
 	return 0, false
+}
+
+// boolNum reports a switch in current_values' numeric form: 1 on, 0 off.
+func boolNum(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // ValueSource reports which layer supplies each key.

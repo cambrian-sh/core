@@ -7,7 +7,6 @@ type TelemetryObserver interface {
 	OnTaskCompleted(evt TaskEvent)
 	OnSessionEvicted(agentID string)
 	OnConwipWait(durationMs int64)
-	OnAuctionNoWinner(taskID string)
 	OnSchemaMismatch(agentID, kind string)
 	OnPlanCompleted(event PlanEvent)
 	OnRetrievalCompleted(session RetrievalSession)
@@ -21,7 +20,6 @@ type NoopTelemetryObserver struct{}
 func (NoopTelemetryObserver) OnTaskCompleted(_ TaskEvent)                       {}
 func (NoopTelemetryObserver) OnSessionEvicted(_ string)                         {}
 func (NoopTelemetryObserver) OnConwipWait(_ int64)                              {}
-func (NoopTelemetryObserver) OnAuctionNoWinner(_ string)                        {}
 func (NoopTelemetryObserver) OnSchemaMismatch(_, _ string)                      {}
 func (NoopTelemetryObserver) OnPlanCompleted(_ PlanEvent)                       {}
 func (NoopTelemetryObserver) OnRetrievalCompleted(_ RetrievalSession)           {}

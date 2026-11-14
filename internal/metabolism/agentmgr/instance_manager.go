@@ -72,11 +72,14 @@ type InstanceManager struct {
 	// manifestFor resolves an agent's manifest so its per-agent memory_limit_mb
 	// can override the global default (SEC-01). nil ⇒ only the global default is
 	// used. Set by NewAgentManager (which holds the registry).
-	manifestFor func(agentID string) *domain.AgentManifest
+	manifestFor func(ctx context.Context, agentID string) *domain.AgentManifest
 	// capCleanups holds the per-instance resource-cap teardown (Windows: closes
 	// the Job Object handle, which reaps the whole process tree via
 	// kill-on-close). Keyed by instance ID; invoked on eviction.
 	capCleanups map[string]func()
+	// containment is execution.agents.sandbox (containment.go); its zero value
+	// refuses third-party agents (fail closed).
+	containment AgentContainment
 }
 
 // SetEnvPassthrough configures the operator-declared agent env allowlist extras
@@ -110,7 +113,7 @@ func (im *InstanceManager) SetAgentBootTimeout(d time.Duration) {
 
 // SetManifestResolver wires the per-agent manifest lookup used to honor an
 // agent's declared memory_limit_mb over the global default (SEC-01).
-func (im *InstanceManager) SetManifestResolver(f func(agentID string) *domain.AgentManifest) {
+func (im *InstanceManager) SetManifestResolver(f func(ctx context.Context, agentID string) *domain.AgentManifest) {
 	im.manifestFor = f
 }
 
@@ -124,9 +127,9 @@ func (im *InstanceManager) SetManifestResolver(f func(agentID string) *domain.Ag
 //
 // So enabling a global cap contains a runaway user agent without endangering the
 // heavy system agents.
-func (im *InstanceManager) effectiveMemLimitMB(agentID string) int {
+func (im *InstanceManager) effectiveMemLimitMB(ctx context.Context, agentID string) int {
 	if im.manifestFor != nil {
-		if m := im.manifestFor(agentID); m != nil && m.MemoryLimitMB > 0 {
+		if m := im.manifestFor(ctx, agentID); m != nil && m.MemoryLimitMB > 0 {
 			return m.MemoryLimitMB
 		}
 	}
@@ -141,11 +144,11 @@ func (im *InstanceManager) effectiveMemLimitMB(agentID string) int {
 // (virtual address space) and V8 reserves multi-GB virtual ranges it never
 // commits, so a limit sized for Python kills a healthy bun/node agent at boot.
 // Windows Job Objects limit COMMITTED memory and apply to JS agents unchanged.
-func (im *InstanceManager) spawnMemLimitMB(def *domain.AgentDefinition) int {
+func (im *InstanceManager) spawnMemLimitMB(ctx context.Context, def *domain.AgentDefinition) int {
 	if goruntime.GOOS == "linux" && domain.IsJSRuntime(def.Runtime) {
 		return 0
 	}
-	return im.effectiveMemLimitMB(def.ID)
+	return im.effectiveMemLimitMB(ctx, def.ID)
 }
 
 // NewInstanceManager creates an InstanceManager with empty maps.
@@ -605,6 +608,12 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	im.bootCount.Add(1)
 	inst := domain.NewInstance(def.ID)
 
+	// ADR-0139 D8: the agent's trust tier decides whether it may start and its
+	// memory cap (containment.go) — before anything is spawned.
+	memMB, err := im.admitLaunch(ctx, def)
+	if err != nil {
+		return nil, err
+	}
 	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.
 	if err := im.verifyRuntimeDeps(ctx, def); err != nil {
 		return nil, err
@@ -643,7 +652,13 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	// SEC-01: cap the agent's memory after start (Windows Job Object / Unix
 	// RLIMIT_AS). A failure here is non-fatal — the agent still runs uncapped and
 	// the error is logged rather than aborting boot.
-	if cleanup, capErr := applyResourceCaps(cmd, im.spawnMemLimitMB(def)); capErr != nil {
+	if cleanup, capErr := applyResourceCaps(cmd, memMB); capErr != nil {
+		if agentTrustTier(def) == agentTierThirdParty {
+			// A third-party agent's memory cap is a containment control, not
+			// best-effort: no cap, no agent.
+			_ = cmd.Process.Kill()
+			return nil, fmt.Errorf("agent %s (third-party): memory cap not applied: %w", def.ID, capErr)
+		}
 		slog.Warn("SEC-01: failed to apply agent resource caps", "agent_id", def.ID, "err", capErr)
 	} else if cleanup != nil {
 		im.mu.Lock()
@@ -692,6 +707,11 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	inst := domain.NewInstance(def.ID)
 	inst.Mode = domain.ModeDaemon
 
+	// ADR-0139 D8: tier admission and memory cap (containment.go).
+	memMB, err := im.admitLaunch(ctx, def)
+	if err != nil {
+		return nil, err
+	}
 	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.
 	if err := im.verifyRuntimeDeps(ctx, def); err != nil {
 		return nil, err
@@ -737,7 +757,11 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 		return nil, err
 	}
 	// SEC-01: daemons are the longest-lived, most-exposed agents — cap first.
-	if cleanup, capErr := applyResourceCaps(cmd, im.spawnMemLimitMB(def)); capErr != nil {
+	if cleanup, capErr := applyResourceCaps(cmd, memMB); capErr != nil {
+		if agentTrustTier(def) == agentTierThirdParty {
+			_ = cmd.Process.Kill()
+			return nil, fmt.Errorf("daemon %s (third-party): memory cap not applied: %w", def.ID, capErr)
+		}
 		slog.Warn("SEC-01: failed to apply daemon resource caps", "agent_id", def.ID, "err", capErr)
 	} else if cleanup != nil {
 		im.mu.Lock()

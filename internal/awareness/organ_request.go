@@ -52,7 +52,7 @@ func planRequest(pair prompts.Pair, dataTags []string, values map[string]string,
 func decodeReply(resp domain.GenerateResponse, v any) error {
 	text := strings.TrimSpace(resp.Text)
 	if resp.SchemaUnchecked() {
-		text = stripCodeFence(text)
+		text = domain.StripCodeFence(text)
 	}
 	if err := json.Unmarshal([]byte(text), v); err != nil {
 		return fmt.Errorf("reply is not the requested JSON: %w", err)
@@ -66,17 +66,6 @@ func decodePlanReply(resp domain.GenerateResponse, reply *planReply) error {
 		return fmt.Errorf("%w | raw: %s", err, truncateRunes(resp.Text, 512))
 	}
 	return nil
-}
-
-func stripCodeFence(t string) string {
-	if !strings.HasPrefix(t, "```") {
-		return t
-	}
-	t = strings.TrimPrefix(t, "```")
-	if nl := strings.IndexByte(t, '\n'); nl >= 0 {
-		t = t[nl+1:] // the language tag line ("json")
-	}
-	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(t), "```"))
 }
 
 // truncateRunes cuts s to at most n runes, never inside a UTF-8 sequence.

@@ -8,9 +8,9 @@
 #                 decisions/no-benchmark-in-oss), which a CI checkout does not have.
 #
 # `make release-gate` is deliberately not scheduled: chaos-real cannot pass yet
-# (T-20261031-chaos-real-cannot-pass-and-injects-no-fault), contract-release runs a
-# test file that does not exist (T-20261031-release-gate-targets-reference-test-files-that)
-# and bench-macro is absent from CI checkouts. A red-every-night job trains people to
+# (T-20261031-chaos-real-cannot-pass-and-injects-no-fault) and bench-macro is absent
+# from CI checkouts. (contract-release, which ran a test file that never existed, was
+# removed from release-gate 2026-11-14 — ENG-180.) A red-every-night job trains people to
 # ignore it. Run release-gate by hand before a release (AGENTS.md §4.7).
 #
 # T-20261031-nightly-and-release-gate-checks-are-not-run-by.

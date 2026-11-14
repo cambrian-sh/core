@@ -241,5 +241,9 @@ func (s *Service) Wave1Capabilities() []string {
 	if s.generators != nil {
 		caps = append(caps, "generator-registry")
 	}
+	if s.controls != nil {
+		// run-cancel (contract 0102): CancelRun ends a live run terminally.
+		caps = append(caps, "run-cancel")
+	}
 	return caps
 }

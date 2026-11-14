@@ -457,10 +457,13 @@ func (c *Connector) dialUser(ctx context.Context, s ServerConfig, principal stri
 		}
 		transport = t
 	case "http", "sse":
-		hc := &http.Client{Transport: &userAuthRoundTripper{
-			base: http.DefaultTransport, src: c.userSource(), server: s.ID, principal: principal,
-			inject: s.UserInject, header: s.UserInjectName,
-		}}
+		// Guarded egress (ADR-0153, ENG-1419), the same as the shared session.
+		hc := s.guardedHTTPClient(func(base http.RoundTripper) http.RoundTripper {
+			return &userAuthRoundTripper{
+				base: base, src: c.userSource(), server: s.ID, principal: principal,
+				inject: s.UserInject, header: s.UserInjectName,
+			}
+		})
 		if s.Transport == "http" {
 			transport = &mcpsdk.StreamableClientTransport{Endpoint: s.Endpoint, HTTPClient: hc, DisableStandaloneSSE: true}
 		} else {

@@ -69,7 +69,7 @@ func subtaskExec(t *testing.T, h ToolHandler) (*ToolExecutor, *Subtasks) {
 	} {
 		reg.Register(st)
 	}
-	sub := NewSubtasks(0)
+	sub := NewSubtasks(0, nil)
 	// OSS default: no authorizer at all (AllowAllAuthorizer) and the unrestricted
 	// bypass — nothing but the subtask ceiling can stop a call.
 	return &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, Unrestricted: true,
@@ -168,7 +168,7 @@ func TestSubtaskApprovalLabelledAndResumeNeverRepeatsAWrite(t *testing.T) {
 }
 
 func TestSubtasksRegistry_PositionReserveAndOffer(t *testing.T) {
-	sub := NewSubtasks(0)
+	sub := NewSubtasks(0, nil)
 	if _, _, ok := sub.Position("planner-step-lease"); ok {
 		t.Fatal("an unregistered lease (a planner-lane worker) is not a subtask parent")
 	}

@@ -19,16 +19,17 @@ type Bridge struct {
 	fallbackCounter      metric.Int64Counter
 	sessionLeakCounter   metric.Int64Counter
 	conwipWaitHist       metric.Int64Histogram
-	auctionNoWinner      metric.Int64Counter
 	schemaMismatch       metric.Int64Counter
 }
 
 // NewBridge constructs a Bridge from TelemetryConfig using a default MeterProvider.
 // Returns NoopTelemetryObserver when no exporter is configured.
 func NewBridge(cfg config.TelemetryConfig) domain.TelemetryObserver {
-	if cfg.OTLPEndpoint == "" && cfg.PrometheusPort == 0 && !cfg.EnableStdoutExporter {
+	// The stdout exporter is the only one this build has (otlp_endpoint and
+	// prometheus_port were retired in schema v3, ENG-203).
+	if !cfg.EnableStdoutExporter {
 		slog.Warn("telemetry: no exporter configured, all metrics dropped",
-			"hint", "set otlp_endpoint or prometheus_port or enable_stdout_exporter")
+			"hint", "set telemetry.enable_stdout_exporter")
 		return domain.NoopTelemetryObserver{}
 	}
 	mp := otel.GetMeterProvider()
@@ -48,14 +49,10 @@ func NewBridgeWithProvider(_ config.TelemetryConfig, mp metric.MeterProvider) do
 		metric.WithDescription("Number of expired session tokens evicted"))
 	b.conwipWaitHist, _ = meter.Int64Histogram("cambrian_conwip_wait_ms",
 		metric.WithDescription("CONWIP semaphore wait time in milliseconds"))
-	// The auction is gone (ADR-0100); this counter now counts dispatches that found
-	// no eligible agent (internal/metabolism/dispatch). The metric NAME and its
-	// task_id label are kept unchanged on purpose: renaming a metric or dropping a
-	// label is an observability-contract change for any dashboard, and is an owner
-	// decision (T-20261113-cambrian-auction-no-winner-total-is-labelled — task_id
-	// is unbounded cardinality for a real exporter). Only the description is corrected.
-	b.auctionNoWinner, _ = meter.Int64Counter("cambrian_auction_no_winner_total",
-		metric.WithDescription("Number of dispatches where no eligible agent was found (name kept from the retired auction)"))
+	// cambrian_auction_no_winner_total was deleted 2026-11-14 (owner decision,
+	// ENG-1335): it named the retired auction (ADR-0100) and carried an unbounded
+	// task_id label. A dispatch with no eligible agent is reported on the operator
+	// feed (SelectionEventPayload status "failed") and in the dispatch error.
 	b.schemaMismatch, _ = meter.Int64Counter("cambrian_schema_mismatch_total",
 		metric.WithDescription("Number of schema mismatches detected in handoff mapping"))
 	return b
@@ -82,11 +79,6 @@ func (b *Bridge) OnSessionEvicted(agentID string) {
 
 func (b *Bridge) OnConwipWait(durationMs int64) {
 	b.conwipWaitHist.Record(context.Background(), durationMs)
-}
-
-func (b *Bridge) OnAuctionNoWinner(taskID string) {
-	b.auctionNoWinner.Add(context.Background(), 1,
-		metric.WithAttributes(attribute.String("task_id", taskID)))
 }
 
 func (b *Bridge) OnSchemaMismatch(agentID, kind string) {

@@ -109,7 +109,7 @@ func buildO3x(t *testing.T, liveMenu bool) (*awareness.Planner, *planFromMenuLLM
 	disp := &dispatch.Dispatcher{Gatekeeper: gk, Caller: caller, ExecCfg: cfg}
 
 	llm := &planFromMenuLLM{}
-	planner := awareness.NewPlanner(llm, reg, nil)
+	planner := awareness.NewPlanner(llm, reg)
 	planner.SetCapabilityContract(true)
 	planner.SetEffectSource(effects)
 	if liveMenu {

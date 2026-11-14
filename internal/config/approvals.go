@@ -46,13 +46,18 @@ type ApprovalRuleConfig struct {
 	Class         string   `json:"class"`
 	Approvers     []string `json:"approvers"`
 	AllowStanding bool     `json:"allow_standing,omitempty"`
+	// WaitOffline parks a blocking request for its window when no eligible
+	// approver is connected, instead of denying it at once (ENG-653). Default
+	// false.
+	WaitOffline bool `json:"wait_offline,omitempty"`
 }
 
 // PolicyConfig merges the block over the shipped policy data.
 func (c ApprovalsConfig) PolicyConfig() domain.ApprovalPolicyConfig {
 	out := domain.DefaultApprovalPolicyConfig()
 	for _, r := range c.Rules {
-		row := domain.ApprovalClassRule{Class: r.Class, Approvers: append([]string(nil), r.Approvers...), AllowStanding: r.AllowStanding}
+		row := domain.ApprovalClassRule{Class: r.Class, Approvers: append([]string(nil), r.Approvers...),
+			AllowStanding: r.AllowStanding, WaitOffline: r.WaitOffline}
 		replaced := false
 		for i := range out.Rules {
 			if out.Rules[i].Class == r.Class {

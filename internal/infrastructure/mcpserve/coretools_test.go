@@ -339,6 +339,81 @@ func TestListDocuments_MapsTheFilterAndThePage(t *testing.T) {
 	}
 }
 
+// readScopePDP hands every reader one fixed predicate and records who asked.
+type readScopePDP struct {
+	perPrincipalPDP
+	pred *domain.TagPredicate
+	got  *domain.PrincipalRef
+}
+
+func (p readScopePDP) ReadFilter(_ context.Context, pr domain.PrincipalRef, _ domain.SurfaceRef) (*domain.TagPredicate, domain.AccessDecision) {
+	*p.got = pr
+	return p.pred, domain.AccessDecision{Allowed: true}
+}
+
+// ENG-725: list_documents lists under the caller's WHOLE read predicate, the one
+// the decision point resolves for the authenticated principal — before, it passed
+// only the owner fence, so a forbidden tag's titles and labels were listed to any
+// MCP caller.
+func TestListDocuments_ListsUnderTheCallersReadPredicate(t *testing.T) {
+	t.Parallel()
+	pred := &domain.TagPredicate{ForbiddenTags: []string{"hr"}, RequiredTags: []string{"eng"}}
+	var asked domain.PrincipalRef
+	lister := &fakeLister{}
+	b := NewCoreBackends()
+	b.Bind(nil, nil, lister, nil)
+
+	ctx := domain.WithAuthorizer(callerCtx(), readScopePDP{pred: pred, got: &asked})
+	if _, err := b.listDocuments(ctx, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("listDocuments: %v", err)
+	}
+	if asked != domain.AgentPrincipal("mcp:ci-bot") {
+		t.Errorf("ReadFilter asked for %v, want the authenticated caller", asked)
+	}
+	if lister.gotFilter.Scope != pred {
+		t.Fatalf("listing scope = %+v, want the decision point's predicate", lister.gotFilter.Scope)
+	}
+}
+
+// No read authorized ⇒ an empty listing (not even a total), and the store is never asked.
+func TestListDocuments_DeniedReaderListsNothing(t *testing.T) {
+	t.Parallel()
+	lister := &fakeLister{total: 99, page: []memory.DocumentSummary{{ID: "secret"}}}
+	b := NewCoreBackends()
+	b.Bind(nil, nil, lister, nil)
+
+	res, err := b.listDocuments(domain.WithAuthorizer(callerCtx(), denyAll{}), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("listDocuments: %v", err)
+	}
+	if lister.gotFilter.Limit != 0 {
+		t.Errorf("store was asked (%+v) for a reader with no read", lister.gotFilter)
+	}
+	m := structured(t, res)
+	if m["total_matching"].(float64) != 0 || len(m["documents"].([]any)) != 0 {
+		t.Errorf("denied reader got %v", m)
+	}
+}
+
+// OSS (no decision point installed): a person still reads as itself — the owner
+// fence the earlier owners-only rule gave, now carried on the predicate.
+func TestListDocuments_OSSPersonKeepsItsOwnerFence(t *testing.T) {
+	t.Parallel()
+	lister := &fakeLister{}
+	b := NewCoreBackends()
+	b.Bind(nil, nil, lister, nil)
+
+	ctx := domain.WithPrincipal(context.Background(), domain.UserPrincipal("alice"))
+	ctx = domain.WithSurface(ctx, domain.SurfaceRef{Kind: domain.SurfaceMCP, ID: surfaceID})
+	if _, err := b.listDocuments(ctx, json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("listDocuments: %v", err)
+	}
+	s := lister.gotFilter.Scope
+	if s == nil || s.Unfiltered() || len(s.Owners) != 1 || s.Owners[0] != "alice" {
+		t.Fatalf("OSS person listing scope = %+v, want Bypass fenced to alice", s)
+	}
+}
+
 // ── ADR-0134 event time ──────────────────────────────────────────────────────
 
 // search_memory / ask_memory take the same event-time parameters as the gRPC planes

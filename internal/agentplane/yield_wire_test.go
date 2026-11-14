@@ -1,6 +1,7 @@
 package agentplane
 
 import (
+	"github.com/cambrian-sh/core/internal/agentwire"
 	"testing"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -25,7 +26,7 @@ func TestYieldWireContract_SDKShapedHandoff(t *testing.T) {
 			"_yield_continuation_state": "Y29udA==",
 		},
 	}
-	d := protoToDomainHandoff(sdk)
+	d := agentwire.FromProto(sdk)
 	if !yield.IsYield(d) {
 		t.Fatalf("SDK yield not recognised after conversion: %+v", d)
 	}
@@ -35,7 +36,7 @@ func TestYieldWireContract_SDKShapedHandoff(t *testing.T) {
 	}
 
 	d.Context = map[string]string{yield.KeyResult: "RISKS", yield.KeyResumedIntent: "x"}
-	back := domainToProtoHandoff(d)
+	back := agentwire.ToProto(d)
 	if back.Metadata["_yield_result"] != "RISKS" || back.Metadata["_yield_resumed_intent"] != "x" {
 		t.Fatalf("resume keys must travel as metadata: %v", back.Metadata)
 	}

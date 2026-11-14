@@ -19,3 +19,7 @@ func (s *Spool) SetClock(now func() time.Time) {
 	defer s.mu.Unlock()
 	s.now = now
 }
+
+// PremiumRolesFixture is the premium plugins' declared operator-method roles
+// (method_roles_test.go), for the external test package's interceptor tests.
+var PremiumRolesFixture = premiumRolesFixture

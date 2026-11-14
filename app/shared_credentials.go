@@ -64,9 +64,9 @@ func clearSharedMCPCredential(ctx context.Context, store *storage.BoltConfigStor
 		if _, err := w.ClearOrgCredential(ctx, mcpOrgRequest(serverID, secretName), sharedCredActor); err != nil {
 			return err
 		}
-		// The pre-migration copy goes too: the provider's boot migration
-		// imports a legacy value into any UNBOUND slot, so leaving it would
-		// resurrect a credential the operator just cleared on the next boot.
+		// The pre-migration consumer-named copy goes too (best effort): nothing
+		// reads it any more, but a cleared credential should not linger as a
+		// stale secret in the store.
 		if store != nil {
 			_ = store.ClearSecret(secretName) // best effort: the binding is already gone
 		}

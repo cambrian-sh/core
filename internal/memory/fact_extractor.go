@@ -238,7 +238,7 @@ func (e *FactExtractor) Enqueue(ctx context.Context, documentID string, src doma
 		documentID: documentID,
 		evidenceID: ingestEvidenceFrom(ctx),
 		source:     src,
-		chunks:     append([]*domain.Document(nil), chunks...),
+		chunks:     slimFactChunks(chunks),
 		wait:       w,
 	}
 	e.closeMu.RLock()
@@ -259,6 +259,24 @@ func (e *FactExtractor) Enqueue(ctx context.Context, documentID string, src doma
 			"effect", "the chunks are stored; this document has no facts until it is re-ingested")
 	}
 	return w
+}
+
+// slimFactChunks copies the chunks a fact job keeps WITHOUT their embedding vectors:
+// extraction reads id, text, metadata and event time only (facts are embedded on
+// their own), and a full queue of stored *Documents held each chunk's 4 KB vector
+// (~100-400 MB at 1024 queued jobs; T-20261103-factextractor-queue-jobs-retain-full-chunk).
+// A shallow copy per chunk, so the caller's documents are never mutated.
+func slimFactChunks(chunks []*domain.Document) []*domain.Document {
+	out := make([]*domain.Document, 0, len(chunks))
+	for _, c := range chunks {
+		if c == nil {
+			continue
+		}
+		d := *c
+		d.Embedding = domain.Embedding{}
+		out = append(out, &d)
+	}
+	return out
 }
 
 // Start seeds the declared predicate profiles (supersession on), then launches the
@@ -965,7 +983,9 @@ func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact,
 
 // askJudge makes the plan's one judge call. It stores nothing.
 func (e *FactExtractor) askJudge(ctx context.Context, p *assessPlan) (domain.GenerateResponse, error) {
-	llmCtx, cancel := context.WithTimeout(ctx, e.callTimeout(len(p.prompt)))
+	// Booked as facts_assess, not facts: extraction and assessment share the
+	// PurposeFacts handle, and a per-request report must tell them apart.
+	llmCtx, cancel := context.WithTimeout(domain.WithLLMCallLabel(ctx, domain.LLMCallLabelFactsAssess), e.callTimeout(len(p.prompt)))
 	resp, err := domain.GenerateVia(llmCtx, e.gen, p.req)
 	cancel()
 	e.llmCalls.Add(1)

@@ -156,6 +156,9 @@ type Kernel struct {
 	// keyed by fully-qualified service name. The keys route auth: exempt from the
 	// operator bearer, SurfaceAgent, x-agent-id principal seeding. nil in OSS.
 	AgentGRPCServices map[string]func(*grpc.Server)
+	// OperatorMethodRoles are the premium plugins' declared operator-method role
+	// classes, handed to the operator auth interceptors. nil in OSS.
+	OperatorMethodRoles map[string]OperatorMethodRole
 	// LoginObserver receives every operator Login attempt (ADR-0130 1f) — the
 	// premium receipts lane chains failed ones. Observation only; nil in OSS,
 	// where the operator service's structured log line is the whole record.
@@ -188,6 +191,10 @@ type Kernel struct {
 	// principal-owned recurring tasks (nil ⇒ "scheduled-tasks" not advertised).
 	PrincipalDirectory domain.PrincipalDirectory
 	PrincipalSchedules domain.PrincipalSchedules
+	// StreamRegistry is the contract-0074 stream liveness source a plugin
+	// registers (RegisterStreamRegistry); a late-bound holder, never nil — until
+	// a plugin registers it answers "unknown" / -1, as an unwired kernel did.
+	StreamRegistry domain.StreamRegistry
 	// Principals is the principal registry (ADR-0142 D3) and Authenticator the
 	// one bearer resolver of the operator plane and the HTTP admin routes (D1).
 	Principals    domain.PrincipalRegistry
@@ -244,6 +251,9 @@ type Kernel struct {
 	// it — it is started during bootstrap, before the errgroup the other HTTP
 	// servers live in exists, because it must be serving before ConnectAll.
 	MCPEndpoint *http.Server
+	// mcpTasks is the endpoint's task lane (ADR-0126 D10); Shutdown cancels and
+	// drains its in-flight runs after the endpoint stops accepting (AGENTS.md §3.3).
+	mcpTasks *mcpTaskLane
 	// MCPCoreBackends is the endpoint's core-tool binding seam (ADR-0126 D5).
 	// Bound during bootstrap; carried here so a later phase (E6's
 	// IdentityResolver hop, a scoped answer lane) can rebind without a restart.
@@ -347,6 +357,14 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 		slog.Info("🔌 Stopping MCP endpoint (ADR-0126)...")
 		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		_ = k.MCPEndpoint.Shutdown(shutCtx)
+		cancel()
+	}
+	// The task lane's runs outlive their submit requests (WithoutCancel), so the
+	// endpoint draining does not end them: cancel and wait for them here, before
+	// the stacks they call into stop.
+	if k.mcpTasks != nil {
+		laneCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		k.mcpTasks.Stop(laneCtx)
 		cancel()
 	}
 
@@ -664,6 +682,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		storeHandle.Close()
 		return nil, err
 	}
+	// Plugin schema lanes (Registry.AddMigrations) run right after core's, under the
+	// same auto-migrate gate and database.migrations policy; with no plugin lanes (OSS)
+	// this is a no-op (T-20261113-premium-has-no-schema-migration-chain-41-create).
+	if err := vec.BootPluginMigrations(ctx, composed.migrations); err != nil {
+		storeHandle.Close()
+		return nil, fmt.Errorf("plugin schema migrations: %w", err)
+	}
 
 	// PLAT-03 / ADR-0065: readiness = the database is reachable. Ping the pgvector pool.
 	healthChecker := health.New(func(pctx context.Context) error {
@@ -682,6 +707,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if authorizer == nil {
 		authorizer = domain.AllowAllAuthorizer{}
 	}
+	// ADR-0084 D7 (owner decision 2026-11-14, ENG-614): a customer conversation reads
+	// only customer-visible memory. ONE wrapper at the decision point, so every reader
+	// below is narrowed; the profile is stamped server-side from the caller's lease.
+	authorizer = authz.NewProfileNarrowingAuthorizer(authorizer, cfg.Execution.Chat.CustomerVisibleTags)
 
 	// ADR-0047 0047-24: durable operator audit store (Postgres), reusing the
 	// pgvector pool. Falls back to in-memory if the table can't be created.
@@ -691,6 +720,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		operatorAudit = operator.NewInMemoryAuditStore()
 	} else {
 		operatorAudit = pgAudit
+		// ENG-128: execution.retention — operator audit kept 365 days by default,
+		// derived/cache tables opt-in; evidence and knowledge are never TTL'd.
+		retentionWorker := buildRetentionWorker(cfg.Execution.Retention, pgAudit, vec.Pool())
+		lifecycles = append(lifecycles, Lifecycle{Name: "retention", Start: retentionWorker.Start, Stop: retentionWorker.Stop})
 	}
 	// ADR-0084 D1: the durable Conversation/Message store, reusing the pgvector pool.
 	// Schema is owned by migration 0002 (ADR-0064), so an unmigrated DB yields a nil store
@@ -776,7 +809,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	awarenessGen := llmProvider.GeneratorFor(domain.PurposePlanner)
 	supervisionGen := llmProvider.GeneratorFor(domain.PurposeVerifier)
 
-	// Register LLM models as TraitModel agents so they participate in the auction.
+	// Register LLM models as TraitModel agents (registry entries the console and
+	// dispatch read; the auction they once bid in is deleted, ADR-0100 P3).
 	registerModelAgents(reg, cfg.LLMProvider.Generators)
 	// ADR-0075: register agents from all AgentSources — the built-in filesystem scan
 	// (now a system-aware FilesystemAgentSource carrying manifests) FIRST, then any
@@ -848,9 +882,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// build them with, so there is one construction path.
 	substrate := NewSubstrate(vec.Pool(), onto, onto)
 	knowledgeStore := substrate.Knowledge
+	factReader := postgres.NewPgFactItemReader(knowledgeStore, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions)
 	factsSubstrate := kernel.FactSubstrate{
 		Store:         knowledgeStore,
-		Reader:        postgres.NewPgFactItemReader(knowledgeStore, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions),
+		Reader:        factReader,
+		Inspector:     factReader, // operator-plane fact RPCs (ENG-459)
 		Lister:        knowledgeStore,
 		EmbedModelID:  cfg.Embedder.Model,
 		AssessorModel: factsAssessorModel(llmProvider.Roles()),
@@ -887,8 +923,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// depend on this one line in this one function being reached — correct, but only by
 	// convention, and the failure mode was a silent unfiltered read rather than an error.
 
-	pp := config.NewStaticPolicyProvider(cfg.Execution.Hippocampus.HippocampusPolicies, cfg.Execution.Hippocampus.HippocampusDefaultPolicy)
-	aw := kernel.NewAwarenessStack(awarenessGen, reg, mem.Hippocampus, mem.WorkspaceStage, pp)
+	aw := kernel.NewAwarenessStack(awarenessGen, reg, mem.WorkspaceStage)
 	// The kernel's ONE "today" (domain.Calendar), in the organisation's timezone: the
 	// planner, the plan executor (stamped on every step), replans, thought steps and
 	// the chat turn handoff all date their prompts with this instance
@@ -1001,13 +1036,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	planExec := &kernelPlanExecutor{}
 	watcher := supwatcher.New(
 		meta.Manager,
-		mem.Agent,
+		// ENG-1339: signal enrichment reads as the signal's principal through the
+		// QueryService (no principal, no priming).
+		mem.QueryService,
 		aw.Planner,
 		toolApproval,
 		planExec,
 		supwatcher.WatcherConfig{
 			SignalNoiseThreshold:  cfg.Execution.Supervision.SignalNoiseThreshold,
 			SignalNoiseWindowSecs: cfg.Execution.Supervision.SignalNoiseWindowSecs,
+			RecallMinCosine:       cfg.Execution.Memory.MemoryRelevanceThreshold,
+			RecallMaxResults:      cfg.Execution.Memory.MaxMemoryResults,
 		},
 	)
 
@@ -1212,6 +1251,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		mem.QueryService.EnableNeighborWindow()
 		slog.Info("ADR-0060: neighbor-window expansion ENABLED")
 	}
+	if cfg.Execution.Retrieval.DocumentCompletionEnabled {
+		mem.QueryService.EnableDocumentCompletion(cfg.Execution.Retrieval.DocumentCompletionDocuments, cfg.Execution.Retrieval.DocumentCompletionMaxChunks)
+		slog.Info("ENG-430: document/session completion ENABLED",
+			"documents", cfg.Execution.Retrieval.DocumentCompletionDocuments, "max_chunks", cfg.Execution.Retrieval.DocumentCompletionMaxChunks)
+	}
 	if cfg.Execution.Retrieval.ChronologicalContextEnabled {
 		mem.QueryService.EnableChronologicalContext()
 		slog.Info("ADR-0134 D5a: chronological answer context ENABLED (passages ordered and dated by event time)")
@@ -1351,6 +1395,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// premium contributes the directory and the store at Build; the kernel binds the
 	// owned-turn runner once the chat lane exists.
 	principalSchedules := &principalSchedulesHolder{}
+	streamRegistry := &streamRegistryHolder{}
 	principalDirectory := &principalDirectoryHolder{}
 	ownedTurns := &ownedTurnRunner{}
 	// ADR-0141: the credential provider's late-bound seams. Created here, before
@@ -1371,7 +1416,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// One reader, shared by the plugin seam and the operator RPC.
 	// mem.ReadStore is the stack's tier-1 fail-closed read chokepoint (AGENTS.md §2.1:
 	// NewMemoryStack is the only place it is built; T-20261113-enforcingvectorstore-is-constructed-outside).
-	docReader := &kernelDocumentReader{store: mem.ReadStore}
+	docReader := newKernelDocumentReader(mem.ReadStore, authorizer) // RESOLVED authorizer: it turns the principal into the predicate the by-id read needs (ENG-1610)
 
 	// ADR-0105/0108: the evidence foundation's pieces, built ONCE here so the
 	// plugin seam, the ingest chokepoint and the outbox consumer share one
@@ -1395,6 +1440,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	eventStore := substrate.Events
 	entityStore := substrate.Entities
 	linkStore := substrate.Links
+	identityScans := substrate.IdentityScans
 	queryPlane := substrate.Query
 	if cfg.Execution.Ingestion.EvidenceCaptureEnabled {
 		var everr error
@@ -1424,7 +1470,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// authenticated (its knowledge_commit handler is registered here, at boot, so an
 	// item approved after a restart still commits). Served on the agent plane as
 	// Orchestrator/ProposeKnowledge (cambrianServer.Knowledge below).
-	knowledgeBridge, kbErr := knowledgecommit.New(knowledgeStore, onto, authorizer, toolApproval, linkStore, slog.Default())
+	// The bridge refuses cited evidence the proposer may not read (and unknown ids
+	// with the same answer, so the refusal is no existence oracle). Without an
+	// evidence store it refuses EVERY citation, so the store is wired whenever it
+	// exists; a nil *PgEvidenceStore must not be wrapped in the interface (it would
+	// panic on Get) (T-20261107-propose-knowledge-link-proposals-do-not-check).
+	var kbOpts []knowledgecommit.Option
+	if evStore != nil {
+		kbOpts = append(kbOpts, knowledgecommit.WithEvidence(evStore))
+	}
+	knowledgeBridge, kbErr := knowledgecommit.New(knowledgeStore, onto, authorizer, toolApproval, linkStore, slog.Default(), kbOpts...)
 	if kbErr != nil {
 		return nil, fmt.Errorf("knowledge commit bridge: %w", kbErr)
 	}
@@ -1497,6 +1552,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		RegisterIngressSchemaDeclarer: func(d domain.IngressSchemaDeclarer) { ingressSchemaDeclarers.Store(&d) },
 		RegisterTurnRouter:            func(r domain.TurnRouter) { turnRouters.Store(&r) },
 		RegisterPrincipalSchedules:    principalSchedules.set,
+		RegisterStreamRegistry:        streamRegistry.set,
 		RegisterPrincipalDirectory:    principalDirectory.set,
 		RunOwnedTurn:                  ownedTurns.run,
 		RegisterAgent: func(def domain.AgentDefinition) error {
@@ -1569,6 +1625,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Events:                 eventStore,
 		Entities:               entityStore,
 		Links:                  linkStore,
+		// The identity producers' scan port (ENG-1393): retirements and scope
+		// applied inside, so premium never scans substrate tables with raw SQL.
+		IdentityScans: identityScans,
 		// The verb vocabulary, so a plugin that takes a link verb from an
 		// OPERATOR (the ingress studio's mapping confirm) can refuse an
 		// undeclared one where a human is present, instead of leaving the
@@ -1758,6 +1817,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// delivery time so revoking an ingress stops conversations already bound to it.
 		deliverySvc := ingress.NewDeliveryService(
 			conversations, opts.IngressResolver, ingress.NewDaemonTransport(meta.Manager))
+		// ADR-0090 D8.1 (ENG-1172): two-phase delivery — every reply is recorded as a
+		// prepared intent in the kernel's bbolt store before it is sent, confirmed
+		// after, and redriven (or marked ambiguous) after a crash. No duplicates, no
+		// silent drops.
+		deliverySvc.SetJournal(reg)
+		lifecycles = append(lifecycles, Lifecycle{
+			Name:  "delivery-redrive",
+			Start: deliverySvc.Start,
+			Stop:  deliverySvc.Stop,
+		})
 		chatTurns.SetDeliverer(deliverySvc)
 		// ADR-0098 D2: the same resolved, re-authorised envelope carries progress.
 		progressOut.set(deliverySvc.DeliverProgress)
@@ -1861,9 +1930,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// every other lane writes through, so a captured message obeys ADR-0105's
 		// ordering contract rather than a second, chat-shaped copy of it.
 		//
-		// evIngestor is nil when evidence capture is disabled; the capture is
-		// still constructed and is simply inert, because "capture is off" is a
-		// deployment's decision and not a reason for this wiring to branch.
+		// evIngestor is nil when evidence capture is disabled; then NO capture
+		// is constructed and the inbound service runs without one (chat turns
+		// still work, they are just not archived).
 		if evIngestor != nil {
 			chatCapture := ingress.NewChatCapture(evIngestor.Ingest, eventStore)
 			// The identity plane, so an author and a thread are entities the
@@ -2123,6 +2192,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// predicate narrows a chat-lane agent's reads and calls
 	// (T-20261106-conversations-cannot-be-opened-as-a-given).
 	cambrianServer.ConversationOwner = conversationOwnerOf(conversations, sessionMgr)
+	// ENG-614: the conversation profile rides the same lease lookup; the decision
+	// point (authz.ProfileNarrowingAuthorizer, above) narrows customer conversations.
+	cambrianServer.ConversationProfile = conversationProfileOf(conversations, sessionMgr)
 	cambrianServer.PrivateByDefault = cfg.Privacy.PrivateByDefaultOn() // ADR-0142 D12
 
 	mcpEndpoint, err := startMCPEndpoint(cfg,
@@ -2164,7 +2236,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		servers = append(servers, mcp.ServerConfig{
 			ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
 			AuthType: s.AuthType, AuthHeader: s.AuthHeader, AuthTokenEnv: s.AuthTokenEnv,
-			Tools: toolPolicy,
+			Tools:               toolPolicy,
+			AllowPrivateNetwork: s.AllowPrivateNetwork,
 			// A plugin's server ships with the plugin: first-party.
 			Sandbox: sbPolicy.Resolve(s.ID, "", "", true, sandbox.ServerSpec{}),
 		})
@@ -2237,9 +2310,27 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// outcome records and can be used to tune the floor from data rather than taste.
 	cambrianServer.SurpriseOracle = &supervision.MeritSurpriseOracle{Profiles: mem.ProfileStore}
 
-	cambrianServer.ToolExecutor = &domain.ToolExecutor{
-		Registry:   toolReg,
-		Grants:     toolGrants,
+	// ADR-0154: the one durable action record (nil without migration 0046), shared
+	// by the plan-step idempotency cache and the subtask registry (ENG-1428). Built
+	// before the executor: the idempotency cache is one of its constructor controls.
+	actionRecords := buildActionRecordStore(ctx, vec.Pool())
+	// AGENTS.md §2.3 (T-20261113-domain-toolexecutor-has-no-constructor-its): the
+	// tool reference monitor's security controls are constructor-injected —
+	// Registry, Grants and Authz are required (authorizer is AllowAllAuthorizer{}
+	// in OSS, set explicitly above); approval, the profile ceiling, the
+	// tools_unrestricted bypass and the ADR-0145 D9/D14 controls are read from
+	// config here, in the one place the executor is built.
+	toolControls := evidenceToolControls(cfg.Execution, actionRecords, domain.ToolExecutorControls{
+		Registry: toolReg,
+		Grants:   toolGrants,
+		Authz:    authorizer, // ADR-0085: data-store regime + (Phase 2) effect classes
+		Approval: toolApprovalCtrl,
+		// Agent stack v2: each profile agent's tool allowlist is a hard ceiling,
+		// held under tools_unrestricted and over skill-conferred grants.
+		Ceiling:      profileToolCeiling(profiles),
+		Unrestricted: cfg.Execution.Tools.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
+	})
+	toolExecutor, err := domain.NewToolExecutor(toolControls, domain.ToolExecutor{
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)
 		// ADR-0127: contributed local:<machine>/<tool> steps resolve through
 		// the hub's live fleet and relay through it, D8-fenced. The executor
@@ -2268,22 +2359,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			// per-call tempdir teardown; CIDs surface in the result "_artifacts".
 			ContentStore: storeHandle.ContentStore,
 		},
-		Approval:      toolApprovalCtrl,
 		EgressAuditor: mcpAuditor, // ADR-0043: nil ⇒ no egress auditing
 		Budget:        mcpBudget,  // ADR-0043: nil ⇒ MCP calls unmetered
 		Pricing:       mcpPricing, // ADR-0043: nil ⇒ MCP calls unmetered
-		Authz:         authorizer, // ADR-0085: data-store regime + (Phase 2) effect classes
 		ContentStore:  storeHandle.ContentStore,
 		// ADR-0145 / owner decision 2026-11-12: every content size is
 		// execution.content (was a hardcoded 65536).
 		InlineThreshold: cfg.Execution.Content.Inline(),
 		PreviewChars:    cfg.Execution.Content.Preview(),
 		PageBytes:       cfg.Execution.Content.Page(),
-		Unrestricted:    cfg.Execution.Tools.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
-		Overlay:         domain.NewRunGrantOverlay(),           // ADR-0046 D6: skill-conferred run-scoped grants
-		// Agent stack v2: each profile agent's tool allowlist is a hard ceiling,
-		// held under tools_unrestricted and over skill-conferred grants.
-		Ceiling: profileToolCeiling(profiles),
+		Overlay:         domain.NewRunGrantOverlay(), // ADR-0046 D6: skill-conferred run-scoped grants
 		// Promote files a confined tool writes into the DURABLE artifact system
 		// (vault + metadata, retrievable via GetArtifact, scope-governed) AND
 		// materialize them to data/outputs so a requested file lands on disk —
@@ -2310,12 +2395,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// (T-20261107-approver-is-not-told-that-an-identical-side). nil when the
 		// window is 0 (disabled).
 		History: domain.NewActionHistory(time.Duration(cfg.Execution.Tools.DuplicateNoticeWindowMinutes)*time.Minute, nil),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tool executor: %w", err)
 	}
+	cambrianServer.ToolExecutor = toolExecutor
 	// ADR-0145 D1: the run ledger (execution.ledger, off by default): every tool
 	// result and step output recorded, scope-enforced, read by reference. Threaded
 	// to the executor, the server and the turn end here; nil sweeper when off.
 	ledgerSweeper := wireLedger(ctx, cfg.Execution.Ledger, cfg.Execution.Content, vec.Pool(), artifactVault, reg, authorizer,
-		cfg.Privacy.PrivateByDefaultOn(), cambrianServer, turnDelegations)
+		cfg.Privacy.PrivateByDefaultOn(), cambrianServer, turnDelegations, eventBus)
 	// Effect-checked dispatch (T-20261106-kernel-does-not-check-that-a-declared): an
 	// agent's effects are derived from the tools the executor would let it call
 	// (grants × profile ceiling × live registry), so routing and enforcement read one
@@ -2328,8 +2417,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if aw.Planner != nil {
 		plannerGen = aw.Planner
 	}
-	wireEvidencePipeline(cfg.Execution, cambrianServer, plannerGen)
-	// ADR-0145 D4: calculation tools (execution.tools.calc_tools, default off),
+	wireEvidencePipeline(cfg.Execution, cambrianServer, plannerGen, actionRecords)
+	// ADR-0145 D4: calculation tools (execution.tools.calc_tools, default on since 2026-11-15),
 	// after the ledger so they read and record through it.
 	wireCalcTools(cfg, cambrianServer, cambrianServer.Calendar)
 	wireStagedInputs(cfg.Execution.Tools.StagedInputs, cambrianServer)
@@ -2428,14 +2517,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			Caller:  meta.AgentTransport,
 			AgentID: "retrieval_agent",
 			Gateway: llmGateway,
-			Model:   cfg.Execution.Retrieval.AgenticPlannerModel, // "" ⇒ gateway default; a FAST model matters on the hot path
+			// An explicit generator id overrides; "" (default) ⇒ the retrieval_planner
+			// role, falling back to memory, read per call (ENG-329). A FAST model
+			// matters on the hot path.
+			Model:     cfg.Execution.Retrieval.AgenticPlannerModel,
+			RoleModel: retrievalPlannerRole(llmProvider),
 		}, cfg.Execution.Retrieval.AgenticMaxHops)
-		mem.QueryService.SetIrcotEnabled(cfg.Execution.Retrieval.AgenticIrcotEnabled)
 		mem.QueryService.SetDecomposeEnabled(cfg.Execution.Retrieval.AgenticDecomposeEnabled)
 		mem.QueryService.SetSubQuestionConcurrency(cfg.Execution.Retrieval.AgenticSubQuestionConcurrency)
 		mem.QueryService.SetAdaptiveRoutesEnabled(cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled) // ADR-0135
 		warnUndeclaredPlannerModel(cfg.Execution.Retrieval.AgenticPlannerModel, cfg.LLMProvider.Generators)
-		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "ircot", cfg.Execution.Retrieval.AgenticIrcotEnabled, "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled, "subquestion_concurrency", cfg.Execution.Retrieval.AgenticSubQuestionConcurrency, "adaptive_routes", cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled)
+		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled, "subquestion_concurrency", cfg.Execution.Retrieval.AgenticSubQuestionConcurrency, "adaptive_routes", cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled)
 	}
 
 	// ADR-0053 D2 (revised): route write-time chunk-triplet extraction through the
@@ -2520,7 +2612,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	wireComposedWorkers(cfg.Execution, cambrianServer, meta.Dispatcher, reg)
 	// ADR-0150 D2: run_subtasks for the single-agent lane's agent (after the ledger
 	// and the composed runtime it runs subtask workers on).
-	wireSubtasks(cfg.Execution, cambrianServer)
+	wireSubtasks(cfg.Execution, cambrianServer, actionRecords)
 	skillLifecycle, skillCurator := wireSkillLifecycle(ctx, cfg.Execution.Skills, vec.Pool(), skillReg, skillIndexer, discoveredSkills, proposerGrants)
 	if skillLifecycle != nil {
 		cambrianServer.SkillLifecycle = skillLifecycle // typed-nil guard: only a built service
@@ -2695,59 +2787,62 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// both backends; the operator wiring type-asserts for the two methods it
 		// needs, so a backend lacking them degrades to Unimplemented rather than
 		// to an empty list.
-		CheckpointSource:   storeHandle,
-		TokenSeries:        tokenSeries,
-		Progress:           progressSink,
-		StepOutputFeed:     stepOutFeed,
-		Logs:               util.DefaultLogRing(),
-		LLMProvider:        llmProvider,
-		VectorCounter:      vectorCounterFor(vec),
-		Config:             cfg,
-		Registry:           reg,
-		WatchDeadLetters:   reg,                    // REACT-01 / ADR-0061
-		WatchMetrics:       watchMetricsReader,     // REACT-05 / ADR-0071
-		WatchBacktester:    watchBacktester,        // REACT-05 / ADR-0071
-		ExtraServices:      opts.ExtraServices,     // ADR-0073
-		AgentGRPCServices:  opts.AgentGRPCServices, // ADR-0118 D3
-		LoginObserver:      opts.LoginObserver,     // ADR-0130 1f (nil in OSS)
-		Lifecycles:         lifecycles,             // ADR-0074 (empty in OSS)
-		PluginCapabilities: composed.capabilities,  // ADR-0082 D2 (empty in OSS)
-		Conversations:      conversations,          // ADR-0084 D1 (nil until migrated)
-		ChatTurns:          chatTurns,              // ADR-0084 D4 (nil when disabled)
-		PrincipalDirectory: principalDirectoryOrRegistry(principalDirectory.get(), idStores.registry),
-		PrincipalSchedules: principalSchedules.get(),
-		Principals:         idStores.registry,
-		Authenticator:      authenticator,
-		PluginStatuses:     composed.statuses, // ADR-0082 D9 (empty in OSS)
-		Health:             healthChecker,     // PLAT-03 / ADR-0065
-		Store:              storeHandle,
-		Memory:             mem,
-		Awareness:          aw,
-		Metabolism:         meta,
-		Supervision:        sup,
-		Server:             cambrianServer,
-		Listener:           lis,
-		SessionMgr:         sessionMgr,
-		CircadianRhythm:    circadianRhythm,
-		SkillLifecycle:     skillLifecycle,
-		SkillCurator:       skillCurator,
-		LedgerSweeper:      ledgerSweeper,
-		SkillAccess:        skillAccess,
-		ArtifactVault:      artifactVault,
-		EventBus:           eventBus,
-		Authorizer:         authorizer,
-		PolicyAdmin:        opts.PolicyAdmin,
-		ToolGrants:         toolGrants,
-		MCPConnector:       mcpConnector,
-		MCPSink:            mcpSink,
-		MCPServers:         mcpServers,
-		MCPRuntime:         mcpRT,
-		credentialFactory:  opts.NewCredentialSource, // ADR-0141 (nil in OSS)
-		credentialSeams:    credSeams,
-		MCPEndpoint:        mcpEndpoint,
-		MCPCoreBackends:    mcpCoreBackends,
-		GeneratorRuntime:   newGeneratorRuntime(cfg.LLMProvider),
-		LLMGateway:         llmGateway,
+		CheckpointSource:    storeHandle,
+		TokenSeries:         tokenSeries,
+		Progress:            progressSink,
+		StepOutputFeed:      stepOutFeed,
+		Logs:                util.DefaultLogRing(),
+		LLMProvider:         llmProvider,
+		VectorCounter:       vectorCounterFor(vec),
+		Config:              cfg,
+		Registry:            reg,
+		WatchDeadLetters:    reg,                      // REACT-01 / ADR-0061
+		WatchMetrics:        watchMetricsReader,       // REACT-05 / ADR-0071
+		WatchBacktester:     watchBacktester,          // REACT-05 / ADR-0071
+		ExtraServices:       opts.ExtraServices,       // ADR-0073
+		AgentGRPCServices:   opts.AgentGRPCServices,   // ADR-0118 D3
+		OperatorMethodRoles: opts.OperatorMethodRoles, // premium-declared operator method roles
+		LoginObserver:       opts.LoginObserver,       // ADR-0130 1f (nil in OSS)
+		Lifecycles:          lifecycles,               // ADR-0074 (empty in OSS)
+		PluginCapabilities:  composed.capabilities,    // ADR-0082 D2 (empty in OSS)
+		Conversations:       conversations,            // ADR-0084 D1 (nil until migrated)
+		ChatTurns:           chatTurns,                // ADR-0084 D4 (nil when disabled)
+		PrincipalDirectory:  principalDirectoryOrRegistry(principalDirectory.get(), idStores.registry),
+		PrincipalSchedules:  principalSchedules.get(),
+		StreamRegistry:      streamRegistry,
+		Principals:          idStores.registry,
+		Authenticator:       authenticator,
+		PluginStatuses:      composed.statuses, // ADR-0082 D9 (empty in OSS)
+		Health:              healthChecker,     // PLAT-03 / ADR-0065
+		Store:               storeHandle,
+		Memory:              mem,
+		Awareness:           aw,
+		Metabolism:          meta,
+		Supervision:         sup,
+		Server:              cambrianServer,
+		Listener:            lis,
+		SessionMgr:          sessionMgr,
+		CircadianRhythm:     circadianRhythm,
+		SkillLifecycle:      skillLifecycle,
+		SkillCurator:        skillCurator,
+		LedgerSweeper:       ledgerSweeper,
+		SkillAccess:         skillAccess,
+		ArtifactVault:       artifactVault,
+		EventBus:            eventBus,
+		Authorizer:          authorizer,
+		PolicyAdmin:         opts.PolicyAdmin,
+		ToolGrants:          toolGrants,
+		MCPConnector:        mcpConnector,
+		MCPSink:             mcpSink,
+		MCPServers:          mcpServers,
+		MCPRuntime:          mcpRT,
+		credentialFactory:   opts.NewCredentialSource, // ADR-0141 (nil in OSS)
+		credentialSeams:     credSeams,
+		MCPEndpoint:         mcpEndpoint,
+		mcpTasks:            mcpTaskLane,
+		MCPCoreBackends:     mcpCoreBackends,
+		GeneratorRuntime:    newGeneratorRuntime(cfg.LLMProvider),
+		LLMGateway:          llmGateway,
 	}, nil
 }
 
@@ -2941,12 +3036,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				grpc.ChainUnaryInterceptor(
 					authz.UnarySurfaceInterceptor(agentPlaneServices),
 					authz.UnaryAgentAuthInterceptor(agentAuth, agentPlaneServices),
-					operator.UnaryAuthInterceptor(operatorIDP, agentPlaneServices),
+					operator.UnaryAuthInterceptor(operatorIDP, agentPlaneServices, operator.MethodRoles(k.OperatorMethodRoles)),
 					ratelimit.UnaryInterceptor(planeLimiter)),
 				grpc.ChainStreamInterceptor(
 					authz.StreamSurfaceInterceptor(agentPlaneServices),
 					authz.StreamAgentAuthInterceptor(agentAuth, agentPlaneServices),
-					operator.StreamAuthInterceptor(operatorIDP, agentPlaneServices),
+					operator.StreamAuthInterceptor(operatorIDP, agentPlaneServices, operator.MethodRoles(k.OperatorMethodRoles)),
 					ratelimit.StreamInterceptor(planeLimiter)),
 				// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
 				// gRPC's 4 MiB default rejects any PDF above it server-side before docling
@@ -3018,6 +3113,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		operatorSvc := operator.NewService(operatorFeed)
 		operatorSvc.SetSnapshotSources(operatorProjection, k.SessionMgr)
 		operatorSvc.SetIdentity(operatorIDP)
+		// Contract 0102 WhoAmI: the caller's display name from the registry
+		// (nil-safe: without a registry WhoAmI answers with an empty name).
+		if k.Principals != nil {
+			operatorSvc.SetPrincipalNames(k.Principals)
+		}
 		// ADR-0130 1f: failed logins become receipts when a plugin observes them.
 		// Wired beside SetIdentity, before Serve; it is observation, not a gate —
 		// the per-source limiter is built inside NewService and runs regardless.
@@ -3074,6 +3174,9 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// configured tolerance the agent plane reads from ExecCfg.
 		operatorSvc.SetEventTimeFutureTolerance(
 			time.Duration(k.Config.Execution.Ingestion.EventTimeFutureToleranceMs) * time.Millisecond)
+		// ADR-0136 A3.5 (contract 0104): the same descriptive-field caps the agent plane reads.
+		mc := k.Config.Execution.Ingestion.SourceMetaCaps()
+		operatorSvc.SetSourceMetaCaps(operator.SourceMetaCaps{Kind: mc.Kind, Title: mc.Title, Author: mc.Author, Speaker: mc.Speaker})
 		operatorSvc.SetMemoryIngestor(operator.MemoryIngestorFunc(func(ctx context.Context, req operator.IngestRequest) (string, error) {
 			if k.Server.IngestionProcessor != nil {
 				doc := operatorIngestDoc(req)
@@ -3240,10 +3343,24 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			if k.Memory != nil && k.Memory.QueryService != nil {
 				live = liveBlendWeights(k.Memory.QueryService)
 			}
+			var overrides func() []config.StoreOverride
+			if k.ConfigStore != nil {
+				store, path := k.ConfigStore, k.ConfigPath
+				// Read at call time: the console asks after its own writes.
+				overrides = func() []config.StoreOverride {
+					m, err := store.Overrides()
+					if err != nil {
+						slog.Warn("config schema: store overrides unreadable; overrides_file left empty", "err", err)
+						return nil
+					}
+					return config.StoreOverrideReport(path, m)
+				}
+			}
 			operatorSvc.SetConfigSchemaReporter(configSchemaSource{
-				cfg:  k.Config,
-				prov: k.ConfigProvenance,
-				live: live,
+				cfg:       k.Config,
+				prov:      k.ConfigProvenance,
+				live:      live,
+				overrides: overrides,
 			})
 
 			// ADR-0101 D3: the durable WRITE path. Wired only alongside a real
@@ -3433,12 +3550,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// carries `section_path`/`text` for citations. A UI gates its file-upload
 			// affordance on this — an older kernel silently text-only-ingests.
 			"memory-ingest-binary",
-			// routing-trace: AuctionEventOp carries the Gatekeeper L1/L2/L3
-			// candidate funnel + winner margin + bid requirements (backlog ROUTE-02).
+			// routing-trace: SelectionEventOp (contract 0102; was AuctionEventOp)
+			// carries the Gatekeeper L1/L2/L3 candidate funnel + winner margin +
+			// candidate requirements (backlog ROUTE-02).
 			"routing-trace",
-			// selection-cost (ADR-0100 P2): AuctionEventOp carries selection_latency_ms
-			// + selection_boots, so a client can measure what a routing decision cost
-			// and compare the dispatch and auction arms.
+			// selection-cost (ADR-0100 P2): SelectionEventOp carries
+			// selection_latency_ms + selection_boots, so a client can measure what a
+			// routing decision cost.
 			"selection-cost",
 			// route-preview: PreviewRoute deterministic gatekeeper merit scoring (ROUTE-07).
 			"route-preview",
@@ -3631,6 +3749,27 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			operatorSvc.SetPrincipalSchedules(k.PrincipalSchedules)
 			operatorCaps = append(operatorCaps, "scheduled-tasks")
 		}
+		// ENG-472: the reactive journal that serves ListWatchDeadLetters also deletes
+		// an entry an operator resolved (DeleteWatchDeadLetter); same condition as
+		// the reader's wiring.
+		if k.Server != nil && k.Server.WatchHandler != nil && k.WatchDeadLetters != nil {
+			if _, ok := k.WatchDeadLetters.(domain.WatchDeadLetterDeleter); ok {
+				operatorCaps = append(operatorCaps, "watch-deadletter-delete")
+			}
+		}
+		// Contract 0074 watch liveness (T-20261101-contract-0074-watch-liveness-is-never-wired):
+		// ListWatches reads each watch's source-stream state through the registry a
+		// plugin registered. Fire history and the plane budget have no provider yet.
+		if k.StreamRegistry != nil {
+			operatorSvc.SetWatchLiveness(k.StreamRegistry, nil, nil)
+		}
+		// Contract 0103 (T-20261103-operator-plane-cannot-inspect-facts-no-rpc): the
+		// read-only fact inspection RPCs, over the fail-closed inspector NewMemoryStack
+		// composed. Advertised only when the fact substrate exists.
+		if k.Memory != nil && k.Memory.FactInspector != nil {
+			operatorSvc.SetFactInspector(k.Memory.FactInspector)
+			operatorCaps = append(operatorCaps, "facts-inspect")
+		}
 		operatorCaps = append(operatorCaps, "session-lifecycle")
 		// step-output-stream (ADR-0139 amendment 2026-11-06, additive within 0101):
 		// TokenChunkOp carries the live step-output stream — kind, lease, chunk_seq,
@@ -3751,7 +3890,25 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// AnswerApproval / ListStandingApprovals / RevokeStandingApproval /
 		// ShareToTeam — additive, announced by "addressed-approvals" and
 		// "share-to-team"; the legacy approval streams keep their pending-only shape.
-		operatorSvc.SetHandshake(KernelVersion, "0101", operatorCaps)
+		// 0102 (2026-11-14, owner decision third round): WhoAmI and CancelRun
+		// (T-20261106-operator-plane-has-no-whoami-an-oidc-signed-in,
+		// T-20261106-operator-closesession-only-pauses-a-live-plan); CancelRun is
+		// also announced by "run-cancel". Same bump, owner decision fourth round:
+		// the auction-named feed payload AuctionEventOp (OperatorEvent field 10,
+		// now reserved) / BidEntryOp / InterviewResultOp are replaced by
+		// SelectionEventOp (field 35) / SelectionCandidateOp / SemanticGateOp
+		// (T-20261113-operator-feed-still-names-dispatch-decisions), and
+		// AuthoredStepOp.checkpoint_query (7) is reserved (ENG-1313). Breaking for
+		// a 0101 client reading the dispatch decision; the console never folded it.
+		// 0103 (2026-11-14, owner decision on
+		// T-20261103-operator-plane-cannot-inspect-facts-no-rpc): read-only fact
+		// inspection — ListFacts, GetFactChain, GetFactCoverage — additive, also
+		// announced by the "facts-inspect" capability.
+		// 0104 (2026-11-15, additive): ConfigSchemaOp.overrides_file /
+		// overrides_file_value (ADR-0101 D8, ENG-257), MemoryOp fact_matches /
+		// fact_match / fact_current (ENG-461), and on the agent plane
+		// ExecuteToolResponse.annotations (ADR-0139 D11 hook context, ENG-629).
+		operatorSvc.SetHandshake(KernelVersion, "0104", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -3778,13 +3935,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			SetStatusFn: func(ctx context.Context, sessionID string, st domain.SessionStatus, reason string) error {
 				return k.SessionMgr.TransitionStatusReason(ctx, domain.SessionID(sessionID), st, reason)
 			},
-			SendFn: func(_ context.Context, sessionID, text string) error {
+			SendFn: func(ctx context.Context, sessionID, text string) error {
+				// ENG-1378 (owner 2026-11-14): the run carries the operator's request
+				// values, detached from its cancellation (operatorRunContext).
+				runCtx := operatorRunContext(ctx, sessionID)
 				go func() {
-					mdCtx := metadata.NewIncomingContext(
-						context.Background(),
-						metadata.Pairs("x-session-id", sessionID),
-					)
-					if _, err := k.Server.Execute(mdCtx, &pb.Handoff{Payload: &pb.Object{Data: []byte(text)}}); err != nil {
+					if _, err := k.Server.Execute(runCtx, &pb.Handoff{Payload: &pb.Object{Data: []byte(text)}}); err != nil {
 						slog.Warn("operator SendMessage execution failed", "session", sessionID, "err", err)
 						// Tell the CONSOLE, not just the log. This returns immediately and
 						// the operator watches the feed, so a turn that fails here used to
@@ -3827,13 +3983,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 					}
 					return string(ses.ID), nil
 				},
-				execute: func(sessionID, planJSON string) {
+				execute: func(ctx context.Context, sessionID, planJSON string) {
+					runCtx := operatorRunContext(ctx, sessionID) // ENG-1378, as SendFn
 					go func() {
-						mdCtx := metadata.NewIncomingContext(
-							context.Background(),
-							metadata.Pairs("x-session-id", sessionID),
-						)
-						_, err := k.Server.Execute(mdCtx, &pb.Handoff{
+						_, err := k.Server.Execute(runCtx, &pb.Handoff{
 							Payload: &pb.Object{Data: []byte("")},
 							Metadata: map[string]string{
 								subnetwork.AuthoredPlanMetadataKey: planJSON,

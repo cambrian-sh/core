@@ -33,8 +33,10 @@ type Step struct {
 	IsThought       bool    `json:"is_thought,omitempty"`
 	MaxEnergy       float64 `json:"max_energy,omitempty"`
 	CheckpointAfter bool    `json:"checkpoint_after,omitempty"`
-	CheckpointQuery string  `json:"checkpoint_query,omitempty"`
-	CacheTTLSeconds int     `json:"cache_ttl_seconds,omitempty"`
+	// CheckpointQuery (json "checkpoint_query", ADR-0013) was deleted 2026-11-14
+	// (owner decision, ENG-1313): its only reader, the checkpoint gate, went with
+	// ADR-0139 D10. Stored plans that still carry the key decode with it ignored.
+	CacheTTLSeconds int `json:"cache_ttl_seconds,omitempty"`
 	// RequiredCapabilities is the ROUTE-03 capability contract: the capability
 	// tags a step needs its executor to declare, emitted by the planner from the
 	// live capability-cluster vocabulary. When non-empty AND the capability
@@ -162,7 +164,6 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 				IsThought:       s.IsThought,
 				MaxEnergy:       s.MaxEnergy,
 				CheckpointAfter: s.CheckpointAfter,
-				CheckpointQuery: s.CheckpointQuery,
 				CacheTTLSeconds: s.CacheTTLSeconds,
 				FanOutVar:       s.FanOutVar,
 				FanOutItem:      s.FanOutItem,

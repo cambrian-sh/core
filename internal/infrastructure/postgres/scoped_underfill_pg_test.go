@@ -227,7 +227,7 @@ func randUnit(rng *rand.Rand, centre []float32, noise float64) []float32 {
 	for i := range v {
 		x := rng.NormFloat64()
 		if centre != nil {
-			x = float64(centre[i])*math.Sqrt(eventTestDim) + noise*x
+			x = float64(centre[i])*math.Sqrt(float64(eventTestDim)) + noise*x
 		}
 		v[i] = float32(x)
 		norm += x * x

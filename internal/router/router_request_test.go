@@ -117,8 +117,8 @@ func TestClassifySendsSystemMessagesAndSchema(t *testing.T) {
 	if dec.Type != domain.DecisionPlan || dec.Confidence != 0.92 || dec.Why != "execution intent" {
 		t.Fatalf("decision = %+v", dec)
 	}
-	if e, ok := domain.PromptRegistry[classifyPromptHash]; !ok || e.ID != "router.classify" || classifyPromptHash != classifyPrompts.StaticHash() {
-		t.Fatal("router.classify must be registered under the pair's static hash")
+	if classifyPromptHash != classifyPrompts.StaticHash() {
+		t.Fatal("classifyPromptHash must be the pair's static hash")
 	}
 }
 

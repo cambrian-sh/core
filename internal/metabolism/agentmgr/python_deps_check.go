@@ -60,7 +60,7 @@ func (im *InstanceManager) verifyPythonDeps(ctx context.Context, def *domain.Age
 	if def.Runtime != domain.RuntimePython || im.manifestFor == nil {
 		return nil
 	}
-	m := im.manifestFor(def.ID)
+	m := im.manifestFor(ctx, def.ID)
 	if m == nil || len(m.PythonDeps) == 0 {
 		return nil
 	}

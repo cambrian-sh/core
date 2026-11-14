@@ -70,6 +70,43 @@ func TestGuard_EnglishWithholdingParagraph(t *testing.T) {
 	}
 }
 
+// The withholding cue sits on a heading and the items are a separate list paragraph
+// (T-20261108-reply-disclosure-guard-does-not-mask-a-private, the reply shape of
+// g-en-records-request-2): the list is still withholding context, and the scope ends at the
+// next prose paragraph.
+func TestGuard_ListUnderAWithholdingHeadingIsWithholdingContext(t *testing.T) {
+	reply := "Released with redactions:\n\n" +
+		"- HDC/CS/2025/00023 – Letter from the complainant, phone 07700 900767\n" +
+		"- HDC/CS/2025/00024 – Note, NI number QQ 81 28 80 C\n\n" +
+		"- HDC/CS/2025/00025 – Email from owen@example.org\n\n" +
+		"Released in full:\n\n" +
+		"- Planning office line 0 (161) 496 0000\n\n" +
+		"You can call the records office on 0 (161) 496 0001."
+	out, held := guardDisclosure(reply, domain.ProfileEmployee, nil, "en")
+	for _, v := range []string{"07700 900767", "QQ 81 28 80 C", "owen@example.org"} {
+		if strings.Contains(out, v) {
+			t.Errorf("an identifier listed under a withholding heading was stated: %q\n%s", v, out)
+		}
+	}
+	for _, v := range []string{"0 (161) 496 0000", "0 (161) 496 0001", "HDC/CS/2025/00023"} {
+		if !strings.Contains(out, v) {
+			t.Errorf("text outside the withholding section was masked: %q\n%s", v, out)
+		}
+	}
+	if held.total() != 3 {
+		t.Errorf("held = %v, want 3", held)
+	}
+}
+
+// Prose after a withholding heading is not swept into its scope.
+func TestGuard_WithholdingHeadingDoesNotReachProse(t *testing.T) {
+	reply := "## Redacted records\n\nThe applicant can be reached on 0 (509) 214 55 10."
+	out, held := guardDisclosure(reply, domain.ProfileEmployee, nil, "en")
+	if out != reply || held != nil {
+		t.Fatalf("prose under a withholding heading was masked:\n%s", out)
+	}
+}
+
 // An entitled officer asking for a contact detail gets it: the guard is not a blanket filter.
 func TestGuard_InternalReplyWithoutWithholdingIsUntouched(t *testing.T) {
 	reply := "The applicant, Cengiz Erdem, can be reached on 0 (509) 214 55 10 or cengiz.erdem@posta.example."

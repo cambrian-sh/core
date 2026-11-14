@@ -54,7 +54,7 @@ func TestStagedPlanner_PinsAndStagePrompt(t *testing.T) {
 		t.Fatalf("staged arm = v%d + v%d", plannerStagedPrompts.System.Version, plannerStagedPrompts.Input.Version)
 	}
 	gen := &scriptedGenerator{replies: []string{stagedStageReply}}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil)
+	p := NewPlanner(gen, &mockAgentProvider{})
 	sp := &domain.StagePlanning{Number: 1, CanAsk: true, MaxLookupRounds: 3}
 	plan, err := p.GetExecutionPlan(stagedCtx(sp, nil), "vadesi geçen müşteriler ve toplam tutar; gönderme")
 	if err != nil {
@@ -77,7 +77,7 @@ func TestStagedPlanner_PinsAndStagePrompt(t *testing.T) {
 
 func TestStagedPlanner_LaterStageIsFreshAndShowsStatuses(t *testing.T) {
 	gen := &scriptedGenerator{replies: []string{stagedStageReply}}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil)
+	p := NewPlanner(gen, &mockAgentProvider{})
 	sp := &domain.StagePlanning{Number: 2, CanAsk: false, LedgerIndex: "led_a tool_result invoices_search step 0: [INV-1...]",
 		EarlierStages: "- stage 1 step 0 \"list\" -> led_s0: [INV-1]"}
 	stage := &domain.CoverageStage{Number: 2, Settled: []string{"R1"}, SettledAs: map[string]domain.RequirementStatus{"R1": domain.RequirementSatisfied},
@@ -106,7 +106,7 @@ func TestStagedPlanner_ServesLedgerReadsBetweenCalls(t *testing.T) {
 		served = append(served, l)
 		return `{"found":true,"id":"led_a","value":[{"id":"INV-1"}]}`
 	}}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil)
+	p := NewPlanner(gen, &mockAgentProvider{})
 	plan, err := p.GetExecutionPlan(stagedCtx(sp, nil), "r")
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestStagedPlanner_ReadRoundsAreBounded(t *testing.T) {
 	read := `{"reasoning":"r","outcome":"read","subject":"s","cache_policy":"default","steps":[],"ledger_reads":[{"tool":"ledger_find","arguments":{"scope":"turn"}}]}`
 	gen := &scriptedGenerator{replies: []string{read, read, read}}
 	sp := &domain.StagePlanning{Number: 1, MaxLookupRounds: 2, Lookup: func(context.Context, domain.LedgerLookup) string { return "{}" }}
-	_, err := NewPlanner(gen, &mockAgentProvider{}, nil).GetExecutionPlan(stagedCtx(sp, nil), "r")
+	_, err := NewPlanner(gen, &mockAgentProvider{}).GetExecutionPlan(stagedCtx(sp, nil), "r")
 	if err == nil || !strings.Contains(err.Error(), "stage_ledger_read_rounds") {
 		t.Fatalf("a planner that only reads must stop at the bound: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestStagedPlanner_QuestionAndNothingMoreAreTyped(t *testing.T) {
 			`"assumptions":["the overdue cut-off is today"]}`,
 	}}
 	sp := &domain.StagePlanning{Number: 1, CanAsk: true}
-	_, err := NewPlanner(gen, &mockAgentProvider{}, nil).GetExecutionPlan(stagedCtx(sp, nil), "r")
+	_, err := NewPlanner(gen, &mockAgentProvider{}).GetExecutionPlan(stagedCtx(sp, nil), "r")
 	var ir *domain.InputRequiredError
 	if !errors.As(err, &ir) || len(ir.Questions) != 1 || ir.Questions[0].ID != "Q1" || ir.Questions[0].Kind != domain.QuestionConflict {
 		t.Fatalf("input_required = %v", err)
@@ -150,7 +150,7 @@ func TestStagedPlanner_QuestionAndNothingMoreAreTyped(t *testing.T) {
 	}
 
 	gen2 := &scriptedGenerator{replies: []string{`{"reasoning":"nothing can help","outcome":"nothing_more","subject":"s","cache_policy":"default","steps":[]}`}}
-	_, err = NewPlanner(gen2, &mockAgentProvider{}, nil).GetExecutionPlan(stagedCtx(&domain.StagePlanning{Number: 3}, nil), "r")
+	_, err = NewPlanner(gen2, &mockAgentProvider{}).GetExecutionPlan(stagedCtx(&domain.StagePlanning{Number: 3}, nil), "r")
 	if !errors.Is(err, domain.ErrNoFurtherStage) {
 		t.Fatalf("nothing_more = %v", err)
 	}

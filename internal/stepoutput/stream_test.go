@@ -57,7 +57,7 @@ func newTestStream(t *testing.T, cfg config.StepOutputConfig, hooks *domain.Hook
 		Config: cfg,
 		Hooks:  hooks,
 		Leases: testLeases,
-		StreamsOutput: func(agent string) bool {
+		StreamsOutput: func(_ context.Context, agent string) bool {
 			for _, a := range streams {
 				if a == agent {
 					return true
@@ -192,14 +192,14 @@ func TestStream_CapMidChunkSaysSoAndAgentFinalStillGoesOut(t *testing.T) {
 
 func TestStream_StreamsOutputAgentSuppressesGatewayDeltas(t *testing.T) {
 	s, _ := newTestStream(t, config.StepOutputConfig{}, nil, "pusher")
-	if !s.GatewayForwarding("L1", "") {
+	if !s.GatewayForwarding(context.Background(), "L1", "") {
 		t.Error("writer does not stream its own output: gateway deltas flow")
 	}
-	if s.GatewayForwarding("L2", "") {
+	if s.GatewayForwarding(context.Background(), "L2", "") {
 		t.Error("pusher declares streams_output: gateway deltas must not flow")
 	}
 	// An unbound lease falls back to the caller's header id.
-	if s.GatewayForwarding("unbound", "pusher") {
+	if s.GatewayForwarding(context.Background(), "unbound", "pusher") {
 		t.Error("caller header names a streams_output agent")
 	}
 }
@@ -231,7 +231,7 @@ func TestStream_PostModelHookSuppressesGatewayDeltasFailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		s, rec := newTestStream(t, config.StepOutputConfig{}, chain)
-		if s.GatewayForwarding("L1", "") {
+		if s.GatewayForwarding(context.Background(), "L1", "") {
 			t.Errorf("may_rewrite=%v: a post_model hook must suppress gateway deltas (it sees only the complete reply)", rewrite)
 		}
 		// Agent-pushed output is not model output the hook could see: unaffected.
@@ -243,10 +243,10 @@ func TestStream_PostModelHookSuppressesGatewayDeltasFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := newTestStream(t, config.StepOutputConfig{}, other); !s.GatewayForwarding("L1", "") {
+	if s, _ := newTestStream(t, config.StepOutputConfig{}, other); !s.GatewayForwarding(context.Background(), "L1", "") {
 		t.Error("a pre_tool hook must not suppress model deltas")
 	}
-	if s, _ := newTestStream(t, config.StepOutputConfig{GatewayDeltasDisabled: true}, nil); s.GatewayForwarding("L1", "") {
+	if s, _ := newTestStream(t, config.StepOutputConfig{GatewayDeltasDisabled: true}, nil); s.GatewayForwarding(context.Background(), "L1", "") {
 		t.Error("gateway_deltas_disabled must suppress")
 	}
 }
@@ -287,10 +287,10 @@ func TestStream_SuppressionHonoursHookScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		s, _ := newTestStream(t, config.StepOutputConfig{}, chain)
-		if got := s.GatewayForwarding("L1", "writer"); got != c.writerFwd {
+		if got := s.GatewayForwarding(context.Background(), "L1", "writer"); got != c.writerFwd {
 			t.Errorf("%s: writer step forwarding = %v, want %v", c.name, got, c.writerFwd)
 		}
-		if got := s.GatewayForwarding("unbound", "other"); got != c.otherFwd {
+		if got := s.GatewayForwarding(context.Background(), "unbound", "other"); got != c.otherFwd {
 			t.Errorf("%s: other agent forwarding = %v, want %v", c.name, got, c.otherFwd)
 		}
 	}
@@ -301,7 +301,7 @@ func TestStream_SuppressionHonoursHookScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, _ := newTestStream(t, config.StepOutputConfig{}, chain)
-	if s.GatewayForwarding("L1", "impostor") {
+	if s.GatewayForwarding(context.Background(), "L1", "impostor") {
 		t.Error("the lease is bound to writer: its scoped hook must suppress")
 	}
 }
@@ -350,7 +350,26 @@ func TestStream_NilStreamIsInert(t *testing.T) {
 	s.EmitGateway("L", domain.StepOutputText, "x")
 	s.EndLease("L")
 	s.SubscribeSession("S", func(domain.StepOutputChunk) {})()
-	if s.GatewayForwarding("L", "a") {
+	if s.GatewayForwarding(context.Background(), "L", "a") {
 		t.Error("a nil stream forwards nothing")
+	}
+}
+
+// ENG-1467 item 7: the streams_output lookup runs on the gateway call's ctx
+// (it used to read the registry under context.Background()).
+func TestStream_StreamsOutputLookupGetsTheCallersContext(t *testing.T) {
+	type key struct{}
+	var got context.Context
+	s := New(Options{
+		Config: config.StepOutputConfig{},
+		Leases: testLeases,
+		StreamsOutput: func(ctx context.Context, _ string) bool {
+			got = ctx
+			return false
+		},
+	})
+	s.GatewayForwarding(context.WithValue(context.Background(), key{}, "caller"), "unbound", "agent-x")
+	if got == nil || got.Value(key{}) != "caller" {
+		t.Fatal("streams_output lookup did not receive the caller's ctx")
 	}
 }

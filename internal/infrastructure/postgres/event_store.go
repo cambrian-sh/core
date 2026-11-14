@@ -197,6 +197,18 @@ const observationColumns = `namespace_id, entity_id, predicate, value_type,
 // source_ref can never be retired, so it always passes.
 func notRetired(alias string) string { return objects.NotRetired(alias) }
 
+// latestRevision keeps only the LATEST revision of an edited occurrence (owner
+// decision 2026-11-14, ENG-1026; ADR-0147 D4/D7): an edited source record arrives as
+// a NEW evidence row whose revises_id names the previous one, and its event is a new
+// row — so the latest revision is the event whose evidence no later evidence row
+// revises. Event LISTS and COUNTS (events, the catalog's event listing and counts,
+// related-event co-occurrence and df) apply it beside notRetired; history views do
+// not, they keep every revision. No source_ref parsing: the evidence chain is the
+// identity of an edit. Served by idx_evidence_revises_id (migration 0050).
+func latestRevision(alias string) string {
+	return ` AND NOT EXISTS (SELECT 1 FROM evidence nv WHERE nv.revises_id = ` + alias + `.evidence_id)`
+}
+
 // checkTimeBasis refuses a time basis the domain does not name, so a typo in a
 // writer cannot mint a third clock nobody reads.
 func checkTimeBasis(b string) error {

@@ -239,7 +239,7 @@ func (b *ConsentBridge) HandleReply(ctx context.Context, conversationID, text st
 
 	// Submit BEFORE clearing local state: the controller is the authority on
 	// whether the prompt is still alive.
-	submitted := b.hub.Submit(p.ID, ans)
+	submitted := b.hub.Submit(ctx, p.ID, ans)
 
 	b.mu.Lock()
 	var next *consentPending

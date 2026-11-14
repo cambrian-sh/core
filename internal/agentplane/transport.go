@@ -3,6 +3,7 @@ package agentplane
 import (
 	"context"
 	"fmt"
+	"github.com/cambrian-sh/core/internal/agentwire"
 	"sync"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -34,6 +35,11 @@ type Transport struct {
 	// in-flight RPC with "the client connection is closing"). Zero value is ready.
 	dialGroup singleflight.Group
 	Manager   AgentDialer
+
+	// ContextLimits are the context-engine settings (execution.lane.context,
+	// ADR-0150 D10) stamped on every handoff to a kernel-spawned agent; set by the
+	// composition root (kernel.NewMetabolismStack). Zero stamps nothing.
+	ContextLimits domain.AgentContextLimits
 
 	// CallAgentHook, when non-nil, replaces callAgent for testing.
 	CallAgentHook func(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error)
@@ -159,74 +165,6 @@ func (a *Transport) VerifyOutput(ctx context.Context, agent domain.AgentDefiniti
 	}, nil
 }
 
-// domainToProtoHandoff converts a domain Handoff to proto for gRPC calls.
-func domainToProtoHandoff(d *domain.Handoff) *pb.Handoff {
-	if d == nil {
-		return nil
-	}
-	h := &pb.Handoff{
-		Id:            d.ID,
-		FromAgent:     d.FromAgent,
-		ToAgent:       d.ToAgent,
-		Confidence:    d.Confidence,
-		Uncertainties: d.Uncertainties,
-		Metadata:      d.Context,
-	}
-	if d.Payload != nil {
-		h.Payload = &pb.Object{
-			Id:       d.Payload.ID,
-			Type:     d.Payload.Type,
-			Data:     d.Payload.Data,
-			Metadata: d.Payload.Metadata,
-		}
-	}
-	for _, ref := range d.WorkingMemory {
-		h.WorkingMemory = append(h.WorkingMemory, &pb.ContextRef{
-			Cid:        string(ref.CID),
-			Type:       ref.Type,
-			Labels:     ref.Labels,
-			Activation: ref.Activation,
-			Snippet:    ref.Snippet,
-			Precision:  ref.Precision,
-		})
-	}
-	return h
-}
-
-// protoToDomainHandoff converts a proto Handoff to domain for internal use.
-func protoToDomainHandoff(h *pb.Handoff) *domain.Handoff {
-	if h == nil {
-		return nil
-	}
-	d := &domain.Handoff{
-		ID:            h.Id,
-		FromAgent:     h.FromAgent,
-		ToAgent:       h.ToAgent,
-		Confidence:    h.Confidence,
-		Uncertainties: h.Uncertainties,
-		Context:       h.GetMetadata(),
-	}
-	if h.Payload != nil {
-		d.Payload = &domain.Payload{
-			ID:       h.Payload.Id,
-			Type:     h.Payload.Type,
-			Data:     h.Payload.Data,
-			Metadata: h.Payload.Metadata,
-		}
-	}
-	for _, ref := range h.WorkingMemory {
-		d.WorkingMemory = append(d.WorkingMemory, domain.ContextRef{
-			CID:        domain.CID(ref.Cid),
-			Type:       ref.Type,
-			Labels:     ref.Labels,
-			Activation: ref.Activation,
-			Snippet:    ref.Snippet,
-			Precision:  ref.Precision,
-		})
-	}
-	return d
-}
-
 // CallAgent wraps the gRPC Execute call against an agent.
 // Converts domain.Handoff ↔ pb.Handoff at the gRPC boundary.
 func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
@@ -246,6 +184,9 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 		}
 		return nil, fmt.Errorf("agent %s: a2a runtime is not supported by this dialer", agent.ID)
 	}
+	// A local, kernel-spawned agent: its context-engine settings ride the handoff
+	// (not a remote A2A agent above, whose engine is not ours to tune).
+	handoff = a.withContextLimits(handoff)
 	if domain.DedicatedInstanceRequested(ctx) {
 		if booter, ok := a.Manager.(dedicatedBooter); ok {
 			return a.callDedicated(ctx, booter, *agent, handoff)
@@ -255,7 +196,7 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 	if err != nil {
 		return nil, err
 	}
-	protoResp, err := client.Execute(ctx, domainToProtoHandoff(handoff))
+	protoResp, err := client.Execute(ctx, agentwire.ToProto(handoff))
 	if err != nil {
 		if status.Code(err) == codes.Unavailable {
 			// The cached connection points at an agent that is gone (crashed or
@@ -267,7 +208,25 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 		}
 		return nil, err
 	}
-	return protoToDomainHandoff(protoResp), nil
+	return agentwire.FromProto(protoResp), nil
+}
+
+// withContextLimits returns the handoff with ContextLimits stamped on a copy of
+// its context (the caller's handoff is not mutated: a retry or a runner-up reuses
+// it). Owner decision 2026-11-14 (T-20261105-context-engine-budgets-cannot-be-
+// tuned-for): procenv strips CAMBRIAN_* from a spawned agent's inherited env and a
+// profile has no context field, so the handoff is the channel.
+func (a *Transport) withContextLimits(h *domain.Handoff) *domain.Handoff {
+	if h == nil || a.ContextLimits.IsZero() {
+		return h
+	}
+	cp := *h
+	cp.Context = make(map[string]string, len(h.Context)+4)
+	for k, v := range h.Context {
+		cp.Context[k] = v
+	}
+	a.ContextLimits.Stamp(cp.Context)
+	return &cp
 }
 
 // a2aExecutor is the optional AgentDialer surface that serves a RuntimeA2A agent
@@ -301,11 +260,11 @@ func (a *Transport) callDedicated(ctx context.Context, booter dedicatedBooter, a
 		return nil, fmt.Errorf("dedicated instance: dial agent %s: %w", agent.ID, err)
 	}
 	defer func() { _ = conn.Close() }()
-	protoResp, err := pb.NewAgentServiceClient(conn).Execute(ctx, domainToProtoHandoff(handoff))
+	protoResp, err := pb.NewAgentServiceClient(conn).Execute(ctx, agentwire.ToProto(handoff))
 	if err != nil {
 		return nil, err
 	}
-	return protoToDomainHandoff(protoResp), nil
+	return agentwire.FromProto(protoResp), nil
 }
 
 // forgetAgentClient removes agentID's cached client if it is still client (a

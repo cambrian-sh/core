@@ -26,7 +26,7 @@ type fakeDispatcher struct {
 
 func newFake() *fakeDispatcher { return &fakeDispatcher{live: map[string]bool{}} }
 
-func (f *fakeDispatcher) SpawnDaemon(agentID, streamID string, _ map[string]any) (string, error) {
+func (f *fakeDispatcher) SpawnDaemon(_ context.Context, agentID, streamID string, _ map[string]any) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.spawnErr != nil {

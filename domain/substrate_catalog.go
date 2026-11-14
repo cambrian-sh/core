@@ -37,6 +37,87 @@ type SubstrateCatalog interface {
 	// Actors lists the actors of readable live resolutions about the given
 	// entities (all entities when entityIDs is empty).
 	Actors(ctx context.Context, entityIDs []string, limit int) ([]string, error)
+
+	// The three LISTINGS below (T-20261113-link-building-suite-reads-the-kernel-s-postgres,
+	// owner decision 2026-11-14) are the reads a black-box client needs to see what
+	// the identity plane produced — the links, the minted handles, and which event a
+	// source record became — without SQL against the substrate tables. They return
+	// rows, not values: refs and verbs, never an observation's value. Each is paged
+	// in id order and fenced like everything else here.
+
+	// Links pages a namespace's link assertions in id order. Every row is kept only
+	// when the reader may read the evidence it rests on (an assertion with no
+	// evidence only for an unfiltered scope) — the filterLinks rule the entity op
+	// and the review inbox apply. A page can therefore come back SHORT; its Next
+	// cursor is the last row scanned, so paging never skips nor repeats a row.
+	Links(ctx context.Context, f LinkListFilter) (LinkPage, error)
+	// Events pages readable, unretired events whose source_ref starts with
+	// f.SourceRefPrefix (empty = any non-empty source_ref), in id order.
+	Events(ctx context.Context, f EventListFilter) (EventPage, error)
+	// EntityHandles pages a namespace's minted handles in id order, fenced through
+	// each handle's first-seen evidence.
+	EntityHandles(ctx context.Context, f EntityHandleFilter) (EntityHandlePage, error)
+}
+
+// LinkListFilter narrows SubstrateCatalog.Links. Namespace is required.
+type LinkListFilter struct {
+	Namespace string
+	// States keeps only these states (candidate | confirmed); empty = all.
+	States []string
+	// ProducerPrefix keeps links whose producer starts with it (literal, not a pattern).
+	ProducerPrefix string
+	// IncludeRetracted also returns retracted assertions (default: left out).
+	IncludeRetracted bool
+	// AfterID is the cursor: rows with id > AfterID.
+	AfterID string
+	Limit   int
+}
+
+// LinkPage is one page of links. Next is "" when nothing follows.
+type LinkPage struct {
+	Links []Link
+	Next  string
+}
+
+// EventListFilter narrows SubstrateCatalog.Events. Namespace is required.
+type EventListFilter struct {
+	Namespace       string
+	SourceRefPrefix string
+	AfterID         string
+	Limit           int
+}
+
+// CatalogEvent is an occurrence as the event listing reports it.
+type CatalogEvent struct {
+	ID         string
+	EventType  string
+	SourceRef  string
+	OccurredAt time.Time
+}
+
+// EventPage is one page of events. Next is "" when nothing follows.
+type EventPage struct {
+	Events []CatalogEvent
+	Next   string
+}
+
+// EntityHandleFilter narrows SubstrateCatalog.EntityHandles. Namespace is required.
+type EntityHandleFilter struct {
+	Namespace string
+	AfterID   string
+	Limit     int
+}
+
+// CatalogHandle is one minted entity handle.
+type CatalogHandle struct {
+	ID   string
+	Kind string
+}
+
+// EntityHandlePage is one page of handles. Next is "" when nothing follows.
+type EntityHandlePage struct {
+	Handles []CatalogHandle
+	Next    string
 }
 
 // EntityFilter narrows SubstrateCatalog.Entities. Zero fields do not filter.

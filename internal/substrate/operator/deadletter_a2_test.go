@@ -64,3 +64,50 @@ func TestDeadLetters_ReturnsMappedEntries(t *testing.T) {
 		t.Fatalf("expected failed_at_unix_ms=1234, got %d", e.GetFailedAtUnixMs())
 	}
 }
+
+type fakeDeadLetterStore struct {
+	fakeDeadLetterReader
+	deleted []string
+}
+
+func (f *fakeDeadLetterStore) DeleteDeadLetter(id string) (bool, error) {
+	for i, e := range f.entries {
+		if e.ID == id {
+			f.entries = append(f.entries[:i], f.entries[i+1:]...)
+			f.deleted = append(f.deleted, id)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ENG-472: an operator deletes a dead letter they resolved — audited, with a
+// reason, NotFound for an unknown id, Unimplemented when the reader cannot delete.
+func TestDeleteWatchDeadLetter(t *testing.T) {
+	ctx := operator.ContextWithPrincipal(context.Background(), "alice", operator.RoleOperator)
+	svc, _, audit, _ := newCommandService()
+	store := &fakeDeadLetterStore{fakeDeadLetterReader: fakeDeadLetterReader{entries: []domain.ReactiveDeadLetter{{ID: "dl-1"}, {ID: "dl-2"}}}}
+	svc.SetDeadLetterReader(store)
+
+	if _, err := svc.DeleteWatchDeadLetter(ctx, &pb.DeleteWatchDeadLetterOpRequest{CommandId: "c1", Reason: "handled by hand", DeadLetterId: "dl-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "dl-1" {
+		t.Fatalf("deleted %v", store.deleted)
+	}
+	rows, _ := audit.Query(context.Background(), operator.AuditFilter{CommandID: "c1"})
+	if len(rows) != 1 || rows[0].ActionType != "delete_watch_dead_letter" {
+		t.Fatalf("audit: %+v", rows)
+	}
+	if _, err := svc.DeleteWatchDeadLetter(ctx, &pb.DeleteWatchDeadLetterOpRequest{CommandId: "c2", Reason: "r", DeadLetterId: "nope"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("unknown id: %v", err)
+	}
+	if _, err := svc.DeleteWatchDeadLetter(ctx, &pb.DeleteWatchDeadLetterOpRequest{CommandId: "c3", DeadLetterId: "dl-2"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("a reason is required: %v", err)
+	}
+	readOnly, _, _, _ := newCommandService()
+	readOnly.SetDeadLetterReader(&fakeDeadLetterReader{})
+	if _, err := readOnly.DeleteWatchDeadLetter(ctx, &pb.DeleteWatchDeadLetterOpRequest{CommandId: "c4", Reason: "r", DeadLetterId: "x"}); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("a reader that cannot delete: %v", err)
+	}
+}

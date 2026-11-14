@@ -132,7 +132,9 @@ type ConsentController interface {
 type WorkerConsentHub interface {
 	ConsentController
 	Watch() (<-chan ConsentPrompt, func())
-	Submit(id string, ans ConsentAnswer) bool
+	// ctx is the answerer's request (ENG-1467 item 3): the hub's answer-time
+	// check and policy routing run on it.
+	Submit(ctx context.Context, id string, ans ConsentAnswer) bool
 }
 
 // defaultConsentGrace bounds a prompt awaiting a human answer when no window is

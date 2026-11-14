@@ -58,26 +58,21 @@ func TestLexicalAliasVariants(t *testing.T) {
 	}
 }
 
-type fakeAliasIdx struct{ neighbors map[string][]string }
-
-func (f *fakeAliasIdx) NeighborNamesOf(name string, k int) []string { return f.neighbors[name] }
-
-// Alias expansion keeps original ranking first, adds semantic neighbors for top
-// entities and lexical variants after, dedups, and respects the cap.
+// Alias expansion keeps original ranking first, adds lexical variants after,
+// dedups, and respects the cap.
 func TestExpandEntityAliases(t *testing.T) {
 	t.Parallel()
-	idx := &fakeAliasIdx{neighbors: map[string][]string{"us": {"united states"}}}
-	got := expandEntityAliases([]string{"us", "kraków"}, idx, 10)
+	got := expandEntityAliases([]string{"us", "kraków"}, 10)
 	if got[0] != "us" || got[1] != "kraków" {
 		t.Fatalf("originals must lead in rank order: %v", got)
 	}
-	for _, want := range []string{"united states", "krakow"} {
+	for _, want := range []string{"krakow"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("missing alias %q in %v", want, got)
 		}
 	}
 	// Cap trims aliases, never originals.
-	capped := expandEntityAliases([]string{"a1", "b2", "c3"}, idx, 3)
+	capped := expandEntityAliases([]string{"a1", "b2", "c3"}, 3)
 	if len(capped) != 3 || capped[0] != "a1" || capped[1] != "b2" || capped[2] != "c3" {
 		t.Errorf("cap must preserve originals first: %v", capped)
 	}

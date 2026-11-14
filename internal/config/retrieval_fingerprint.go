@@ -67,6 +67,10 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	fmt.Fprintf(&b, "anchor=%t\n", c.Retrieval.AnchorConstraintEnabled)
 	fmt.Fprintf(&b, "structure=%t\n", c.Retrieval.StructureGraphEnabled)
 	fmt.Fprintf(&b, "neighbor_window=%t\n", c.Retrieval.NeighborWindowEnabled)
+	// ENG-430: written only when on, so every flag-off fingerprint stays what it was.
+	if c.Retrieval.DocumentCompletionEnabled {
+		fmt.Fprintf(&b, "document_completion=%d/%d\n", c.Retrieval.DocumentCompletionDocuments, c.Retrieval.DocumentCompletionMaxChunks)
+	}
 	fmt.Fprintf(&b, "agentic=%t\n", c.Retrieval.AgenticRetrievalEnabled)
 	// ADR-0135: executing the planner's route changes which passes run (direct is
 	// one pass, not the decomposition's union). Written only when it can take

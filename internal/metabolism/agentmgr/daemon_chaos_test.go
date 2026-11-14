@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"sync"
@@ -91,7 +92,7 @@ func TestChaos_DaemonKillRestartQuarantine(t *testing.T) {
 	}
 
 	// Spawn: boot #1.
-	if _, err := m.SpawnDaemon("chaos-daemon", "stream-1", nil); err != nil {
+	if _, err := m.SpawnDaemon(context.Background(), "chaos-daemon", "stream-1", nil); err != nil {
 		t.Fatalf("SpawnDaemon: %v", err)
 	}
 	waitUntil(t, "initial boot", func() bool { return getBoots() == 1 })

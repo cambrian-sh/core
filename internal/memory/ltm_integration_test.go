@@ -17,7 +17,6 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/kernel"
-	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // ── seed IDs ─────────────────────────────────────────────────────────────────
@@ -288,18 +287,13 @@ func TestLTM_RelevanceGate(t *testing.T) {
 				}
 			}
 
-			// ── Assertion 5: BuildLTMContext format ───────────────────────────
-			ltmBlock := memory.BuildLTMContext(nil, enrichment)
-			t.Logf("[A5] ltmBlock=%q", ltmBlock[:min(200, len(ltmBlock))])
-			if len(enrichment.Negatives) > 0 && !strings.Contains(ltmBlock, "<NegativeLTM>") {
-				t.Error("[A5] BuildLTMContext missing <NegativeLTM> section when negatives present")
-			}
-			if len(enrichment.Facts) > 0 && !strings.Contains(ltmBlock, "<FactLTM>") {
-				t.Error("[A5] BuildLTMContext missing <FactLTM> section when facts present")
-			}
-			// Poison content must not appear in the FactLTM block.
-			if strings.Contains(ltmBlock, "Event sourcing stores state as a sequence") {
-				t.Errorf("[A5] <FactLTM> must not contain event-sourcing poison content")
+			// ── Assertion 5: poison content never reaches the facts ──────────
+			// (memory.BuildLTMContext, which this assertion used to render, was
+			// deleted 2026-11-14, ENG-1336: the planner renders its own block.)
+			for _, f := range enrichment.Facts {
+				if strings.Contains(f.Document.Text, "Event sourcing stores state as a sequence") {
+					t.Errorf("[A5] Facts must not contain event-sourcing poison content")
+				}
 			}
 		})
 	}

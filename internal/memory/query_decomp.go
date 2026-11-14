@@ -375,7 +375,7 @@ func (q *QueryService) singlePassPlan(ctx context.Context, query, callerID, docT
 		return nil, err
 	}
 	trace := []hopTrace{{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(hits), Decision: decision}}
-	return q.withControlRow(ctx, query, hits, nil, trace, nil), nil
+	return q.withControlRow(ctx, query, hits, nil, trace), nil
 }
 
 // annotate records the route on the control row — its metadata keys and its

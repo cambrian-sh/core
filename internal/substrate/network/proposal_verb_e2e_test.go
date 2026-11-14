@@ -59,7 +59,7 @@ func TestE2E_ProposeKnowledgeNeedsTheVerbGrantThroughTheAgentPlane(t *testing.T)
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		authz.UnarySurfaceInterceptor(nil),
 		authz.UnaryAgentAuthInterceptor(verifier, nil),
-		operator.UnaryAuthInterceptor(idp, nil)))
+		operator.UnaryAuthInterceptor(idp, nil, nil)))
 	pb.RegisterOrchestratorServer(srv, srvImpl)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)

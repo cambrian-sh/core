@@ -54,6 +54,10 @@ const (
 	StreamLive        = "live"
 	StreamUnavailable = "unavailable"
 	StreamUnknown     = "unknown"
+	// StreamQuarantined is a stream whose daemon flapped and was quarantined by
+	// the supervisor (ADR-0070): it will NOT restart by itself — an operator
+	// must act. Distinct from StreamUnavailable, which may recover on its own.
+	StreamQuarantined = "quarantined"
 )
 
 // StreamRegistry reports whether a signal stream is alive and how many watches
@@ -64,10 +68,13 @@ const (
 // dead letter, no fired event — while each watch still reads "active". Nothing
 // anywhere in the system said so.
 //
-// Satisfied by the premium reactive engine; nil ⇒ every watch reports
-// StreamUnknown, which a console must render as "cannot tell", not as healthy.
+// Satisfied by the premium reactive engine, which hands itself to the kernel
+// through KernelServices.RegisterStreamRegistry; none registered ⇒ every watch
+// reports StreamUnknown, which a console must render as "cannot tell", not as
+// healthy.
 type StreamRegistry interface {
-	// StreamState returns StreamLive, StreamUnavailable or StreamUnknown.
+	// StreamState returns StreamLive, StreamUnavailable, StreamQuarantined or
+	// StreamUnknown.
 	StreamState(streamID string) string
 	// StreamRefcount returns how many watches hold streamID, or -1 when the
 	// registry does not count them.

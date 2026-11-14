@@ -127,7 +127,7 @@ func callAs(ctx context.Context, h *Handler, principal, tool string) (string, er
 }
 
 func perUserHTTP(id, url, inject, header string) ServerConfig {
-	return ServerConfig{ID: id, Transport: "http", Endpoint: url,
+	return ServerConfig{ID: id, Transport: "http", Endpoint: url, AllowPrivateNetwork: true,
 		DefaultPolicy:   &ToolPolicy{Effects: []string{"read"}},
 		CredentialScope: ScopePerUser, UserInject: inject, UserInjectName: header}
 }
@@ -249,7 +249,7 @@ func TestPerUser_EitherFallbackPolicy(t *testing.T) {
 	run := func(fallback bool) (*Connector, *Handler) {
 		conn := NewConnector()
 		conn.SetUserCredentials(creds, UserPoolLimits{})
-		cfg := ServerConfig{ID: "gh", Transport: "http", Endpoint: shared.url,
+		cfg := ServerConfig{ID: "gh", Transport: "http", Endpoint: shared.url, AllowPrivateNetwork: true,
 			AuthType: "bearer", AuthTokenEnv: "GH_SHARED_TEST_TOKEN",
 			DefaultPolicy:   &ToolPolicy{Effects: []string{"read"}},
 			CredentialScope: ScopeEither, UserInject: "bearer", SharedFallback: fallback}

@@ -4,6 +4,7 @@
 package mapper
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -108,7 +109,7 @@ func (m *AgentMapper) ManifestToRecord(man domain.AgentManifest) storage.Manifes
 
 // TaskEventToDomain converts a storage task event DTO to a domain task event.
 func (m *AgentMapper) TaskEventToDomain(rec storage.TaskEventRecord) domain.TaskEvent {
-	ts, _ := time.Parse(time.RFC3339Nano, rec.Timestamp)
+	ts := parseTime(rec.Timestamp)
 	return domain.TaskEvent{
 		TaskID:               rec.TaskID,
 		AgentID:              rec.AgentID,
@@ -509,10 +510,19 @@ func formatTime(t time.Time) string {
 	return t.Format(time.RFC3339Nano)
 }
 
+// parseTime reads a stored RFC3339Nano stamp. "" is the documented "unset" and
+// yields the zero time quietly; anything else that does not parse also yields the
+// zero time (a read must not fail over one bad stamp) but is logged, because a
+// stored record whose time silently became 0001-01-01 sorts and ages wrongly
+// (AGENTS.md §3.2; T-20261113-persisted-writes-and-builder-resolver-errors).
 func parseTime(s string) time.Time {
 	if s == "" {
 		return time.Time{}
 	}
-	t, _ := time.Parse(time.RFC3339Nano, s)
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		slog.Warn("mapper: stored timestamp does not parse; using the zero time", "value", s, "err", err)
+		return time.Time{}
+	}
 	return t
 }

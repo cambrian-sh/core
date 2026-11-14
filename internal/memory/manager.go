@@ -59,30 +59,19 @@ func (m *MemoryManager) SaveBatch(ctx context.Context, docs []*domain.Document) 
 	return m.Store.SaveBatch(ctx, docs)
 }
 
-// Query performs a semantic search for memory documents only.
-func (m *MemoryManager) Query(ctx context.Context, prompt string, topK int) ([]domain.SearchResult, error) {
-	queryVector, err := m.Embedder.Embed(ctx, prompt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to embed query: %w", err)
-	}
-
-	return m.Store.Search(ctx, queryVector, domain.SearchOptions{
-		DocumentType: domain.DocTypeMnemonicFact,
-		TopK:         topK,
-		Scope:        domain.ScopeSystem, // ADR-0034: kernel-internal read (not the agent RPC path)
-	})
-}
-
-// GetByID / GetBatch are KERNEL-INTERNAL reads, not the agent RPC path — the same
-// classification the Search above already declares with Scope: domain.ScopeSystem.
-// Now that the read chokepoint enforces by-identity reads too (ADR-0095 D9), that
-// intent has to be stated on the context rather than assumed, or these fail closed.
+// GetByID / GetBatch read through the enforcing store under the CALLER's scope, as
+// it travels on ctx (AGENTS.md §2.4). They used to overwrite whatever predicate the
+// caller carried with domain.ScopeSystem, on the claim that only kernel-internal code
+// called them — a principal path reaching them would have read every principal's rows
+// (owner decision 2026-11-15, ENG-540). A caller with no principal states that
+// explicitly with domain.WithScope(ctx, domain.ScopeSystem) (greppable); a ctx with no
+// predicate fails closed (authz.ErrScopeMissing), by design.
 func (m *MemoryManager) GetByID(ctx context.Context, id string) (*domain.Document, error) {
-	return m.Store.GetByID(domain.WithScope(ctx, domain.ScopeSystem), id)
+	return m.Store.GetByID(ctx, id)
 }
 
 func (m *MemoryManager) GetBatch(ctx context.Context, ids []string) ([]domain.Document, error) {
-	return m.Store.GetBatch(domain.WithScope(ctx, domain.ScopeSystem), ids)
+	return m.Store.GetBatch(ctx, ids)
 }
 
 func (m *MemoryManager) IncrementAccess(ctx context.Context, id string) error {

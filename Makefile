@@ -3,11 +3,10 @@
 # All targets assume `go`, `benchstat`, `pytest`, and `docker` are in PATH.
 
 .PHONY: help \
-        test integration chaos chaos-real \
+        test integration chaos chaos-real chaos-real-up \
         leak leak-integration \
         bench-micro bench-macro bench-compare \
         fuzz fuzz-release \
-        contract contract-release \
         separability \
         lint lint-new deadcode \
         proto-sync proto-sync-check \
@@ -34,12 +33,11 @@ help:
 	@echo "  SLOW (dedicated runner or Docker required)"
 	@echo "    make bench-macro       Macro benchmarks (nightly runner)          ~6m"
 	@echo "    make bench-compare     Micro benchmarks + benchstat diff          ~15s"
-	@echo "    make chaos-real        Real-service chaos (Docker required)       8-20m"
+	@echo "    make chaos-real-up     Start chaos infra (postgres + toxiproxy)   ~30s"
+	@echo "    make chaos-real        Real-service chaos vs a hand-started kernel (CAMBRIAN_CHAOS_KERNEL_ADDR) 8-20m"
 	@echo "    make leak-integration  Full-kernel goroutine leak test            ~30s"
 	@echo "    make fuzz              Fuzzing, 10 minutes                        10m"
 	@echo "    make fuzz-release      Fuzzing, 1 hour (release gate)             1h"
-	@echo "    make contract          Agent mock contract tests (Python)         ~10s"
-	@echo "    make contract-release  Agent real-Substrate contract tests        ~2m"
 	@echo ""
 	@echo "  DATA"
 	@echo "    make corpus            Generate 1000-record synthetic corpus       <1s"
@@ -164,16 +162,34 @@ chaos:
 # Runs ONLY the TestChaosReal_* scenarios: the target used to run the whole network
 # package (60+ unit tests) under the chaos tag, which `make test-race` already covers.
 # The -list guard refuses a vacuous pass (cf. leak-integration).
-# KNOWN BROKEN (T-20261031-chaos-real-cannot-pass-and-injects-no-fault): the compose
-# file starts no kernel and the scenarios inject no fault yet, so this target fails
-# without a hand-started kernel on :50051 and proves nothing when it passes.
+#
+# The gate runs against a HAND-STARTED kernel (owner decision 2026-11-14,
+# T-20261031-chaos-real-cannot-pass-and-injects-no-fault); the compose file starts
+# only Postgres and toxiproxy. Procedure:
+#   1. make chaos-real-up              # postgres (host :5433) + toxiproxy (:8474 API,
+#                                      # :5432 → postgres, :11434 → host Ollama)
+#   2. start a kernel whose database DSN points at toxiproxy localhost:5432
+#      (cambrian/cambrian/cambrian) and whose generator base URL is toxiproxy
+#      localhost:11434, so the toxics sit between the kernel and its dependencies.
+#      Stop a host Postgres/Ollama bound to 5432/11434 first: toxiproxy needs them.
+#   3. CAMBRIAN_CHAOS_KERNEL_ADDR=localhost:50051 make chaos-real
+#      (optional: CAMBRIAN_CHAOS_AGENT_ID / _AGENT_TOKEN, _EXECUTE_DEADLINE,
+#      _LLM_HANG_DEADLINE, _TOXIPROXY_URL — see internal/substrate/network/chaos_test.go)
+# The target refuses to start without CAMBRIAN_CHAOS_KERNEL_ADDR so a forgotten
+# kernel reads as a setup error, not as three red scenarios. Building a kernel into
+# the compose (local Dockerfile, Ollama behind toxiproxy) waits for automated
+# releases. TestChaosReal_AgentSigkill is unimplemented and fails on purpose until
+# its recovery contract is decided (follow-up ticket).
+chaos-real-up:
+	docker compose -f scripts/chaos-compose.yml up -d
+
 chaos-real:
 	@go test -tags chaos ./internal/substrate/network/ -list 'TestChaosReal' | grep -q TestChaosReal_ || (echo "chaos-real: no TestChaosReal_* scenarios found" && exit 1)
+	@test -n "$$CAMBRIAN_CHAOS_KERNEL_ADDR" || (echo "chaos-real: set CAMBRIAN_CHAOS_KERNEL_ADDR to a hand-started kernel wired through toxiproxy (see the comment above this target)" && exit 1)
 	@echo "--- Starting chaos infrastructure ---"
 	docker compose -f scripts/chaos-compose.yml up -d
-	@echo "--- Running real-service chaos scenarios ---"
-	go test -tags chaos ./internal/substrate/network/ -run 'TestChaosReal' -v -timeout 30m || \
-		(docker compose -f scripts/chaos-compose.yml down -v; exit 1)
+	@echo "--- Running real-service chaos scenarios against $$CAMBRIAN_CHAOS_KERNEL_ADDR ---"
+	go test -tags chaos ./internal/substrate/network/ -run 'TestChaosReal' -v -timeout 30m || 		(docker compose -f scripts/chaos-compose.yml down -v; exit 1)
 	@echo "--- Tearing down chaos infrastructure ---"
 	docker compose -f scripts/chaos-compose.yml down -v
 
@@ -255,13 +271,10 @@ fuzz:
 fuzz-release:
 	go test -fuzz=FuzzProtoToHandoff -fuzztime=1h ./internal/substrate/network/...
 
-# ─── Agent Contract Tests ─────────────────────────────────────────────────────
-
-contract:
-	pytest agents/contract_test.py -v
-
-contract-release:
-	bash scripts/run-agent-contract-release.sh
+# The ADR-0020 agent contract targets (`contract`, `contract-release`) were removed
+# 2026-11-14 (owner decision, third round; ENG-180): they ran agents/contract_test.py,
+# which was never written, so `contract-release` failed and release-gate could not
+# pass. ADR-0020 is amended: the agent contract suite was not delivered.
 
 # ─── Data Generation ──────────────────────────────────────────────────────────
 
@@ -298,7 +311,7 @@ nightly: bench-macro fuzz leak deadcode
 	@echo "=== Nightly pipeline complete ==="
 
 # Release gate: all suites, real services, 1h fuzz
-release-gate: bench-macro chaos-real contract-release fuzz-release leak-integration
+release-gate: bench-macro chaos-real fuzz-release leak-integration
 	@echo ""
 	@echo "=== Release gate pipeline complete ==="
 

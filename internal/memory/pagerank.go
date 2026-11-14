@@ -5,6 +5,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // PageRank over the chunk graph (ADR-0054 D2). The graph is implicit in
@@ -19,12 +21,8 @@ import (
 // WORKER (cmd/pagerank-recompute) feeds it chunk_triplets and persists the
 // result; the kernel only READS the persisted table.
 
-// ChunkEntities is one chunk and the entities it mentions (the deduped union of
-// its triplet heads + tails, lowercased). The input unit for ComputePageRank.
-type ChunkEntities struct {
-	ChunkID  string
-	Entities []string
-}
+// ChunkEntities lives in domain/memory_ports.go (ENG-1104); aliased for callers here.
+type ChunkEntities = domain.ChunkEntities
 
 // PageRankParams configures the computation. Zero values get sane defaults.
 type PageRankParams struct {

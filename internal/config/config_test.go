@@ -57,7 +57,6 @@ func TestExecutionConfig_Validate_ModelConfigs(t *testing.T) {
 			StepTimeoutMultiplier:       2.0,
 			PlanMaxDurationMs:           config.DefaultPlanMaxDurationMs,
 			MaxReplanAttempts:           2,
-			MaxPartialContextBytes:      51200,
 			FallbackConfidenceThreshold: 0.4,
 		},
 		Gatekeeper: config.GatekeeperConfig{
@@ -83,17 +82,11 @@ func TestExecutionConfig_ADR0018Defaults(t *testing.T) {
 	if cfg.LLM.LLMGatewayMaxConcurrency != 0 {
 		t.Error("LLMGatewayMaxConcurrency zero value should be 0 before LoadConfig")
 	}
-	if cfg.LLM.LLMGatewayRetryBackoffMs != 0 {
-		t.Error("LLMGatewayRetryBackoffMs zero value should be 0 before LoadConfig")
-	}
 	if cfg.Session.SessionTokenSweepIntervalSeconds != 0 {
 		t.Error("SessionTokenSweepIntervalSeconds zero value should be 0 before LoadConfig")
 	}
 	if cfg.Session.SessionTokenTTLMultiplier != 0 {
 		t.Error("SessionTokenTTLMultiplier zero value should be 0 before LoadConfig")
-	}
-	if cfg.Plan.BudgetExhaustionAlarmRate != 0 {
-		t.Error("BudgetExhaustionAlarmRate zero value should be 0 before LoadConfig")
 	}
 	if cfg.Plan.MinStepEnergy != 0 {
 		t.Error("MinStepEnergy zero value should be 0 before LoadConfig")
@@ -110,15 +103,12 @@ func TestExecutionConfig_ADR0018Defaults(t *testing.T) {
 }
 
 func TestTelemetryConfig_Unmarshal(t *testing.T) {
-	raw := `{"telemetry":{"otlp_endpoint":"collector:4317","trace_sampling_rate":0.1,"metrics_export_interval_seconds":15,"enable_stdout_exporter":true,"prometheus_port":8080}}`
+	raw := `{"telemetry":{"trace_sampling_rate":0.1,"metrics_export_interval_seconds":15,"enable_stdout_exporter":true}}`
 	var cfg struct {
 		Telemetry config.TelemetryConfig `json:"telemetry"`
 	}
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
-	}
-	if cfg.Telemetry.OTLPEndpoint != "collector:4317" {
-		t.Errorf("OTLPEndpoint: want collector:4317, got %q", cfg.Telemetry.OTLPEndpoint)
 	}
 	if cfg.Telemetry.TraceSamplingRate != 0.1 {
 		t.Errorf("TraceSamplingRate: want 0.1, got %v", cfg.Telemetry.TraceSamplingRate)
@@ -128,9 +118,6 @@ func TestTelemetryConfig_Unmarshal(t *testing.T) {
 	}
 	if !cfg.Telemetry.EnableStdoutExporter {
 		t.Error("EnableStdoutExporter: want true")
-	}
-	if cfg.Telemetry.PrometheusPort != 8080 {
-		t.Errorf("PrometheusPort: want 8080, got %d", cfg.Telemetry.PrometheusPort)
 	}
 }
 
@@ -406,9 +393,6 @@ func TestDefaultConfig_PassesValidation(t *testing.T) {
 
 func TestTelemetryConfig_ZeroValueDisabled(t *testing.T) {
 	var tc config.TelemetryConfig
-	if tc.OTLPEndpoint != "" {
-		t.Error("OTLPEndpoint zero value should be empty")
-	}
 	if tc.TraceSamplingRate != 0 {
 		t.Errorf("TraceSamplingRate zero value should be 0, got %v", tc.TraceSamplingRate)
 	}
@@ -417,9 +401,6 @@ func TestTelemetryConfig_ZeroValueDisabled(t *testing.T) {
 	}
 	if tc.EnableStdoutExporter {
 		t.Error("EnableStdoutExporter zero value should be false")
-	}
-	if tc.PrometheusPort != 0 {
-		t.Error("PrometheusPort zero value should be 0")
 	}
 }
 

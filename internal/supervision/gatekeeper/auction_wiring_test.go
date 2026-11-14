@@ -17,8 +17,8 @@ func (t *trackingProfileSearcher) SearchByEmbedding(ctx context.Context, embeddi
 	return t.inner.SearchByEmbedding(ctx, embedding, threshold, topK)
 }
 
-func TestFindCandidates_TraitTool_GoesThroughLayer2(t *testing.T) {
-	toolAgent := domain.AgentDefinition{ID: "tool-gk-1", Provisional: false, Trait: domain.TraitTool}
+func TestFindCandidates_NonCognitiveTrait_GoesThroughLayer2(t *testing.T) {
+	toolAgent := domain.AgentDefinition{ID: "tool-gk-1", Provisional: false, Trait: domain.TraitModel}
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{toolAgent}, nil)
 
 	searcher := &trackingProfileSearcher{inner: &fakeProfileSearcher{results: map[string]float64{}}}
@@ -34,12 +34,12 @@ func TestFindCandidates_TraitTool_GoesThroughLayer2(t *testing.T) {
 		t.Fatalf("expected 0 candidates (tool agent not in search results), got %d", len(candidates))
 	}
 	if !searcher.called {
-		t.Error("SearchByEmbedding was NOT called for a TraitTool agent; it must be included in Layer 2")
+		t.Error("SearchByEmbedding was NOT called for a non-cognitive (model) agent; it must be included in Layer 2")
 	}
 }
 
-func TestFindCandidates_TraitTool_CognitiveAgentStillChecked(t *testing.T) {
-	toolAgent := domain.AgentDefinition{ID: "tool-gk-2", Provisional: false, Trait: domain.TraitTool}
+func TestFindCandidates_NonCognitiveTrait_CognitiveAgentStillChecked(t *testing.T) {
+	toolAgent := domain.AgentDefinition{ID: "tool-gk-2", Provisional: false, Trait: domain.TraitModel}
 	cogAgent := domain.AgentDefinition{ID: "cog-gk-2", Provisional: false, Trait: domain.TraitCognitive}
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{toolAgent, cogAgent}, nil)
 
@@ -66,8 +66,8 @@ func TestFindCandidates_TraitTool_CognitiveAgentStillChecked(t *testing.T) {
 	}
 }
 
-func TestFindCandidates_TraitTool_FailsDeclaration_Eliminated(t *testing.T) {
-	toolAgent := domain.AgentDefinition{ID: "tool-gk-3", Provisional: false, Trait: domain.TraitTool}
+func TestFindCandidates_NonCognitiveTrait_FailsDeclaration_Eliminated(t *testing.T) {
+	toolAgent := domain.AgentDefinition{ID: "tool-gk-3", Provisional: false, Trait: domain.TraitModel}
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{toolAgent}, map[string]*domain.AgentManifest{
 		toolAgent.ID: {SupportedFormats: []string{"csv"}},
 	})

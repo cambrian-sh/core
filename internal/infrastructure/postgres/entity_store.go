@@ -79,7 +79,7 @@ func (s *PgEntityStore) EnsureEntity(ctx context.Context, e domain.Entity) (bool
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO entities (id, namespace_id, kind, first_seen_evidence)
 			VALUES ($1,$2,$3,$4)
-			ON CONFLICT (id) DO NOTHING`,
+			ON CONFLICT (namespace_id, id) DO NOTHING`,
 			e.ID, ns, kind, firstSeen)
 		if err != nil {
 			return err
@@ -109,33 +109,6 @@ func (s *PgEntityStore) GetEntity(ctx context.Context, namespace, id string) (do
 		return domain.Entity{}, false, err
 	}
 	return e, true, nil
-}
-
-// ListEntitiesByKind returns minted handles of one kind, newest first.
-func (s *PgEntityStore) ListEntitiesByKind(ctx context.Context, namespace, kind string, limit int) ([]domain.Entity, error) {
-	namespace = orDefaultNamespace(namespace)
-	if limit <= 0 {
-		limit = defaultIdentityLimit
-	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+entityColumns+` FROM entities
-		WHERE namespace_id=$1 AND kind=$2
-		ORDER BY created_at DESC, id
-		LIMIT $3`,
-		namespace, kind, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []domain.Entity
-	for rows.Next() {
-		e, err := scanEntity(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
 }
 
 // ResolveEntityByLocal returns the handles whose id ends in "/"+local, across kinds

@@ -54,7 +54,7 @@ func TestService_StreamEventsDeliversBacklogAndLive(t *testing.T) {
 
 	// Backlog: the auction event, mapped.
 	e1 := recvOne(t, stream.recv)
-	if e1.GetSeq() != 1 || e1.GetAuction() == nil || e1.GetAuction().GetWinnerId() != "w1" {
+	if e1.GetSeq() != 1 || e1.GetSelection() == nil || e1.GetSelection().GetWinnerId() != "w1" {
 		t.Fatalf("event 1: expected mapped auction at seq 1, got %+v", e1)
 	}
 	// Backlog: the agent-ready event, mapped.

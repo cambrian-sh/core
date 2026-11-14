@@ -51,8 +51,9 @@ func NewAgentManager(reg domain.AgentRegistry, pyPath string, substrateAddr stri
 	im := NewInstanceManager(pyPath, substrateAddr)
 	// SEC-01: let the InstanceManager honor each agent's declared memory_limit_mb
 	// over the global default at spawn time.
-	im.SetManifestResolver(func(agentID string) *domain.AgentManifest {
-		m, err := reg.GetManifest(context.Background(), agentID)
+	// The boot path's ctx (the caller's, ENG-1467 item 7) reaches the registry read.
+	im.SetManifestResolver(func(ctx context.Context, agentID string) *domain.AgentManifest {
+		m, err := reg.GetManifest(ctx, agentID)
 		if err != nil {
 			// AGENTS.md §3.2: the fallback (the global memory cap) is the documented
 			// default, but it must not be silent — a registry read error here means

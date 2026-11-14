@@ -8,7 +8,8 @@ package identity
 // JWT into a domain.Identity:
 //
 //  1. signature against the issuer's JWKS (found through OIDC discovery),
-//  2. the registered claims iss / aud / exp / nbf / iat / sub,
+//  2. the registered claims iss / aud / exp / nbf / iat / sub, and the token
+//     kind: a Keycloak ID token (typ "ID") is refused as a bearer (ENG-714),
 //  3. (iss, sub) → a registry person via PrincipalRegistry.ResolveIdentity —
 //     NEVER the email alone, because emails are reassigned (ADR-0142 threat
 //     table, impersonation),
@@ -591,7 +592,11 @@ func (v *OIDCVerifier) getJSON(ctx context.Context, u string, dst any) error {
 
 type verifiedClaims struct {
 	iss, sub, email, name string
-	exp                   time.Time
+	// oid / tid are Entra ID's tenant-stable object id and tenant id. Entra's `sub`
+	// is pairwise per application, so a SCIM push (externalId = objectId) and a
+	// sign-in name the same person by different values; linkByOID joins them.
+	oid, tid string
+	exp      time.Time
 }
 
 func (v *OIDCVerifier) checkClaims(c map[string]json.RawMessage) (verifiedClaims, error) {
@@ -610,6 +615,20 @@ func (v *OIDCVerifier) checkClaims(c map[string]json.RawMessage) (verifiedClaims
 	}
 	if !v.audienceOK(c["aud"]) {
 		return out, unauth("aud does not name an accepted audience")
+	}
+	// An ID token is not a bearer credential. It is minted for the client (OIDC
+	// Core §2), its aud is the client id so it passes the audience check above,
+	// it travels more freely (id_token_hint in logout URLs) and it is not revoked
+	// with the access token. Keycloak marks its token kinds in a `typ` claim
+	// ("ID" for ID tokens, "Bearer" for access tokens), so a token carrying
+	// typ "ID" is refused here. Decided by the owner 2026-11-14 (ENG-714):
+	// refuse Keycloak ID tokens only. Rejected for now: requiring the RFC 9068
+	// header typ "at+jwt" (Entra never sets it, Keycloak only when configured)
+	// and refusing any token with a `nonce` (Keycloak puts nonce into access
+	// tokens too). The Entra rule is decided separately. Comparison is
+	// case-insensitive so "id" cannot slip past.
+	if typ := str("typ"); strings.EqualFold(typ, "ID") {
+		return out, unauth("token typ %q is an ID token, not an access token", typ)
 	}
 	now, skew := v.cfg.Now(), v.cfg.ClockSkew
 	exp, ok, err := numericDate(c["exp"])
@@ -631,6 +650,8 @@ func (v *OIDCVerifier) checkClaims(c map[string]json.RawMessage) (verifiedClaims
 		return out, unauth("token issued in the future (%s)", iat.UTC().Format(time.RFC3339))
 	}
 	out.email = str("email")
+	out.oid = str("oid")
+	out.tid = str("tid")
 	out.name = str("name")
 	if out.name == "" {
 		out.name = str("preferred_username")
@@ -705,7 +726,11 @@ func numericDate(raw json.RawMessage) (time.Time, bool, error) {
 func (v *OIDCVerifier) person(ctx context.Context, c verifiedClaims) (domain.Principal, error) {
 	p, err := v.reg.ResolveIdentity(ctx, c.iss, c.sub)
 	if errors.Is(err, domain.ErrIdentityNotFound) {
-		p, err = v.firstLogin(ctx, c)
+		var linked bool
+		p, linked, err = v.linkByOID(ctx, c)
+		if err == nil && !linked {
+			p, err = v.firstLogin(ctx, c)
+		}
 	}
 	if err != nil {
 		return domain.Principal{}, err
@@ -714,6 +739,117 @@ func (v *OIDCVerifier) person(ctx context.Context, c verifiedClaims) (domain.Pri
 		return domain.Principal{}, unauth("person %s is %s", p.ID, p.Status)
 	}
 	return p, nil
+}
+
+// linkByOID joins an Entra sign-in to the person a SCIM directory provisioned
+// (owner decision 2026-11-14, third round;
+// T-20261106-entra-sign-in-and-entra-scim-provisioning). Entra's `sub` is pairwise
+// per application while Entra SCIM sends externalId = the user's object id, and
+// premium orgdir links a provisioned person as (connection OIDC issuer,
+// externalId). So an unknown (iss, sub) whose `oid` claim is linked, under the
+// SAME issuer, to a SCIM-provisioned person whose ExternalID is that oid is
+// linked to that person: (iss, sub) → person, recorded once and audited, then
+// resolved like any linked identity. Deterministic and idempotent: the same token
+// always reaches the same person, and LinkIdentity never re-points a pair.
+//
+// Fail closed — any doubt is "no auto-link" (linked=false, err=nil), which hands
+// the caller to the configured first-login policy and logs why:
+//   - no oid, or oid == sub (nothing to join);
+//   - no tid, a tid that is not a GUID, or an issuer whose path does not carry
+//     that tid as a segment. Entra issuers are https://login.microsoftonline.com/
+//     {tid}/v2.0 and https://sts.windows.net/{tid}/; this keeps the join to Entra
+//     and to the configured tenant, so another IdP that happens to emit an `oid`
+//     (a Keycloak user attribute mapped by an admin) cannot claim a person;
+//   - the (iss, oid) link names nobody, or a person that is not SCIM-sourced or
+//     whose ExternalID is not the oid;
+//   - more than one SCIM-sourced person carries that ExternalID (ambiguous).
+func (v *OIDCVerifier) linkByOID(ctx context.Context, c verifiedClaims) (domain.Principal, bool, error) {
+	if c.oid == "" || c.oid == c.sub {
+		return domain.Principal{}, false, nil
+	}
+	skip := func(reason string) (domain.Principal, bool, error) {
+		sh := sha256.Sum256([]byte(c.oid))
+		slog.WarnContext(ctx, "oidc: oid present but not linked to a provisioned person; no auto-link",
+			"issuer", c.iss, "oid_sha256", hex.EncodeToString(sh[:8]), "reason", reason,
+			"ticket", "T-20261106-entra-sign-in-and-entra-scim-provisioning")
+		return domain.Principal{}, false, nil
+	}
+	if !isGUID(c.tid) || !issuerCarriesTenant(c.iss, c.tid) {
+		return skip("tid missing, not a GUID, or not the configured issuer's tenant")
+	}
+	p, err := v.reg.ResolveIdentity(ctx, c.iss, c.oid)
+	if errors.Is(err, domain.ErrIdentityNotFound) || errors.Is(err, domain.ErrPrincipalNotFound) {
+		return skip("no person provisioned under this oid")
+	}
+	if err != nil {
+		return domain.Principal{}, false, unauth("oid link: resolve: %v", err)
+	}
+	if p.Source != domain.SourceSCIM || p.ExternalID != c.oid {
+		return skip("the oid names a person that is not a SCIM-provisioned person with that externalId")
+	}
+	scim, err := v.reg.ListPrincipals(ctx, domain.PrincipalFilter{Source: domain.SourceSCIM})
+	if err != nil {
+		return domain.Principal{}, false, unauth("oid link: list provisioned persons: %v", err)
+	}
+	n := 0
+	for _, q := range scim {
+		if q.ExternalID == c.oid {
+			n++
+		}
+	}
+	if n != 1 {
+		return skip(fmt.Sprintf("ambiguous: %d provisioned persons carry this externalId", n))
+	}
+	if err := v.reg.LinkIdentity(ctx, domain.ExternalIdentity{
+		Issuer: c.iss, Subject: c.sub, Email: c.email, PrincipalID: p.ID,
+	}); err != nil {
+		return domain.Principal{}, false, unauth("oid link: link identity: %v", err)
+	}
+	p, err = v.reg.ResolveIdentity(ctx, c.iss, c.sub)
+	if err != nil {
+		return domain.Principal{}, false, unauth("oid link: re-resolve: %v", err)
+	}
+	ssh := sha256.Sum256([]byte(c.sub))
+	// The audit record of the join: who (principal), by which identity (issuer and
+	// a subject hash, never the raw subject), and why (oid matched a SCIM person).
+	slog.InfoContext(ctx, "oidc: first login linked to a SCIM-provisioned person by oid",
+		"audit", "identity_linked", "issuer", c.iss, "principal", p.ID,
+		"subject_sha256", hex.EncodeToString(ssh[:8]), "rule", "oid=scim_external_id")
+	return p, true, nil
+}
+
+// isGUID reports whether s is a canonical 8-4-4-4-12 hex GUID (an Entra tenant id).
+func isGUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// issuerCarriesTenant reports whether tid is a whole path segment of the issuer URL.
+func issuerCarriesTenant(issuer, tid string) bool {
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return false
+	}
+	for _, seg := range strings.Split(u.Path, "/") {
+		if strings.EqualFold(seg, tid) {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *OIDCVerifier) firstLogin(ctx context.Context, c verifiedClaims) (domain.Principal, error) {

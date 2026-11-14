@@ -42,7 +42,7 @@ func TestConnector_ConfigDrivenConnectDiscoverAuth(t *testing.T) {
 	defer conn.Close()
 
 	tools := conn.ConnectAll(ctx, []ServerConfig{{
-		ID: "srv", Transport: "http", Endpoint: ts.URL,
+		ID: "srv", Transport: "http", Endpoint: ts.URL, AllowPrivateNetwork: true,
 		AuthType: "bearer", AuthTokenEnv: "MCP_TEST_TOKEN",
 		// Declared read-only: an unlisted tool is Dangerous (ADR-0139 D8) and would
 		// need an approver this test does not wire.
@@ -104,7 +104,7 @@ func TestConnector_SSETransport(t *testing.T) {
 
 	conn := NewConnector()
 	defer conn.Close()
-	tools := conn.ConnectAll(ctx, []ServerConfig{{ID: "srv", Transport: "sse", Endpoint: ts.URL}})
+	tools := conn.ConnectAll(ctx, []ServerConfig{{ID: "srv", Transport: "sse", Endpoint: ts.URL, AllowPrivateNetwork: true}})
 
 	found := false
 	for _, tl := range tools {
@@ -142,7 +142,7 @@ func TestConnector_AppliesToolPolicyToDiscoveredTools(t *testing.T) {
 	conn := NewConnector()
 	defer conn.Close()
 	tools := conn.ConnectAll(ctx, []ServerConfig{{
-		ID: "srv", Transport: "http", Endpoint: ts.URL,
+		ID: "srv", Transport: "http", Endpoint: ts.URL, AllowPrivateNetwork: true,
 		Tools: map[string]ToolPolicy{"scrape": {Dangerous: true, DataWriteKinds: []string{"pii"}}},
 	}})
 
@@ -172,7 +172,7 @@ func TestConnector_UnreachableServerSkippedGracefully(t *testing.T) {
 	defer conn.Close()
 
 	tools := conn.ConnectAll(ctx, []ServerConfig{
-		{ID: "dead", Transport: "http", Endpoint: "http://127.0.0.1:1/nope"},
+		{ID: "dead", Transport: "http", Endpoint: "http://127.0.0.1:1/nope", AllowPrivateNetwork: true},
 	})
 	if len(tools) != 0 {
 		t.Errorf("an unreachable server should contribute no tools, got %d", len(tools))
@@ -212,10 +212,10 @@ func TestConnector_ConnectAllIsConcurrentAndOrdered(t *testing.T) {
 	defer conn.Close()
 	start := time.Now()
 	tools := conn.ConnectAll(ctx, []ServerConfig{
-		{ID: "a", Transport: "http", Endpoint: a.URL},
-		{ID: "dead", Transport: "http", Endpoint: "http://127.0.0.1:1/nope"},
-		{ID: "b", Transport: "http", Endpoint: b.URL},
-		{ID: "c", Transport: "http", Endpoint: c.URL},
+		{ID: "a", Transport: "http", Endpoint: a.URL, AllowPrivateNetwork: true},
+		{ID: "dead", Transport: "http", Endpoint: "http://127.0.0.1:1/nope", AllowPrivateNetwork: true},
+		{ID: "b", Transport: "http", Endpoint: b.URL, AllowPrivateNetwork: true},
+		{ID: "c", Transport: "http", Endpoint: c.URL, AllowPrivateNetwork: true},
 	})
 	elapsed := time.Since(start)
 	if elapsed >= 3*delay {

@@ -25,7 +25,6 @@ func TestAgentDefinition_MissingTrait_DefaultsToTraitCognitive(t *testing.T) {
 func TestAgentDefinition_TraitDaemon_Constant(t *testing.T) {
 	t.Parallel()
 	if domain.TraitDaemon == domain.TraitCognitive ||
-		domain.TraitDaemon == domain.TraitTool ||
 		domain.TraitDaemon == domain.TraitModel {
 		t.Error("TraitDaemon must be distinct from all other traits")
 	}
@@ -37,28 +36,6 @@ func TestAgentDefinition_TraitDaemon_Constant(t *testing.T) {
 	}
 	if got.Trait != domain.TraitDaemon {
 		t.Errorf("want TraitDaemon, got %q", got.Trait)
-	}
-}
-
-// Cycle 2: marshal TraitTool → JSON contains "trait":"tool"
-
-func TestAgentDefinition_TraitTool_MarshalIncludesKey(t *testing.T) {
-	t.Parallel()
-	def := domain.AgentDefinition{ID: "file-writer", Trait: domain.TraitTool}
-	b, err := json.Marshal(def)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(b, &result); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
-	trait, ok := result["trait"]
-	if !ok {
-		t.Fatal("want \"trait\" key in JSON, got none")
-	}
-	if trait != "tool" {
-		t.Errorf("want trait=tool, got %q", trait)
 	}
 }
 

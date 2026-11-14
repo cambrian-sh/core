@@ -6,21 +6,20 @@ import (
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // Document-structure graph persistence (ADR-0060). The adapter implements
-// memory.StructureGraphStore: section nodes are stored in their own table,
+// domain.StructureGraphStore: section nodes are stored in their own table,
 // document_sections (TableSections; ADR-0093 moved them out of the vector table —
 // they carry no embedding and are never returned by recall), leaf chunks are
 // stamped with their inherited section_path + ltree + parent section, and
 // structural edges (PART_OF / NEXT) land in document_edges. All idempotent.
 
-// StructureGraphStore returns the adapter as a memory.StructureGraphStore.
-func (p *PgVectorAdapter) StructureGraphStore() memory.StructureGraphStore { return p }
+// StructureGraphStore returns the adapter as a domain.StructureGraphStore.
+func (p *PgVectorAdapter) StructureGraphStore() domain.StructureGraphStore { return p }
 
 // SaveSections upserts section nodes into document_sections (TableSections).
-func (p *PgVectorAdapter) SaveSections(ctx context.Context, sections []memory.SectionRow) error {
+func (p *PgVectorAdapter) SaveSections(ctx context.Context, sections []domain.SectionRow) error {
 	for _, s := range sections {
 		meta, _ := json.Marshal(map[string]any{
 			"kind": "section", "level": s.Level, "order": s.Order, "title": s.Title,
@@ -54,7 +53,7 @@ func (p *PgVectorAdapter) SaveSections(ctx context.Context, sections []memory.Se
 }
 
 // StampChunks writes the inherited structural location onto existing chunk rows.
-func (p *PgVectorAdapter) StampChunks(ctx context.Context, stamps []memory.ChunkStamp) error {
+func (p *PgVectorAdapter) StampChunks(ctx context.Context, stamps []domain.ChunkStamp) error {
 	for _, s := range stamps {
 		_, err := p.pool.Exec(ctx, `
 			UPDATE `+TableChunks+`
@@ -74,7 +73,7 @@ func (p *PgVectorAdapter) StampChunks(ctx context.Context, stamps []memory.Chunk
 // already dropped the target-side one. Referential integrity is therefore the
 // writer's job — callers persist section nodes (and chunks) before their edges, and
 // the document-retire cascade (document_lifecycle.go) deletes the edges explicitly.
-func (p *PgVectorAdapter) SaveStructuralEdges(ctx context.Context, edges []memory.StructuralEdge) error {
+func (p *PgVectorAdapter) SaveStructuralEdges(ctx context.Context, edges []domain.StructuralEdge) error {
 	for _, e := range edges {
 		_, err := p.pool.Exec(ctx, `
 			INSERT INTO `+TableEdges+` (source_id, target_id, edge_type, weight)

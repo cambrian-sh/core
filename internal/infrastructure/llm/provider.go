@@ -30,6 +30,10 @@ var RetiredRoles = map[string]string{
 // T-20261106-thought-steps-call-the-model-under-the-planner.
 var RoleFallbacks = map[domain.Purpose]domain.Purpose{
 	domain.PurposeThought: domain.PurposePlanner,
+	// The agentic retrieval planner follows the memory organ until an operator
+	// binds a `retrieval_planner` role (owner decision 2026-11-14, third round;
+	// T-20261102-agentic-planner-model-names-a-generator-id).
+	domain.PurposeRetrievalPlanner: domain.PurposeMemory,
 }
 
 // Provider is the concrete LLMProvider (ADR-0042). It composes the id-keyed
@@ -89,6 +93,11 @@ type Provider struct {
 	// guardedArgs are the control-verb arguments a post_model hook also sees and
 	// may rewrite (WithGuardedArgs; execution.hooks.guarded_arguments defaults).
 	guardedArgs []domain.GuardedArg
+
+	// fallback is the ENG-453 fallback policy (owner decision 2026-11-14), fixed
+	// at construction from llm_provider.pinned / equivalent_generators: which
+	// generator may serve a call its first choice could not.
+	fallback fallbackPolicy
 
 	log *slog.Logger
 }
@@ -151,12 +160,23 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger, opts ...Provide
 				"role", r, "generator", id, "default", cfg.Default)
 		}
 	}
+	for _, group := range cfg.EquivalentGenerators {
+		for _, id := range group {
+			if _, ok := reg.Lookup(id); !ok {
+				log.Warn("llm provider: equivalent_generators names an unknown generator; it can never serve a fallback",
+					"generator", id)
+			}
+		}
+	}
+	log.Info("llm provider: fallback policy", "pinned", cfg.Pinned, "equivalence_groups", len(cfg.EquivalentGenerators),
+		"rule", "a failed or unhealthy first choice falls back only to a generator marked equivalent; pinned: never")
 	p := &Provider{
-		breaker: NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
-		ledger:  SeedPriceLedger(cfg.Generators),
-		roles:   roles,
-		sem:     sem,
-		log:     log,
+		fallback: newFallbackPolicy(cfg.Pinned, cfg.EquivalentGenerators),
+		breaker:  NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
+		ledger:   SeedPriceLedger(cfg.Generators),
+		roles:    roles,
+		sem:      sem,
+		log:      log,
 		// The defaults live with the config keys (execution.step_output).
 		finalAnswerTool: config.StepOutputConfig{}.FinalAnswerToolName(),
 		finalAnswerArg:  config.StepOutputConfig{}.FinalAnswerArgName(),
@@ -245,7 +265,7 @@ func (p *Provider) Acquire(ctx context.Context, req domain.LLMRequest) (domain.G
 // failed THIS call with an endpoint-class error are skipped by the ladder even while
 // their breaker is still closed. It also returns the resolved id.
 func (p *Provider) acquire(ctx context.Context, req domain.LLMRequest, excluded map[string]bool) (domain.Generator, string, error) {
-	id, err := p.resolveExcluding(ctx, req, excluded)
+	id, err := p.resolveExcluding(req, excluded)
 	if err != nil {
 		if len(excluded) == 0 {
 			p.log.Error("llm provider: no healthy model", "purpose", req.Purpose, "suggested", req.SuggestedModelID, "err", err)
@@ -374,27 +394,40 @@ func (c *concurrencyGenerator) GenerateStream(ctx context.Context, prompt string
 
 // resolve picks the generator id via the failover ladder, sourcing preference by
 // purpose. Separated from Acquire so the decision is unit-testable.
-func (p *Provider) resolve(ctx context.Context, req domain.LLMRequest) (string, error) {
-	return p.resolveExcluding(ctx, req, nil)
+//
+// It takes no ctx on purpose (ENG-1467 item 6): the decision is an in-memory read
+// of the published generator table, the role table and breaker health — no I/O,
+// nothing scope- or session-dependent. The ctx parameter it used to carry was
+// read by nothing, so capabilitiesFor had to invent one (context.Background()).
+func (p *Provider) resolve(req domain.LLMRequest) (string, error) {
+	return p.resolveExcluding(req, nil)
 }
 
-func (p *Provider) resolveExcluding(ctx context.Context, req domain.LLMRequest, excluded map[string]bool) (string, error) {
+func (p *Provider) resolveExcluding(req domain.LLMRequest, excluded map[string]bool) (string, error) {
 	// One table load for the whole decision: allIDs/default/capIndex are always
 	// from the SAME published table, even mid-reload.
 	t := p.tab()
-	healthy := p.breaker.Healthy
-	if len(excluded) > 0 {
-		healthy = func(id string) bool { return !excluded[id] && p.breaker.Healthy(id) }
+	prefs := p.preferenceFor(req)
+	// ENG-453: the ladder still decides ORDER, but only the call's first choice
+	// (what the ladder would pick with every generator healthy) and the generators
+	// marked equivalent to it may serve. Pinned admits the first choice alone.
+	first := firstChoice(req.SuggestedModelID, req.CapabilityHints, prefs, t.allIDs, t.defaultID, t.capIndex)
+	healthy := func(id string) bool {
+		return !excluded[id] && p.fallback.admits(first, id) && p.breaker.Healthy(id)
 	}
-	return resolveModel(
+	id, err := resolveModel(
 		req.SuggestedModelID,
 		req.CapabilityHints,
-		p.preferenceFor(ctx, req),
+		prefs,
 		t.allIDs,
 		t.defaultID,
 		healthy,
 		t.capIndex,
 	)
+	if err != nil && first != "" {
+		return "", fmt.Errorf("%w: first choice %q is unavailable for this call and %s", err, first, p.fallback.describe(first))
+	}
+	return id, err
 }
 
 // preferenceFor returns the ordered preference ids for a request. System roles
@@ -405,25 +438,32 @@ func (p *Provider) resolveExcluding(ctx context.Context, req domain.LLMRequest, 
 // ModelSelector hook that used to sit here was never wired and was removed
 // with ADR-0037's supersession (ADR-0100). No model is hardcoded per task, so
 // the Zero-Hardcode Rule holds.
-func (p *Provider) preferenceFor(_ context.Context, req domain.LLMRequest) []string {
+func (p *Provider) preferenceFor(req domain.LLMRequest) []string {
 	if req.Purpose == domain.PurposeAgentStep {
 		return nil
 	}
 	// System role: deterministic role -> id (Zero-Hardcode-legal; roles are not agents).
-	// A purpose with no role of its own resolves through its RoleFallbacks alias
-	// (thought -> planner), so splitting a purpose label never moves its traffic.
-	p.rolesMu.RLock()
-	id, ok := p.roles[string(req.Purpose)]
-	if !ok {
-		if alias, has := RoleFallbacks[req.Purpose]; has {
-			id, ok = p.roles[string(alias)]
-		}
-	}
-	p.rolesMu.RUnlock()
-	if ok {
+	if id := p.RoleGenerator(req.Purpose); id != "" {
 		return []string{id}
 	}
 	return nil
+}
+
+// RoleGenerator returns the generator id the role table binds purpose to, read
+// per call so an operator's SetRole is live. A purpose with no role of its own
+// resolves through its RoleFallbacks alias (thought -> planner,
+// retrieval_planner -> memory), so splitting a purpose label never moves its
+// traffic. "" when neither is bound (the caller's ladder serves the default).
+func (p *Provider) RoleGenerator(purpose domain.Purpose) string {
+	p.rolesMu.RLock()
+	defer p.rolesMu.RUnlock()
+	if id, ok := p.roles[string(purpose)]; ok {
+		return id
+	}
+	if alias, has := RoleFallbacks[purpose]; has {
+		return p.roles[string(alias)]
+	}
+	return ""
 }
 
 // GeneratorFor returns a domain.Generator bound to a fixed purpose that resolves

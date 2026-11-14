@@ -116,11 +116,13 @@ func authoredStepsToDomain(in []*pb.AuthoredStepOp) []domain.Step {
 			DependsOn:            deps,
 			MaxEnergy:            a.GetMaxEnergy(),
 			CheckpointAfter:      a.GetCheckpointAfter(),
-			CheckpointQuery:      a.GetCheckpointQuery(),
-			IsThought:            a.GetIsThought(),
-			PreferredAgent:       a.GetPreferredAgent(),
-			AgentPin:             a.GetAgentPin(),
-			FanOutVar:            a.GetFanOutVar(),
+			// AuthoredStepOp field 7 (checkpoint_query) is reserved since contract
+			// 0102: domain.Step.CheckpointQuery was deleted 2026-11-14 (ENG-1313;
+			// nothing read it since ADR-0139 D10).
+			IsThought:      a.GetIsThought(),
+			PreferredAgent: a.GetPreferredAgent(),
+			AgentPin:       a.GetAgentPin(),
+			FanOutVar:      a.GetFanOutVar(),
 		}
 		// -1 is the wire's "not a fan-out": proto3 has no absent int32, and 0 is
 		// a legitimate step index, so a sentinel is the only way to tell "fan out

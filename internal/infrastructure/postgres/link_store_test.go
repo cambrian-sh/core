@@ -426,16 +426,35 @@ func TestPgEntityStore_MintIsIdempotentAndDerivesKind(t *testing.T) {
 		t.Fatalf("an unscoped id was minted: %v", err)
 	}
 
-	byKind, err := entities.ListEntitiesByKind(ctx, identityNS, "customer", 10)
-	if err != nil {
-		t.Fatalf("ListEntitiesByKind: %v", err)
-	}
-	if len(byKind) != 1 || byKind[0].ID != "customer/C-1042" {
-		t.Fatalf("ListEntitiesByKind = %+v", byKind)
-	}
 	// "No such entity" is an answer, never an error.
 	if _, ok, err := entities.GetEntity(ctx, identityNS, "customer/nope"); err != nil || ok {
 		t.Fatalf("GetEntity(missing) = ok=%v, err=%v", ok, err)
+	}
+}
+
+// ENG-1043 item 1: an entity is keyed by (namespace_id, id) since migration 0048.
+// Before it, the second namespace's mint was a silent ON CONFLICT (id) no-op and
+// GetEntity there answered "never minted".
+func TestPgEntityStore_SameIDMintsPerNamespace(t *testing.T) {
+	entities, _, pool, ctx := newIdentityStores(t)
+	otherNS := identityNS + "-other"
+	clean := func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM entities WHERE namespace_id = $1`, otherNS)
+	}
+	clean()
+	t.Cleanup(clean)
+
+	for _, ns := range []string{identityNS, otherNS} {
+		created, err := entities.EnsureEntity(ctx, domain.Entity{ID: "customer/C-77", NamespaceID: ns})
+		if err != nil || !created {
+			t.Fatalf("mint in %s = %v, %v; want a new row per namespace", ns, created, err)
+		}
+		if _, ok, err := entities.GetEntity(ctx, ns, "customer/C-77"); err != nil || !ok {
+			t.Fatalf("GetEntity(%s) = ok=%v, err=%v", ns, ok, err)
+		}
+	}
+	if created, err := entities.EnsureEntity(ctx, domain.Entity{ID: "customer/C-77", NamespaceID: otherNS}); err != nil || created {
+		t.Fatalf("re-mint in %s = %v, %v — still idempotent within a namespace", otherNS, created, err)
 	}
 }
 

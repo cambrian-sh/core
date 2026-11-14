@@ -14,8 +14,7 @@ import (
 
 // MemoryStack is the memory substrate of the system. It owns everything that
 // persists agent knowledge: the vector database, cognitive fingerprints
-// (ProfileStore), memory curation (Agent), procedural memory (Hippocampus),
-// and cross-session workspace enrichment (WorkspaceStage).
+// (ProfileStore), memory curation (Agent) and cross-session workspace enrichment (WorkspaceStage).
 //
 // Biologically: this is the hippocampus + long-term memory cortex.
 type MemoryStack struct {
@@ -31,12 +30,10 @@ type MemoryStack struct {
 	DocumentStore        domain.DocumentStore
 	ProfileStore         memstore.ProfileStore
 	Agent                *memory.Agent
-	Hippocampus          *memory.Hippocampus
 	QueryService         *memory.QueryService
 	Embedder             domain.Embedder
 	WorkspaceStage       domain.WorkspaceStage        // ADR-0016: may be nil
 	IngestionManager     *memory.IngestionManager     // ADR-0028: ALWAYS non-nil (a zero queue size defaults to 1000). The old "may be nil" note was false and implied a raw-write fallback that could not fire.
-	EntityIndex          *memory.EntityIndex          // ADR-0053 (T-Mem associative hop): in-memory entity→docs index; nil = surface-only recall
 	ChunkTripletsBatcher *memory.ChunkTripletsBatcher // ADR-0053 Phase 0: batched per-chunk (h,r,t) extractor
 	// FactWriter is the ENFORCING write side of the ADR-0136 A1 fact layer
 	// (authz.EnforcingKnowledgeWriter over the raw knowledge substrate), the only write
@@ -47,6 +44,10 @@ type MemoryStack struct {
 	// decide use.
 	FactWriter domain.FactSubstrateWriter
 	FactReader domain.FactItemReader
+	// FactInspector is the operator plane's read-only fact inspection
+	// (authz.EnforcingFactInspector over FactSubstrate.Inspector; ListFacts,
+	// GetFactChain, GetFactCoverage). nil when no inspector was handed in.
+	FactInspector domain.FactInspector
 	// FactExtractor runs ADR-0136 D4 extraction off the ingest path, writing items and
 	// (with assessments on) keyed assessments. nil unless execution.facts.extract_enabled
 	// and a substrate exists.
@@ -109,16 +110,16 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// see kernelRead in pgvector_profile_store.go.
 	profileStore := memstore.NewProfileStore(writeStore)
 	memoryManager := memory.NewMemoryManager(writeStore, embed)
-	memoryAgent := memory.NewAgent(memoryManager,
-		execCfg.Memory.MemoryRelevanceThreshold, execCfg.Memory.MaxMemoryResults, execCfg.Memory.MaxNeighborExpansion)
+	memoryAgent := memory.NewAgent(memoryManager, execCfg.Memory.MaxNeighborExpansion)
 	// The passive raw capture (auto-embedded step results and tool outputs behind
 	// `experiential_memory_enabled`, curated by the ADR-0015 tier-2 judge) was deleted
 	// 2026-11-05 with its config keys (decisions/scenes-cancelled.md).
 	//
-	// ADR-0049 §A2.2: the experiential records — mutation action events and the
-	// plan-outcome hook (episode close, A2.3 failure record, procedure feedback).
+	// ADR-0049 §A2.2: the plan-outcome hook (episode open/close, procedure feedback).
+	// The mutation action events and the A2.3 failure record were stopped 2026-11-14
+	// (owner decision, ENG-1595), and execution.memory.experience_surprise_floor that
+	// gated the failure record was retired with them (internal/config retiredConfigKeys).
 	memoryAgent.RecordOutcomes = execCfg.Memory.ExperienceRecordsEnabled
-	memoryAgent.SurpriseFloor = execCfg.Memory.ExperienceSurpriseFloor
 	memoryAgent.ProcedureDeprecateBelow = execCfg.Procedure.ProcedureDeprecateBelow
 	// `vec` is the raw adapter on purpose (ADR-0095 D1): the episode parent row is a
 	// kernel-owned write of a row the kernel itself stamps, not a principal-facing one.
@@ -128,8 +129,8 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	if es, ok := vec.(domain.ExperienceStore); ok {
 		memoryAgent.ExperienceStore = es
 	}
-	hippocampus := memory.NewHippocampus(scopedRead, embed,
-		config.NewStaticPolicyProvider(execCfg.Hippocampus.HippocampusPolicies, execCfg.Hippocampus.HippocampusDefaultPolicy))
+	// The ADR-0027 Hippocampus (procedural plan memory) was deleted 2026-11-14
+	// (owner decision, third round; ENG-1301): its writer had no production caller.
 	// ADR-0085: the agent recall path is built ON the read chokepoint, not on the
 	// raw adapter. This used to be `NewQueryService(embed, vec)` with the enforcing
 	// store swapped in afterwards by app.go calling EnableAuthorization — correct in
@@ -150,6 +151,12 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		efr := authz.NewEnforcingFactItemReader(facts.Reader, slog.Default())
 		factItemReader, laneReader = efr, efr
 	}
+	// T-20261103-operator-plane-cannot-inspect-facts-no-rpc: the operator plane's fact
+	// inspection is composed here with the other fact chokepoints, fail-closed.
+	var factInspector domain.FactInspector
+	if facts.Inspector != nil {
+		factInspector = authz.NewEnforcingFactInspector(facts.Inspector, slog.Default())
+	}
 	queryService := memory.NewQueryServiceWithFacts(embed, scopedRead, authorizer, laneReader)
 	// ADR-0048 #1: gate agent recall on a relevance floor so irrelevant promoted
 	// facts (a prior task's web search, a stray shell error) are dropped instead of
@@ -162,7 +169,8 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	queryService.SetRecallSizes(execCfg.Retrieval.RecallTopK, execCfg.Retrieval.RecallOverFetch)
 
 	// ADR-0016: Cross-session workspace enrichment.
-	ws := memory.NewWorkspaceStage(scopedRead, embed, gen,
+	// ENG-465: priming reads as the planning principal through the QueryService.
+	ws := memory.NewWorkspaceStage(queryService, embed, gen,
 		execCfg.Workspace.WorkspacePlanningSlots, execCfg.Workspace.WorkspaceExecutionSlots,
 		execCfg.Retrieval.RetrievalFloor)
 
@@ -181,39 +189,10 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// still declares it loads unchanged — see internal/config/retired_keys_test.go).
 
 	// ADR-0017: Spreading activation layer (optional — depends on GraphStore).
-	var entityIdx *memory.EntityIndex
 	var chunkTripletsBatcher *memory.ChunkTripletsBatcher
 	if gs, ok := vec.(domain.GraphStore); ok {
-		// ADR-0053 (T-Mem associative hop; cited as "ADR-0052" until 2026-10-31): the
-		// in-memory entity reverse index, built BEFORE the spreader so
-		// queryService.EnableEntityRouting has an index to read on the first recall.
-		//
-		// The EdgeBatcher/EdgeWriter pair of the original ADR-0053 D2 LLM edge lane used
-		// to be constructed here as well
-		// and described as the "production path". It was not one: nothing in the kernel
-		// ever called Enqueue on it, so it started a drain goroutine and an idle ticker
-		// that consumed an always-empty queue for the lifetime of the process. Its
-		// persistent graph write had already been disabled in favour of the
-		// kg_extractor system agent writing chunk_triplets (ADR-0053 D2 revised), so
-		// the wiring outlived its purpose by two ADRs.
-		//
-		// Removing it here changes no runtime behaviour, because there was no runtime
-		// behaviour to change: the queue never received a document.
-		//
-		// The memory.EdgeBatcher / EdgeWriter / EdgeExtractor types have since been
-		// deleted as well; cmd/chunk-fill builds a ChunkTripletsBatcher.
-		//
-		// Consequence worth stating plainly rather than discovering (re-checked
-		// 2026-10-31): NOTHING populates this EntityIndex. EntityIndex.Load has no
-		// caller and no GraphStore adapter implements its loader, EntityIndex.Add has
-		// no production caller, and cmd/chunk-fill writes chunk_triplets rows, not
-		// this index. execution.retrieval.recall_spreading_enabled defaults ON
-		// (ADR-0049 D10), so EnableEntityRouting below IS armed — but against an
-		// always-empty index, where every entity lane returns its input unchanged
-		// (query.go: `len(embs) == 0` early return). Harmless (fail-open, no extra
-		// cost beyond a map snapshot), but entity routing contributes nothing until
-		// a writer exists: T-20261031-entityindex-is-never-populated-so-entity.
-		entityIdx = memory.NewEntityIndex()
+		// The ADR-0053 (T-Mem) EntityIndex and its entity-routing lane were deleted
+		// 2026-11-15 (owner decision, ENG-76): nothing ever populated the index.
 
 		// ADR-0085 D7 / ADR-0095 D9: the spreader fetches every BFS edge target by
 		// id (spreading_engine.go), and its output REPLACES the already-scoped
@@ -228,7 +207,6 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// confidence. The four `weight_*` config keys were retired 2026-10-31
 		// (T-20261031-graph-edge-weight-and-consolidator-timeout).
 		spEngine.HebbianDecayPerDay = execCfg.Retrieval.HebbianDecayPerDay // ADR-0049 D10: decay-on-spread-read
-		ws.SpreadingEngine = spEngine
 
 		// ADR-0053 Phase 0: build the batched per-chunk (h, r, t) extractor.
 		// The ChunkTripletsBatcher is the production path for back-filling
@@ -244,13 +222,6 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// spreading. Flag-gated; default ON since ADR-0049 D10 (config.go defaults).
 		if execCfg.Retrieval.RecallSpreadingEnabled {
 			queryService.EnableSpreading(spEngine)
-		}
-		// ADR-0053 (T-Mem associative hop): entity-aware routing. The "first hop" — finds the
-		// top-K entity keys by query-embedding cosine and seeds the BFS with
-		// their doc associations. Flag-gated by the same RecallSpreadingEnabled
-		// knob (default on, ADR-0049 D10) — see the empty-index note above.
-		if execCfg.Retrieval.RecallSpreadingEnabled {
-			queryService.EnableEntityRouting(entityIdx)
 		}
 		// ADR-0049 D10: Hebbian co-activation edge reinforcement on recall (flag-gated by
 		// execution.retrieval.hebbian_enabled, which DefaultConfig turns ON; the constants
@@ -328,15 +299,14 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		DocumentStore:        documentStore,
 		ProfileStore:         profileStore,
 		Agent:                memoryAgent,
-		Hippocampus:          hippocampus,
 		QueryService:         queryService,
 		Embedder:             embed,
 		WorkspaceStage:       ws,
 		IngestionManager:     ingestionMgr,
-		EntityIndex:          entityIdx,
 		ChunkTripletsBatcher: chunkTripletsBatcher,
 		FactWriter:           factWriter,
 		FactReader:           factItemReader,
+		FactInspector:        factInspector,
 		FactExtractor:        factExtractor,
 		FactBackfill:         factBackfill,
 		FactReset:            facts.Resetter,
@@ -411,6 +381,10 @@ type FactSubstrate struct {
 	Store domain.FactSubstrateStore
 	// Reader is postgres.PgFactItemReader (SQL-side scope).
 	Reader domain.FactItemReader
+	// Inspector is the operator plane's read-only fact inspection — the same
+	// postgres.PgFactItemReader, passed as its own port (no type assertion on Reader;
+	// T-20261113-replace-optional-interface-probing-in-the). nil = no fact RPCs.
+	Inspector domain.FactInspector
 	// Lister selects backfill candidates (postgres.PgKnowledgeStore); nil = no backfill.
 	Lister domain.FactBackfillLister
 	// Resetter is the fact layer's hard reset (postgres.PgKnowledgeStore.ResetFacts),

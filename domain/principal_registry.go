@@ -136,6 +136,14 @@ type PrincipalRegistry interface {
 	SetStatus(ctx context.Context, id string, status PrincipalStatus) error
 	// SetRoles replaces the person's role set.
 	SetRoles(ctx context.Context, id string, roles []string) error
+	// UpdateProfile overwrites the person's display name and/or email (an empty
+	// argument keeps the stored value). Unlike EnsurePrincipal's fill-only rule it
+	// replaces a non-empty value, so it is for the source that OWNS the person's
+	// profile — a directory updating a person it provisioned (owner decision
+	// 2026-11-14, ENG-683: the directory wins on its own rows; locally created
+	// persons keep local edits). Deciding WHO may call it is the caller's job;
+	// the registry only stores. ErrPrincipalNotFound for an unknown id.
+	UpdateProfile(ctx context.Context, id, displayName, email string) error
 
 	// LinkIdentity binds (issuer, subject) to a person. Re-linking the same pair
 	// to the same person is a no-op; to a different person is ErrIdentityConflict.
@@ -222,4 +230,56 @@ func PersonMayAct(ctx context.Context, reg PrincipalRegistry, id string) bool {
 		return false
 	}
 	return p.Active()
+}
+
+// PrincipalAliasReader is the slice of the registry PrincipalForms reads.
+// domain.PrincipalRegistry satisfies it.
+type PrincipalAliasReader interface {
+	GetPrincipal(ctx context.Context, id string) (Principal, error)
+	AliasesOf(ctx context.Context, principalID string) ([]string, error)
+	Canonical(ctx context.Context, ref string) (id string, ok bool, err error)
+}
+
+// PrincipalForms returns every string an audit or journal row may have recorded
+// for the person ref names, so a query by one form matches all of them (ADR-0142
+// migration step 2): the bare id (operator audit's actor), `user:<id>` (the
+// principal a person acts as today), and every recorded alias — `agent:<id>`,
+// the kind a bound person ran as before ADR-0142. ref itself is always included.
+//
+// ref may be any of those forms. A ref the registry does not know (not a person,
+// or no registry) yields just {ref}, so a query by an agent's or a daemon's id is
+// unchanged. A registry error also yields {ref}: widening a READ filter on a
+// guess would be worse than matching only the exact string the caller typed.
+func PrincipalForms(ctx context.Context, reg PrincipalAliasReader, ref string) []string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || reg == nil {
+		return []string{ref}
+	}
+	id, ok, err := reg.Canonical(ctx, ref)
+	if err != nil {
+		return []string{ref}
+	}
+	if !ok {
+		// A bare id: Canonical maps aliases and `user:<id>` only.
+		if strings.Contains(ref, ":") {
+			return []string{ref}
+		}
+		if _, gerr := reg.GetPrincipal(ctx, ref); gerr != nil {
+			return []string{ref}
+		}
+		id = ref
+	}
+	aliases, err := reg.AliasesOf(ctx, id)
+	if err != nil {
+		aliases = nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range append([]string{ref, id, string(PrincipalUser) + ":" + id}, aliases...) {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }

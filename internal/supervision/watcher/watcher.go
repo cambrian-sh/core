@@ -41,20 +41,27 @@ type WatcherConfig struct {
 	// is dropped with a warning rather than queued without limit: a chattering
 	// daemon must not grow goroutines without bound (AGENTS.md §3.3). 0 => 4.
 	MaxPendingPlans int
+	// RecallMinCosine drops a recalled DENSE hit whose raw cosine to the signal is
+	// at or below it (execution.memory.memory_relevance_threshold, default 0.70).
+	// Rows with no cosine (lexical- or fact-lane-only hits) are kept, as the
+	// QueryService floor keeps them. 0 => no extra floor.
+	RecallMinCosine float64
+	// RecallMaxResults caps the memories injected into the signal's prompt
+	// (execution.memory.max_memory_results, default 5). 0 => 5.
+	RecallMaxResults int
 }
 
-// MemoryFetcher is the consumer-side interface Watcher needs for LTM access.
-type MemoryFetcher interface {
-	FetchContext(ctx context.Context, query string) string
+// SignalRecall is the consumer-side interface Watcher needs for LTM access:
+// QueryService.RecallFor (ENG-1339, owner decision 2026-11-14 — signal enrichment
+// reads as the signal's principal through QueryService; no principal, no priming).
+type SignalRecall interface {
+	RecallFor(ctx context.Context, p domain.PrincipalRef, query, docType string) ([]domain.SearchResult, error)
 }
 
-// ManagerAccess is the consumer-side interface Watcher needs from AgentManager.
-// Structurally equivalent to signal.ManagerAccess — both are satisfied by *agentmgr.AgentManager.
-type ManagerAccess interface {
-	FindInstanceByToken(token string) *domain.Instance
-	GetInstanceIDs(agentID string) []string
-	EvictInstance(instanceID string)
-}
+// ManagerAccess is what Watcher needs from the agent manager: the whole
+// domain.AgentManager port, so an alias of it rather than a restated copy
+// (AGENTS.md §3.1; signal.ManagerAccess is the same alias).
+type ManagerAccess = domain.AgentManager
 
 // PlannerAccess is the consumer-side interface Watcher needs from the Planner.
 type PlannerAccess interface {
@@ -72,10 +79,10 @@ type PlannerAccess interface {
 // built without them can plan but never execute, so a missing wire fails closed
 // instead of auto-running daemon-initiated work (AGENTS.md §2.3).
 type Watcher struct {
-	Manager     ManagerAccess
-	MemoryAgent MemoryFetcher
-	Planner     PlannerAccess
-	Config      WatcherConfig
+	Manager ManagerAccess
+	Recall  SignalRecall
+	Planner PlannerAccess
+	Config  WatcherConfig
 
 	approval domain.ApprovalController
 	executor domain.PlanExecutor
@@ -108,7 +115,7 @@ func (w *Watcher) isReplanning() bool {
 // controller: tools_auto_approve is a decision about dangerous TOOLS, and reusing
 // it here would silently turn every daemon signal into executed work. Either nil
 // => plans are produced and dropped (logged), never run.
-func New(manager ManagerAccess, memoryAgent MemoryFetcher, planner PlannerAccess,
+func New(manager ManagerAccess, recall SignalRecall, planner PlannerAccess,
 	approval domain.ApprovalController, executor domain.PlanExecutor, cfg WatcherConfig) *Watcher {
 	if cfg.SignalNoiseThreshold == 0 {
 		cfg.SignalNoiseThreshold = 3
@@ -119,15 +126,18 @@ func New(manager ManagerAccess, memoryAgent MemoryFetcher, planner PlannerAccess
 	if cfg.MaxPendingPlans <= 0 {
 		cfg.MaxPendingPlans = 4
 	}
+	if cfg.RecallMaxResults <= 0 {
+		cfg.RecallMaxResults = 5
+	}
 	return &Watcher{
-		Manager:     manager,
-		MemoryAgent: memoryAgent,
-		Planner:     planner,
-		Config:      cfg,
-		approval:    approval,
-		executor:    executor,
-		pending:     make(chan struct{}, cfg.MaxPendingPlans),
-		cb:          signal.NewCircuitBreaker(cfg.SignalNoiseThreshold, cfg.SignalNoiseWindowSecs),
+		Manager:  manager,
+		Recall:   recall,
+		Planner:  planner,
+		Config:   cfg,
+		approval: approval,
+		executor: executor,
+		pending:  make(chan struct{}, cfg.MaxPendingPlans),
+		cb:       signal.NewCircuitBreaker(cfg.SignalNoiseThreshold, cfg.SignalNoiseWindowSecs),
 	}
 }
 
@@ -149,13 +159,77 @@ func (w *Watcher) ValidateToken(ctx context.Context) (*domain.Instance, error) {
 	return signal.ValidateToken(ctx, w.Manager)
 }
 
-// EnrichSignal fetches relevant LTM context for a signal.
+// EnrichSignal fetches relevant LTM context for a signal, read AS THE SIGNAL'S
+// PRINCIPAL — the authenticated sender of the signal stream (the agent
+// credential interceptor puts it on ctx; Signal.FromAgent is caller-asserted and
+// never used for this) — through QueryService.RecallFor (ENG-1339, owner
+// decision 2026-11-14). It used to recall through MemoryManager.Query: a raw
+// store search at ScopeSystem (every principal's rows), outside QueryService (no
+// hybrid, fact lane or decision record) and embedded without the query prefix.
+// No principal ⇒ no priming: the signal is planned without memory context.
 func (w *Watcher) EnrichSignal(ctx context.Context, signalType, signalData string) string {
-	if w.MemoryAgent == nil {
+	if w.Recall == nil {
+		return ""
+	}
+	p := domain.PrincipalFromContext(ctx)
+	if p.ID == "" {
+		slog.InfoContext(ctx, "watcher: signal has no principal; no memory priming", "signal", signalType)
 		return ""
 	}
 	query := fmt.Sprintf("%s %s", signalType, signalData)
-	return w.MemoryAgent.FetchContext(ctx, query)
+	results, err := w.Recall.RecallFor(ctx, p, query, domain.DocTypeMnemonicFact)
+	if err != nil {
+		slog.WarnContext(ctx, "watcher: signal recall failed; planning without memory context",
+			"signal", signalType, "principal", p.String(), "err", err)
+		return ""
+	}
+	return formatSignalRecall(results, w.Config.RecallMinCosine, w.Config.RecallMaxResults)
+}
+
+// formatSignalRecall renders recalled memories for the signal's prompt: poisoned
+// memories (is_poisoned, with their correction) as failures to avoid, the rest
+// as a numbered list of up to max relevant memories.
+func formatSignalRecall(results []domain.SearchResult, minCosine float64, max int) string {
+	var sb, poisonedSb strings.Builder
+	seen := make(map[string]bool)
+	memoryCount := 0
+	hasPoisoned := false
+	sb.WriteString("\n\n--- RELEVANT MEMORY CONTEXT ---\n")
+	poisonedSb.WriteString("\n--- CRITICAL FAILURES TO AVOID (ANTI-ANTIBODIES) ---\n")
+	for _, res := range results {
+		if seen[res.Document.ID] {
+			continue
+		}
+		if poisoned, _ := res.Document.Metadata["is_poisoned"].(bool); poisoned {
+			hasPoisoned = true
+			correction, _ := res.Document.Metadata["correction"].(string)
+			poisonedSb.WriteString(fmt.Sprintf("- ERROR: %s\n", res.Document.Text))
+			if correction != "" {
+				poisonedSb.WriteString(fmt.Sprintf("  CORRECTION: %s\n", correction))
+			}
+			seen[res.Document.ID] = true
+			continue
+		}
+		if res.RawScore > 0 && res.RawScore <= minCosine {
+			continue
+		}
+		if memoryCount >= max {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("%d. (Rel: %.2f) %s\n", memoryCount+1, res.Score, res.Document.Text))
+		seen[res.Document.ID] = true
+		memoryCount++
+	}
+	final := ""
+	if hasPoisoned {
+		poisonedSb.WriteString("---------------------------------------------------\n")
+		final += poisonedSb.String()
+	}
+	if memoryCount > 0 {
+		sb.WriteString("-------------------------------\n")
+		final += sb.String()
+	}
+	return final
 }
 
 // BuildInspiration constructs an unstructured prompt from a signal.

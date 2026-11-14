@@ -45,7 +45,8 @@ func effectPlanner(t *testing.T, reply string) (*Planner, *requestRecorder) {
 	t.Helper()
 	gen := &requestRecorder{reply: reply}
 	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents(), caps: map[string][]string{"worker_agent": {"file_read"}},
-		tools: map[string][]string{"worker_agent": {"mcp:filesystem/read_*", "mcp:filesystem/move_file"}}}, nil)
+		tools: map[string][]string{"worker_agent": {"mcp:filesystem/read_*", "mcp:filesystem/move_file"}}})
+
 	p.SetCapabilityContract(true)
 	p.SetEffectSource(goldenEffects(t))
 	p.goos = "linux"
@@ -120,7 +121,7 @@ func TestPlannerEffects_VocabularyFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	gen := &requestRecorder{reply: effectPlanReply}
-	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents()}, nil)
+	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents()})
 	p.SetCapabilityContract(true)
 	p.SetEffectSource(fakeEffects{vocab: v})
 	if _, err := p.GetExecutionPlan(context.Background(), "x"); err != nil {

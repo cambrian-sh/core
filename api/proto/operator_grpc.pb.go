@@ -22,6 +22,7 @@ const (
 	OperatorConsole_Login_FullMethodName                    = "/cambrian.OperatorConsole/Login"
 	OperatorConsole_DescribeAuth_FullMethodName             = "/cambrian.OperatorConsole/DescribeAuth"
 	OperatorConsole_Logout_FullMethodName                   = "/cambrian.OperatorConsole/Logout"
+	OperatorConsole_WhoAmI_FullMethodName                   = "/cambrian.OperatorConsole/WhoAmI"
 	OperatorConsole_StreamEvents_FullMethodName             = "/cambrian.OperatorConsole/StreamEvents"
 	OperatorConsole_Snapshot_FullMethodName                 = "/cambrian.OperatorConsole/Snapshot"
 	OperatorConsole_SetToolGrant_FullMethodName             = "/cambrian.OperatorConsole/SetToolGrant"
@@ -30,6 +31,7 @@ const (
 	OperatorConsole_PauseSession_FullMethodName             = "/cambrian.OperatorConsole/PauseSession"
 	OperatorConsole_ResumeSession_FullMethodName            = "/cambrian.OperatorConsole/ResumeSession"
 	OperatorConsole_CloseSession_FullMethodName             = "/cambrian.OperatorConsole/CloseSession"
+	OperatorConsole_CancelRun_FullMethodName                = "/cambrian.OperatorConsole/CancelRun"
 	OperatorConsole_TagMemory_FullMethodName                = "/cambrian.OperatorConsole/TagMemory"
 	OperatorConsole_SetScope_FullMethodName                 = "/cambrian.OperatorConsole/SetScope"
 	OperatorConsole_RegisterSkill_FullMethodName            = "/cambrian.OperatorConsole/RegisterSkill"
@@ -45,6 +47,9 @@ const (
 	OperatorConsole_ListConversations_FullMethodName        = "/cambrian.OperatorConsole/ListConversations"
 	OperatorConsole_ListConversationMessages_FullMethodName = "/cambrian.OperatorConsole/ListConversationMessages"
 	OperatorConsole_ListScheduledTasks_FullMethodName       = "/cambrian.OperatorConsole/ListScheduledTasks"
+	OperatorConsole_ListFacts_FullMethodName                = "/cambrian.OperatorConsole/ListFacts"
+	OperatorConsole_GetFactChain_FullMethodName             = "/cambrian.OperatorConsole/GetFactChain"
+	OperatorConsole_GetFactCoverage_FullMethodName          = "/cambrian.OperatorConsole/GetFactCoverage"
 	OperatorConsole_ListTools_FullMethodName                = "/cambrian.OperatorConsole/ListTools"
 	OperatorConsole_ListSkills_FullMethodName               = "/cambrian.OperatorConsole/ListSkills"
 	OperatorConsole_QueryMemory_FullMethodName              = "/cambrian.OperatorConsole/QueryMemory"
@@ -111,6 +116,7 @@ const (
 	OperatorConsole_ExplainAccessBatch_FullMethodName       = "/cambrian.OperatorConsole/ExplainAccessBatch"
 	OperatorConsole_GetBlastRadiusPreview_FullMethodName    = "/cambrian.OperatorConsole/GetBlastRadiusPreview"
 	OperatorConsole_RetryWatchDeadLetter_FullMethodName     = "/cambrian.OperatorConsole/RetryWatchDeadLetter"
+	OperatorConsole_DeleteWatchDeadLetter_FullMethodName    = "/cambrian.OperatorConsole/DeleteWatchDeadLetter"
 	OperatorConsole_ListMemoryNotes_FullMethodName          = "/cambrian.OperatorConsole/ListMemoryNotes"
 	OperatorConsole_GetMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/GetMemoryNotes"
 	OperatorConsole_SetMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/SetMemoryNotes"
@@ -160,6 +166,12 @@ type OperatorConsoleClient interface {
 	// able to end its own session. A second Logout with the revoked token is refused
 	// at the auth gate, and the token stays revoked. Capability "logout".
 	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error)
+	// WhoAmI returns the principal the caller's bearer resolved to, its display
+	// name and its full role set (contract 0102; ADR-0142 D1). An OIDC-signed-in
+	// console never calls Login, so this is how it learns who the kernel thinks it
+	// is — the role is the KERNEL's answer, not a probe or an ID-token claim. Open to
+	// every authenticated role, member included.
+	WhoAmI(ctx context.Context, in *WhoAmIRequest, opts ...grpc.CallOption) (*WhoAmIResponse, error)
 	// StreamEvents drains the sequenced operator feed. The client resumes from
 	// last_seq; every OperatorEvent carries a global monotonic seq (the cursor).
 	StreamEvents(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperatorEvent], error)
@@ -187,6 +199,16 @@ type OperatorConsoleClient interface {
 	// had: without it nothing ever left "active", so episodic consolidation (ADR-0012/0030)
 	// was gated on a state no code could reach. Idempotent via command_id; audited.
 	CloseSession(ctx context.Context, in *SessionCommandRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// CancelRun ends a live run TERMINALLY (contract 0102; owner decision 2026-11-14,
+	// T-20261106-operator-closesession-only-pauses-a-live-plan). Unlike CloseSession's
+	// pause, it cancels the run's context, so in-flight steps and agent calls stop on
+	// both execution lanes (single-agent and planner), and the run is recorded as
+	// cancelled: it is not resumable. Writes already dispatched are NOT rolled back
+	// (their ActionRecords keep their dispatched/accepted state). Operator-only,
+	// mandatory reason, idempotent via command_id, audited with actor and reason.
+	// Name the run by session_id (every live run of that session) and/or run_id.
+	// FailedPrecondition when nothing matching is live. Capability "run-cancel".
+	CancelRun(ctx context.Context, in *CancelRunRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// Remaining mutations (Operator-only, idempotent, audited). ADR-0047 0047-07.
 	TagMemory(ctx context.Context, in *TagMemoryRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	SetScope(ctx context.Context, in *SetScopeRequest, opts ...grpc.CallOption) (*CommandAck, error)
@@ -223,6 +245,18 @@ type OperatorConsoleClient interface {
 	// Pause/resume/delete reuse SetWatchActive / DeleteWatch on the same id — a
 	// scheduled task IS a premium schedule watch. Capability "scheduled-tasks".
 	ListScheduledTasks(ctx context.Context, in *ListScheduledTasksOpRequest, opts ...grpc.CallOption) (*ListScheduledTasksOpResponse, error)
+	// Contract 0103 (owner decision 2026-11-14,
+	// T-20261103-operator-plane-cannot-inspect-facts-no-rpc): read-only inspection of the
+	// ADR-0136 fact layer, which is ON by default. Every content read runs at the
+	// operator plane's system scope through the fail-closed fact chokepoint (the owner
+	// fence still applies: another person's private facts are absent). No override,
+	// backfill or reset controls. Capability "facts-inspect".
+	// ListFacts: stored memory_fact items (stated bounds), newest assertion first, paged.
+	ListFacts(ctx context.Context, in *ListFactsOpRequest, opts ...grpc.CallOption) (*ListFactsOpResponse, error)
+	// GetFactChain: the DERIVED supersession chain of one fact's resolution key.
+	GetFactChain(ctx context.Context, in *GetFactChainOpRequest, opts ...grpc.CallOption) (*GetFactChainOpResponse, error)
+	// GetFactCoverage: extraction coverage of the corpus (counts only).
+	GetFactCoverage(ctx context.Context, in *GetFactCoverageOpRequest, opts ...grpc.CallOption) (*GetFactCoverageOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error)
 	ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error)
@@ -739,6 +773,13 @@ type OperatorConsoleClient interface {
 	// cannot double-fire. Mutating: command_id + reason, audited. Premium
 	// (capability "watch-deadletter"); OSS returns Unimplemented.
 	RetryWatchDeadLetter(ctx context.Context, in *RetryWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// DeleteWatchDeadLetter removes one dead letter an operator has dealt with
+	// (ENG-472). A dead letter embeds the full signal, personal content included;
+	// besides this delete, the premium JournalGC prunes entries older than
+	// CAMBRIAN_REACTIVE_DEADLETTER_RETENTION (default 30 days). Mutating:
+	// command_id + reason, audited. Capability "watch-deadletter-delete"; a kernel
+	// without the reactive journal returns Unimplemented, an unknown id NotFound.
+	DeleteWatchDeadLetter(ctx context.Context, in *DeleteWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// ── ADR-0139 D14: principal memory notes (capability "memory-notes") ───────
 	//
 	// The operator half of the notes the agent plane reads as a run-start snapshot
@@ -884,6 +925,16 @@ func (c *operatorConsoleClient) Logout(ctx context.Context, in *LogoutRequest, o
 	return out, nil
 }
 
+func (c *operatorConsoleClient) WhoAmI(ctx context.Context, in *WhoAmIRequest, opts ...grpc.CallOption) (*WhoAmIResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WhoAmIResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_WhoAmI_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) StreamEvents(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperatorEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &OperatorConsole_ServiceDesc.Streams[0], OperatorConsole_StreamEvents_FullMethodName, cOpts...)
@@ -967,6 +1018,16 @@ func (c *operatorConsoleClient) CloseSession(ctx context.Context, in *SessionCom
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommandAck)
 	err := c.cc.Invoke(ctx, OperatorConsole_CloseSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) CancelRun(ctx context.Context, in *CancelRunRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_CancelRun_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1117,6 +1178,36 @@ func (c *operatorConsoleClient) ListScheduledTasks(ctx context.Context, in *List
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListScheduledTasksOpResponse)
 	err := c.cc.Invoke(ctx, OperatorConsole_ListScheduledTasks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListFacts(ctx context.Context, in *ListFactsOpRequest, opts ...grpc.CallOption) (*ListFactsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFactsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListFacts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetFactChain(ctx context.Context, in *GetFactChainOpRequest, opts ...grpc.CallOption) (*GetFactChainOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFactChainOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetFactChain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetFactCoverage(ctx context.Context, in *GetFactCoverageOpRequest, opts ...grpc.CallOption) (*GetFactCoverageOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFactCoverageOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetFactCoverage_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1810,6 +1901,16 @@ func (c *operatorConsoleClient) RetryWatchDeadLetter(ctx context.Context, in *Re
 	return out, nil
 }
 
+func (c *operatorConsoleClient) DeleteWatchDeadLetter(ctx context.Context, in *DeleteWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_DeleteWatchDeadLetter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) ListMemoryNotes(ctx context.Context, in *ListMemoryNotesOpRequest, opts ...grpc.CallOption) (*ListMemoryNotesOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListMemoryNotesOpResponse)
@@ -2064,6 +2165,12 @@ type OperatorConsoleServer interface {
 	// able to end its own session. A second Logout with the revoked token is refused
 	// at the auth gate, and the token stays revoked. Capability "logout".
 	Logout(context.Context, *LogoutRequest) (*LogoutResponse, error)
+	// WhoAmI returns the principal the caller's bearer resolved to, its display
+	// name and its full role set (contract 0102; ADR-0142 D1). An OIDC-signed-in
+	// console never calls Login, so this is how it learns who the kernel thinks it
+	// is — the role is the KERNEL's answer, not a probe or an ID-token claim. Open to
+	// every authenticated role, member included.
+	WhoAmI(context.Context, *WhoAmIRequest) (*WhoAmIResponse, error)
 	// StreamEvents drains the sequenced operator feed. The client resumes from
 	// last_seq; every OperatorEvent carries a global monotonic seq (the cursor).
 	StreamEvents(*SubscribeRequest, grpc.ServerStreamingServer[OperatorEvent]) error
@@ -2091,6 +2198,16 @@ type OperatorConsoleServer interface {
 	// had: without it nothing ever left "active", so episodic consolidation (ADR-0012/0030)
 	// was gated on a state no code could reach. Idempotent via command_id; audited.
 	CloseSession(context.Context, *SessionCommandRequest) (*CommandAck, error)
+	// CancelRun ends a live run TERMINALLY (contract 0102; owner decision 2026-11-14,
+	// T-20261106-operator-closesession-only-pauses-a-live-plan). Unlike CloseSession's
+	// pause, it cancels the run's context, so in-flight steps and agent calls stop on
+	// both execution lanes (single-agent and planner), and the run is recorded as
+	// cancelled: it is not resumable. Writes already dispatched are NOT rolled back
+	// (their ActionRecords keep their dispatched/accepted state). Operator-only,
+	// mandatory reason, idempotent via command_id, audited with actor and reason.
+	// Name the run by session_id (every live run of that session) and/or run_id.
+	// FailedPrecondition when nothing matching is live. Capability "run-cancel".
+	CancelRun(context.Context, *CancelRunRequest) (*CommandAck, error)
 	// Remaining mutations (Operator-only, idempotent, audited). ADR-0047 0047-07.
 	TagMemory(context.Context, *TagMemoryRequest) (*CommandAck, error)
 	SetScope(context.Context, *SetScopeRequest) (*CommandAck, error)
@@ -2127,6 +2244,18 @@ type OperatorConsoleServer interface {
 	// Pause/resume/delete reuse SetWatchActive / DeleteWatch on the same id — a
 	// scheduled task IS a premium schedule watch. Capability "scheduled-tasks".
 	ListScheduledTasks(context.Context, *ListScheduledTasksOpRequest) (*ListScheduledTasksOpResponse, error)
+	// Contract 0103 (owner decision 2026-11-14,
+	// T-20261103-operator-plane-cannot-inspect-facts-no-rpc): read-only inspection of the
+	// ADR-0136 fact layer, which is ON by default. Every content read runs at the
+	// operator plane's system scope through the fail-closed fact chokepoint (the owner
+	// fence still applies: another person's private facts are absent). No override,
+	// backfill or reset controls. Capability "facts-inspect".
+	// ListFacts: stored memory_fact items (stated bounds), newest assertion first, paged.
+	ListFacts(context.Context, *ListFactsOpRequest) (*ListFactsOpResponse, error)
+	// GetFactChain: the DERIVED supersession chain of one fact's resolution key.
+	GetFactChain(context.Context, *GetFactChainOpRequest) (*GetFactChainOpResponse, error)
+	// GetFactCoverage: extraction coverage of the corpus (counts only).
+	GetFactCoverage(context.Context, *GetFactCoverageOpRequest) (*GetFactCoverageOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error)
 	ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error)
@@ -2643,6 +2772,13 @@ type OperatorConsoleServer interface {
 	// cannot double-fire. Mutating: command_id + reason, audited. Premium
 	// (capability "watch-deadletter"); OSS returns Unimplemented.
 	RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error)
+	// DeleteWatchDeadLetter removes one dead letter an operator has dealt with
+	// (ENG-472). A dead letter embeds the full signal, personal content included;
+	// besides this delete, the premium JournalGC prunes entries older than
+	// CAMBRIAN_REACTIVE_DEADLETTER_RETENTION (default 30 days). Mutating:
+	// command_id + reason, audited. Capability "watch-deadletter-delete"; a kernel
+	// without the reactive journal returns Unimplemented, an unknown id NotFound.
+	DeleteWatchDeadLetter(context.Context, *DeleteWatchDeadLetterOpRequest) (*CommandAck, error)
 	// ── ADR-0139 D14: principal memory notes (capability "memory-notes") ───────
 	//
 	// The operator half of the notes the agent plane reads as a run-start snapshot
@@ -2767,6 +2903,9 @@ func (UnimplementedOperatorConsoleServer) DescribeAuth(context.Context, *Describ
 func (UnimplementedOperatorConsoleServer) Logout(context.Context, *LogoutRequest) (*LogoutResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Logout not implemented")
 }
+func (UnimplementedOperatorConsoleServer) WhoAmI(context.Context, *WhoAmIRequest) (*WhoAmIResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WhoAmI not implemented")
+}
 func (UnimplementedOperatorConsoleServer) StreamEvents(*SubscribeRequest, grpc.ServerStreamingServer[OperatorEvent]) error {
 	return status.Error(codes.Unimplemented, "method StreamEvents not implemented")
 }
@@ -2790,6 +2929,9 @@ func (UnimplementedOperatorConsoleServer) ResumeSession(context.Context, *Sessio
 }
 func (UnimplementedOperatorConsoleServer) CloseSession(context.Context, *SessionCommandRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method CloseSession not implemented")
+}
+func (UnimplementedOperatorConsoleServer) CancelRun(context.Context, *CancelRunRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelRun not implemented")
 }
 func (UnimplementedOperatorConsoleServer) TagMemory(context.Context, *TagMemoryRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method TagMemory not implemented")
@@ -2835,6 +2977,15 @@ func (UnimplementedOperatorConsoleServer) ListConversationMessages(context.Conte
 }
 func (UnimplementedOperatorConsoleServer) ListScheduledTasks(context.Context, *ListScheduledTasksOpRequest) (*ListScheduledTasksOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListScheduledTasks not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListFacts(context.Context, *ListFactsOpRequest) (*ListFactsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListFacts not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetFactChain(context.Context, *GetFactChainOpRequest) (*GetFactChainOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetFactChain not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetFactCoverage(context.Context, *GetFactCoverageOpRequest) (*GetFactCoverageOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetFactCoverage not implemented")
 }
 func (UnimplementedOperatorConsoleServer) ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTools not implemented")
@@ -3034,6 +3185,9 @@ func (UnimplementedOperatorConsoleServer) GetBlastRadiusPreview(context.Context,
 func (UnimplementedOperatorConsoleServer) RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetryWatchDeadLetter not implemented")
 }
+func (UnimplementedOperatorConsoleServer) DeleteWatchDeadLetter(context.Context, *DeleteWatchDeadLetterOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteWatchDeadLetter not implemented")
+}
 func (UnimplementedOperatorConsoleServer) ListMemoryNotes(context.Context, *ListMemoryNotesOpRequest) (*ListMemoryNotesOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListMemoryNotes not implemented")
 }
@@ -3178,6 +3332,24 @@ func _OperatorConsole_Logout_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_WhoAmI_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WhoAmIRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).WhoAmI(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_WhoAmI_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).WhoAmI(ctx, req.(*WhoAmIRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_StreamEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SubscribeRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -3311,6 +3483,24 @@ func _OperatorConsole_CloseSession_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).CloseSession(ctx, req.(*SessionCommandRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_CancelRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).CancelRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_CancelRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).CancelRun(ctx, req.(*CancelRunRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3581,6 +3771,60 @@ func _OperatorConsole_ListScheduledTasks_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).ListScheduledTasks(ctx, req.(*ListScheduledTasksOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListFacts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFactsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListFacts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListFacts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListFacts(ctx, req.(*ListFactsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetFactChain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFactChainOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetFactChain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetFactChain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetFactChain(ctx, req.(*GetFactChainOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetFactCoverage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFactCoverageOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetFactCoverage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetFactCoverage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetFactCoverage(ctx, req.(*GetFactCoverageOpRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4752,6 +4996,24 @@ func _OperatorConsole_RetryWatchDeadLetter_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_DeleteWatchDeadLetter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteWatchDeadLetterOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).DeleteWatchDeadLetter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_DeleteWatchDeadLetter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).DeleteWatchDeadLetter(ctx, req.(*DeleteWatchDeadLetterOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_ListMemoryNotes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListMemoryNotesOpRequest)
 	if err := dec(in); err != nil {
@@ -5186,6 +5448,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _OperatorConsole_Logout_Handler,
 		},
 		{
+			MethodName: "WhoAmI",
+			Handler:    _OperatorConsole_WhoAmI_Handler,
+		},
+		{
 			MethodName: "Snapshot",
 			Handler:    _OperatorConsole_Snapshot_Handler,
 		},
@@ -5212,6 +5478,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CloseSession",
 			Handler:    _OperatorConsole_CloseSession_Handler,
+		},
+		{
+			MethodName: "CancelRun",
+			Handler:    _OperatorConsole_CancelRun_Handler,
 		},
 		{
 			MethodName: "TagMemory",
@@ -5272,6 +5542,18 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListScheduledTasks",
 			Handler:    _OperatorConsole_ListScheduledTasks_Handler,
+		},
+		{
+			MethodName: "ListFacts",
+			Handler:    _OperatorConsole_ListFacts_Handler,
+		},
+		{
+			MethodName: "GetFactChain",
+			Handler:    _OperatorConsole_GetFactChain_Handler,
+		},
+		{
+			MethodName: "GetFactCoverage",
+			Handler:    _OperatorConsole_GetFactCoverage_Handler,
 		},
 		{
 			MethodName: "ListTools",
@@ -5524,6 +5806,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetryWatchDeadLetter",
 			Handler:    _OperatorConsole_RetryWatchDeadLetter_Handler,
+		},
+		{
+			MethodName: "DeleteWatchDeadLetter",
+			Handler:    _OperatorConsole_DeleteWatchDeadLetter_Handler,
 		},
 		{
 			MethodName: "ListMemoryNotes",

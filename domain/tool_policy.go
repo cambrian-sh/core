@@ -1,10 +1,12 @@
 package domain
 
 import (
-	"net"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"strings"
+
+	"github.com/cambrian-sh/core/pkg/egress"
 )
 
 // ToolResourcePolicy is the per-grant system-resource authorization regime
@@ -105,9 +107,14 @@ func (p ToolResourcePolicy) AllowsURL(raw string) bool {
 	}
 	host := u.Hostname()
 
-	// If the host is an IP literal, apply the private/loopback/link-local denial.
-	if ip := net.ParseIP(host); ip != nil {
-		return !isDeniedIP(ip)
+	// An IP literal must be a public destination by the ONE definition of one —
+	// the guarded egress policy (pkg/egress, ADR-0153, ENG-1419): loopback,
+	// private, link-local (cloud metadata), CGNAT, unique-local, NAT64,
+	// documentation and reserved space, IPv4-mapped forms unmapped first. The
+	// fetch itself happens in the tool, outside the kernel; this is the argument
+	// pre-check, so it never resolves DNS.
+	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		return egress.Policy{}.CheckAddr(ip) == nil
 	}
 
 	// Domain host: must be in the allowlist.
@@ -117,12 +124,6 @@ func (p ToolResourcePolicy) AllowsURL(raw string) bool {
 		}
 	}
 	return false
-}
-
-// isDeniedIP reports whether an IP is in a range tools must never reach.
-func isDeniedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 // AllowsCommand reports whether a shell command may run: its leading token must

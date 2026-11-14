@@ -25,7 +25,8 @@ import (
 //  1. Withholding context, every conversation. A paragraph of the reply that says data is
 //     redacted, withheld, blacked out or masked (withholdingCues, per catalogue language)
 //     must not state a personal identifier: a reply cannot both declare a value withheld
-//     and print it. Every identifier in such a paragraph is masked.
+//     and print it. Every identifier in such a paragraph is masked. A list set off by a
+//     blank line under a withholding heading counts as part of it (withholdingParagraphs).
 //  2. Customer-facing conversations (domain.ProfileCustomer, the requester is outside the
 //     organisation). A strong identifier — a national ID number, an IBAN, a payment card
 //     number — is masked anywhere in the reply. Phone numbers and e-mail addresses are left
@@ -374,10 +375,7 @@ func guardDisclosure(reply string, profile domain.ConversationProfile, userText 
 		}
 	}
 	paragraphs := paragraphSpans(reply)
-	withholding := make([]bool, len(paragraphs))
-	for i, p := range paragraphs {
-		withholding[i] = declaresWithholding(reply[p[0]:p[1]])
-	}
+	withholding := withholdingParagraphs(reply, paragraphs)
 	inWithholding := func(pos int) bool {
 		for i, p := range paragraphs {
 			if pos >= p[0] && pos < p[1] {
@@ -448,6 +446,102 @@ func normaliseIdentifier(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// withholdingParagraphs marks which paragraphs are withholding context (rule 1). A paragraph
+// is one when it holds a withholding cue itself, or when it is a list that sits under a
+// heading holding one: "Released with personal data redacted:" followed by a blank line and
+// "- HDC/CS/2025/00023 – …" items puts the cue and the items in different paragraphs, and
+// the items are exactly what the heading says is being withheld
+// (T-20261108-reply-disclosure-guard-does-not-mask-a-private). The heading's scope runs over
+// the list paragraphs right after it and ends at the first paragraph that is not a list
+// (prose or another heading), so a later section of the reply is never swept in.
+func withholdingParagraphs(text string, paragraphs [][2]int) []bool {
+	out := make([]bool, len(paragraphs))
+	underWithholdingHeading := false
+	for i, p := range paragraphs {
+		para := text[p[0]:p[1]]
+		cue := declaresWithholding(para)
+		switch {
+		case cue:
+			out[i] = true
+			underWithholdingHeading = isHeading(para) || endsWithHeading(para)
+		case underWithholdingHeading && isListBlock(para):
+			out[i] = true
+		default:
+			underWithholdingHeading = false
+		}
+	}
+	return out
+}
+
+// isHeading reports whether a paragraph is a single heading line: a markdown heading
+// ("## Redacted records") or a line that introduces what follows ("Released with
+// redactions:", "**Withheld in part:**").
+func isHeading(paragraph string) bool {
+	lines := nonBlankLines(paragraph)
+	return len(lines) == 1 && headingLine(lines[0])
+}
+
+// endsWithHeading reports whether a paragraph's last line is a heading: prose that ends by
+// introducing a list ("I have prepared the response.\nReleased with redactions:").
+func endsWithHeading(paragraph string) bool {
+	lines := nonBlankLines(paragraph)
+	return len(lines) > 0 && headingLine(lines[len(lines)-1]) && !listLine(lines[len(lines)-1])
+}
+
+func headingLine(line string) bool {
+	t := strings.TrimSpace(line)
+	if strings.HasPrefix(t, "#") {
+		return true
+	}
+	t = strings.TrimRight(t, "*_ ")
+	return strings.HasSuffix(t, ":")
+}
+
+// isListBlock reports whether every line of a paragraph is a list item or an indented
+// continuation of one.
+func isListBlock(paragraph string) bool {
+	lines := nonBlankLines(paragraph)
+	if len(lines) == 0 {
+		return false
+	}
+	for i, ln := range lines {
+		if listLine(ln) {
+			continue
+		}
+		if i > 0 && (strings.HasPrefix(ln, " ") || strings.HasPrefix(ln, "\t")) {
+			continue // an indented continuation of the item above
+		}
+		return false
+	}
+	return true
+}
+
+// listLine reports whether a line is a bulleted ("-", "*", "+", "•") or numbered ("1.",
+// "2)") list item.
+func listLine(line string) bool {
+	t := strings.TrimSpace(line)
+	for _, b := range []string{"- ", "* ", "+ ", "• ", "– "} {
+		if strings.HasPrefix(t, b) {
+			return true
+		}
+	}
+	n := 0
+	for n < len(t) && t[n] >= '0' && t[n] <= '9' {
+		n++
+	}
+	return n > 0 && n < len(t) && (t[n] == '.' || t[n] == ')')
+}
+
+func nonBlankLines(paragraph string) []string {
+	var out []string
+	for _, ln := range strings.Split(paragraph, "\n") {
+		if strings.TrimSpace(ln) != "" {
+			out = append(out, strings.TrimRight(ln, "\r"))
+		}
+	}
+	return out
 }
 
 // paragraphSpans splits text into blank-line separated paragraphs, as byte spans.

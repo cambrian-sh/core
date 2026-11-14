@@ -4,11 +4,11 @@ This module is the "thin stateless Python endpoint" from AGENTIC_RETRIEVAL_SPEC
 §2.1: pure functions that take the loop state + an injected LLM callable and
 return a decision. Go owns the loop + retrieval tiers and calls these per step.
 
-Ops: the lexical query planner (``plan_step``), interleaved reasoning
-(``reason_step``), the stop/continue decision (``decide_continue``), typed
+Ops: the lexical query planner (``plan_step``), the stop/continue decision
+(``decide_continue``), typed
 synthesis (``synthesize`` / ``synthesize_cited``), up-front decomposition
 (``decompose`` / ``decompose_routed``), grounded sub-question extraction
-(``answer_subquestion``) and ingest-time provenance (``extract_provenance``).
+(``answer_subquestion``).
 
 Prompts (ADR-0139 C4/D2). Every prompt is a file in the kernel's prompt library,
 ``cambrian-core/prompts/retrieval_<op>/v<N>.md``, rendered with the SDK's
@@ -31,7 +31,6 @@ prose or a code fence. The old first-``{``/last-``}`` scraper is gone.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import hashlib
 import json
 import os
@@ -122,7 +121,7 @@ def _prompts_root() -> Path:
 LIBRARY = PromptLibrary.load(_prompts_root())
 
 _CLOSING_TAGS = ("documents", "question", "resolved_entities", "current_entity",
-                 "reasoning_so_far", "sub_question", "reference_date", "hint", "text")
+                 "sub_question")
 
 
 def neutralise_closing_tags(value: str, tags: tuple[str, ...] = _CLOSING_TAGS) -> str:
@@ -352,34 +351,11 @@ def plan_step(query: str, llm: LLM, scratchpad: str = "",
 
 
 # --------------------------------------------------------------------------
-# reason_step — interleaved retrieval + reasoning
+# context budget shared by decide_continue (the IRCoT reason_step op that also used
+# it was deleted 2026-11-15, owner decision ENG-1321)
 # --------------------------------------------------------------------------
 
 _DECIDE_CONTEXT_MAXCHARS = 12000
-
-
-def reason_step(state: dict, llm: LLM) -> dict:
-    """Emit the next GROUNDED reasoning sentence, decide done, and give the next
-    search query. Grounded only: the prompt no longer licenses naming an
-    intermediate entity from the model's own knowledge. Fail-safe: parse failure
-    ⇒ done (stop), so the loop degrades to the chunks already accumulated."""
-    query = str(state.get("query", ""))
-    cot = state.get("cot") if isinstance(state.get("cot"), list) else []
-    cot_str = "\n".join(f"- {t}" for t in cot if str(t).strip()) or "(nothing yet)"
-    context = build_context(state.get("chunks"), _DECIDE_CONTEXT_MAXCHARS) or "(nothing retrieved)"
-    req = build_request("reason_step", ("retrieval_reason_step",), "retrieval_reason_step_input",
-                        {"documents": context, "reasoning": cot_str, "question": query})
-    obj = decode(_call(llm, req))
-    if obj is None:
-        return {"thought": "", "done": True, "search_query": ""}
-    thought = str(obj.get("thought", "")).strip()
-    search_query = str(obj.get("search_query", "")).strip()
-    # `done` is a boolean under the schema; an unchecked reply may spell it "true".
-    done = obj.get("done") in (True, "true") or thought.lower().startswith("so the answer is")
-    # The kernel stops on an empty next query too (query.go ircot loop); say so.
-    if done or not search_query:
-        done, search_query = True, ""
-    return {"thought": thought, "done": done, "search_query": search_query}
 
 
 # --------------------------------------------------------------------------
@@ -664,56 +640,6 @@ def answer_subquestion(subq: str, chunks: object, llm: LLM) -> str:
         if ans and _word_set(ans) <= ctx_words:
             return ans
     return ""
-
-
-# --------------------------------------------------------------------------
-# extract_provenance — ingest-time schema-bounded metadata (spec §3)
-# --------------------------------------------------------------------------
-
-_KNOWN_SOURCE_TYPES = {
-    "slack_thread", "design_doc", "git_change", "incident_report",
-    "support_ticket", "system_event", "email", "note",
-}
-
-_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
-
-
-def reference_date(value: object = None, now: _dt.datetime | None = None) -> str:
-    """The date relative dates resolve against: the caller's event time when it
-    is an ISO-8601 date or timestamp, else today's date in UTC."""
-    s = str(value or "").strip()
-    if _ISO_DATE.match(s):
-        return s[:10]
-    return (now or _dt.datetime.now(_dt.timezone.utc)).date().isoformat()
-
-
-def extract_provenance(text: str, llm: LLM, hint: str = "", ref_date: str = "") -> dict:
-    """Per-memory, schema-bounded provenance extraction (spec §3).
-
-    Returns ``{"valid_time": str, "actors": [str], "source_type": str,
-    "origin": "inferred"}``. Schema-bounded (fills fixed fields, never invents
-    content); fail-safe to empty fields on any parse failure. ``ref_date`` is the
-    date relative dates in the text resolve against (:func:`reference_date`);
-    without one the prompt would have to invent the year. Tagged
-    ``origin=inferred`` so an inferred fact is never trusted like a caller-given one.
-    """
-    req = build_request("extract_provenance", ("retrieval_extract_provenance",),
-                        "retrieval_extract_provenance_input",
-                        {"reference_date": reference_date(ref_date), "hint": hint or "(none)",
-                         "text": text[:2000]})
-    obj = decode(_call(llm, req)) or {}
-    source_type = str(obj.get("source_type", "")).strip().lower()
-    if source_type not in _KNOWN_SOURCE_TYPES:
-        source_type = ""
-    valid_time = str(obj.get("valid_time", "")).strip()
-    if valid_time and not _ISO_DATE.match(valid_time):
-        valid_time = ""  # the schema asks for YYYY-MM-DD; anything else is not a date we can use
-    return {
-        "valid_time": valid_time,
-        "actors": [str(a).strip() for a in _strlist(obj.get("actors"))],
-        "source_type": source_type,
-        "origin": "inferred",
-    }
 
 
 def prompt_versions() -> dict[str, str]:

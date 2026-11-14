@@ -63,7 +63,7 @@ func TestPlannerToolMenuSourceReachesThePromptAndTheReplan(t *testing.T) {
 	prov := &vocabAgents{agents: agents, caps: map[string][]string{"assistant": {"general_purpose"}},
 		tools: map[string][]string{"assistant": {"mcp:erp/*"}}}
 	gen := &requestRecorder{reply: `{"reasoning":"r","subject":"s","cache_policy":"tool","steps":[{"query":"q","depends_on":[],"required_capabilities":[]}]}`}
-	p := NewPlanner(gen, prov, nil)
+	p := NewPlanner(gen, prov)
 	p.SetCapabilityContract(true)
 	p.SetToolMenuSource(menuByAgent{"assistant": {{Name: "mcp:erp/finance_aging_report", Description: "AR aging."}}})
 	if _, err := p.GetExecutionPlan(context.Background(), "who owes us"); err != nil {
@@ -125,7 +125,7 @@ func TestWorkSystemsListsTheLiveMCPSystemsFromTheToolMenu(t *testing.T) {
 		"analyst":   {{Name: "mcp:emp/finance_aging_report"}, {Name: "mcp:wiki/page_get"}, {Name: "calculator"}},
 		"chatty":    {{Name: "mcp:secret/should_not_show"}},
 	}
-	p := NewPlanner(&requestRecorder{}, prov, nil)
+	p := NewPlanner(&requestRecorder{}, prov)
 	if got := p.WorkSystems(context.Background()); got != "" {
 		t.Errorf("no tool menu source wired: want \"\", got %q", got)
 	}

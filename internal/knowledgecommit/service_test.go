@@ -69,6 +69,16 @@ func (m *memStore) commits() []domain.KnowledgeItem {
 	return out
 }
 
+// memEvidence is an EvidenceReader over fixed rows.
+type memEvidence map[domain.EvidenceID]*domain.Evidence
+
+func (m memEvidence) Get(_ context.Context, id domain.EvidenceID) (*domain.Evidence, error) {
+	if ev, ok := m[id]; ok {
+		return ev, nil
+	}
+	return nil, errors.New("evidence get: no rows in result set")
+}
+
 type linkRec struct{ links []domain.Link }
 
 func (l *linkRec) PutLink(_ context.Context, x domain.Link) (bool, error) {
@@ -113,7 +123,7 @@ func newFixture(t *testing.T) fixture {
 	reg := testRegistry(t)
 	store := &memStore{reg: reg}
 	links := &linkRec{}
-	svc, err := New(store, reg, nil, hub, links, nil)
+	svc, err := New(store, reg, nil, hub, links, nil, WithEvidence(memEvidence{"ev": {ID: "ev"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,5 +294,82 @@ func TestProposeLink_IsAScoredCandidateAssertedByTheAgent(t *testing.T) {
 	l := f.links.links[0]
 	if l.State != domain.LinkStateCandidate || l.Mechanism != domain.LinkMechanismScored || l.AssertedBy != "agent:scout" || l.Family != domain.LinkFamilyRelation {
 		t.Fatalf("link = %+v", l)
+	}
+}
+
+// T-20261107-propose-knowledge-link-proposals-do-not-check: a proposal may cite
+// only evidence its proposer may read, and an unreadable id answers exactly as an
+// unknown one (no existence oracle).
+type forbidAuthorizer struct{ domain.AllowAllAuthorizer }
+
+func (forbidAuthorizer) ReadFilter(context.Context, domain.PrincipalRef, domain.SurfaceRef) (*domain.TagPredicate, domain.AccessDecision) {
+	return &domain.TagPredicate{ForbiddenTags: []string{"hr"}}, domain.AccessDecision{Allowed: true}
+}
+
+func TestProposals_CiteOnlyEvidenceTheProposerMayRead(t *testing.T) {
+	reg := testRegistry(t)
+	ev := memEvidence{
+		"ev_open":    {ID: "ev_open", Classification: []string{"ops"}},
+		"ev_hr":      {ID: "ev_hr", Classification: []string{"hr"}},
+		"ev_private": {ID: "ev_private", Classification: []string{domain.OwnerTag("bob")}},
+	}
+	for _, tc := range []struct {
+		name  string
+		authz domain.Authorizer
+		id    domain.EvidenceID
+		ok    bool
+	}{
+		{"readable", forbidAuthorizer{}, "ev_open", true},
+		{"forbidden tag", forbidAuthorizer{}, "ev_hr", false},
+		{"unknown id", forbidAuthorizer{}, "ev_missing", false},
+		{"another person's private row (owner fence, OSS default)", nil, "ev_private", false},
+		{"readable under the OSS default", nil, "ev_open", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := domain.NewAddressedHub(domain.AddressedHubConfig{})
+			store, links := &memStore{reg: reg}, &linkRec{}
+			svc, err := New(store, reg, tc.authz, hub, links, nil, WithEvidence(ev))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, lerr := svc.ProposeLink(context.Background(), scout, LinkProposal{Relation: "about", FromRef: "entity:a", ToRef: "entity:b", EvidenceID: tc.id})
+			p := closeProposal()
+			p.EvidenceID = tc.id
+			_, perr := svc.Propose(context.Background(), scout, alice, p, false, "")
+			for what, err := range map[string]error{"link": lerr, "item": perr} {
+				if tc.ok && err != nil {
+					t.Fatalf("%s proposal citing readable evidence refused: %v", what, err)
+				}
+				if !tc.ok {
+					if !errors.Is(err, ErrNotProposable) {
+						t.Fatalf("%s proposal citing %s: err = %v, want ErrNotProposable", what, tc.id, err)
+					}
+					// Same answer for unknown and unreadable: only the id differs.
+					want := fmt.Sprintf("evidence %q is unknown or not readable by agent:scout", tc.id)
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("%s refusal %q does not read %q", what, err, want)
+					}
+				}
+			}
+			if !tc.ok && (len(links.links) != 0 || len(store.items) != 0) {
+				t.Fatalf("a refused proposal wrote: links=%v items=%v", links.links, store.items)
+			}
+		})
+	}
+}
+
+// Without an evidence store the bridge cannot check a citation, so it refuses one
+// (fail closed); a proposal citing nothing is unaffected.
+func TestProposals_NoEvidenceStoreRefusesCitations(t *testing.T) {
+	reg := testRegistry(t)
+	svc, err := New(&memStore{reg: reg}, reg, nil, domain.NewAddressedHub(domain.AddressedHubConfig{}), &linkRec{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ProposeLink(context.Background(), scout, LinkProposal{Relation: "about", FromRef: "a", ToRef: "b", EvidenceID: "ev"}); !errors.Is(err, ErrNotProposable) {
+		t.Fatalf("err = %v, want ErrNotProposable", err)
+	}
+	if _, err := svc.Propose(context.Background(), scout, alice, closeProposal(), false, ""); err != nil {
+		t.Fatalf("a proposal citing no evidence was refused: %v", err)
 	}
 }

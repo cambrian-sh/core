@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -32,6 +33,10 @@ type linkWriteSource struct {
 	// (T-20261107-link-review-inbox-and-entity-op-candidates-skip).
 	review interface {
 		ReviewCandidates(ctx context.Context, namespace string, limit int, scope *domain.TagPredicate) ([]domain.Link, error)
+		// LinkReadable guards the review WRITES (ConfirmLink, RetractLink): the
+		// link must exist and be readable at the operator plane's scope, judged
+		// on its own evidence as the inbox judges it.
+		LinkReadable(ctx context.Context, namespace, linkID string, scope *domain.TagPredicate) (bool, error)
 	}
 }
 
@@ -61,7 +66,39 @@ func linkRecord(l domain.Link) operator.LinkRecord {
 	return r
 }
 
+// requireReadable refuses a review write on a link the operator plane cannot
+// read (T-20261107-operator-confirmlink-retractlink-act-on-and). The inbox does
+// not LIST a candidate proposed from someone's owner:X evidence (ScopeSystem
+// keeps the owner fence), so it must not be confirmable or retractable by an id
+// learned elsewhere (a log line, an audit entry, a guess) either — and
+// ConfirmLink would otherwise hand back the row's from/to refs and evidence id.
+//
+// A hidden link answers EXACTLY as an absent one: the same ErrLinkRefused and
+// the same message the store gives for an unknown id, so the refusal cannot be
+// used to probe for existence. No review plane ⇒ no write (fail closed; the
+// inbox lists nothing in that case too).
+func (w linkWriteSource) requireReadable(ctx context.Context, op, namespace, linkID string) error {
+	ok := false
+	if w.review != nil {
+		var err error
+		if ok, err = w.review.LinkReadable(ctx, namespace, linkID, domain.ScopeSystem); err != nil {
+			return err
+		}
+	}
+	if !ok {
+		ns := namespace
+		if ns == "" {
+			ns = "default" // the store's own default (postgres.orDefaultNamespace), so the message matches
+		}
+		return fmt.Errorf("link %s: no link %q in namespace %q: %w", op, linkID, ns, domain.ErrLinkRefused)
+	}
+	return nil
+}
+
 func (w linkWriteSource) ConfirmLink(ctx context.Context, namespace, linkID, actor string) (operator.LinkRecord, error) {
+	if err := w.requireReadable(ctx, "confirm", namespace, linkID); err != nil {
+		return operator.LinkRecord{}, err
+	}
 	l, err := w.links.ConfirmLink(ctx, namespace, linkID, actor)
 	if err != nil {
 		return operator.LinkRecord{}, err
@@ -70,6 +107,9 @@ func (w linkWriteSource) ConfirmLink(ctx context.Context, namespace, linkID, act
 }
 
 func (w linkWriteSource) RetractLink(ctx context.Context, namespace, linkID, actor, reason string) error {
+	if err := w.requireReadable(ctx, "retract", namespace, linkID); err != nil {
+		return err
+	}
 	return w.links.RetractLink(ctx, namespace, linkID, actor, reason)
 }
 

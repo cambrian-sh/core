@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -42,32 +41,6 @@ type fakeEmbedder struct{}
 
 func (f *fakeEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
 	return []float32{0.1, 0.2, 0.3}, nil
-}
-
-// ADR-0025: MemoryManager.Query now queries DocTypeMnemonicFact (DocTypeMemory retired).
-func TestMemoryManager_Query_PassesMnemonicFact(t *testing.T) {
-	t.Parallel()
-	store := &fakeVectorStore{
-		docs: []domain.SearchResult{
-			{Document: domain.Document{ID: "fact-1", Text: "a fact"}, Score: 0.9},
-		},
-	}
-	mgr := NewMemoryManager(store, &fakeEmbedder{})
-
-	results, err := mgr.Query(context.Background(), "what do I remember?", 5)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if store.lastOpts.DocumentType != domain.DocTypeMnemonicFact {
-		t.Errorf("DocumentType = %q, want %q (DocTypeMemory is retired)",
-			store.lastOpts.DocumentType, domain.DocTypeMnemonicFact)
-	}
-	if store.lastOpts.TopK != 5 {
-		t.Errorf("TopK = %d, want 5", store.lastOpts.TopK)
-	}
 }
 
 func TestVectorStore_Search_EmptyDocumentTypeReturnsAll(t *testing.T) {
@@ -111,19 +84,6 @@ func TestDocTypeConstants_StringValues(t *testing.T) {
 
 func TestVectorStore_Interface_SearchAcceptsOptions(_ *testing.T) {
 	var _ domain.VectorStore = &fakeVectorStore{}
-}
-
-func TestMemoryManager_Query_EmbedError(t *testing.T) {
-	t.Parallel()
-	errStore := &fakeVectorStore{}
-	errMgr := &MemoryManager{
-		Store:    errStore,
-		Embedder: &alwaysErrEmbedder{err: errors.New("embed failed")},
-	}
-	_, err := errMgr.Query(context.Background(), "test", 5)
-	if err == nil {
-		t.Error("expected error from failed embed, got nil")
-	}
 }
 
 type alwaysErrEmbedder struct {

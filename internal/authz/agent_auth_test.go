@@ -61,11 +61,11 @@ func startAgentPlane(t *testing.T, store secretStore, waived bool) (pb.Orchestra
 		grpc.ChainUnaryInterceptor(
 			authz.UnarySurfaceInterceptor(nil),
 			authz.UnaryAgentAuthInterceptor(verifier, nil),
-			operator.UnaryAuthInterceptor(idp, nil)),
+			operator.UnaryAuthInterceptor(idp, nil, nil)),
 		grpc.ChainStreamInterceptor(
 			authz.StreamSurfaceInterceptor(nil),
 			authz.StreamAgentAuthInterceptor(verifier, nil),
-			operator.StreamAuthInterceptor(idp, nil)),
+			operator.StreamAuthInterceptor(idp, nil, nil)),
 	)
 	rec := &recordingOrchestrator{seen: make(chan domain.PrincipalRef, 8)}
 	pb.RegisterOrchestratorServer(srv, rec)

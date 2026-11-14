@@ -153,3 +153,19 @@ func TestLLMProviderConfig_AGeneratorKeyedFromTheStoreIsValid(t *testing.T) {
 		t.Fatalf("a store-keyed generator must validate, got %v", errs)
 	}
 }
+
+// ENG-453: an equivalence group must name at least two non-empty ids; a valid
+// one, and pinned, load.
+func TestLLMProviderConfig_Validate_EquivalentGenerators(t *testing.T) {
+	p, e := validProvider()
+	p.Pinned = true
+	p.EquivalentGenerators = [][]string{{"qwen-local", "deepseek"}}
+	if errs := p.validate(e); len(errs) != 0 {
+		t.Fatalf("valid equivalence refused: %v", errs)
+	}
+	p.EquivalentGenerators = [][]string{{"qwen-local"}, {"deepseek", ""}}
+	errs := strings.Join(p.validate(e), "\n")
+	if !strings.Contains(errs, "equivalent_generators[0] must name at least two") || !strings.Contains(errs, "equivalent_generators[1][1] is empty") {
+		t.Fatalf("errors = %s", errs)
+	}
+}

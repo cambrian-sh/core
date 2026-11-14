@@ -104,7 +104,7 @@ var parentMenu = []domain.SystemTool{
 
 func newTool(t *testing.T, r *fakeRunner) (*Tool, *memLedger) {
 	t.Helper()
-	reg := domain.NewSubtasks(0)
+	reg := domain.NewSubtasks(0, nil)
 	reg.RegisterParent("parent", "main")
 	led := &memLedger{}
 	return &Tool{

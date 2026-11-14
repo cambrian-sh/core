@@ -21,22 +21,25 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 
 	switch e := se.Event.(type) {
 	case domain.SelectionEventPayload:
-		bids := make([]*pb.BidEntryOp, len(e.Bids))
+		// Contract 0102: the dispatch decision rides SelectionEventOp (was the
+		// auction-named AuctionEventOp; T-20261113-operator-feed-still-names-dispatch-decisions).
+		// A candidate's Confidence field carries the Gatekeeper's merit score.
+		cands := make([]*pb.SelectionCandidateOp, len(e.Bids))
 		for i, b := range e.Bids {
-			bids[i] = &pb.BidEntryOp{
+			cands[i] = &pb.SelectionCandidateOp{
 				AgentId:      b.AgentID,
-				Confidence:   b.Confidence,
+				Merit:        b.Confidence,
 				Rationale:    b.Rationale,
 				LatencyMs:    b.LatencyMs,
 				Requirements: b.Requirements,
 			}
 		}
-		out.Payload = &pb.OperatorEvent_Auction{Auction: &pb.AuctionEventOp{
+		out.Payload = &pb.OperatorEvent_Selection{Selection: &pb.SelectionEventOp{
 			TaskId:       e.TaskID,
 			TaskDesc:     e.TaskDesc,
 			Status:       e.Status,
 			WinnerId:     e.WinnerID,
-			Bids:         bids,
+			Candidates:   cands,
 			ErrorMsg:     e.ErrorMsg,
 			WinnerMargin: e.WinnerMargin,
 			Funnel:       gatekeeperFunnelToOp(e.Funnel),
@@ -365,9 +368,9 @@ func gatekeeperFunnelToOp(f *domain.GatekeeperFunnel) *pb.GatekeeperFunnelOp {
 	for i, d := range f.L1 {
 		l1[i] = &pb.DeclarationResultOp{AgentId: d.AgentID, Passed: d.Passed, Reason: d.Reason}
 	}
-	l2 := make([]*pb.InterviewResultOp, len(f.L2))
+	l2 := make([]*pb.SemanticGateOp, len(f.L2))
 	for i, v := range f.L2 {
-		l2[i] = &pb.InterviewResultOp{
+		l2[i] = &pb.SemanticGateOp{
 			AgentId:           v.AgentID,
 			Similarity:        v.Similarity,
 			Survived:          v.Survived,

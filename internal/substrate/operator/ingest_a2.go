@@ -41,6 +41,31 @@ type IngestRequest struct {
 	// and the part offsets. Always set by IngestMemory; an upload that states no
 	// time carries the ingest clock labelled ingest_default.
 	EventTime domain.IngestEventTime
+	// Descriptive source metadata (ADR-0136 A3.5, contract 0104), already normalised
+	// by IngestMemory. SourceKind never becomes the routing source type; AuthorLabel
+	// never replaces Author (the authenticated operator); Title, when set, replaces
+	// the filename-derived title. Per-part speakers ride in EventTime.Parts.
+	SourceKind  string
+	Title       string
+	AuthorLabel string
+}
+
+// SourceMetaCaps bounds the descriptive ingest fields, in characters
+// (execution.ingestion.source_*_max_chars / part_speaker_max_chars). 0 = no cap.
+type SourceMetaCaps struct {
+	Kind, Title, Author, Speaker int
+}
+
+// SetSourceMetaCaps wires the configured caps (the agent plane reads the same keys).
+func (s *Service) SetSourceMetaCaps(c SourceMetaCaps) { s.sourceMetaCaps = c }
+
+// opDescriptive is domain.NormalizeDescriptiveField as INVALID_ARGUMENT naming field.
+func opDescriptive(field, v string, max int) (string, error) {
+	out, err := domain.NormalizeDescriptiveField(v, max)
+	if err != nil {
+		return "", status.Errorf(codes.InvalidArgument, "%s: %v", field, err)
+	}
+	return out, nil
 }
 
 // MemoryIngestor requests a kernel document ingest and returns the assigned
@@ -141,7 +166,11 @@ func (s *Service) resolveOpEventTime(req *pb.IngestMemoryOpRequest) (domain.Inge
 		if err != nil {
 			return domain.IngestEventTime{}, err
 		}
-		parts = append(parts, domain.MemoryPartInput{Text: p.GetText(), OccurredAt: t})
+		speaker, err := opDescriptive(fmt.Sprintf("parts[%d].speaker", i), p.GetSpeaker(), s.sourceMetaCaps.Speaker)
+		if err != nil {
+			return domain.IngestEventTime{}, err
+		}
+		parts = append(parts, domain.MemoryPartInput{Text: p.GetText(), OccurredAt: t, Speaker: speaker})
 	}
 	et, err := domain.ResolveIngestEventTime(occurredAt, parts, req.GetTimePrecision(), time.Now(), s.eventTimeFutureTolerance())
 	if err != nil {
@@ -195,6 +224,19 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	if err != nil {
 		return nil, err
 	}
+	caps := s.sourceMetaCaps
+	sourceKind, err := opDescriptive("source_kind", req.GetSourceKind(), caps.Kind)
+	if err != nil {
+		return nil, err
+	}
+	title, err := opDescriptive("title", req.GetTitle(), caps.Title)
+	if err != nil {
+		return nil, err
+	}
+	authorLabel, err := opDescriptive("author", req.GetAuthor(), caps.Author)
+	if err != nil {
+		return nil, err
+	}
 	if s.audit == nil {
 		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
 	}
@@ -236,6 +278,9 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 		ContentType: req.GetContentType(),
 		Context:     req.GetContext(),
 		EventTime:   et,
+		SourceKind:  sourceKind,
+		Title:       title,
+		AuthorLabel: authorLabel,
 	})
 	if err != nil {
 		// ADR-0138 Q1: a caller-named document id held by another writer is refused, not

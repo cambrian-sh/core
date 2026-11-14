@@ -810,3 +810,38 @@ func TestProcessSync_WaitForFactsAndEvidenceLink(t *testing.T) {
 		t.Fatalf("complete wait reported pending/failed: %v", c)
 	}
 }
+
+// ENG-488 (owner decision 2026-11-14): the facts wait is BOUNDED and a timeout is a
+// clear error (ErrFactsNotReady), not a silent success — while the content is still
+// stored and the written event still goes out.
+func TestProcessSync_WaitForFactsTimeoutIsAnError(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	release := make(chan struct{})
+	gen := &scriptedGen{block: release, answer: func(string) (string, error) {
+		return `{"facts":[]}`, nil
+	}}
+	e := newTestExtractor(gen, newMemSubstrate(), FactExtractorConfig{})
+	e.Start(context.Background())
+	defer e.Stop()
+	defer close(release)
+
+	im := newCaptureIngestManager(t, agentTimedParser{})
+	im.SetFactExtractor(e)
+	im.cfg.SyncWaitForFacts = true
+	im.cfg.SyncFactsWaitTimeout = 30 * time.Millisecond
+	clock := domain.NewStageClock()
+	ctx := domain.WithStageClock(context.Background(), clock)
+	entityID, err := im.ProcessSync(ctx, kgDoc("ingest_memory://facts-stuck"))
+	if !errors.Is(err, ErrFactsNotReady) {
+		t.Fatalf("a timed-out facts wait must return ErrFactsNotReady, got %v", err)
+	}
+	if entityID == "" {
+		t.Fatal("the stored document's entity id must still be returned with the error")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("the error must say it timed out: %v", err)
+	}
+	if c := clock.Counts(); c[CountFactsPending] != 1 {
+		t.Fatalf("facts_pending not counted: %v", c)
+	}
+}

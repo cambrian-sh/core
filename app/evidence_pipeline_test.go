@@ -32,10 +32,16 @@ func TestGuardsOffIdempotentWritesStillAnswerRetries(t *testing.T) {
 	reg := domain.NewInMemoryToolRegistry()
 	reg.Register(domain.SystemTool{Name: "move_file", Effects: []domain.ToolEffect{domain.EffectWrite}})
 	h := &countingWrite{}
-	srv := &subnetwork.Server{ToolExecutor: &domain.ToolExecutor{Registry: reg, Handler: h,
-		InlineThreshold: 1 << 20, Unrestricted: true}}
-	wireEvidencePipeline(cfg, srv, nil)
-	te := srv.ToolExecutor
+	// The controls go in through the constructor, exactly as bootstrapKernel builds
+	// the executor (AGENTS.md §2.3).
+	controls := evidenceToolControls(cfg, nil, domain.ToolExecutorControls{
+		Registry: reg, Grants: domain.NewInMemoryGrantsStore(), Authz: domain.AllowAllAuthorizer{}, Unrestricted: true})
+	te, err := domain.NewToolExecutor(controls, domain.ToolExecutor{Handler: h, InlineThreshold: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &subnetwork.Server{ToolExecutor: te}
+	wireEvidencePipeline(cfg, srv, nil, nil)
 	if te.Guards != nil {
 		t.Fatal("request guards wired although the flag is off")
 	}

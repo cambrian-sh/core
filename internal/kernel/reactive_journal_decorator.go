@@ -91,6 +91,17 @@ func (d *AgentRepoDecorator) RecordDeadLetter(dl domain.ReactiveDeadLetter) erro
 	})
 }
 
+// PruneDeadLetters drops up to limit dead letters that failed before `before`
+// (ENG-472 retention; the premium JournalGC calls it on every pass).
+func (d *AgentRepoDecorator) PruneDeadLetters(before time.Time, limit int) (int, bool, error) {
+	return d.store.PruneReactiveDeadLetters(before, limit)
+}
+
+// DeleteDeadLetter removes one dead letter by id (operator DeleteWatchDeadLetter).
+func (d *AgentRepoDecorator) DeleteDeadLetter(id string) (bool, error) {
+	return d.store.DeleteReactiveDeadLetter(id)
+}
+
 // ListDeadLetters returns dead-letter entries newest-first (limit <= 0 ⇒ all).
 func (d *AgentRepoDecorator) ListDeadLetters(limit int) ([]domain.ReactiveDeadLetter, error) {
 	recs, err := d.store.ListReactiveDeadLetters(limit)

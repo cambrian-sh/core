@@ -196,6 +196,11 @@ type ToolCallResponse struct {
 	// Structured so a consumer (the per-run unroutable bound in ExecuteTool) never has
 	// to parse DenyReason.
 	ApprovalState ApprovalState
+	// Annotations is the context pre_tool / post_tool hooks added (ADR-0139 D11),
+	// delivered to the agent BESIDE the result, never inside ResultJSON, so ledger
+	// records and replayed results stay byte-identical (owner decision 2026-11-15,
+	// T-20261105-pre-tool-and-post-tool-hook-annotations-are).
+	Annotations []string
 }
 
 // ToolExecutor is the single reference monitor for tool execution (ADR-0039 D4).
@@ -483,7 +488,9 @@ func (e *ToolExecutor) callerReadScope(ctx context.Context, req ToolCallRequest)
 	if req.System {
 		principal = SystemPrincipal
 	}
-	eff, dec := a.ReadFilter(ctx, principal, SurfaceRef{Kind: SurfaceAgent})
+	// The turn's surface (ADR-0085 D7): a surface-linked policy binds kernel-tool
+	// reads and staged inputs exactly as it binds the effect decision.
+	eff, dec := a.ReadFilter(ctx, principal, SurfaceFromContextOr(ctx, SurfaceRef{Kind: SurfaceAgent}))
 	if eff == nil {
 		return nil, dec.Explain()
 	}
@@ -718,9 +725,18 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// ADR-0150 D2/D5: every side-effecting call inside a subtask carries a
 	// deterministic key (subtask id + tool + canonical args + occurrence), so a
 	// resumed subtask answers a call that already ran from its stored result.
+	// The key is also the action's identity on the wire (ADR-0154 D4, ENG-812): it
+	// travels in the MCP request's _meta like a plan step's, and the call is
+	// recorded in the durable action record when the registry has one (ENG-1428).
+	var subtaskKey string
 	if subtaskLease && tool.SideEffecting() {
 		if key, ok := e.Subtasks.CallKey(req.SessionTokenID, req.ToolName, req.ArgsJSON); ok {
-			stored, found, finish := e.Subtasks.Idempotency().Begin(ctx, key)
+			subtaskKey = key
+			sid, _ := SessionIDFromContext(ctx)
+			stored, found, finish := e.Subtasks.Idempotency().BeginAction(ctx, DurableAction{
+				Key: key, Tool: req.ToolName, Principal: RunPrincipalFromContext(ctx),
+				SessionID: sid, ArgsHash: argHash,
+			})
 			if found {
 				slog.Info("ADR-0150 D5: resumed subtask's side-effecting call answered from its stored result",
 					"tool", req.ToolName, "lease", req.SessionTokenID)
@@ -729,11 +745,27 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 			defer func() { finish(out, !out.Denied && out.Error == "") }()
 		}
 	}
+	// ADR-0154 D4 (ENG-812): a side-effecting call made by a plan step carries its
+	// deterministic action key to the target, in the MCP request's _meta
+	// (ActionKeyMetaKey), so the target — or premium's write-back confirmation —
+	// can recognise a retry of the same action. Computed whether or not
+	// idempotent_writes is on: it is the action's identity, not a cache key.
+	actionKey := subtaskKey
+	if tool.SideEffecting() && !req.System && !subtaskLease {
+		if sc, ok := StepCallFrom(ctx); ok {
+			actionKey = IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON)
+		}
+	}
 	// ADR-0145 D9: a side-effecting call made by a plan step has an idempotency
 	// key; a retry of the same call returns the stored result.
 	if e.Idempotency != nil && tool.SideEffecting() && !req.System && !subtaskLease {
 		if sc, ok := StepCallFrom(ctx); ok {
-			stored, found, finish := e.Idempotency.Begin(ctx, IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON))
+			sid, _ := SessionIDFromContext(ctx)
+			stored, found, finish := e.Idempotency.BeginAction(ctx, DurableAction{
+				Key:  IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON),
+				Tool: req.ToolName, RunID: sc.RunID, StepIndex: sc.StepIndex,
+				Principal: RunPrincipalFromContext(ctx), SessionID: sid, ArgsHash: argHash,
+			})
 			if found {
 				slog.Info("ADR-0145 D9: duplicate side-effecting call answered from its stored result",
 					"tool", req.ToolName, "run", sc.RunID, "step", sc.StepIndex)
@@ -797,8 +829,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// ADR-0139 D11 pre_tool hooks, AFTER the policy decision. They can only narrow
 	// it (allow → ask → deny). A rewritten call is re-authorized from the grant
 	// onward, so a rewrite can never reach what the original call could not.
+	var hookNotes []string // pre_tool + post_tool annotations, for the agent
 	if e.Hooks.Has(HookPreTool) {
 		out := e.Hooks.Run(ctx, e.toolHookEvent(ctx, req, tool, HookPreTool, verdict, nil))
+		hookNotes = append(hookNotes, out.Annotations...)
 		if out.ArgsRewritten {
 			argHash = hashBytes(out.Args) // the receipt names the call that runs
 			req.ArgsJSON = out.Args
@@ -955,7 +989,15 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	if subtaskLease {
 		e.Subtasks.ObserveCall(req.SessionTokenID, tool)
 	}
-	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy, Meta: stagedMeta})
+	callMeta := stagedMeta
+	if actionKey != "" {
+		callMeta = make(map[string]any, len(stagedMeta)+1)
+		for k, v := range stagedMeta {
+			callMeta[k] = v
+		}
+		callMeta[ActionKeyMetaKey] = actionKey
+	}
+	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy, Meta: callMeta})
 	if err != nil {
 		if priced {
 			// Failure-cost (D7): never-reached ⇒ 0; otherwise the per-server policy.
@@ -1031,6 +1073,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// output is not recorded to memory and never reaches the agent.
 	if e.Hooks.Has(HookPostTool) {
 		out := e.Hooks.Run(ctx, e.toolHookEvent(ctx, req, tool, HookPostTool, HookAllow, result))
+		hookNotes = append(hookNotes, out.Annotations...)
 		if out.ResultRewritten {
 			result = out.Result
 		}
@@ -1055,7 +1098,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		})
 	}
 
-	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver}
+	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver, Annotations: hookNotes}
 	// ADR-0145 D1: with the ledger on, every result is recorded, and a large one
 	// travels as its ledger id instead of a plan-scoped content-store cid (one
 	// pathway: the content store holds no tool results then). A result the ledger

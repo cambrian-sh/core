@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -29,7 +30,7 @@ func testProvider(t *testing.T) *Provider {
 func TestProvider_RoleResolvesToConfiguredID(t *testing.T) {
 	t.Parallel()
 	p := testProvider(t)
-	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter})
+	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter})
 	if err != nil || id != "qwen-local" {
 		t.Fatalf("router role: want qwen-local, got %q (%v)", id, err)
 	}
@@ -41,7 +42,7 @@ func TestProvider_SetRoleRebindsResolutionLive(t *testing.T) {
 	t.Parallel()
 	p := testProvider(t)
 	p.SetRole("router", "deepseek")
-	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter})
+	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter})
 	if err != nil || id != "deepseek" {
 		t.Fatalf("after SetRole: want deepseek, got %q (%v)", id, err)
 	}
@@ -74,7 +75,7 @@ func TestProvider_NewProviderCopiesTheRolesMap(t *testing.T) {
 func TestProvider_AgentStepUsesHealthySuggestion(t *testing.T) {
 	t.Parallel()
 	p := testProvider(t)
-	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeAgentStep, SuggestedModelID: "deepseek"})
+	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeAgentStep, SuggestedModelID: "deepseek"})
 	if err != nil || id != "deepseek" {
 		t.Fatalf("agent step suggestion: want deepseek, got %q (%v)", id, err)
 	}
@@ -83,11 +84,29 @@ func TestProvider_AgentStepUsesHealthySuggestion(t *testing.T) {
 func TestProvider_FailsOverWhenRoleModelUnhealthy(t *testing.T) {
 	t.Parallel()
 	p := testProvider(t)
+	// ENG-453: only to a generator marked equivalent.
+	p.fallback = newFallbackPolicy(false, [][]string{{"qwen-local", "deepseek"}})
 	p.breaker.Record("qwen-local", false) // threshold 1 => qwen-local OPEN
-	// router role prefers qwen-local (open) -> default deepseek (healthy).
-	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter})
+	// router role prefers qwen-local (open) -> default deepseek (healthy, equivalent).
+	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter})
 	if err != nil || id != "deepseek" {
 		t.Fatalf("failover: want deepseek (default), got %q (%v)", id, err)
+	}
+}
+
+// ENG-453 (owner decision 2026-11-14): with nothing marked equivalent, an
+// unhealthy role model is NOT replaced by the default — the call fails, naming
+// its first choice and why.
+func TestProvider_NoFailoverToAnUnmarkedGenerator(t *testing.T) {
+	t.Parallel()
+	p := testProvider(t)
+	p.breaker.Record("qwen-local", false)
+	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter})
+	if !errors.Is(err, ErrNoHealthyModel) || id != "" {
+		t.Fatalf("resolve = %q, %v; want ErrNoHealthyModel (deepseek is not marked equivalent)", id, err)
+	}
+	if !strings.Contains(err.Error(), `"qwen-local"`) || !strings.Contains(err.Error(), "equivalent_generators") {
+		t.Fatalf("error does not say why: %v", err)
 	}
 }
 
@@ -96,7 +115,7 @@ func TestProvider_NoHealthyModelReturnsError(t *testing.T) {
 	p := testProvider(t)
 	p.breaker.Record("qwen-local", false)
 	p.breaker.Record("deepseek", false)
-	if _, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter}); !errors.Is(err, ErrNoHealthyModel) {
+	if _, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter}); !errors.Is(err, ErrNoHealthyModel) {
 		t.Fatalf("want ErrNoHealthyModel, got %v", err)
 	}
 }
@@ -148,7 +167,7 @@ func TestProvider_AgentStepHasNoRolePreference(t *testing.T) {
 	p := testProvider(t)
 	// Even a role entry keyed "agent_step" must not steer an agent step.
 	p.SetRole(string(domain.PurposeAgentStep), "qwen-local")
-	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeAgentStep})
+	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeAgentStep})
 	if err != nil || id != "deepseek" {
 		t.Fatalf("agent step: want the default deepseek, got %q (%v)", id, err)
 	}

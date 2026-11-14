@@ -34,7 +34,7 @@ func (s *scavengerRecordingStore) Delete(_ context.Context, id string) error {
 // (Agent.decayLoner) and observe which entity rows it would have removed.
 func newScavengerTestAgent() (*Agent, *scavengerRecordingStore) {
 	store := &scavengerRecordingStore{}
-	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.70, 5, 3)
+	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 3)
 	return agent, store
 }
 

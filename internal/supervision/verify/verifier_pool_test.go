@@ -215,29 +215,6 @@ func TestVerifierPool_HealthGuard_TotalCollapse_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestVerifierPool_Select_NeverReturnsTraitTool(t *testing.T) {
-	agents := []domain.AgentDefinition{
-		{ID: "cognitive", SourceHash: "sc", Provisional: false, Trait: domain.TraitCognitive},
-		{ID: "tool", SourceHash: "st", Provisional: false, Trait: domain.TraitTool},
-	}
-	profiles := map[string]*domain.AgentProfile{
-		"cognitive:sc": {TrustScore: 0.85, SuccessRate: 0.85},
-		"tool:st":      {TrustScore: 0.95, SuccessRate: 0.95},
-	}
-	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.DispatchTask{ID: "t-trait-exclusion"}
-
-	for i := 0; i < 10; i++ {
-		got, err := pool.Select(context.Background(), task, "other", nil)
-		if err != nil {
-			t.Fatalf("Select error on call %d: %v", i+1, err)
-		}
-		if got.ID == "tool" {
-			t.Errorf("call %d: Select returned TraitTool agent %q; TraitTool must never be a verifier", i+1, got.ID)
-		}
-	}
-}
-
 func TestVerifierPool_Select_NeverReturnsTraitDaemon(t *testing.T) {
 	agents := []domain.AgentDefinition{
 		{ID: "cognitive", SourceHash: "sc", Provisional: false, Trait: domain.TraitCognitive},
@@ -323,23 +300,3 @@ func TestVerifierPool_Select_OnlySystemAgents_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestVerifierPool_Select_OnlyTraitTool_ReturnsError(t *testing.T) {
-	agents := []domain.AgentDefinition{
-		{ID: "tool1", SourceHash: "st1", Provisional: false, Trait: domain.TraitTool},
-		{ID: "tool2", SourceHash: "st2", Provisional: false, Trait: domain.TraitTool},
-	}
-	profiles := map[string]*domain.AgentProfile{
-		"tool1:st1": {TrustScore: 0.9, SuccessRate: 0.9},
-		"tool2:st2": {TrustScore: 0.95, SuccessRate: 0.95},
-	}
-	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.DispatchTask{ID: "t-tool-only"}
-
-	got, err := pool.Select(context.Background(), task, "other", nil)
-	if err == nil {
-		t.Errorf("Select returned agent %q; expected ErrNoVerifierAvailable when only TraitTool agents exist", got.ID)
-	}
-	if got != nil && got.Trait == domain.TraitTool {
-		t.Error("Select must not return a TraitTool agent regardless of threshold")
-	}
-}

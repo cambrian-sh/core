@@ -37,7 +37,27 @@ type RetrievalDispatcher struct {
 	Caller  domain.AgentCaller
 	AgentID string // default "retrieval_agent"
 	Gateway LLMGateway
-	Model   string // planner model id; "" ⇒ gateway default
+	// Model is an explicit planner generator id (execution.retrieval.agentic_planner_model);
+	// it overrides RoleModel. "" ⇒ RoleModel, then the gateway default.
+	Model string
+	// RoleModel resolves the planner's generator through the role table per call
+	// (the retrieval_planner purpose, falling back to memory: llm.RoleFallbacks), so
+	// a console role switch moves the planner on its next call. Nil or "" ⇒ the
+	// gateway default (owner decision 2026-11-14, third round;
+	// T-20261102-agentic-planner-model-names-a-generator-id).
+	RoleModel func() string
+}
+
+// plannerModel is the generator the planner's lease is allocated to: the explicit
+// id, else the role's generator, else "" (gateway default).
+func (d *RetrievalDispatcher) plannerModel() string {
+	if d.Model != "" {
+		return d.Model
+	}
+	if d.RoleModel != nil {
+		return d.RoleModel()
+	}
+	return ""
 }
 
 var (
@@ -97,11 +117,11 @@ func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte,
 		Payload:   &domain.Payload{Type: "retrieval", Data: reqData},
 		Context:   map[string]string{"task_id": "agentic-retrieval"},
 	}
-	// Empty Model ⇒ gateway default via a metered session.
+	// No explicit model and no role binding ⇒ gateway default via a metered session.
 	if d.Gateway != nil {
 		sa := domain.StepAllocation{}
-		if d.Model != "" {
-			sa.Winner = domain.AgentDefinition{ID: d.Model}
+		if m := d.plannerModel(); m != "" {
+			sa.Winner = domain.AgentDefinition{ID: m}
 		}
 		if tokenID, aerr := d.Gateway.Acquire(ctx, sa, retrievalPlanTokenLimit, retrievalSessionTTL); aerr == nil && tokenID != "" {
 			h.Context["_session_token_id"] = string(tokenID)
@@ -199,40 +219,6 @@ func (d *RetrievalDispatcher) PlanQuery(ctx context.Context, query, scratchpad s
 	}
 	slog.InfoContext(ctx, "agentic-trace plan", "scratchpad", scratchpad, "lexical", ps.LexicalQuery)
 	return ps.LexicalQuery, nil
-}
-
-// ReasonStep (IRCoT) asks the retrieval_agent for the next chain-of-thought
-// sentence + whether it reached the answer + the next search query. FAIL-OPEN =
-// done (stop the loop) on any error, so a bad step ends with accumulated chunks.
-func (d *RetrievalDispatcher) ReasonStep(ctx context.Context, query string, cot, chunks []string) (thought string, done bool, nextQuery string, err error) {
-	reqData, merr := json.Marshal(struct {
-		Op     string   `json:"op"`
-		Query  string   `json:"query"`
-		Cot    []string `json:"cot,omitempty"`
-		Chunks []string `json:"chunks"`
-	}{Op: "reason_step", Query: query, Cot: cot, Chunks: chunks})
-	if merr != nil {
-		return "", true, "", merr
-	}
-	data, cerr := d.call(ctx, reqData)
-	if cerr != nil || len(data) == 0 {
-		return "", true, "", cerr
-	}
-	obj := domain.ExtractJSONObject(string(data))
-	if obj == "" {
-		return "", true, "", nil
-	}
-	var rs struct {
-		Thought     string `json:"thought"`
-		Done        bool   `json:"done"`
-		SearchQuery string `json:"search_query"`
-	}
-	if uerr := json.Unmarshal([]byte(obj), &rs); uerr != nil {
-		slog.WarnContext(ctx, "retrieval dispatch: bad reason JSON; fail-open (done)", "err", uerr)
-		return "", true, "", uerr
-	}
-	slog.InfoContext(ctx, "agentic-trace reason", "done", rs.Done, "thought", rs.Thought, "next", rs.SearchQuery)
-	return rs.Thought, rs.Done, strings.TrimSpace(rs.SearchQuery), nil
 }
 
 // the results already accumulated rather than spinning.

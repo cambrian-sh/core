@@ -123,14 +123,11 @@ func kgExpand(
 		// Rank entities by mention frequency; take top MaxEntities.
 		ranked := rankEntitiesByCount(entityCounts, opts.MaxEntities)
 
-		// Alias linking: widen the entity set with (a) deterministic lexical
-		// variants (possessive/plural, hyphen↔space, diacritics) so "US Army's"
-		// and "us army" meet, and (b) embedding-nearest entity names from the
-		// EntityIndex when one is wired — the query-time half of HippoRAG-style
-		// synonym linking, at zero extra embed calls (the index already holds
-		// name embeddings). Bounded: variants are cheap strings; semantic
-		// neighbors only for the top few entities.
-		expanded := expandEntityAliases(ranked, opts.AliasIndex, opts.MaxEntities*2)
+		// Alias linking: widen the entity set with deterministic lexical variants
+		// (possessive/plural, hyphen↔space, diacritics) so "US Army's" and
+		// "us army" meet. (The embedding-nearest names from the EntityIndex went
+		// with that index, ENG-76: it was never populated.) Bounded.
+		expanded := expandEntityAliases(ranked, opts.MaxEntities*2)
 
 		// Candidate gathering. Preferred path: ONE batched, relevance-ranked,
 		// corroboration-counting lookup per hop (ChunksForEntities capability) —
@@ -168,7 +165,7 @@ func kgExpand(
 			for _, ent := range expanded {
 				relatedIDs, err := store.ChunksMentioningEntity(ctx, ent, opts.PerEntity, scope)
 				if err != nil {
-					slog.Warn("kgExpand: ChunksMentioningEntity failed", "entity", ent, "err", err)
+					slog.Warn("kgExpand: ChunksMentioningEntity failed", append(TextLogAttrs("entity", ent), "err", err)...) // entity names are document content: fingerprint only (ENG-447)
 					continue
 				}
 				for _, id := range relatedIDs {
@@ -229,17 +226,11 @@ type entityBatchLookup interface {
 	ChunksForEntities(ctx context.Context, entities []string, limit int, scope *domain.TagPredicate, queryVec []float32) ([]domain.EntityChunkHit, error)
 }
 
-// aliasNeighborIndex is the optional alias source: embedding-nearest entity
-// names for a given name, from an index that already holds name embeddings.
-type aliasNeighborIndex interface {
-	NeighborNamesOf(name string, k int) []string
-}
-
-// expandEntityAliases widens an entity list with lexical variants and (when an
-// index is wired) embedding-nearest entity names, deduplicated, capped at max.
+// expandEntityAliases widens an entity list with lexical variants, deduplicated,
+// capped at max.
 // Order preserves the original ranking: originals first, then their variants in
 // rank order — so a cap trims aliases before it ever trims a real entity.
-func expandEntityAliases(ranked []string, idx aliasNeighborIndex, max int) []string {
+func expandEntityAliases(ranked []string, max int) []string {
 	if max <= 0 {
 		max = len(ranked)
 	}
@@ -255,20 +246,6 @@ func expandEntityAliases(ranked []string, idx aliasNeighborIndex, max int) []str
 	}
 	for _, e := range ranked {
 		add(e)
-	}
-	// Semantic neighbors for the top few entities only — the head of the
-	// ranking carries the query's real subjects; hub noise lives in the tail.
-	const aliasTopEntities = 5
-	const aliasPerEntity = 2
-	if idx != nil {
-		for i, e := range ranked {
-			if i >= aliasTopEntities || len(out) >= max {
-				break
-			}
-			for _, n := range idx.NeighborNamesOf(e, aliasPerEntity) {
-				add(n)
-			}
-		}
 	}
 	for _, e := range ranked {
 		if len(out) >= max {
@@ -358,18 +335,29 @@ type batchChunkFetcher interface {
 // materializeAuthorized fetches the given chunk ids and returns the subset the
 // caller's read predicate admits, keyed by id. Batched when the store supports
 // it (one round-trip); falls back to the per-id authorizedDoc loop otherwise.
-// Authorization semantics are IDENTICAL on both paths: the predicate is applied
-// to each returned row's classification tags, and refused/missing rows are
-// simply absent.
+//
+// The predicate is APPLIED by the read chokepoint, not here (AGENTS.md §2.5,
+// T-20261113-retrieval-enrichment-lanes-re-apply-the): it is stamped on ctx with
+// domain.WithScope, and vs — the tier-1 authz.EnforcingVectorStore QueryService is
+// constructed over (kernel.NewMemoryStack) — filters ChunksByIDs and GetByID rows
+// against exactly that predicate. A second inline Allows loop here was the same
+// policy expressed twice, and the stamped predicate makes the parameter the one the
+// decorator applies, so the two can no longer disagree. Refused and missing rows
+// are simply absent on both paths.
+//
+// A nil predicate means no read is authorized (readFilter's contract): nothing is
+// fetched at all.
 func materializeAuthorized(ctx context.Context, vs kgExpandVectorSearch, scope *domain.TagPredicate, ids []string) map[string]domain.Document {
 	out := make(map[string]domain.Document, len(ids))
+	if scope == nil || len(ids) == 0 {
+		return out
+	}
+	ctx = domain.WithScope(ctx, scope)
 	if bf, ok := vs.(batchChunkFetcher); ok {
 		docs, err := bf.ChunksByIDs(ctx, ids)
 		if err == nil {
 			for _, d := range docs {
-				if scope.Allows(docTags(d.Metadata)) {
-					out[d.ID] = d
-				}
+				out[d.ID] = d
 			}
 			return out
 		}
@@ -383,31 +371,27 @@ func materializeAuthorized(ctx context.Context, vs kgExpandVectorSearch, scope *
 	return out
 }
 
-// mustGetDoc returns the doc for an ID, or a minimal placeholder if the
-// fetch fails. The expansion shouldn't fail the query just because a
-// related-chunk fetch errored; the user still has the seed chunks.
-// authorizedDoc materializes an expanded chunk and admits it only if the caller's
-// read predicate allows its classification tags. ok=false means DROP — the chunk is
-// missing, unreadable, or forbidden.
+// authorizedDoc materializes an expanded chunk through the enforcing by-id read
+// with the caller's predicate stamped on ctx. ok=false means DROP — the chunk is
+// missing, unreadable, or forbidden (the decorator reports a forbidden row as
+// absent, so the three are indistinguishable by design).
 //
 // It replaces mustGetDoc, whose `return domain.Document{ID: id}` fallback leaked. That
 // fallback PREDATES authorization: it was correct when a missing row was the only way
 // GetByID could fail, and ADR-0085 added a second reason — denial — which it then
 // treated identically. The stub carried the restricted chunk's ID into the result pool
 // (and `{docID}-chunk-{n}` ids encode their source document), while expandedScore floored
-// it at 0.5 because a stub has no embedding. Worse, GetByID is not enforced at all, so a
-// permitted-looking read returned the row's FULL CONTENT. Hence the check here rather
-// than a nil-check: there is no denial signal to detect, so the predicate is applied
-// directly to what came back.
+// it at 0.5 because a stub has no embedding. Never admit a stub: a nil or failed read
+// is a drop.
 //
-// A nil predicate denies everything (TagPredicate.Check fail-closes on nil), matching
-// readFilter's contract that a nil predicate means no read is authorized.
+// A nil predicate denies everything, matching readFilter's contract that a nil
+// predicate means no read is authorized.
 func authorizedDoc(ctx context.Context, vs kgExpandVectorSearch, scope *domain.TagPredicate, id string) (domain.Document, bool) {
-	doc, err := vs.GetByID(ctx, id)
-	if err != nil || doc == nil {
+	if scope == nil {
 		return domain.Document{}, false
 	}
-	if !scope.Allows(docTags(doc.Metadata)) {
+	doc, err := vs.GetByID(domain.WithScope(ctx, scope), id)
+	if err != nil || doc == nil {
 		return domain.Document{}, false
 	}
 	return *doc, true
@@ -419,9 +403,6 @@ type kgExpandOpts struct {
 	MaxExpanded int // default 20 (max new chunks added)
 	MaxEntities int // default 30 (max entities to consider from frontier)
 	PerEntity   int // default 5 (max chunks pulled per entity via ChunksMentioningEntity)
-	// AliasIndex, when non-nil, supplies embedding-nearest entity names for the
-	// top frontier entities (query-time synonym linking). Optional.
-	AliasIndex aliasNeighborIndex
 }
 
 // rankEntitiesByCount sorts entities by mention frequency desc, returns the

@@ -34,6 +34,11 @@ type Substrate struct {
 	Entities  *postgres.PgEntityStore
 	Links     *postgres.PgLinkStore
 	Query     *postgres.PgQueryPlane
+	// IdentityScans is the background identity producers' read port
+	// (domain.IdentityScanSource, ENG-1393): namespace-wide paged scans with the
+	// retirement rule and the access fence applied inside, so premium's producers
+	// never read substrate tables with their own SQL.
+	IdentityScans *postgres.PgIdentityScanSource
 	// Objects reads the per-kind object tables (ADR-0149 D6 ListObjects, D7
 	// GetObject); plugins reach it only through ObjectsSeam.
 	Objects *objects.Reader
@@ -57,6 +62,8 @@ func NewSubstrate(pool *pgxpool.Pool, kinds domain.KindSource, relations domain.
 		Knowledge: postgres.NewPgKnowledgeStore(pool, kinds),
 		Entities:  postgres.NewPgEntityStore(pool, kinds),
 		Links:     postgres.NewPgLinkStore(pool, relations),
+
+		IdentityScans: postgres.NewPgIdentityScanSource(pool),
 	}
 	s.Query = postgres.NewPgQueryPlane(pool, s.Events, s.Knowledge, s.Evidence, s.Links, s.Entities, relations)
 	s.Objects = objects.NewReader(pool, kinds, relations)

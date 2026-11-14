@@ -207,6 +207,8 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		Error:      resp.Error,
 		ArgHash:    resp.ArgHash,
 		ResultHash: resp.ResultHash,
+		// ADR-0139 D11 hook context, beside the result (contract 0104).
+		Annotations: resp.Annotations,
 	}, nil
 }
 

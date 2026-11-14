@@ -20,10 +20,8 @@
   },
   "server": { "port": "50051" },
   "telemetry": {
-    "otlp_endpoint": "",
     "trace_sampling_rate": 1.0,
     "metrics_export_interval_seconds": 10,
-    "enable_stdout_exporter": false,
-    "prometheus_port": 0
+    "enable_stdout_exporter": false
   }
 }

@@ -38,7 +38,7 @@ func newTestAdapter(t *testing.T) (*PgVectorAdapter, func()) {
 		t.Fatalf("failed to create pgx pool: %v", err)
 	}
 
-	adapter := &PgVectorAdapter{pool: pool, dim: 1536}
+	adapter := &PgVectorAdapter{pool: pool, dim: eventTestDim}
 	if err := adapter.ensureSchema(context.Background()); err != nil {
 		pool.Close()
 		t.Fatalf("ensureSchema failed: %v", err)
@@ -68,7 +68,7 @@ func testCtx() context.Context {
 }
 
 func dummyVec() []float32 {
-	v := make([]float32, 1536)
+	v := make([]float32, eventTestDim)
 	v[0] = 0.1
 	return v
 }
@@ -232,7 +232,7 @@ func TestFloorMultiplier_Reranking(t *testing.T) {
 			Text:         "doc with high activation but medium similarity",
 			DocumentType: domain.DocTypeMemory,
 			Embedding: domain.Embedding{Vector: func() []float32 {
-				v := make([]float32, 1536)
+				v := make([]float32, eventTestDim)
 				v[0] = 0.3
 				return v
 			}()},
@@ -243,7 +243,7 @@ func TestFloorMultiplier_Reranking(t *testing.T) {
 			Text:         "doc with low activation but high similarity",
 			DocumentType: domain.DocTypeMemory,
 			Embedding: domain.Embedding{Vector: func() []float32 {
-				v := make([]float32, 1536)
+				v := make([]float32, eventTestDim)
 				v[0] = 0.85
 				return v
 			}()},
@@ -257,7 +257,7 @@ func TestFloorMultiplier_Reranking(t *testing.T) {
 	}
 
 	// Query between both vectors — doc-002 should have higher raw cosine but lower re-ranked score.
-	queryVec := make([]float32, 1536)
+	queryVec := make([]float32, eventTestDim)
 	queryVec[0] = 0.5
 
 	results, err := adapter.Search(ctx, queryVec, domain.SearchOptions{
@@ -289,7 +289,7 @@ func TestRetrievalFloor_Guarantee(t *testing.T) {
 	defer cleanup()
 
 	ctx := testCtx()
-	v := make([]float32, 1536)
+	v := make([]float32, eventTestDim)
 	v[0] = 0.5
 
 	doc := &domain.Document{
@@ -303,7 +303,7 @@ func TestRetrievalFloor_Guarantee(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	queryVec := make([]float32, 1536)
+	queryVec := make([]float32, eventTestDim)
 	queryVec[0] = 0.5
 
 	results, err := adapter.Search(ctx, queryVec, domain.SearchOptions{
@@ -333,7 +333,7 @@ func TestExplorationRate_Slots(t *testing.T) {
 
 	// Seed 150 documents so there's a tail beyond TopK for exploration sampling.
 	for i := 0; i < 150; i++ {
-		v := make([]float32, 1536)
+		v := make([]float32, eventTestDim)
 		v[0] = float32(i) * 0.006
 		doc := &domain.Document{
 			ID:                 fmt.Sprintf("test-explore-%02d", i),
@@ -351,7 +351,7 @@ func TestExplorationRate_Slots(t *testing.T) {
 	// At 5% exploration: ceil(10*0.05)=1 slot per query → ~10% of slots are exploratory.
 	exploreCount := 0
 	totalResults := 0
-	queryVec := make([]float32, 1536)
+	queryVec := make([]float32, eventTestDim)
 	queryVec[0] = 0.5
 
 	for q := 0; q < 50; q++ {
@@ -377,110 +377,5 @@ func TestExplorationRate_Slots(t *testing.T) {
 	// ceil(10*0.05)=1 slot per 10 → 10% expected rate, with ±6% tolerance.
 	if rate < 0.02 || rate > 0.15 {
 		t.Errorf("exploration rate = %.3f, want approximately 0.10 (±6%%)", rate)
-	}
-}
-
-// ── Ebbinghaus decay integration tests (ADR-0015) ─────────────────────
-
-// Cycle 8: Decay formula correctness.
-func TestEbbinghausDecay_Formula(t *testing.T) {
-	adapter, cleanup := newTestAdapter(t)
-	defer cleanup()
-
-	ctx := testCtx()
-	doc := &domain.Document{
-		ID:                 "test-decay-001",
-		Text:               "ebbinghaus decay formula test",
-		DocumentType:       domain.DocTypeMemory,
-		Embedding:          dummyEmb(),
-		ActivationStrength: 0.5,
-		AccessCount:        20,
-	}
-	if err := adapter.Save(ctx, doc); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	// Run decay.
-	_, err := adapter.pool.Exec(ctx, "SELECT apply_ebbinghaus_decay(30);")
-	if err != nil {
-		t.Fatalf("apply_ebbinghaus_decay failed: %v", err)
-	}
-
-	retrieved, err := adapter.GetByID(ctx, "test-decay-001")
-	if err != nil {
-		t.Fatalf("GetByID failed: %v", err)
-	}
-	if retrieved == nil {
-		t.Fatal("document was GC'd unexpectedly")
-	}
-
-	// Formula: (0.5 + 0.005×20) × e^{-0.001} × (1-0.02) ≈ 0.587
-	expected := 0.587
-	if retrieved.ActivationStrength < expected-0.01 || retrieved.ActivationStrength > expected+0.01 {
-		t.Errorf("ActivationStrength after decay = %.4f, want approximately %.4f", retrieved.ActivationStrength, expected)
-	}
-	t.Logf("decay result: AS = %.4f (expected ~%.4f)", retrieved.ActivationStrength, expected)
-}
-
-// Cycle 9: GC fires on stale documents past min_gc_age_days.
-func TestEbbinghausDecay_GC_Fires(t *testing.T) {
-	adapter, cleanup := newTestAdapter(t)
-	defer cleanup()
-
-	ctx := testCtx()
-
-	// Insert a chunk manually with an old created_at timestamp. `chunks` is the
-	// table apply_ebbinghaus_decay() decays and GCs since 0007 (ADR-0093);
-	// the entity table `documents` has no activation_strength column.
-	_, err := adapter.pool.Exec(ctx,
-		"INSERT INTO chunks (id, text, activation_strength, access_count, created_at, document_type, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-		"test-gc-fire-001", "stale garbage doc", 0.03, 0, "2025-01-01T00:00:00Z", domain.DocTypeMemory, "{}")
-	if err != nil {
-		t.Fatalf("manual insert failed: %v", err)
-	}
-
-	// GC with min_gc_age_days=1 (doc is ~500 days old → should be deleted).
-	_, err = adapter.pool.Exec(ctx, "SELECT apply_ebbinghaus_decay(1);")
-	if err != nil {
-		t.Fatalf("apply_ebbinghaus_decay failed: %v", err)
-	}
-
-	retrieved, err := adapter.GetByID(ctx, "test-gc-fire-001")
-	if err != nil {
-		t.Fatalf("GetByID failed: %v", err)
-	}
-	if retrieved != nil {
-		t.Errorf("expected document to be GC'd, but it was still present with AS=%.2f", retrieved.ActivationStrength)
-	}
-}
-
-// Cycle 10: GC does NOT fire on recently-created documents even with low AS.
-func TestEbbinghausDecay_GC_MinAgeGate(t *testing.T) {
-	adapter, cleanup := newTestAdapter(t)
-	defer cleanup()
-
-	ctx := testCtx()
-
-	// Insert with recent created_at (now).
-	_, err := adapter.pool.Exec(ctx,
-		"INSERT INTO chunks (id, text, activation_strength, access_count, created_at, document_type, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-		"test-gc-protected-001", "recent document", 0.03, 0,
-		"NOW()", domain.DocTypeMemory, "{}")
-	if err != nil {
-		t.Fatalf("manual insert failed: %v", err)
-	}
-
-	// GC with min_gc_age_days=30 (doc is seconds old → should NOT be deleted).
-	_, err = adapter.pool.Exec(ctx, "SELECT apply_ebbinghaus_decay(30);")
-	if err != nil {
-		t.Fatalf("apply_ebbinghaus_decay failed: %v", err)
-	}
-
-	retrieved, err := adapter.GetByID(ctx, "test-gc-protected-001")
-	if err != nil {
-		t.Fatalf("GetByID failed: %v", err)
-	}
-	if retrieved == nil {
-		t.Error("document was prematurely GC'd — minimum age gate should have protected it")
 	}
 }

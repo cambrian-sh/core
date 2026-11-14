@@ -7,7 +7,6 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz/sqlfence"
-	"github.com/cambrian-sh/core/internal/memory"
 )
 
 const (
@@ -27,7 +26,7 @@ const (
 // it is invisible to the policy model. Before this there was no way to find one
 // except by already knowing what it said, which is the one thing an operator
 // auditing their own corpus does not know.
-func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f memory.DocumentFilter) ([]memory.DocumentSummary, string, int, error) {
+func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f domain.DocumentFilter) ([]domain.DocumentSummary, string, int, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = defaultDocumentPage
@@ -47,9 +46,22 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f memory.DocumentFi
 	}
 	// The owner fence, unconditionally (domain/owner_scope.go): a listing returns
 	// titles and labels, and a personal mailbox's subject lines are content.
-	held := (&domain.TagPredicate{Owners: f.Owners}).HeldOwnerTags()
-	args = append(args, held)
-	filters = append(filters, sqlfence.OwnerFence("d.tags", len(args)))
+	if f.Scope != nil {
+		// A principal-serving listing (ENG-725): the reader's whole predicate,
+		// rendered by the one SQL mirror (sqlfence; AGENTS.md §2.5), owner fence
+		// included. In the WHERE, so it filters before LIMIT and the count sees
+		// exactly what the page sees — a post-filter would short-page and let
+		// total_matching count rows the reader may not read.
+		expr, fenceArgs := sqlfence.TextArray("d.tags").Expr(f.Scope, len(args))
+		args = append(args, fenceArgs...)
+		if expr != "TRUE" {
+			filters = append(filters, expr)
+		}
+	} else {
+		held := (&domain.TagPredicate{Owners: f.Owners}).HeldOwnerTags()
+		args = append(args, held)
+		filters = append(filters, sqlfence.OwnerFence("d.tags", len(args)))
+	}
 	if f.UnlabelledOnly {
 		filters = append(filters, "cardinality(d.tags) = 0")
 	}
@@ -100,9 +112,9 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f memory.DocumentFi
 	}
 	defer rows.Close()
 
-	out := make([]memory.DocumentSummary, 0, limit)
+	out := make([]domain.DocumentSummary, 0, limit)
 	for rows.Next() {
-		var s memory.DocumentSummary
+		var s domain.DocumentSummary
 		if err := rows.Scan(&s.ID, &s.Title, &s.SourceType, &s.Tags, &s.CreatedAt, &s.ChunkCount); err != nil {
 			return nil, "", 0, mapError("ListDocuments", err)
 		}

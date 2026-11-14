@@ -1159,7 +1159,6 @@ type testObserver struct {
 func (o *testObserver) OnTaskCompleted(evt domain.TaskEvent)                     { o.onTaskCompleted(evt) }
 func (o *testObserver) OnSessionEvicted(_ string)                                {}
 func (o *testObserver) OnConwipWait(_ int64)                                     {}
-func (o *testObserver) OnAuctionNoWinner(_ string)                               {}
 func (o *testObserver) OnSchemaMismatch(_, _ string)                             {}
 func (o *testObserver) OnPlanCompleted(_ domain.PlanEvent)                       {}
 func (o *testObserver) OnRetrievalCompleted(_ domain.RetrievalSession)           {}

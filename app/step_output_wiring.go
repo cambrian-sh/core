@@ -56,12 +56,12 @@ type manifestReader interface {
 // AGENT_MANIFEST). Read per call so a re-registered agent's declaration is live; a
 // lookup failure reads as "does not stream" — the gateway then forwards, which is
 // the pre-amendment behaviour, never a silent loss of output.
-func agentStreamsOutput(reg manifestReader) func(string) bool {
+func agentStreamsOutput(reg manifestReader) func(context.Context, string) bool {
 	if reg == nil {
 		return nil
 	}
-	return func(agentID string) bool {
-		m, err := reg.GetManifest(context.Background(), agentID)
+	return func(ctx context.Context, agentID string) bool {
+		m, err := reg.GetManifest(ctx, agentID)
 		if err != nil || m == nil {
 			return false
 		}

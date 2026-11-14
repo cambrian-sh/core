@@ -16,27 +16,33 @@ import (
 // EnableNeighborWindow turns on neighbor-window expansion.
 func (q *QueryService) EnableNeighborWindow() { q.neighborWindow = true }
 
-// neighborIDs pulls a chunk's preceding/following neighbor ids from its
-// chunk_relations metadata (jsonb — round-trips as a nested map, or a raw JSON
-// string on some write paths; handle both).
-func neighborIDs(meta map[string]interface{}) []string {
+// chunkRelationsOf parses a chunk's chunk_relations metadata (jsonb — round-trips
+// as a nested map, or a raw JSON string on some write paths; handle both). A missing
+// or malformed payload reads as the zero value (no neighbours).
+func chunkRelationsOf(meta map[string]interface{}) ChunkRelations {
+	var cr ChunkRelations
 	raw, ok := meta["chunk_relations"]
 	if !ok {
-		return nil
-	}
-	var cr struct {
-		PrecedingChunkID string `json:"preceding_chunk_id"`
-		FollowingChunkID string `json:"following_chunk_id"`
+		return cr
 	}
 	switch v := raw.(type) {
 	case string:
 		_ = json.Unmarshal([]byte(v), &cr)
 	case []byte:
 		_ = json.Unmarshal(v, &cr)
+	case json.RawMessage:
+		_ = json.Unmarshal(v, &cr)
 	case map[string]interface{}:
 		b, _ := json.Marshal(v)
 		_ = json.Unmarshal(b, &cr)
 	}
+	return cr
+}
+
+// neighborIDs pulls a chunk's preceding/following neighbor ids from its
+// chunk_relations metadata.
+func neighborIDs(meta map[string]interface{}) []string {
+	cr := chunkRelationsOf(meta)
 	out := make([]string, 0, 2)
 	if cr.PrecedingChunkID != "" {
 		out = append(out, cr.PrecedingChunkID)

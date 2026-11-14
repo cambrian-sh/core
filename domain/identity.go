@@ -217,8 +217,8 @@ type EntityStore interface {
 	// entity" is an answer, never an error.
 	GetEntity(ctx context.Context, namespace, id string) (Entity, bool, error)
 
-	// ListEntitiesByKind returns minted handles of one kind, newest first.
-	ListEntitiesByKind(ctx context.Context, namespace, kind string, limit int) ([]Entity, error)
+	// ListEntitiesByKind was deleted 2026-11-14 (ENG-1043): it had no production
+	// caller and applied no scope fence. Listing objects is ListObjects (ADR-0149).
 
 	// ResolveEntityByLocal returns the minted handles whose id ends in
 	// "/"+local — every kind that happens to use this local id (five-planes

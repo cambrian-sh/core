@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"sort"
 	"strings"
@@ -11,7 +12,29 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/migrate"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
+)
+
+// OperatorMethodRole classifies one premium operator-plane method for the
+// operator role gate (owner decision 2026-11-14,
+// T-20261113-core-operator-authz-hardcodes-premium-plane). Core keeps the
+// enforcement point; the plugin that serves a method declares its class through
+// Registry.DeclareOperatorMethodRoles. An undeclared method follows the
+// fail-closed naming rule (Query*/List*/Get*/Describe* = read; else command;
+// Members reach nothing).
+type OperatorMethodRole = operator.MethodRole
+
+const (
+	// OperatorMethodSelfService: open to every authenticated role, Member included;
+	// the handler acts only on the caller's own data (connect MY account).
+	OperatorMethodSelfService = operator.MethodSelfService
+	// OperatorMethodMemberRead: a read a Member may make (MY accounts list).
+	OperatorMethodMemberRead = operator.MethodMemberRead
+	// OperatorMethodOperatorOnly: a read Viewers and Members may not make (other
+	// people's accounts, SCIM connections, a full ontology draft).
+	OperatorMethodOperatorOnly = operator.MethodOperatorOnly
 )
 
 // Plugin is a compile-time kernel extension unit (ADR-0074). A downstream module
@@ -153,6 +176,9 @@ type MCPServerSpec struct {
 	AuthHeader   string
 	AuthTokenEnv string
 	Tools        []MCPToolSpec
+	// AllowPrivateNetwork opts an http server on loopback / private space into
+	// the guarded egress dialer (ADR-0153). Default false: refused.
+	AllowPrivateNetwork bool
 }
 
 // MCPToolSpec is a per-tool policy carried on an MCPServerSpec.
@@ -216,6 +242,77 @@ type Registry struct {
 	consultOwner     string
 	publishedTools   domain.PublishedToolSurface
 	publishedOwner   map[string]string
+	migrations       []migrate.Lane
+	laneDigests      map[string]string
+	methodRoles      map[string]OperatorMethodRole // full method -> declared class
+}
+
+// DeclareOperatorMethodRoles declares the role class of methods of one premium
+// operator-plane service the plugin serves (service is the fully-qualified gRPC
+// name, e.g. "cambrian.premium.accounts.AccountsAdmin"; roles maps a bare method
+// name to its class). Only methods with a NON-default class need declaring: the
+// naming rule already makes Query*/List*/Get*/Describe* reads and everything else
+// Operator commands.
+//
+// Tier-2 add-many. Refused: a service outside cambrian.premium.* (OperatorConsole's
+// roles are core's), an unknown class, and the same method declared twice with
+// different classes (two answers to one access question; an identical repeat is a
+// no-op, like AddMigrations).
+func (r *Registry) DeclareOperatorMethodRoles(service string, roles map[string]OperatorMethodRole) error {
+	for method, role := range roles {
+		full, err := operator.FullMethodName(service, method)
+		if err != nil {
+			return err
+		}
+		if !role.Valid() {
+			return fmt.Errorf("operator method roles: %s: unknown class %q", full, role)
+		}
+		if r.methodRoles == nil {
+			r.methodRoles = make(map[string]OperatorMethodRole)
+		}
+		if prev, dup := r.methodRoles[full]; dup && prev != role {
+			return fmt.Errorf("operator method roles: %s declared both %q and %q", full, prev, role)
+		}
+		r.methodRoles[full] = role
+	}
+	return nil
+}
+
+// AddMigrations registers a plugin's schema migrations: NNNN_name.sql files at the
+// root of fsys, applied by core's forward-only runner in their own ledger namespace
+// (plugin_schema_migrations, keyed by namespace and version) after core's own
+// migrations, by `migrate up|status` and at boot under the same
+// database.migrations policy (T-20261113-premium-has-no-schema-migration-chain-41-create,
+// owner decision 2026-11-14). Core never imports the plugin: a lane is a namespace
+// and an fs.FS.
+//
+// The lane is validated here, so a malformed file fails the plugin's registration
+// rather than a boot against a database. Several plugins of one product may share a
+// namespace by registering the SAME files (premium's plugins all register lane
+// "premium" from one embedded package): an identical repeat is a no-op, while a
+// different file set under a taken namespace is an error — two lanes writing one
+// ledger namespace would make its versions mean two things.
+func (r *Registry) AddMigrations(namespace string, fsys fs.FS) error {
+	lane := migrate.Lane{Namespace: namespace, FS: fsys}
+	if err := migrate.ValidateLane(lane); err != nil {
+		return err
+	}
+	digest, err := migrate.LaneDigest(lane)
+	if err != nil {
+		return err
+	}
+	if prev, ok := r.laneDigests[namespace]; ok {
+		if prev == digest {
+			return nil
+		}
+		return fmt.Errorf("migration lane %q is already registered with different files", namespace)
+	}
+	if r.laneDigests == nil {
+		r.laneDigests = map[string]string{}
+	}
+	r.laneDigests[namespace] = digest
+	r.migrations = append(r.migrations, lane)
+	return nil
 }
 
 // SetAuthorizer installs the access-control decision point (ADR-0085). Tier-1
@@ -612,6 +709,10 @@ type composedPlugins struct {
 	// built is the ordered set of plugins that registered, retained so the composition
 	// root can drive their optional Build phase once the kernel stacks exist (D12).
 	built []Plugin
+	// migrations are the plugins' schema migration lanes (Registry.AddMigrations), in
+	// registration order: applied after core's migrations at boot
+	// (PgVectorAdapter.BootPluginMigrations) and by `migrate up|status` (RunMigrateWith).
+	migrations []migrate.Lane
 }
 
 // PluginStatus pairs a plugin's declaration with what actually happened to it at boot.
@@ -881,6 +982,21 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 			}
 		}
 	}
+	// Operator method roles (T-20261113-core-operator-authz-hardcodes-premium-plane):
+	// merged per method. A method classified both directly on Options and by a
+	// plugin must agree — disagreement is two answers to an access question, so it
+	// fails the boot rather than letting either win silently.
+	if len(reg.methodRoles) > 0 {
+		if opts.OperatorMethodRoles == nil {
+			opts.OperatorMethodRoles = make(map[string]OperatorMethodRole, len(reg.methodRoles))
+		}
+		for full, role := range reg.methodRoles {
+			if prev, set := opts.OperatorMethodRoles[full]; set && prev != role {
+				return composedPlugins{opts: opts}, fmt.Errorf("operator method roles: %s is %q on Options but a plugin declared %q", full, prev, role)
+			}
+			opts.OperatorMethodRoles[full] = role
+		}
+	}
 	// Substrate consultant (ADR-0118 D5): plugin wins only if not set directly.
 	if opts.SubstrateConsultant == nil && reg.substrateConsult != nil {
 		opts.SubstrateConsultant = reg.substrateConsult
@@ -955,6 +1071,7 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 		capabilities:   caps,
 		statuses:       statuses,
 		built:          ordered,
+		migrations:     reg.migrations,
 	}, nil
 }
 

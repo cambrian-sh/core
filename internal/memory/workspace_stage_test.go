@@ -9,22 +9,39 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// mockFactStore implements VectorStore for workspace tests.
-type mockFactStore struct {
-	fakeVectorStore
-	docs    []domain.SearchResult
-	negDocs []domain.SearchResult // returned for DocTypeNegativeEdge queries
+// recordingRecall is a PrincipalRecall double: it answers per document type and
+// records who each lane read as and with what query.
+type recordingRecall struct {
+	mu       sync.Mutex
+	byType   map[string][]domain.SearchResult
+	calls    []recallCall
+	failType string
 }
 
-func (m *mockFactStore) Search(_ context.Context, _ []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {
-	if opts.DocumentType == domain.DocTypeNegativeEdge {
-		return m.negDocs, nil
+type recallCall struct {
+	p       domain.PrincipalRef
+	query   string
+	docType string
+}
+
+func (r *recordingRecall) RecallFor(_ context.Context, p domain.PrincipalRef, query, docType string) ([]domain.SearchResult, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, recallCall{p, query, docType})
+	r.mu.Unlock()
+	if docType == r.failType {
+		return nil, fmt.Errorf("boom")
 	}
-	return m.docs, nil
+	return append([]domain.SearchResult(nil), r.byType[docType]...), nil
 }
 
-func (m *mockFactStore) GetBatch(_ context.Context, _ []string) ([]domain.Document, error) {
-	return nil, nil
+func (r *recordingRecall) types() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, c := range r.calls {
+		out = append(out, c.docType)
+	}
+	return out
 }
 
 func factDocs(n int) []domain.SearchResult {
@@ -37,19 +54,26 @@ func factDocs(n int) []domain.SearchResult {
 				DocumentType: domain.DocTypeMnemonicFact,
 				Metadata:     map[string]interface{}{"source_agent": "test_agent"},
 			},
-			Score: float64(n-i) * 0.1,
+			Score:    float64(n-i) * 0.1,
+			RawScore: 0.9,
 		}
 	}
 	return docs
 }
 
-// Cycle 1: Facts returned in LTMEnrichment.Facts.
+// planningCtx is a context carrying the planning principal (the authenticated
+// caller of the Execute that plans).
+func planningCtx() context.Context {
+	return domain.WithPrincipal(context.Background(), domain.PrincipalRef{ID: "ayse", Kind: domain.PrincipalUser})
+}
+
+// Facts returned in LTMEnrichment.Facts.
 func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
 	t.Parallel()
-	store := &mockFactStore{docs: factDocs(2)}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(2)}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
-	result, err := ws.PrimeForPlanning(context.Background(), "auth deployment")
+	result, err := ws.PrimeForPlanning(planningCtx(), "auth deployment")
 	if err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
 	}
@@ -58,28 +82,77 @@ func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
 	}
 }
 
-// Cycle 2: NegativeEdge docs appear in LTMEnrichment.Negatives, not Facts.
+// ENG-465 + ENG-540 (owner decisions 2026-11-14/15): the FACT lane reads as the
+// planning principal; the NEGATIVE and PROCEDURE lanes are global company knowledge
+// and read as domain.SystemPrincipal — all through the recall (QueryService.RecallFor),
+// all with the task as the query.
+func TestWorkspaceStage_LanesReadUnderTheDecidedScopes(t *testing.T) {
+	t.Parallel()
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(1)}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	if _, err := ws.PrimeForPlanning(planningCtx(), "auth deployment"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]domain.PrincipalRef{
+		domain.DocTypeMnemonicFact:      {ID: "ayse", Kind: domain.PrincipalUser},
+		domain.DocTypeNegativeEdge:      domain.SystemPrincipal,
+		domain.DocTypeMnemonicProcedure: domain.SystemPrincipal,
+	}
+	seen := map[string]bool{}
+	for _, c := range rec.calls {
+		if c.p != want[c.docType] || c.query != "auth deployment" {
+			t.Errorf("lane %s read as %v with %q; want %v with the task", c.docType, c.p, c.query, want[c.docType])
+		}
+		seen[c.docType] = true
+	}
+	for ty := range want {
+		if !seen[ty] {
+			t.Errorf("lane %s never ran (ran %v)", ty, rec.types())
+		}
+	}
+}
+
+// No principal ⇒ no priming: nothing is read, the enrichment is empty, the plan
+// is not failed.
+func TestWorkspaceStage_NoPrincipalNoPriming(t *testing.T) {
+	t.Parallel()
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(3)}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	got, err := ws.PrimeForPlanning(context.Background(), "auth deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Facts)+len(got.Negatives)+len(got.Procedures) != 0 || len(rec.calls) != 0 {
+		t.Fatalf("primed without a principal: %+v, calls %v", got, rec.calls)
+	}
+	m, err := ws.PrimeForExecution(context.Background(), &domain.ExecutionPlan{Subject: "s"}, nil)
+	if err != nil || len(m) != 0 {
+		t.Fatalf("PrimeForExecution without a principal = %v, %v", m, err)
+	}
+}
+
+// NegativeEdge docs appear in LTMEnrichment.Negatives, not Facts, capped at 3.
 func TestWorkspaceStage_NegativesInEnrichment(t *testing.T) {
 	t.Parallel()
-	store := &mockFactStore{
-		docs: factDocs(1),
-		negDocs: []domain.SearchResult{
-			{Document: domain.Document{
-				ID:           "neg-1",
-				Text:         "BLOCKED: 'rm' is not in ALLOWED_COMMANDS",
-				DocumentType: domain.DocTypeNegativeEdge,
-				Metadata:     map[string]interface{}{"agent_id": "terminal_agent"},
-			}},
-		},
+	var negs []domain.SearchResult
+	for i := 0; i < 5; i++ {
+		negs = append(negs, domain.SearchResult{Document: domain.Document{
+			ID: fmt.Sprintf("neg-%d", i), Text: "BLOCKED: 'rm' is not in ALLOWED_COMMANDS",
+			DocumentType: domain.DocTypeNegativeEdge,
+		}})
 	}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{
+		domain.DocTypeMnemonicFact: factDocs(1),
+		domain.DocTypeNegativeEdge: negs,
+	}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
-	result, err := ws.PrimeForPlanning(context.Background(), "some query")
+	result, err := ws.PrimeForPlanning(planningCtx(), "some query")
 	if err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
 	}
-	if len(result.Negatives) != 1 {
-		t.Fatalf("expected 1 negative, got %d", len(result.Negatives))
+	if len(result.Negatives) != 3 {
+		t.Fatalf("expected 3 negatives (capped), got %d", len(result.Negatives))
 	}
 	for _, f := range result.Facts {
 		if f.Document.DocumentType == domain.DocTypeNegativeEdge {
@@ -88,69 +161,39 @@ func TestWorkspaceStage_NegativesInEnrichment(t *testing.T) {
 	}
 }
 
-// negLaneStore captures the vector and options the negatives lane searched with. The
-// shared mockFactStore discards both, which is how the lane searched with a nil vector
-// for as long as it did.
-type negLaneStore struct {
-	fakeVectorStore
-	mu      sync.Mutex
-	negVec  []float32
-	negOpts domain.SearchOptions
-	seenNeg bool
-}
-
-func (n *negLaneStore) Search(_ context.Context, vec []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {
-	if opts.DocumentType == domain.DocTypeNegativeEdge {
-		n.mu.Lock()
-		n.negVec, n.negOpts, n.seenNeg = vec, opts, true
-		n.mu.Unlock()
-	}
-	return nil, nil
-}
-
-func (n *negLaneStore) GetBatch(_ context.Context, _ []string) ([]domain.Document, error) {
-	return nil, nil
-}
-
-// A nil query vector is not similarity-matched to anything: the pgvector adapter answers
-// it with an identical score per row ordered by last_accessed_at, so the negatives lane
-// fed the planner the three most recently touched failures whatever the task was.
-func TestWorkspaceStage_NegativesSearchedAgainstTheTask(t *testing.T) {
+// RetrievalFloor and MinFactCosine drop DENSE hits below them; rows with no
+// cosine (lexical or fact-lane hits) are kept, as QueryService's floor keeps them.
+func TestWorkspaceStage_FloorsTestRawCosineOnly(t *testing.T) {
 	t.Parallel()
-	store := &negLaneStore{}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.35)
-
-	if _, err := ws.PrimeForPlanning(context.Background(), "auth deployment"); err != nil {
-		t.Fatalf("PrimeForPlanning failed: %v", err)
+	hits := []domain.SearchResult{
+		{Document: domain.Document{ID: "dense-hi"}, RawScore: 0.9},
+		{Document: domain.Document{ID: "dense-mid"}, RawScore: 0.5},  // below MinFactCosine
+		{Document: domain.Document{ID: "dense-low"}, RawScore: 0.25}, // below RetrievalFloor
+		{Document: domain.Document{ID: "lexical"}, RawScore: 0},
 	}
-	if !store.seenNeg {
-		t.Fatal("the negatives lane never ran")
-	}
-	want, err := (&fakeEmbedder{}).Embed(context.Background(), "auth deployment")
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: hits}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.3)
+	ws.MinFactCosine = 0.6
+	got, err := ws.PrimeForPlanning(planningCtx(), "q")
 	if err != nil {
-		t.Fatalf("embed: %v", err)
+		t.Fatal(err)
 	}
-	if len(store.negVec) != len(want) {
-		t.Fatalf("negatives searched with a %d-dim vector, want the %d-dim task embedding",
-			len(store.negVec), len(want))
+	var ids []string
+	for _, h := range got.Facts {
+		ids = append(ids, h.Document.ID)
 	}
-	for i := range want {
-		if store.negVec[i] != want[i] {
-			t.Fatalf("negatives vector != embedded task query: got %v want %v", store.negVec, want)
-		}
-	}
-	if store.negOpts.RetrievalFloor != ws.RetrievalFloor {
-		t.Errorf("RetrievalFloor: want %v got %v", ws.RetrievalFloor, store.negOpts.RetrievalFloor)
+	if fmt.Sprint(ids) != "[dense-hi lexical]" {
+		t.Fatalf("facts = %v, want [dense-hi lexical]", ids)
 	}
 }
 
-// Cycle 3: PrimeForExecution slot limit enforced (map format for DAGExecutor).
+// PrimeForExecution slot limit enforced (map format for DAGExecutor).
 func TestWorkspaceStage_SlotLimit(t *testing.T) {
 	t.Parallel()
-	store := &mockFactStore{docs: factDocs(8)}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 3, 0.2)
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(8)}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 3, 0.2)
 
-	result, err := ws.PrimeForExecution(context.Background(), &domain.ExecutionPlan{Subject: "test"}, nil)
+	result, err := ws.PrimeForExecution(planningCtx(), &domain.ExecutionPlan{Subject: "test"}, nil)
 	if err != nil {
 		t.Fatalf("PrimeForExecution failed: %v", err)
 	}
@@ -159,13 +202,14 @@ func TestWorkspaceStage_SlotLimit(t *testing.T) {
 	}
 }
 
-// Cycle 4: empty FACT results → empty LTMEnrichment, no panic.
-func TestWorkspaceStage_EmptyResults(t *testing.T) {
+// Empty FACT results → empty LTMEnrichment, no panic; a failing lane costs only
+// enrichment.
+func TestWorkspaceStage_EmptyAndFailingLanes(t *testing.T) {
 	t.Parallel()
-	store := &mockFactStore{docs: nil}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	rec := &recordingRecall{failType: domain.DocTypeNegativeEdge}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
-	result, err := ws.PrimeForPlanning(context.Background(), "unknown query")
+	result, err := ws.PrimeForPlanning(planningCtx(), "unknown query")
 	if err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
 	}
@@ -174,13 +218,13 @@ func TestWorkspaceStage_EmptyResults(t *testing.T) {
 	}
 }
 
-// Cycle 5: execution slots used for PrimeForExecution.
+// Execution slots used for PrimeForExecution.
 func TestWorkspaceStage_ExecutionSlots(t *testing.T) {
 	t.Parallel()
-	store := &mockFactStore{docs: factDocs(10)}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(10)}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
-	result, err := ws.PrimeForExecution(context.Background(), &domain.ExecutionPlan{Subject: "test"}, nil)
+	result, err := ws.PrimeForExecution(planningCtx(), &domain.ExecutionPlan{Subject: "test"}, nil)
 	if err != nil {
 		t.Fatalf("PrimeForExecution failed: %v", err)
 	}
@@ -189,40 +233,17 @@ func TestWorkspaceStage_ExecutionSlots(t *testing.T) {
 	}
 }
 
-// typeRecordingStore records the DocumentType of every Search, and returns a hit with
-// an embedding for any type, so a scene query (had it survived) would prime.
-type typeRecordingStore struct {
-	mockFactStore
-	mu    sync.Mutex
-	types []string
-	vecs  [][]float32
-}
-
-func (s *typeRecordingStore) Search(ctx context.Context, vec []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {
-	s.mu.Lock()
-	s.types = append(s.types, opts.DocumentType)
-	s.vecs = append(s.vecs, append([]float32(nil), vec...))
-	s.mu.Unlock()
-	return s.mockFactStore.Search(ctx, vec, opts)
-}
-
-// 2026-11-05 (decisions/scenes-cancelled.md): enrichment no longer queries scenes and
-// no longer primes the FACT query; the fact search runs on the raw query embedding.
+// 2026-11-05 (decisions/scenes-cancelled.md): enrichment never queries scenes.
 func TestWorkspaceStage_NoScenePriming(t *testing.T) {
 	t.Parallel()
-	store := &typeRecordingStore{mockFactStore: mockFactStore{docs: factDocs(2)}}
-	emb := &fakeEmbedder{}
-	ws := NewWorkspaceStage(store, emb, nil, 10, 5, 0.2)
-	if _, err := ws.PrimeForPlanning(context.Background(), "auth deployment"); err != nil {
+	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(2)}}
+	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	if _, err := ws.PrimeForPlanning(planningCtx(), "auth deployment"); err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
 	}
-	raw, _ := emb.Embed(context.Background(), "auth deployment")
-	for i, ty := range store.types {
+	for _, ty := range rec.types() {
 		if ty == "mnemonic_scene" {
-			t.Errorf("enrichment must not search mnemonic_scene; searched types %v", store.types)
-		}
-		if ty == domain.DocTypeMnemonicFact && fmt.Sprint(store.vecs[i]) != fmt.Sprint(raw) {
-			t.Errorf("the FACT query must use the raw embedding; got %v want %v", store.vecs[i], raw)
+			t.Errorf("enrichment must not search mnemonic_scene; searched types %v", rec.types())
 		}
 	}
 }

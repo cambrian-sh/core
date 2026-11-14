@@ -106,3 +106,43 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	defer l.mu.Unlock()
 	return l.w.Write(p)
 }
+
+// ctxRecordingStore records the hubCtxKey value of every GetApproval (the read
+// Answer starts with).
+type ctxRecordingStore struct {
+	*MemoryApprovalStore
+	mu   sync.Mutex
+	seen []any
+}
+
+func (s *ctxRecordingStore) GetApproval(ctx context.Context, id string) (ApprovalItem, error) {
+	s.mu.Lock()
+	s.seen = append(s.seen, ctx.Value(hubCtxKey{}))
+	s.mu.Unlock()
+	return s.MemoryApprovalStore.GetApproval(ctx, id)
+}
+
+// ENG-1467 item 3: a consent answer submitted through the WorkerConsentHub view
+// is recorded under the answerer's ctx (it used to answer on context.Background()).
+func TestHub_ConsentSubmitUsesTheAnswerersContext(t *testing.T) {
+	store := &ctxRecordingStore{MemoryApprovalStore: NewMemoryApprovalStore()}
+	h := NewAddressedHub(AddressedHubConfig{Store: store, ConsentTimeout: 2 * time.Second})
+	ch, cancel := h.Watch(ApprovalWatch{For: Approver{Principal: hubAlice}})
+	defer cancel()
+	done := raiseAsync(context.Background(), h, ApprovalRequest{Kind: ApprovalKindMachineConsent,
+		ToolName: "local:laptop/write_file", Machine: "laptop", ArgsPreview: `{"path":"a"}`, Beneficiary: hubAlice})
+	it := nextRaised(t, ch)
+	ctx := context.WithValue(context.Background(), hubCtxKey{}, "answerer")
+	if !h.Consent().Submit(ctx, it.ID, ConsentAnswer{Approved: true, By: Approver{Principal: hubAlice}}) {
+		t.Fatal("consent answer refused")
+	}
+	<-done
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for _, v := range store.seen {
+		if v == "answerer" {
+			return
+		}
+	}
+	t.Fatalf("no approval read ran under the answerer's ctx: %v", store.seen)
+}

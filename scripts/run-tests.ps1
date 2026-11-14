@@ -15,8 +15,6 @@
 #   bench-compare     Micro benchmarks + benchstat diff vs baseline
 #   fuzz              Fuzzing, 10 minutes
 #   fuzz-release      Fuzzing, 1 hour
-#   contract          Agent mock contract tests (Python)
-#   contract-release  Agent real-Substrate contract tests
 #   corpus            Generate synthetic corpus (1000 records, baseline scenario)
 #   export            Export bbolt events to JSONL
 #   per-pr            Full per-PR pipeline (unit + separability + integration + chaos + bench-micro)
@@ -31,7 +29,6 @@ param(
         "leak", "leak-integration",
         "bench-micro", "bench-macro", "bench-compare",
         "fuzz", "fuzz-release",
-        "contract", "contract-release",
         "corpus", "export",
         "per-pr", "nightly", "release-gate"
     )]
@@ -147,18 +144,6 @@ function Step-FuzzRelease {
     }
 }
 
-function Step-Contract {
-    Run-Step "Agent mock contract tests (Python / strict mock)" {
-        pytest agents/contract_test.py -v
-    }
-}
-
-function Step-ContractRelease {
-    Run-Step "Agent real-Substrate contract tests (release gate)" {
-        bash "$root/scripts/run-agent-contract-release.sh"
-    }
-}
-
 function Step-Corpus {
     Run-Step "Generate synthetic corpus (1000 records, baseline scenario)" {
         go run ./tools/mockgen-cli/main.go `
@@ -212,7 +197,6 @@ function Pipeline-ReleaseGate {
     Write-Host "========================================" -ForegroundColor Yellow
     Step-BenchMacro
     Step-ChaosReal
-    Step-ContractRelease
     Step-FuzzRelease
     Step-LeakIntegration
     Write-Host ""
@@ -234,8 +218,6 @@ switch ($Group) {
     "bench-compare"      { Step-BenchCompare }
     "fuzz"               { Step-Fuzz }
     "fuzz-release"       { Step-FuzzRelease }
-    "contract"           { Step-Contract }
-    "contract-release"   { Step-ContractRelease }
     "corpus"             { Step-Corpus }
     "export"             { Step-Export }
     "per-pr"             { Pipeline-PerPR }

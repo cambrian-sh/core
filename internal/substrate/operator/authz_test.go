@@ -44,7 +44,7 @@ func login(t *testing.T, idp *identity.LocalAccounts, user, pw string) string {
 }
 
 func callUnary(idp domain.Authenticator, ctx context.Context, method string) (called bool, err error) {
-	interceptor := operator.UnaryAuthInterceptor(idp, nil)
+	interceptor := operator.UnaryAuthInterceptor(idp, nil, nil)
 	_, err = interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method},
 		func(context.Context, any) (any, error) { called = true; return nil, nil })
 	return called, err
@@ -111,7 +111,7 @@ func TestAuth_PrincipalInContext(t *testing.T) {
 	t.Parallel()
 	idp := newIDP()
 	tok := login(t, idp, "op", "pw")
-	interceptor := operator.UnaryAuthInterceptor(idp, nil)
+	interceptor := operator.UnaryAuthInterceptor(idp, nil, nil)
 	var gotPrincipal string
 	var gotRole operator.Role
 	_, err := interceptor(ctxWithToken(tok), nil, &grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/Snapshot"},

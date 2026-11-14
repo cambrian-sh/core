@@ -1,37 +1,22 @@
 package domain
 
-import "context"
-
-// ProceduralMemory stores and retrieves ExecutionPlan templates (Hippocampus).
-type ProceduralMemory interface {
-	Store(ctx context.Context, plan *ExecutionPlan, meanConfidence float64) error
-	// Retrieve returns (plan, similarity, confidence, error).
-	// Similarity is the raw cosine score from vector search.
-	// Confidence is the stored mean per-step selection confidence. It held the mean
-	// BID confidence until ADR-0100 P3 deleted the bid round; historical rows still
-	// carry bid-derived values, so do not compare across that boundary.
-	// Delegates to RetrieveWithPolicy with the default policy.
-	Retrieve(ctx context.Context, userInput string) (*ExecutionPlan, float64, float64, error)
-	// RetrieveWithPolicy uses the named policy's SimilarityThreshold, ConfidenceFloor,
-	// and MaxAgeHours. Unknown policy names fall back to the default policy. (ADR-0027)
-	RetrieveWithPolicy(ctx context.Context, userInput string, policyName string) (*ExecutionPlan, float64, float64, error)
-}
-
-// MemoryFetcher returns a memory context string for injection into prompts.
-type MemoryFetcher interface {
-	FetchContext(ctx context.Context, userInput string) string
-}
+// ProceduralMemory (the ADR-0027 Hippocampus plan-template store) was deleted
+// 2026-11-14 (owner decision, third round; ENG-1301): its writer had no production
+// caller since 2026-07-18. Learned routines are ADR-0139 D13 skills.
 
 // MemoryAgent is the full memory curation interface used by components that need
 // both read and write access to the episodic memory layer.
 // ADR-0025: MemoryFetcher (FetchContext) removed — no longer part of the planning path.
-// The Watcher retains its own local MemoryContextProvider interface for signal enrichment.
+// The Watcher's signal enrichment reads through QueryService.RecallFor as the
+// signal's principal (ENG-1339); FetchContext and domain.MemoryFetcher are deleted.
 //
 // The MemoryIngester seam (IngestSync / ProcessAndStoreAsync) was REMOVED: it was the
 // per-item LLM-importance write path, superseded by the ADR-0015 Tier-1/Tier-2 drain —
 // itself deleted on 2026-11-05 with RecordExecution (decisions/scenes-cancelled.md).
+//
+// IngestNegativeEdge and PoisonMemory were removed from this port on 2026-11-14
+// (owner decision, ENG-1336): neither had a production caller. Failure precedents are
+// written by MemoryRecorder.RecordPlanOutcome.
 type MemoryAgent interface {
-	IngestNegativeEdge(ctx context.Context, errorMsg, lastOutput, agentID string) error
-	PoisonMemory(ctx context.Context, memoryID string, correction string) error
 	MemoryRecorder
 }

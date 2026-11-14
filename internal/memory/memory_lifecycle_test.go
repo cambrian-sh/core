@@ -147,9 +147,8 @@ func lifecycleAgent(store *lifecycleStore) *Agent {
 }
 
 func lifecycleAgentWith(store *lifecycleStore, emb domain.Embedder) *Agent {
-	a := NewAgent(NewMemoryManager(store, emb), 0.7, 5, 3)
+	a := NewAgent(NewMemoryManager(store, emb), 3)
 	a.RecordOutcomes = true // ADR-0049 A2.2 arm ON for this test
-	a.SurpriseFloor = 0.5   // A2.3 failure-precedent gate
 	a.ProcedureDeprecateBelow = 0.3
 	a.ExperienceStore = store
 	return a
@@ -187,18 +186,17 @@ func TestMemoryLifecycle_WhatTheSystemRemembers(t *testing.T) {
 	t.Logf("action records:                %d", store.countType(domain.DocTypeMnemonicAction))
 	t.Logf("failure precedents:            %d", store.countType(domain.DocTypeNegativeEdge))
 
-	// Every plan becomes exactly one EPISODE, and every touch one action record.
+	// Every plan becomes exactly one EPISODE. Since ENG-1595 (owner decision
+	// 2026-11-14) no touch writes an action record and no failure writes a failure
+	// record: raw saves of tool outputs and step results are stopped.
 	if len(store.experiences) != len(plans) {
 		t.Errorf("expected one episode per plan, got %d", len(store.experiences))
 	}
-	if got := store.countType(domain.DocTypeMnemonicAction); got != len(plans) {
-		t.Errorf("expected one action record per touch (%d), got %d", len(plans), got)
+	if got := store.countType(domain.DocTypeMnemonicAction); got != 0 {
+		t.Errorf("no action record may be written (ENG-1595), got %d", got)
 	}
-
-	// A2.3: only the SURPRISING failure earns a precedent. The expected one does not —
-	// that is the difference between a surprise gate and a failure gate.
-	if got := store.countType(domain.DocTypeNegativeEdge); got != 1 {
-		t.Errorf("expected exactly 1 failure precedent (the surprising one), got %d", got)
+	if got := store.countType(domain.DocTypeNegativeEdge); got != 0 {
+		t.Errorf("no failure record may be written (ENG-1595), got %d", got)
 	}
 
 	// ADR-0095 D4: every episode is born tagged, and none can be born untagged.
@@ -217,11 +215,9 @@ func TestMemoryLifecycle_WhatTheSystemRemembers(t *testing.T) {
 		}
 	}
 
-	// The plan-level outcome chunk (`mnemonic_scene`) is gone: what a plan leaves is
-	// its episode row, its action records and, for a surprising failure, a failure
-	// record. Nothing else.
-	if got := len(store.docs); got != len(plans)+1 {
-		t.Errorf("expected %d chunks (actions + one failure record), got %d", len(plans)+1, got)
+	// What a plan leaves is its episode row. No chunk at all.
+	if got := len(store.docs); got != 0 {
+		t.Errorf("expected no chunks, got %d", got)
 	}
 }
 
@@ -274,7 +270,7 @@ func TestMemoryLifecycle_RefinesAStoredRoutine(t *testing.T) {
 func TestMemoryLifecycle_ArmOffRemembersNothing(t *testing.T) {
 	t.Parallel()
 	store := newLifecycleStore()
-	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.7, 5, 3)
+	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 3)
 	agent.ExperienceStore = store // wired, but both arms default false
 
 	runPlan(t, agent, mockPlan{

@@ -61,7 +61,7 @@ func TestThoughtPurpose_RoutesLikeThePlannerUnlessAThoughtRoleIsConfigured(t *te
 		t.Parallel()
 		d, pl, th := newBodyServer(t, `"d"`), newBodyServer(t, `"p"`), newBodyServer(t, `"t"`)
 		p := thoughtProvider(t, d, pl, th, false)
-		id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeThought})
+		id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeThought})
 		if err != nil || id != "p" {
 			t.Fatalf("resolve(thought) = %q %v, want the planner's p", id, err)
 		}
@@ -80,7 +80,7 @@ func TestThoughtPurpose_RoutesLikeThePlannerUnlessAThoughtRoleIsConfigured(t *te
 			t.Fatalf("thought call served by %q, want t", got)
 		}
 		// The planner itself is untouched by the thought binding.
-		id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposePlanner})
+		id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposePlanner})
 		if err != nil || id != "p" {
 			t.Fatalf("resolve(planner) = %q %v, want p", id, err)
 		}

@@ -193,6 +193,34 @@ type LLMProviderConfig struct {
 	// without this Cambrian can flood a rate-limited endpoint (HTTP 429). 0 ⇒ default
 	// (defaultLLMMaxConcurrency); a negative value disables the cap (unbounded).
 	MaxConcurrency int `json:"max_concurrency"`
+
+	// Pinned forbids every model fallback (ENG-453, owner decision
+	// 2026-11-14: "benchmark and pinned kernels never fall back and fail fast").
+	// Each call is served by its FIRST-CHOICE generator — the step's suggested
+	// model, else the purpose's role, else the default (the agent plane: the first
+	// registered candidate of the step's chain) — or it fails with the provider's
+	// own error, logged at ERROR. No other generator is tried, equivalent or not, so
+	// a benchmark run can never mix backbones or spend on a paid API behind the
+	// operator's back. Default false. Benchmark kernels set it
+	// (CAMBRIAN_LLM_PROVIDER__PINNED=true or "pinned": true in the providers file).
+	Pinned bool `json:"pinned,omitempty"`
+
+	// EquivalentGenerators lists groups of generator ids an operator declares
+	// interchangeable (owner decision 2026-11-14: "production falls back only to
+	// generators marked equivalent"). When a call's first-choice generator is
+	// unhealthy or fails with an endpoint-class error, the Provider falls back only
+	// to a generator that shares a group with it; any other generator is never
+	// tried and the call fails with the first choice's own error. Two ids are
+	// equivalent iff some group contains both (the relation is not closed over
+	// shared members). Default empty: NO fallback crosses to another generator.
+	// That is the one behaviour change for existing configs — before this field a
+	// failed call walked to the role, the default and then any capability-matching
+	// generator, i.e. to a different (often paid) model. Retrying the same
+	// generator once after a 401/403 (credential refresh) is not a fallback and
+	// is unchanged. Ignored when Pinned. Read at construction (a live
+	// SaveGenerator/RemoveGenerator does not change it); an id that names no
+	// generator is tolerated with a warning, like a role.
+	EquivalentGenerators [][]string `json:"equivalent_generators,omitempty"`
 }
 
 // DefaultGenerator returns the generator marked as the global default, or nil
@@ -267,6 +295,17 @@ func (c LLMProviderConfig) validate(embedder EmbedderConfig) []string {
 	// a STORED role points at would otherwise brick the kernel, and the console
 	// that could fix the store needs the kernel up. (`llm_provider.default` and
 	// generator ids stay hard errors — the ladder cannot recover from those.)
+
+	for i, group := range c.EquivalentGenerators {
+		if len(group) < 2 {
+			errs = append(errs, fmt.Sprintf("llm_provider.equivalent_generators[%d] must name at least two generator ids (a group of one declares nothing)", i))
+		}
+		for j, id := range group {
+			if id == "" {
+				errs = append(errs, fmt.Sprintf("llm_provider.equivalent_generators[%d][%d] is empty", i, j))
+			}
+		}
+	}
 
 	if embedder.Model == "" {
 		errs = append(errs, "embedder.model is required when llm_provider is configured")

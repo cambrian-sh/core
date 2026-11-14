@@ -95,7 +95,7 @@ func TestDiscover_UnlistedToolFailsClosed(t *testing.T) {
 	url := httpServerWith(t, "run_command")
 	conn := NewConnector()
 	defer conn.Close()
-	tools := conn.ConnectAll(context.Background(), []ServerConfig{{ID: "shell", Transport: "http", Endpoint: url}})
+	tools := conn.ConnectAll(context.Background(), []ServerConfig{{ID: "shell", Transport: "http", Endpoint: url, AllowPrivateNetwork: true}})
 
 	reg := domain.NewInMemoryToolRegistry()
 	for _, tl := range tools {
@@ -125,7 +125,7 @@ func TestDiscover_ExplicitReadOnlyPolicy(t *testing.T) {
 	conn := NewConnector()
 	defer conn.Close()
 	tools := conn.ConnectAll(context.Background(), []ServerConfig{{
-		ID: "seq", Transport: "http", Endpoint: url,
+		ID: "seq", Transport: "http", Endpoint: url, AllowPrivateNetwork: true,
 		DefaultPolicy: &ToolPolicy{Effects: []string{"read"}},
 		Tools:         map[string]ToolPolicy{"write_note": {Dangerous: true, Effects: []string{"read", "write"}}},
 	}})
@@ -154,7 +154,7 @@ func TestDiscover_ListedToolWithoutEffectsIsInferred(t *testing.T) {
 	conn := NewConnector()
 	defer conn.Close()
 	tools := conn.ConnectAll(context.Background(), []ServerConfig{{
-		ID: "fs", Transport: "http", Endpoint: url,
+		ID: "fs", Transport: "http", Endpoint: url, AllowPrivateNetwork: true,
 		Tools: map[string]ToolPolicy{"read_file": {Dangerous: false}},
 	}})
 	reg := domain.NewInMemoryToolRegistry()

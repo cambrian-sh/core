@@ -26,13 +26,11 @@ type AgentTrait string
 
 const (
 	TraitCognitive AgentTrait = "" // zero value — full Gatekeeper pipeline
-	// Deprecated: TraitTool (the DeterministicAgent / static-bidder model) is
-	// SUPERSEDED by the kernel-owned tool registry (ADR-0039 A1.3). Deterministic
-	// capabilities are now kernel tools invoked via ExecuteTool, not auction-bidding
-	// cells. The behavioral static bid (Confidence=1.0 bypass) was already removed
-	// in ADR-0023; this constant is retained only for backward-compatible manifest
-	// parsing and will be removed once no manifests declare "trait":"tool".
-	TraitTool   AgentTrait = "tool"   // deprecated — see above
+	// The "tool" trait (DeterministicAgent / static bidder) is DELETED (owner
+	// decision 2026-11-14, ENG-1351): deterministic capabilities are kernel tools
+	// invoked via ExecuteTool (ADR-0039 A1.3). A manifest declaring "trait":"tool"
+	// is refused at discovery, and a registry record stored with it is migrated
+	// at open (internal/storage: migrateRetiredToolTrait).
 	TraitModel  AgentTrait = "model"  // LLM inference provider; no profile vector, Merit-tracked with cost penalty
 	TraitDaemon AgentTrait = "daemon" // autonomous background process; emits signals via SignalStream. ADR-0033.
 )
@@ -74,11 +72,12 @@ var systemAgentIDs = map[string]bool{
 	"retrieval_agent": true,
 	// chat_agent (ADR-0084): the conversational front desk. The kernel's chat worker
 	// pool dispatches it DIRECTLY (CallDaemon) to own one conversation turn; it never
-	// executes planner steps and has no work tools — it only converses and delegates
-	// whole tasks to the planner. It must be excluded from selection for
-	// two reasons: (a) it is incapable of doing task work, so routing a step to it dead-
-	// loops on empty memory queries; (b) letting the planner route back to it creates a
-	// chat→planner→chat recursion. Same privileged-organ class as the other organs — the
+	// executes planner steps. In the single-agent lane (ADR-0150 D3, the default) it IS
+	// the lane's agent and holds the person's tools; in the planner lane it converses
+	// and delegates whole tasks to the planner. Either way it must be excluded from
+	// planner selection: (a) it is not a step worker, and routing a step to it
+	// dead-loops on empty memory queries; (b) letting the planner route back to it
+	// creates a chat→planner→chat recursion. Same privileged-organ class as the other organs — the
 	// configured ChatPoolAgentID defaults to this ID.
 	"chat_agent": true,
 }
@@ -133,12 +132,13 @@ type AgentDefinition struct {
 	LaunchArgs []string `json:"launch_args,omitempty"`
 	// Profile names the agents/profiles/<name>.yaml this agent was built from; ""
 	// for an agent that is its own source file. A profile agent's grants and tool
-	// ceiling come from the profile's tool allowlist (app/profile_grants.go).
+	// ceiling come from the profile's tool allowlist (app/profile_agents.go).
 	Profile string `json:"profile,omitempty"`
 	// TrustTier is the profile's declared ADR-0139 D8 tier (system, first-party,
-	// third-party). Stored for the agent card and the console; the D8 containment
-	// mapping at launch is NOT built yet, so the tier does not change how the
-	// process is sandboxed today (logged at boot).
+	// third-party). Read for the agent card and the console, and at launch
+	// (agentmgr containment.go, execution.agents.sandbox): a third-party agent is
+	// refused while its containment is unavailable, unless on_unavailable is
+	// degrade; first-party and system agents launch as before.
 	TrustTier string `json:"trust_tier,omitempty"`
 	// ModelPreference is the profile's `model:` — a generator id, or
 	// `role:<role>` meaning the generator assigned to that role. The LLM gateway

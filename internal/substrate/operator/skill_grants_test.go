@@ -81,11 +81,11 @@ func TestSkillGrantRPCs_UnimplementedWithoutStore(t *testing.T) {
 
 func TestSkillGrantRPCs_RoleGate(t *testing.T) {
 	for _, m := range []string{"GrantSkill", "RevokeSkillGrant"} {
-		if !isOperatorOnly(operatorMethodPrefix + m) {
+		if !isOperatorOnly(operatorMethodPrefix+m, nil) {
 			t.Errorf("%s must be operator-only", m)
 		}
 	}
-	if isOperatorOnly(operatorMethodPrefix + "ListSkillGrants") {
+	if isOperatorOnly(operatorMethodPrefix+"ListSkillGrants", nil) {
 		t.Error("ListSkillGrants is a read")
 	}
 }

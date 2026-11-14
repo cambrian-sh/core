@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -21,12 +22,14 @@ import (
 // suffixed '#':
 //
 //	calls#=3,input#=1200,output#=310,cache_read#=0,estimated#=0,cost_usd=0.000412,
-//	facts.calls#=2,facts.input#=...,agent_step:retrieval_agent.calls#=1,...
+//	facts.calls#=2,facts.input#=...,agent_step:retrieval_agent.calls#=1,...,
+//	generator:haiku-local.calls#=3
 //
 // The unprefixed keys are the request's total; "<purpose>." keys split it by the
 // purpose the meter booked (the providers.json role — facts, memory, router … —
 // or agent_step[:<agent id>] for calls an agent made under a lease the request
-// minted). The trailer is ALWAYS sent, so "calls#=0" is an observed zero, while a
+// minted). "generator:<id>.calls#" keys count the calls each generator ANSWERED
+// (the id served after any fallback; ENG-453). The trailer is ALWAYS sent, so "calls#=0" is an observed zero, while a
 // missing trailer means a kernel that does not report.
 //
 // Completeness: a call is in the trailer only when it finished before the
@@ -53,6 +56,18 @@ func FormatLLMUsage(t *domain.LLMUsageTally) string {
 	writeLLMUsage(&b, "", t.Total())
 	for _, p := range t.ByPurpose() {
 		writeLLMUsage(&b, sanitizePurpose(p.Purpose)+".", p.Usage)
+	}
+	gens := t.ByGenerator()
+	ids := make([]string, 0, len(gens))
+	for id := range gens {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		b.WriteString(",generator:")
+		b.WriteString(sanitizePurpose(id))
+		b.WriteString(".calls#=")
+		b.WriteString(strconv.Itoa(gens[id]))
 	}
 	return b.String()
 }

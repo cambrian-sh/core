@@ -51,15 +51,6 @@ func (f *fakeOrgAccounts) ClearOrgCredential(_ context.Context, r domain.Credent
 	delete(f.slots, f.key(r))
 	return ok, nil
 }
-func (f *fakeOrgAccounts) ImportOrgCredential(ctx context.Context, r domain.CredentialRequest, v, _ string) (bool, error) {
-	f.mu.Lock()
-	_, bound := f.slots[f.key(r)]
-	f.mu.Unlock()
-	if bound {
-		return false, nil
-	}
-	return true, f.SetOrgCredential(ctx, r, v, "")
-}
 func (f *fakeOrgAccounts) OrgCredentialStatus(r domain.CredentialRequest) (bool, string, time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -69,10 +60,10 @@ func (f *fakeOrgAccounts) OrgCredentialStatus(r domain.CredentialRequest) (bool,
 
 // ADR-0141 phase 2 + 5 through the composition: with an org-account provider
 // installed, the kernel's legacy writers land in the account, the connector
-// reads the account (never the consumer-named store entry), the provider is
-// told which legacy slots exist, and a clear also removes the legacy copy so
-// the next boot's migration cannot resurrect it. With none installed (OSS)
-// nothing changes.
+// reads the account (never the consumer-named store entry), and a clear also
+// removes the stale consumer-named copy. With none installed (OSS) nothing
+// changes. (The one-release boot migration was removed, ENG-661: the provider
+// is no longer told which legacy slots exist.)
 func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 	store, err := storage.OpenConfigStore(filepath.Join(t.TempDir(), "config.db"))
 	if err != nil {
@@ -96,30 +87,19 @@ func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 	conn := mcp.NewConnector()
 	defer conn.Close()
 	fake := &fakeOrgAccounts{slots: map[string]string{}}
-	var legacy []LegacySharedCredential
-	factory := func(svc CredentialServices) (domain.CredentialSource, error) {
-		legacy = svc.LegacySharedCredentials()
-		// What the premium provider does at build: migrate.
-		for _, l := range legacy {
-			if v, ok := svc.ResolveNamedSecret(l.SecretName); ok {
-				_, _ = fake.ImportOrgCredential(context.Background(),
-					domain.CredentialRequest{ServerID: l.ServerID, Purpose: domain.CredentialPurposeMCP, Slot: l.Slot}, v, l.SecretName)
-			}
-		}
-		return fake, nil
-	}
+	// An account already bound to the slot (what an operator binds today).
+	_ = fake.SetOrgCredential(context.Background(),
+		domain.CredentialRequest{ServerID: "gh", Purpose: domain.CredentialPurposeMCP, Slot: domain.SlotToken}, "store-token", "")
+	factory := func(svc CredentialServices) (domain.CredentialSource, error) { return fake, nil }
 	attachNamedSecretStoreForTest(t, store)
 	if _, err := buildCredentialSource(factory, &config.Config{}, store, rt, conn, &credentialSeams{}); err != nil {
 		t.Fatal(err)
-	}
-	if len(legacy) != 2 || legacy[0].SecretName != "mcp:gh:token" || legacy[1].SecretName != "mcp:gh:env:GH_PAT" {
-		t.Fatalf("legacy slots: %+v", legacy)
 	}
 	if mcp.OrgCredentials() == nil {
 		t.Fatal("an org-owning provider must be installed for shared servers")
 	}
 	if fake.slots["gh/token"] != "store-token" {
-		t.Fatalf("migration: %v", fake.slots)
+		t.Fatalf("bound account: %v", fake.slots)
 	}
 
 	// A legacy write now rotates the account; the store entry is not touched.

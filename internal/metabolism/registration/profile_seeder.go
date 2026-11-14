@@ -44,12 +44,11 @@ type ManifestReader interface {
 	GetManifest(ctx context.Context, agentID string) (*domain.AgentManifest, error)
 }
 
-// ProfileStore is the narrow slice of the profile store the seeder needs: read the
-// existing profile of this exact version, and write the seeded one.
-type ProfileStore interface {
-	SaveProfile(ctx context.Context, agentID, sourceHash string, embedding []float32, profile domain.AgentProfile) error
-	GetProfile(ctx context.Context, agentID, sourceHash string) (*domain.AgentProfile, error)
-}
+// ProfileStore is what the seeder needs from the profile store: read the existing
+// profile of this exact version, and write the seeded one — exactly
+// domain.VerifierProfileStore, so an alias of the port rather than a restated
+// copy of its method set (AGENTS.md §3.1).
+type ProfileStore = domain.VerifierProfileStore
 
 // AgentUpdater marks an agent as no longer Provisional in the registry.
 type AgentUpdater interface {
@@ -224,7 +223,7 @@ func (s *ProfileSeeder) Seed(ctx context.Context, agent domain.AgentDefinition) 
 //     self-heal of a missing vector) keeps the outcomes this version has already
 //     earned: only the vector is refreshed.
 func (s *ProfileSeeder) seededProfile(ctx context.Context, agent domain.AgentDefinition) domain.AgentProfile {
-	if agent.Trait == domain.TraitTool || agent.Trait == domain.TraitDaemon || domain.IsSystemDefinition(agent) {
+	if agent.Trait == domain.TraitDaemon || domain.IsSystemDefinition(agent) {
 		return domain.AgentProfile{
 			AgentID:                agent.ID,
 			SourceHash:             agent.SourceHash,

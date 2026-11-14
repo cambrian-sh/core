@@ -43,15 +43,6 @@ var classifyDataTags = []string{"input"}
 // below a provider's minimum cacheable prefix the mark is simply not used.
 const classifyCacheTTL = domain.CacheTTLLong
 
-func init() {
-	domain.PromptRegistry[classifyPromptHash] = domain.PromptEntry{
-		ID:      "router.classify",
-		Version: fmt.Sprintf("router.v%d+router_input.v%d", classifyPrompts.System.Version, classifyPrompts.Input.Version),
-		Hash:    classifyPromptHash,
-		Schema:  string(classifyPrompts.Schema()),
-	}
-}
-
 // DefaultRouter implements domain.InputRouter using four ordered layers:
 //
 //	Layer 0 — RouterInput.Intent pre-classification (Gateway shortcut)
@@ -260,12 +251,8 @@ func (r *DefaultRouter) classifyRequest(body string) (domain.GenerateRequest, er
 // may carry one markdown code fence, nothing more.
 func decodeClassification(resp domain.GenerateResponse, v *classifyResponse) error {
 	text := strings.TrimSpace(resp.Text)
-	if resp.SchemaUnchecked() && strings.HasPrefix(text, "```") {
-		text = strings.TrimPrefix(text, "```")
-		if nl := strings.IndexByte(text, '\n'); nl >= 0 {
-			text = text[nl+1:] // the language tag line ("json")
-		}
-		text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), "```"))
+	if resp.SchemaUnchecked() {
+		text = domain.StripCodeFence(text) // the shared one-fence tolerance
 	}
 	return json.Unmarshal([]byte(text), v)
 }

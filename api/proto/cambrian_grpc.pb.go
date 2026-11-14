@@ -22,7 +22,6 @@ const (
 	Orchestrator_Execute_FullMethodName                = "/cambrian.Orchestrator/Execute"
 	Orchestrator_RequestProposal_FullMethodName        = "/cambrian.Orchestrator/RequestProposal"
 	Orchestrator_QueryMemory_FullMethodName            = "/cambrian.Orchestrator/QueryMemory"
-	Orchestrator_ChatStream_FullMethodName             = "/cambrian.Orchestrator/ChatStream"
 	Orchestrator_SignalStream_FullMethodName           = "/cambrian.Orchestrator/SignalStream"
 	Orchestrator_GenerateViaModelStream_FullMethodName = "/cambrian.Orchestrator/GenerateViaModelStream"
 	Orchestrator_GenerateWithTools_FullMethodName      = "/cambrian.Orchestrator/GenerateWithTools"
@@ -62,9 +61,6 @@ type OrchestratorClient interface {
 	RequestProposal(ctx context.Context, in *AuctionTask, opts ...grpc.CallOption) (*AgentProposal, error)
 	// Shared LTM semantic query — proxied through Substrate with ACL enforcement
 	QueryMemory(ctx context.Context, in *MemoryRequest, opts ...grpc.CallOption) (*MemoryResponse, error)
-	// Bi-directional TUI shell stream. Upstream: user commands (Handoff).
-	// Downstream: real-time telemetry envelope (SymbiosisEvent).
-	ChatStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Handoff, SymbiosisEvent], error)
 	// Proactive neural signal stream. Upstream: agent signals (Handoff with _signal_type).
 	// Downstream: plan execution telemetry (SymbiosisEvent).
 	SignalStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Handoff, SymbiosisEvent], error)
@@ -247,22 +243,9 @@ func (c *orchestratorClient) QueryMemory(ctx context.Context, in *MemoryRequest,
 	return out, nil
 }
 
-func (c *orchestratorClient) ChatStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Handoff, SymbiosisEvent], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[0], Orchestrator_ChatStream_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[Handoff, SymbiosisEvent]{ClientStream: stream}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_ChatStreamClient = grpc.BidiStreamingClient[Handoff, SymbiosisEvent]
-
 func (c *orchestratorClient) SignalStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Handoff, SymbiosisEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[1], Orchestrator_SignalStream_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[0], Orchestrator_SignalStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +258,7 @@ type Orchestrator_SignalStreamClient = grpc.BidiStreamingClient[Handoff, Symbios
 
 func (c *orchestratorClient) GenerateViaModelStream(ctx context.Context, in *GenerateStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GenerateChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[2], Orchestrator_GenerateViaModelStream_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[1], Orchestrator_GenerateViaModelStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +387,7 @@ func (c *orchestratorClient) Embed(ctx context.Context, in *EmbedRequest, opts .
 
 func (c *orchestratorClient) WatchApprovals(ctx context.Context, in *WatchApprovalsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalRequest], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[3], Orchestrator_WatchApprovals_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[2], Orchestrator_WatchApprovals_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +456,7 @@ func (c *orchestratorClient) ProposeSkill(ctx context.Context, in *ProposeSkillR
 
 func (c *orchestratorClient) EmitStepOutput(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[StepOutputChunk, EmitStepOutputAck], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[4], Orchestrator_EmitStepOutput_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[3], Orchestrator_EmitStepOutput_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -546,9 +529,6 @@ type OrchestratorServer interface {
 	RequestProposal(context.Context, *AuctionTask) (*AgentProposal, error)
 	// Shared LTM semantic query — proxied through Substrate with ACL enforcement
 	QueryMemory(context.Context, *MemoryRequest) (*MemoryResponse, error)
-	// Bi-directional TUI shell stream. Upstream: user commands (Handoff).
-	// Downstream: real-time telemetry envelope (SymbiosisEvent).
-	ChatStream(grpc.BidiStreamingServer[Handoff, SymbiosisEvent]) error
 	// Proactive neural signal stream. Upstream: agent signals (Handoff with _signal_type).
 	// Downstream: plan execution telemetry (SymbiosisEvent).
 	SignalStream(grpc.BidiStreamingServer[Handoff, SymbiosisEvent]) error
@@ -710,9 +690,6 @@ func (UnimplementedOrchestratorServer) RequestProposal(context.Context, *Auction
 func (UnimplementedOrchestratorServer) QueryMemory(context.Context, *MemoryRequest) (*MemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryMemory not implemented")
 }
-func (UnimplementedOrchestratorServer) ChatStream(grpc.BidiStreamingServer[Handoff, SymbiosisEvent]) error {
-	return status.Error(codes.Unimplemented, "method ChatStream not implemented")
-}
 func (UnimplementedOrchestratorServer) SignalStream(grpc.BidiStreamingServer[Handoff, SymbiosisEvent]) error {
 	return status.Error(codes.Unimplemented, "method SignalStream not implemented")
 }
@@ -862,13 +839,6 @@ func _Orchestrator_QueryMemory_Handler(srv interface{}, ctx context.Context, dec
 	}
 	return interceptor(ctx, in, info, handler)
 }
-
-func _Orchestrator_ChatStream_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(OrchestratorServer).ChatStream(&grpc.GenericServerStream[Handoff, SymbiosisEvent]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_ChatStreamServer = grpc.BidiStreamingServer[Handoff, SymbiosisEvent]
 
 func _Orchestrator_SignalStream_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(OrchestratorServer).SignalStream(&grpc.GenericServerStream[Handoff, SymbiosisEvent]{ServerStream: stream})
@@ -1389,12 +1359,6 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "ChatStream",
-			Handler:       _Orchestrator_ChatStream_Handler,
-			ServerStreams: true,
-			ClientStreams: true,
-		},
 		{
 			StreamName:    "SignalStream",
 			Handler:       _Orchestrator_SignalStream_Handler,

@@ -18,6 +18,21 @@ import (
 // so the DB DSN and embedder dimension match the running kernel exactly, then drives the
 // pure-Go runner. `args` is os.Args past the "migrate" token (e.g. ["up"] or ["status"]).
 func RunMigrate(ctx context.Context, args []string) error {
+	return RunMigrateWith(ctx, args, Options{})
+}
+
+// RunMigrateWith is RunMigrate for a binary that carries plugins: opts.Plugins are
+// composed (Register only — nothing is built or served) and every schema migration
+// lane they register (Registry.AddMigrations) is applied after core's on `up` and
+// listed after core's on `status`, each line prefixed by its namespace
+// (T-20261113-premium-has-no-schema-migration-chain-41-create). The premium binary
+// calls this with the Options it boots with; with no plugins it is RunMigrate.
+func RunMigrateWith(ctx context.Context, args []string, opts Options) error {
+	composed, err := applyPlugins(opts)
+	if err != nil {
+		return fmt.Errorf("compose plugins for migrate: %w", err)
+	}
+	lanes := composed.migrations
 	sub := "up"
 	if len(args) > 0 {
 		sub = args[0]
@@ -30,6 +45,9 @@ func RunMigrate(ctx context.Context, args []string) error {
 	switch sub {
 	case "up":
 		if err := postgres.RunMigrations(ctx, cfg); err != nil {
+			return err
+		}
+		if err := postgres.RunPluginMigrations(ctx, cfg, lanes); err != nil {
 			return err
 		}
 		fmt.Println("migrations applied ✓")
@@ -46,6 +64,17 @@ func RunMigrate(ctx context.Context, args []string) error {
 				status = "PENDING"
 			}
 			fmt.Printf("%-8d %-24s %s\n", r.Version, r.Name, status)
+		}
+		laneRecs, err := postgres.PluginMigrationStatus(ctx, cfg, lanes)
+		if err != nil {
+			return err
+		}
+		for _, r := range laneRecs {
+			status := "applied " + r.AppliedAt.Format("2006-01-02 15:04:05")
+			if r.Pending {
+				status = "PENDING"
+			}
+			fmt.Printf("%-8s %-24s %s\n", fmt.Sprintf("%s/%d", r.Namespace, r.Version), r.Name, status)
 		}
 		return nil
 	default:

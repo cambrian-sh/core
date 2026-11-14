@@ -17,6 +17,14 @@ type WatchDeadLetterReader interface {
 	ListDeadLetters(limit int) ([]ReactiveDeadLetter, error)
 }
 
+// WatchDeadLetterDeleter removes one dead letter by id: an operator resolving an
+// entry they have dealt with (OperatorConsole DeleteWatchDeadLetter, ENG-472).
+// found=false when no such entry exists. Satisfied by the OSS bbolt journal
+// decorator beside the reader.
+type WatchDeadLetterDeleter interface {
+	DeleteDeadLetter(id string) (found bool, err error)
+}
+
 // ReactiveDeadLetter records a reactive action that could not be delivered — an
 // action that failed, or a journal signal that expired past its TTL before it ran.
 // Surfaced to operators via the OperatorConsole ListWatchDeadLetters read RPC so a

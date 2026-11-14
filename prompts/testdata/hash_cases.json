@@ -921,28 +921,6 @@
       "static_hash": "518e26aeaaad1a9dc84ccd4b237194454cd772f5ccdbb9d5b9f230405b598456"
     },
     {
-      "id": "retrieval_extract_provenance",
-      "version": 1,
-      "tier": "stable",
-      "inputs": [],
-      "description": "Extract schema-bounded provenance (when the event happened, who acted, what kind of source) from one memory item, resolving relative dates against a reference date.",
-      "has_schema": true,
-      "static_hash": "f4c01bcb831ab04efc6d31db6153e9e67aa9f125785b8bbcf9a7185802ebe74c"
-    },
-    {
-      "id": "retrieval_extract_provenance_input",
-      "version": 1,
-      "tier": "volatile",
-      "inputs": [
-        "reference_date",
-        "hint",
-        "text"
-      ],
-      "description": "The user message of a provenance extraction, carrying the reference date, the hint and the item text as tagged data.",
-      "has_schema": false,
-      "static_hash": "23034a79e6538b192b28586998f09027cfe8041ed77302560fcc34a3adeb93d8"
-    },
-    {
       "id": "retrieval_plan_first",
       "version": 1,
       "tier": "stable",
@@ -984,28 +962,6 @@
       "description": "The user message of a later planning step, carrying the question, the entities already resolved and the current entity as tagged data.",
       "has_schema": false,
       "static_hash": "4c3af73dbd507816bfe32a89033d715075447479bfae84c0a342024608c403f0"
-    },
-    {
-      "id": "retrieval_reason_step",
-      "version": 1,
-      "tier": "stable",
-      "inputs": [],
-      "description": "Write the next grounded reasoning step of interleaved retrieval and reasoning, and say whether it states the answer or what to search next.",
-      "has_schema": true,
-      "static_hash": "70474e67ddfe09fad119b9e0cba9f4eaad0012ee72488c85197c1ab2f8d53be2"
-    },
-    {
-      "id": "retrieval_reason_step_input",
-      "version": 1,
-      "tier": "volatile",
-      "inputs": [
-        "documents",
-        "reasoning",
-        "question"
-      ],
-      "description": "The user message of one reasoning step, carrying the retrieved documents, the reasoning so far and the question as tagged data, the question last.",
-      "has_schema": false,
-      "static_hash": "a5e9932b5ca8de8349712816b5c950ccf1e3437b98472e717d353b1f3c282569"
     },
     {
       "id": "retrieval_synthesis_guidance",

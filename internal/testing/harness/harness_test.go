@@ -44,7 +44,6 @@ func TestCapturingObserver_RecordsAllMethods(t *testing.T) {
 	obs := &harness.CapturingTelemetryObserver{}
 	obs.OnSessionEvicted("agent-1")
 	obs.OnConwipWait(50)
-	obs.OnAuctionNoWinner("task-1")
 	obs.OnSchemaMismatch("agent-1", "missing-field")
 
 	if len(obs.EvictedAgentIDs) != 1 {
@@ -52,9 +51,6 @@ func TestCapturingObserver_RecordsAllMethods(t *testing.T) {
 	}
 	if len(obs.ConwipWaits) != 1 || obs.ConwipWaits[0] != 50 {
 		t.Errorf("ConwipWaits = %v, want [50]", obs.ConwipWaits)
-	}
-	if len(obs.AuctionNoWinners) != 1 {
-		t.Errorf("AuctionNoWinners = %d, want 1", len(obs.AuctionNoWinners))
 	}
 	if len(obs.SchemaMismatches) != 1 {
 		t.Errorf("SchemaMismatches = %d, want 1", len(obs.SchemaMismatches))

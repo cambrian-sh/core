@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -105,19 +106,34 @@ func TestDaemonTransport_TransientAckIsRetryable(t *testing.T) {
 	if errors.Is(err, domain.ErrDeliveryPermanent) {
 		t.Error("an unlabelled failure must be treated as transient, not terminal")
 	}
+	// The daemon REPORTED it did not send: positive evidence, so retryable
+	// (ADR-0090 D8.1).
+	if !errors.Is(err, domain.ErrDeliveryTransient) {
+		t.Errorf("a reported non-permanent failure must be ErrDeliveryTransient, got %v", err)
+	}
 }
 
-// A transport-level error is transient by default: the daemon may simply be
-// restarting under supervision, and dead-lettering there would drop a message a
-// retry would deliver.
-func TestDaemonTransport_CallFailureIsTransient(t *testing.T) {
-	c := &fakeCaller{err: errors.New("daemon unreachable")}
+// No live daemon: the call never started, so nothing was sent — transient, and
+// the journal retries it. The daemon may be restarting under supervision.
+func TestDaemonTransport_NoLiveDaemonIsTransient(t *testing.T) {
+	c := &fakeCaller{err: fmt.Errorf("CallDaemon: %w: no daemon registered", domain.ErrDaemonUnavailable)}
+	err := NewDaemonTransport(c).Deliver(context.Background(), testDelivery)
+	if !errors.Is(err, domain.ErrDeliveryTransient) {
+		t.Fatalf("no live daemon must be ErrDeliveryTransient, got %v", err)
+	}
+}
+
+// Any other call failure may have happened after the daemon received the
+// handoff: it is neither permanent nor proven transient, so the journal records
+// it as ambiguous instead of resending (ADR-0090 D8.1).
+func TestDaemonTransport_OtherCallFailureIsUnlabelled(t *testing.T) {
+	c := &fakeCaller{err: errors.New("rpc error: deadline exceeded")}
 	err := NewDaemonTransport(c).Deliver(context.Background(), testDelivery)
 	if err == nil {
 		t.Fatal("a call failure must surface")
 	}
-	if errors.Is(err, domain.ErrDeliveryPermanent) {
-		t.Error("an unreachable daemon is transient — it is supervised and restarts")
+	if errors.Is(err, domain.ErrDeliveryPermanent) || errors.Is(err, domain.ErrDeliveryTransient) {
+		t.Errorf("a mid-call failure is ambiguous, not %v", err)
 	}
 }
 

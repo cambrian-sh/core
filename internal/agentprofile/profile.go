@@ -77,6 +77,9 @@ var (
 	reGeneratorID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 	reMCPGlob     = regexp.MustCompile(`^mcp:([a-z0-9][a-z0-9._-]*)/([A-Za-z0-9_.*?-]+)$`)
 	reNativeGlob  = regexp.MustCompile(`^[a-z][a-z0-9_.*?-]*$`)
+	// reLocalGlob is a contributed-tool pattern (ADR-0127): local:<machine>/<tool glob>,
+	// the machine a literal id or exactly '*' (every machine of the owner the run serves).
+	reLocalGlob = regexp.MustCompile(`^local:(\*|[A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9_.*?-]+)$`)
 )
 
 // Profile is one validated profile.
@@ -316,8 +319,20 @@ func CheckGlob(v any) (string, error) {
 		}
 		return pattern, nil
 	}
+	// Contributed tools (owner decision 2026-11-15, T-20261105-profile-tool-allowlists-
+	// cannot-name-contributed): a profile may opt into local:<machine>/<tool> tools.
+	// The pattern only lets the profile's CEILING admit them; reaching one still needs
+	// the explicit local:* fleet grant (decisions/local-fleet-grant-holders.md — a
+	// profile never grants it to itself), and the fleet is always the run
+	// beneficiary's own machines (ADR-0127 D9). "local:*" names every machine and tool.
+	if strings.HasPrefix(pattern, domain.LocalToolPrefix) {
+		if pattern != domain.LocalFleetGrant && !reLocalGlob.MatchString(pattern) {
+			return "", fmt.Errorf("tool pattern %q must be local:* or local:<machine id or *>/<tool glob>", pattern)
+		}
+		return pattern, nil
+	}
 	if strings.ContainsAny(pattern, ":/") {
-		return "", fmt.Errorf("tool pattern %q: unknown namespace (use mcp:<server>/<tool> or a native tool name)", pattern)
+		return "", fmt.Errorf("tool pattern %q: unknown namespace (use mcp:<server>/<tool>, local:<machine>/<tool> or a native tool name)", pattern)
 	}
 	if !reNativeGlob.MatchString(pattern) || strings.Trim(pattern, "*?") == "" {
 		return "", fmt.Errorf("tool pattern %q is not a native tool name; a bare wildcard would allow every tool", pattern)

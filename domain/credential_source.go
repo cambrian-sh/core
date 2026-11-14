@@ -152,12 +152,6 @@ type OrgCredentialWriter interface {
 	// account itself is kept: other consumers may share it). existed reports
 	// whether a binding was removed.
 	ClearOrgCredential(ctx context.Context, req CredentialRequest, actor string) (existed bool, err error)
-	// ImportOrgCredential is the one-shot migration of a legacy
-	// consumer-named secret (legacyName, e.g. mcp:<id>:token or
-	// ingress:<id>:<name>) into an org account bound to the slot. Idempotent:
-	// a slot already bound is left alone (created=false), so a re-run, or an
-	// operator change made since, always wins. Audited without the value.
-	ImportOrgCredential(ctx context.Context, req CredentialRequest, value, legacyName string) (created bool, err error)
 	// OrgCredentialStatus reports whether a usable org credential is bound,
 	// with its last four characters and last write time. Never the value.
 	OrgCredentialStatus(req CredentialRequest) (configured bool, lastFour string, updatedAt time.Time)

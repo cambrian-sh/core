@@ -116,6 +116,26 @@ func ObjectProperty(tagsCol, partiesCol string) Shape {
 	return Shape{col: tagsCol, parties: partiesCol, nilPanics: true, present: true}
 }
 
+// ObjectExtra is one UNDECLARED property of an open kind's object row (ADR-0149,
+// internal/objects GetObject): an entry of the row's `extra` jsonb, as entry (a
+// jsonb expression such as `x.value` from jsonb_each). The entry carries its own
+// classification under "tags" and parties under "parties" — the same pair a
+// declared property keeps in its companion columns — so the fence is
+// ObjectProperty itself over those two arrays, per entry
+// (T-20261113-listobjects-getobject-do-not-expose-undeclared, owner decision
+// 2026-11-15).
+//
+// An entry with no "tags" array is unclassified and denied to every filtered
+// reader (present), like a NULL tags companion. The writer omits an EMPTY tags
+// list from the jsonb (omitempty), so an extra whose source row carried no tags
+// is denied here where the same value as a declared property would be shown:
+// narrower, fail-closed. Absent "parties" is no parties. A nil predicate panics.
+func ObjectExtra(entry string) Shape {
+	tags := "(CASE WHEN jsonb_typeof(" + entry + "->'tags') = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(" + entry + "->'tags')) END)"
+	parties := "ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(" + entry + "->'parties') = 'array' THEN " + entry + "->'parties' ELSE '[]'::jsonb END))"
+	return ObjectProperty(tags, parties)
+}
+
 // FenceClass is one row of the object tables' class dictionary
 // (object_fence_classes: a canonical (tags, parties) pair, ADR-0149 D6,
 // T-20261113-unfiltered-listobjects-group-list-under-a). It is ObjectProperty

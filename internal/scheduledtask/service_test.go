@@ -204,6 +204,9 @@ func TestPropose_InvalidAndNoPrincipal(t *testing.T) {
 		"neither":      {OwnerID: "o", Goal: "g"},
 		"bad rrule":    {OwnerID: "o", Goal: "g", RRule: "FREQ=DAILY;COUNT=3"},
 		"bad delivery": {OwnerID: "o", Goal: "g", Cron: "@daily", Delivery: "fax"},
+		// ENG-753: the deprecated agent_id was recorded and never routed; a
+		// caller is no longer told it was accepted.
+		"agent_id": {OwnerID: "o", Goal: "g", Cron: "@daily", RunAgent: "research_agent"},
 	} {
 		if out, _ := s.Propose(context.Background(), p); out.Created || out.Rejection != scheduledtask.RejectInvalid {
 			t.Errorf("%s: %+v", name, out)

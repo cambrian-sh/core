@@ -436,7 +436,20 @@ func TestPg_EntityOp_CandidatesAreOperatorOnly(t *testing.T) {
 			t.Fatal("a scoped caller was shown an unreviewed candidate")
 		}
 	}
-	operator, err := plane.Query(ctx, q, &domain.TagPredicate{Bypass: true})
+	// ENG-1536: an unrestricted read on the AGENT surface (the OSS AllowAll
+	// shape) sees no candidate either; only the operator plane does.
+	agentCtx := domain.WithSurface(ctx, domain.SurfaceRef{Kind: domain.SurfaceAgent, ID: "grpc"})
+	asAgent, err := plane.Query(agentCtx, q, &domain.TagPredicate{Bypass: true})
+	if err != nil {
+		t.Fatalf("agent bypass entity op: %v", err)
+	}
+	for _, row := range asAgent.Rows {
+		if row["row"] == "candidate" {
+			t.Fatal("an agent under AllowAll (Bypass) was shown an unreviewed candidate")
+		}
+	}
+	opCtx := domain.WithSurface(ctx, domain.SurfaceRef{Kind: domain.SurfaceOperator, ID: "console"})
+	operator, err := plane.Query(opCtx, q, &domain.TagPredicate{Bypass: true})
 	if err != nil {
 		t.Fatalf("operator entity op: %v", err)
 	}

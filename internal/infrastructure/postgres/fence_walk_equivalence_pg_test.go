@@ -86,7 +86,9 @@ func newWalkEqFixture(t *testing.T) *weFixture {
 	events := NewPgEventStore(pool, nil)
 	links := NewPgLinkStore(pool, reg)
 	f := &weFixture{
-		pool: pool, ctx: ctx,
+		// The goldens were recorded for the operator plane: candidate links are
+		// shown only there (ENG-1536, seesReviewCandidates).
+		pool: pool, ctx: domain.WithSurface(ctx, domain.SurfaceRef{Kind: domain.SurfaceOperator, ID: "console"}),
 		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), nil, links, NewPgEntityStore(pool, nil), reg),
 		// A fixed base: the golden renders times as offsets from it.
 		base:  time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),

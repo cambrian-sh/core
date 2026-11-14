@@ -28,7 +28,7 @@ const ledgerTurnEndTimeout = 5 * time.Second
 // Returns the sweeper for the kernel to start and stop, nil when the ledger is off.
 func wireLedger(ctx context.Context, cfg config.LedgerConfig, content config.ContentConfig, pool *pgxpool.Pool, artifactVault *vault.ArtifactVault,
 	artifacts subnetwork.ArtifactMetaStore, authorizer domain.Authorizer, privateByDefault bool,
-	server *subnetwork.Server, delegations *subnetwork.TurnDelegations) *ledger.Sweeper {
+	server *subnetwork.Server, delegations *subnetwork.TurnDelegations, bus domain.EventBus) *ledger.Sweeper {
 	deps := kernel.LedgerStackDeps{
 		Pool:             pool,
 		Authorizer:       authorizer,
@@ -50,7 +50,10 @@ func wireLedger(ctx context.Context, cfg config.LedgerConfig, content config.Con
 	}
 	server.Ledger = &subnetwork.LedgerAccess{Writer: st.Writer, Reader: st.Reader}
 	if server.ToolExecutor != nil {
-		server.ToolExecutor.Ledger = st.Writer
+		// ENG-715: an external MCP tool result recorded here is also published as a
+		// domain.ToolEvidenceRecordedEvent (digest + ledger id), so a provenance lane
+		// can prove what evidence an answer used. A nil bus leaves the writer as is.
+		server.ToolExecutor.Ledger = ledger.NewEvidenceNotifier(st.Writer, bus)
 		server.ToolExecutor.KernelTools = append(server.ToolExecutor.KernelTools, st.Tools...)
 	}
 	sweeper := st.Sweeper

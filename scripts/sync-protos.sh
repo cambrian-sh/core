@@ -54,6 +54,12 @@ mappings=(
     # five-planes step 2 added `entity`/`why`/`expand_aliases` to the source the
     # two files were free to disagree with nobody noticing.
     "$premium/api/proto/substrate/substrate.proto|$root/ui/proto/substrate/substrate.proto"
+    # The accounts and org-directory planes (ADR-0142 stage 2). ui/ vendored both
+    # from the start, and neither was listed here — the third repeat of the omission
+    # recorded above, caught by audit before it drifted
+    # (T-20261113-sync-protos-sh-mapping-omits-premium-accounts).
+    "$premium/api/proto/accounts/accounts.proto|$root/ui/proto/accounts/accounts.proto"
+    "$premium/api/proto/org/org_directory.proto|$root/ui/proto/org/org_directory.proto"
     # Not a proto, same problem. cambrian-benchmarks re-implements the Go chunkers
     # in Python; this fixture is what its differential test asserts the ports
     # against. Regenerate on the Go side with:

@@ -255,6 +255,30 @@ var retiredExecutionFields = map[string]string{
 	"single_agent_id": "Moved 2026-11-13 to execution.lane.single_agent.agent_id (ADR-0150 D10); " +
 		"an explicit value loads there.",
 
+	// Schema v3 (owner decision 2026-11-14, ENG-1502): declared, defaulted, some
+	// validated, read by nothing. A layer that still sets one loads with a WARN and
+	// the value dropped (retiredConfigKeys in execution_migrate.go).
+	"max_recursion_depth": "Retired in schema v3 (ENG-1502): nested sub-auctions retired with the auction (ADR-0100).",
+	// ENG-1301 (owner decision 2026-11-14, third round): the ADR-0027 procedural
+	// plan memory these tuned was deleted; dropped with a WARN by retiredConfigKeys.
+	"hippocampus_policies":       "Retired 2026-11-14 (ENG-1301): the ADR-0027 procedural plan memory it tuned was deleted.",
+	"hippocampus_default_policy": "Retired 2026-11-14 (ENG-1301): the ADR-0027 procedural plan memory it tuned was deleted.",
+	// ENG-1595 (owner decision 2026-11-14): the A2.3 failure record it gated is no
+	// longer written; dropped with a WARN by retiredConfigKeys.
+	"experience_surprise_floor": "Retired 2026-11-14 (ENG-1595): the A2.3 failure record it gated is no longer written.",
+	// ENG-1321 (owner decision 2026-11-15): IRCoT deleted like HyDE; WARN via retiredConfigKeys.
+	"agentic_ircot_enabled":              "Retired 2026-11-15 (ENG-1321): IRCoT is a disqualified lever; its branch was deleted.",
+	"max_partial_context_bytes":          "Retired in schema v3 (ENG-1502): no reader.",
+	"budget_exhaustion_alarm_rate":       "Retired in schema v3 (ENG-1502): no reader.",
+	"min_gc_age_days":                    "Retired in schema v3 (ENG-1502): no reader.",
+	"circadian_stale_doc_warn_threshold": "Retired in schema v3 (ENG-1502): no reader.",
+	"remember_default_activation":        "Retired in schema v3 (ENG-1502): no reader.",
+	"llm_gateway_retry_backoff_ms":       "Retired in schema v3 (ENG-1502): no reader.",
+	"proposal_timeout_ms":                "Retired in schema v3 (ENG-1502): the auction bid round it timed was removed by ADR-0100.",
+	"verifier_pool_min_size":             "Retired in schema v3 (ENG-1502): the D15 pool health guard was never built.",
+	"verifier_pool_threshold_step":       "Retired in schema v3 (ENG-1502): the D15 pool health guard was never built.",
+	"verifier_pool_threshold_floor":      "Retired in schema v3 (ENG-1502): the D15 pool health guard was never built.",
+
 	// REPLACED, not dropped: an explicit plan_timeout_ms still loads, as
 	// plan_max_duration_ms (deprecatedExecutionKey in execution_migrate.go).
 	"plan_timeout_ms": "Superseded 2026-11-05 by the progress-aware plan ceiling (owner decision, " +
@@ -293,7 +317,6 @@ var retiredExecutionMapEntries = map[string]map[string]string{
 var promotedExecutionDefaults = map[string]bool{
 	"agentic_decompose_enabled":          true,
 	"agentic_max_hops":                   true,
-	"agentic_planner_model":              true,
 	"blend_enabled":                      true,
 	"blend_weight_coherence":             true,
 	"blend_weight_confidence":            true,

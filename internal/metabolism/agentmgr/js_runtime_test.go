@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -212,7 +213,7 @@ func TestSpawnMemLimitMB_JSExemption(t *testing.T) {
 	im.SetAgentMemoryLimitMB(512)
 
 	py := &domain.AgentDefinition{ID: "py_agent", Runtime: domain.RuntimePython}
-	if got := im.spawnMemLimitMB(py); got != 512 {
+	if got := im.spawnMemLimitMB(context.Background(), py); got != 512 {
 		t.Errorf("python cap: want 512, got %d", got)
 	}
 
@@ -221,7 +222,7 @@ func TestSpawnMemLimitMB_JSExemption(t *testing.T) {
 	if goruntime.GOOS == "linux" {
 		want = 0 // RLIMIT_AS would kill V8's virtual reservations spuriously
 	}
-	if got := im.spawnMemLimitMB(js); got != want {
+	if got := im.spawnMemLimitMB(context.Background(), js); got != want {
 		t.Errorf("js cap on %s: want %d, got %d", goruntime.GOOS, want, got)
 	}
 }

@@ -28,7 +28,7 @@ func TestManifestResolver_ReadErrorIsLoggedNotDiscarded(t *testing.T) {
 	defer slog.SetDefault(prev)
 
 	m := NewAgentManager(manifestErrRegistry{newTestRegistry()}, "python", "", nil)
-	if got := m.InstanceManager.manifestFor("worker-1"); got != nil {
+	if got := m.InstanceManager.manifestFor(context.Background(), "worker-1"); got != nil {
 		t.Fatalf("manifest = %+v, want nil fallback on a read error", got)
 	}
 	if out := buf.String(); !strings.Contains(out, "worker-1") || !strings.Contains(out, "registry unavailable") {

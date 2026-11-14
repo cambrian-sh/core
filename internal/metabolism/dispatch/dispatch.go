@@ -100,8 +100,7 @@ type Dispatcher struct {
 	Boots BootCounter
 
 	ExecCfg  config.ExecutionConfig
-	EventBus domain.EventBus          // may be nil
-	Observer domain.TelemetryObserver // may be nil
+	EventBus domain.EventBus // may be nil
 
 	// ExplorationRate is the probability of picking a random eligible candidate
 	// instead of the policy winner. Carried over from the auction (ADR-0100 D9:
@@ -248,9 +247,6 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 				ErrorMsg: err.Error(),
 				Funnel:   task.Funnel,
 			})
-			if d.Observer != nil {
-				d.Observer.OnAuctionNoWinner(task.ID)
-			}
 			return nil, err
 		}
 		return nil, fmt.Errorf("gatekeeper failed: %w", err)
@@ -274,9 +270,6 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 			ErrorMsg: "no eligible candidates: no registered agent declares the step's required capabilities",
 			Funnel:   task.Funnel,
 		})
-		if d.Observer != nil {
-			d.Observer.OnAuctionNoWinner(task.ID)
-		}
 		return nil, fmt.Errorf("dispatch: no eligible candidates for task %s (required capabilities: %v)",
 			task.ID, task.RequiredCapabilities)
 	}
@@ -321,7 +314,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	bids := make([]domain.CandidateEntry, 0, len(scored))
 	for _, sc := range scored {
 		// IsTool is deliberately left false: it recorded the static-bidder path
-		// (deprecated with TraitTool), and dispatch solicits no bids at all.
+		// (the "tool" trait is deleted, ENG-1351), and dispatch solicits no bids at all.
 		rationale := "merit-rank (dispatch: no bid solicited)"
 		if ec := task.EffectCheck; ec != nil && ec.Outcome == domain.EffectCheckEligible {
 			// Why this agent was eligible at all: its tools cover the step's effects.

@@ -106,7 +106,7 @@ func buildP05(t *testing.T, tools toolsByAgent, llm *scriptedLLM) (*awareness.Pl
 	caller := &recordingCaller{ran: map[string][]string{}}
 	disp := &dispatch.Dispatcher{Gatekeeper: gk, Caller: caller, ExecCfg: cfg}
 
-	planner := awareness.NewPlanner(llm, reg, nil)
+	planner := awareness.NewPlanner(llm, reg)
 	planner.SetCapabilityContract(true)
 	planner.SetEffectSource(effects)
 

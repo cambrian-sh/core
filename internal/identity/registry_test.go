@@ -276,3 +276,38 @@ func (f *fakeAuth) Resolve(context.Context, string) (domain.Identity, error) {
 	return f.id, nil
 }
 func (f *fakeAuth) Revoke(context.Context, string) error { return nil }
+
+// TestRegistry_UpdateProfile: unlike EnsurePrincipal's fill-only rule,
+// UpdateProfile REPLACES a set value (the directory that owns a person's profile
+// renames them, ENG-683); an empty argument keeps the stored value, and an
+// unknown id is ErrPrincipalNotFound.
+func TestRegistry_UpdateProfile(t *testing.T) {
+	for name, reg := range registries(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if _, _, err := reg.EnsurePrincipal(ctx, domain.Principal{ID: "prtest-carol", DisplayName: "Carol", Email: "carol@old.example"}); err != nil {
+				t.Fatal(err)
+			}
+			// EnsurePrincipal never overwrites: the pre-fix path that kept the first name forever.
+			if p, _, _ := reg.EnsurePrincipal(ctx, domain.Principal{ID: "prtest-carol", DisplayName: "Carol Smith"}); p.DisplayName != "Carol" {
+				t.Fatalf("EnsurePrincipal must stay fill-only, got %q", p.DisplayName)
+			}
+			if err := reg.UpdateProfile(ctx, "prtest-carol", "Carol Smith", ""); err != nil {
+				t.Fatal(err)
+			}
+			p, err := reg.GetPrincipal(ctx, "prtest-carol")
+			if err != nil || p.DisplayName != "Carol Smith" || p.Email != "carol@old.example" {
+				t.Fatalf("rename must replace the name and keep the email: %+v %v", p, err)
+			}
+			if err := reg.UpdateProfile(ctx, "prtest-carol", "", "carol@new.example"); err != nil {
+				t.Fatal(err)
+			}
+			if p, _ = reg.GetPrincipal(ctx, "prtest-carol"); p.DisplayName != "Carol Smith" || p.Email != "carol@new.example" {
+				t.Fatalf("email change: %+v", p)
+			}
+			if err := reg.UpdateProfile(ctx, "prtest-ghost", "X", ""); !errors.Is(err, domain.ErrPrincipalNotFound) {
+				t.Fatalf("unknown id: %v", err)
+			}
+		})
+	}
+}

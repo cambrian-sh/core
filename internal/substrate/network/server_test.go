@@ -336,7 +336,7 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 		ID:      "winner",
 		Name:    "winner",
 		Runtime: domain.RuntimePython,
-		Trait:   domain.TraitTool,
+		Trait:   domain.TraitCognitive,
 	})
 	reg.SetAgent(domain.AgentDefinition{
 		ID:      "runner-up-a",
@@ -447,7 +447,7 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 		ID:      "winner",
 		Name:    "winner",
 		Runtime: domain.RuntimePython,
-		Trait:   domain.TraitTool,
+		Trait:   domain.TraitCognitive,
 	})
 	reg.SetAgent(domain.AgentDefinition{
 		ID:      "runner-up-a",

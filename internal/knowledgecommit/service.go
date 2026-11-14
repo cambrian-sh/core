@@ -51,6 +51,22 @@ type LinkWriter interface {
 	PutLink(ctx context.Context, l domain.Link) (bool, error)
 }
 
+// EvidenceReader is the slice of the evidence store the bridge uses to check that
+// the evidence a proposal cites is evidence the proposer may read.
+type EvidenceReader interface {
+	Get(ctx context.Context, id domain.EvidenceID) (*domain.Evidence, error)
+}
+
+// Option configures the bridge at construction.
+type Option func(*Service)
+
+// WithEvidence gives the bridge the evidence store it checks cited evidence against
+// (T-20261107-propose-knowledge-link-proposals-do-not-check). Without it a proposal
+// citing evidence is refused: the bridge cannot tell the proposer may read it.
+func WithEvidence(ev EvidenceReader) Option {
+	return func(s *Service) { s.evidence = ev }
+}
+
 // Proposal is one proposed knowledge item. It carries no actor: the asserter is
 // the principal the caller passes, which the transport resolved (INV-5).
 type Proposal struct {
@@ -97,7 +113,9 @@ type Service struct {
 	authz  domain.Authorizer
 	hub    Hub
 	links  LinkWriter
-	now    func() time.Time
+	// evidence resolves cited evidence for the readability check (citedEvidence).
+	evidence EvidenceReader
+	now      func() time.Time
 	logger *slog.Logger
 }
 
@@ -105,7 +123,9 @@ type Service struct {
 // RAW kernel knowledge store: the bridge IS the kernel path that stamps actors, so it
 // must not sit behind the plugin-seam guard it exists to satisfy. links may be nil
 // (ProposeLink then refuses). A nil authorizer is the OSS allow-all default.
-func New(store domain.KnowledgeStore, kinds domain.KindSource, a domain.Authorizer, hub Hub, links LinkWriter, logger *slog.Logger) (*Service, error) {
+//
+// opts must carry WithEvidence for any proposal that cites evidence to be accepted.
+func New(store domain.KnowledgeStore, kinds domain.KindSource, a domain.Authorizer, hub Hub, links LinkWriter, logger *slog.Logger, opts ...Option) (*Service, error) {
 	if store == nil || kinds == nil || hub == nil {
 		return nil, errors.New("knowledgecommit.New: store, kind registry and approval hub are required")
 	}
@@ -116,6 +136,9 @@ func New(store domain.KnowledgeStore, kinds domain.KindSource, a domain.Authoriz
 		logger = slog.Default()
 	}
 	s := &Service{store: store, kinds: kinds, authz: a, hub: hub, links: links, now: time.Now, logger: logger}
+	for _, o := range opts {
+		o(s)
+	}
 	hub.HandleKind(domain.ApprovalKindKnowledgeCommit, s.Apply)
 	return s, nil
 }
@@ -141,6 +164,9 @@ func (s *Service) Propose(ctx context.Context, by, forPerson domain.PrincipalRef
 	}
 	spec, err := s.designatedSpec(p.NamespaceID, p.Kind)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := s.citedEvidence(ctx, by, p.EvidenceID); err != nil {
 		return Result{}, err
 	}
 	actor := by.String()
@@ -293,6 +319,9 @@ func (s *Service) ProposeLink(ctx context.Context, by domain.PrincipalRef, p Lin
 	if by.IsZero() {
 		return false, fmt.Errorf("%w: no proposer could be established", ErrNotProposable)
 	}
+	if err := s.citedEvidence(ctx, by, p.EvidenceID); err != nil {
+		return false, err
+	}
 	family := p.Family
 	if family == "" {
 		family = domain.LinkFamilyRelation
@@ -317,6 +346,37 @@ func (s *Service) ProposeLink(ctx context.Context, by domain.PrincipalRef, p Lin
 		AssertedAt:  s.now().UTC(),
 		SourceRef:   domain.KnowledgeProposalSourceRefPrefix + by.String() + ":" + hex.EncodeToString(h[:8]),
 	})
+}
+
+// citedEvidence refuses a proposal whose cited evidence the proposer may not read
+// (T-20261107-propose-knowledge-link-proposals-do-not-check): a claim or a link may
+// stand only on evidence its asserter could see. An unknown id, an unreadable one
+// and one the bridge cannot look up all get the SAME refusal, so the answer is not
+// an oracle for which evidence ids exist; the cause is logged for the operator.
+// No evidence cited is not this check's business (the link store's admissibility
+// rule still requires evidence for a link).
+func (s *Service) citedEvidence(ctx context.Context, by domain.PrincipalRef, id domain.EvidenceID) error {
+	if id == "" {
+		return nil
+	}
+	refuse := fmt.Errorf("%w: evidence %q is unknown or not readable by %s", ErrNotProposable, id, by.String())
+	if s.evidence == nil {
+		s.logger.Warn("knowledge proposal refused: no evidence store to check the citation against",
+			"event", "knowledge_proposal_evidence_unchecked", "by", by.String())
+		return refuse
+	}
+	ev, err := s.evidence.Get(ctx, id)
+	if err != nil {
+		s.logger.Info("knowledge proposal refused: cited evidence not found", "event", "knowledge_proposal_evidence_refused",
+			"by", by.String(), "evidence", string(id), "err", err)
+		return refuse
+	}
+	if !authz.MayReadEvidence(ctx, s.authz, by, ev, s.logger) {
+		s.logger.Info("knowledge proposal refused: cited evidence not readable", "event", "knowledge_proposal_evidence_refused",
+			"by", by.String(), "evidence", string(id))
+		return refuse
+	}
+	return nil
 }
 
 // proposalHash keys a proposal by its content (and the caller's ref), so a retried

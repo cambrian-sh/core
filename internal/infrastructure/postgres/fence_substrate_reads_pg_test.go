@@ -422,6 +422,21 @@ func TestPg_SubstrateReads_AliceStillSeesHerOwnRows(t *testing.T) {
 	if err != nil || countRefs(op, slCandAlice) != 0 || countRefs(op, slCandPub) != 1 {
 		t.Errorf("operator inbox: %v err=%v", op, err)
 	}
+	// ENG-818: the review WRITES are guarded by the same judgement — the operator
+	// plane may act on the public candidate only; alice's answers as an absent id.
+	for _, l := range all {
+		alice := countRefs([]domain.Link{l}, slCandAlice) == 1
+		if !alice && countRefs([]domain.Link{l}, slCandPub) != 1 {
+			continue // another test's row in the shared database
+		}
+		ok, err := f.plane.LinkReadable(ctx, "default", l.ID, domain.ScopeSystem)
+		if err != nil || ok == alice {
+			t.Errorf("LinkReadable(%s, ScopeSystem) = %v err=%v (alice's candidate: %v)", l.ID, ok, err, alice)
+		}
+	}
+	if ok, err := f.plane.LinkReadable(ctx, "default", "lnk_does_not_exist", domain.ScopeMaintenance); ok || err != nil {
+		t.Errorf("LinkReadable(absent) = %v err=%v", ok, err)
+	}
 }
 
 func containsStr(list []string, s string) bool {

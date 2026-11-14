@@ -29,7 +29,7 @@ type AgentManifest struct {
 	PythonDeps []string `json:"python_deps,omitempty"`
 	// ToolAllowlist is a declarative profile's tool allowlist (globs over kernel
 	// tool names). The kernel enforces it as grants plus a ceiling for profile
-	// agents (app/profile_grants.go); it is never read as capability tags.
+	// agents (app/profile_agents.go); it is never read as capability tags.
 	ToolAllowlist []string `json:"tool_allowlist,omitempty"`
 	// Skills is a profile's skill menu (skill names), carried for the agent card.
 	Skills []string `json:"skills,omitempty"`

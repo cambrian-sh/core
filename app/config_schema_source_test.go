@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -154,5 +155,91 @@ func TestConfigSchema_SchemaIsStableAndHashed(t *testing.T) {
 	}
 	if h1 != h2 {
 		t.Fatalf("hash unstable across calls: %q vs %q — a console caching by hash would refetch forever", h1, h2)
+	}
+}
+
+// ENG-1456: the schema names each field's SetRuntimeConfig param and runtime flag,
+// so a client can take the runtime-settable params from the kernel itself.
+func TestConfigSchema_PublishesRuntimeParams(t *testing.T) {
+	src := sourceFor(t, bundle(t, map[string]string{}))
+	raw, _, _ := src.SchemaJSON()
+	var doc struct {
+		Properties map[string]struct {
+			Param   string `json:"x-param"`
+			Runtime bool   `json:"x-runtime"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("schema is not JSON: %v", err)
+	}
+	cos := doc.Properties["execution.blend_weight_cosine"]
+	if cos.Param != "blend_weight_cosine" || !cos.Runtime {
+		t.Fatalf("blend_weight_cosine = %+v, want param blend_weight_cosine, runtime", cos)
+	}
+	if ro := doc.Properties["execution.ewma_alpha"]; ro.Param != "" || ro.Runtime {
+		t.Fatalf("ewma_alpha = %+v, want no param, not runtime", ro)
+	}
+	for _, tu := range tunables {
+		if got := doc.Properties[tu.Key]; got.Param != tu.Param || got.Runtime != tu.Runtime {
+			t.Fatalf("%s: schema says %+v, catalogue says param=%q runtime=%v", tu.Key, got, tu.Param, tu.Runtime)
+		}
+	}
+}
+
+// T-20261103-execution-facts-is-absent-from-the-operator: the fact layer's
+// switches and budgets are in the catalogue, read-only (a restart), the switches
+// typed as booleans and reported 1/0, and a file pin is named as for any key.
+func TestConfigSchema_FactLayerIsVisibleReadOnly(t *testing.T) {
+	src := sourceFor(t, bundle(t, map[string]string{
+		"tuning.json": `{"execution":{"facts":{"supersession_enabled":true,"max_calls_per_document":3}}}`,
+	}))
+
+	keys := []string{
+		"execution.facts.extract_enabled",
+		"execution.facts.lane_enabled",
+		"execution.facts.supersession_enabled",
+		"execution.facts.assessments_enabled",
+		"execution.facts.max_calls_per_document",
+		"execution.facts.max_facts_per_document",
+		"execution.facts.max_facts_per_source",
+	}
+	kernelOnly := map[string]bool{}
+	for _, k := range src.KernelOnlyKeys() {
+		kernelOnly[k] = true
+	}
+	cur := src.CurrentValues()
+	for _, k := range keys {
+		if !kernelOnly[k] {
+			t.Errorf("%s: want read-only (kernel_only_keys)", k)
+		}
+		if _, ok := cur[k]; !ok {
+			t.Errorf("%s: no current value", k)
+		}
+	}
+	if got := cur["execution.facts.supersession_enabled"]; got != 1 {
+		t.Errorf("supersession_enabled = %v, want 1 (on, from tuning.json)", got)
+	}
+	if got := cur["execution.facts.max_calls_per_document"]; got != 3 {
+		t.Errorf("max_calls_per_document = %v, want 3", got)
+	}
+	if got := src.ValueSource()["execution.facts.max_calls_per_document"]; got == config.SourceDefault || got == "" {
+		t.Errorf("max_calls_per_document source = %q, want the tuning file", got)
+	}
+
+	schema, version, _ := src.SchemaJSON()
+	if version != "4" {
+		t.Errorf("schema version = %q, want 4", version)
+	}
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(schema), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if typ := doc.Properties["execution.facts.lane_enabled"]["type"]; typ != "boolean" {
+		t.Errorf("lane_enabled type = %v, want boolean", typ)
+	}
+	if typ := doc.Properties["execution.facts.max_facts_per_source"]["type"]; typ != "number" {
+		t.Errorf("max_facts_per_source type = %v, want number", typ)
 	}
 }

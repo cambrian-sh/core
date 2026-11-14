@@ -283,14 +283,16 @@ func TestTurn_TranscriptExcludesCurrentMessage(t *testing.T) {
 	}
 }
 
-// ADR-0084 D7: the conversation's posture travels with the turn, so a worker cannot be
-// pointed at shared memory just because an agent default says so.
+// ADR-0084 D7: the conversation's posture travels with the turn. Since ENG-614 (owner
+// decision 2026-11-14) a customer conversation recalls too — the kernel narrows its
+// reads to customer-visible tags — so recall_lookup is true for every known profile and
+// the profile itself is what the kernel acts on.
 func TestTurn_ProfileTravelsWithTurn(t *testing.T) {
 	for _, tc := range []struct {
 		profile    domain.ConversationProfile
 		wantRecall string
 	}{
-		{domain.ProfileCustomer, "false"},
+		{domain.ProfileCustomer, "true"},
 		{domain.ProfileEmployee, "true"},
 		{domain.ProfileOperator, "true"},
 	} {

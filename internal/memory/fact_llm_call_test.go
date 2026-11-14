@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"go.uber.org/goleak"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // T-20261104-fact-extractor-fails-permanently-on-some: the tolerant read, the bounded
@@ -132,5 +134,41 @@ func TestRedactedResponseEnds_MasksStringContent(t *testing.T) {
 	h, tl := redactedResponseEnds(long)
 	if len([]rune(h)) != 96 || len([]rune(tl)) != 48 || strings.Contains(tl, "unterminated") || !strings.HasSuffix(tl, `"…`) {
 		t.Fatalf("head %q tail %q", h, tl)
+	}
+}
+
+// labelGen records the LLM call label each call carried.
+type labelGen struct{ labels []string }
+
+func (g *labelGen) Generate(ctx context.Context, _ string) (string, error) {
+	g.labels = append(g.labels, domain.LLMCallLabelFrom(ctx))
+	return "{}", nil
+}
+
+// The assessment judge's calls carry the facts_assess label, so the SpendMeter books
+// them apart from extraction calls on the same PurposeFacts handle
+// (T-20261104-fact-extraction-and-fact-assessment-share-llm).
+func TestFactExtractor_AssessJudgeCallIsLabelled(t *testing.T) {
+	g := &labelGen{}
+	e := newTestExtractor(g, newMemSubstrate(), FactExtractorConfig{LLMTimeout: time.Minute})
+	if _, err := e.askJudge(context.Background(), &assessPlan{prompt: "p"}); err != nil {
+		t.Fatalf("askJudge: %v", err)
+	}
+	if len(g.labels) != 1 || g.labels[0] != domain.LLMCallLabelFactsAssess {
+		t.Fatalf("judge call labels = %q, want [%q]", g.labels, domain.LLMCallLabelFactsAssess)
+	}
+}
+
+// ENG-433: a queued fact job keeps no chunk embedding (the extractor never reads it)
+// and never mutates the caller's documents.
+func TestSlimFactChunks_DropsVectorsKeepsTheRest(t *testing.T) {
+	src := &domain.Document{ID: "c1", Text: "t", Metadata: map[string]interface{}{"k": "v"},
+		Embedding: domain.Embedding{Vector: make([]float32, 1024)}}
+	got := slimFactChunks([]*domain.Document{src, nil})
+	if len(got) != 1 || len(got[0].Embedding.Vector) != 0 || got[0].ID != "c1" || got[0].Text != "t" || got[0].Metadata["k"] != "v" {
+		t.Fatalf("slim copy = %+v", got)
+	}
+	if len(src.Embedding.Vector) != 1024 {
+		t.Fatal("the caller's document was mutated")
 	}
 }

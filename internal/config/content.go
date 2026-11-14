@@ -48,7 +48,8 @@ type ContentConfig struct {
 	// WorkerPromptBudgetTokens is the worker's prompt budget: the SDK context
 	// engine compacts above it (budget_tokens), and the step-dependency budget is a
 	// fraction of it, so a dependent step's inputs are sized from what the step
-	// that receives them can hold. 0 ⇒ 32000.
+	// that receives them can hold. 0 ⇒ 32000. execution.lane.context.budget_tokens,
+	// when set, overrides it everywhere (ExecutionConfig.EffectiveContent).
 	WorkerPromptBudgetTokens int `json:"worker_prompt_budget_tokens,omitempty"`
 	// DependencyBudgetFraction is the share of WorkerPromptBudgetTokens a dependent
 	// step's upstream results may take in total. 0 ⇒ 0.5 (16000 tokens by default,
@@ -63,7 +64,8 @@ type ContentConfig struct {
 	// engine: a tool result older than this many tool rounds becomes its
 	// placeholder (naming its ledger id when it has one) even when the prompt is
 	// under budget. 0 = off (only the budget trigger clears). Served as
-	// CAMBRIAN_CONTEXT_KEEP_RECENT_TOOL_RESULTS.
+	// CAMBRIAN_CONTEXT_KEEP_RECENT_TOOL_RESULTS. execution.lane.context.
+	// keep_recent_tool_results, when set, overrides it (lane_context.go).
 	KeepRecentToolResults int `json:"keep_recent_tool_results,omitempty"`
 }
 

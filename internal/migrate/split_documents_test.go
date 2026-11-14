@@ -69,7 +69,11 @@ const splitTestDim = 4
 func freshSchema(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS chunks, document_sections, tools, skills, agent_profiles CASCADE`,
+		// chunk_embeddings (0013) goes WITH chunks: DROP ... CASCADE on chunks drops only
+		// its foreign key, so the table and its rows would survive, 0013's CREATE TABLE
+		// IF NOT EXISTS would keep them, and the next test seeding the same chunk ids
+		// (delete_scenes, delete_neural_traces both seed 'fact-1') hit chunk_embeddings_pkey.
+		`DROP TABLE IF EXISTS chunk_embeddings, chunks, document_sections, tools, skills, agent_profiles CASCADE`,
 		`DROP TABLE IF EXISTS documents, documents_legacy CASCADE`,
 		`DROP TABLE IF EXISTS chunk_triplets, chunk_pagerank, chunk_pagerank_meta, document_edges CASCADE`,
 		`DROP TABLE IF EXISTS schema_migrations CASCADE`,
@@ -294,7 +298,9 @@ func TestSplitDocuments_StoredFunctionsFollowTheRowsToChunks(t *testing.T) {
 	}
 
 	// Decay must run against chunks without error and without touching the document entity,
-	// which has no activation column at all.
+	// which has no activation column at all. This pins 0007's re-point AS OF migration 7
+	// (the test applies only through 7); 0049 drops the function later (ENG-74), so a
+	// database migrated to head has none — that is intended, not a regression.
 	if _, err := pool.Exec(ctx, `SELECT apply_ebbinghaus_decay(30)`); err != nil {
 		t.Fatalf("apply_ebbinghaus_decay: %v", err)
 	}

@@ -81,7 +81,7 @@ func TestCredentialSource_EndToEndThroughTheSeam(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	entry := config.MCPServerConfig{ID: "gh", Transport: "http", Endpoint: mcpSrv.URL, DisplayName: "GitHub",
+	entry := config.MCPServerConfig{ID: "gh", Transport: "http", Endpoint: mcpSrv.URL, AllowPrivateNetwork: true, DisplayName: "GitHub",
 		DefaultToolPolicy: &config.MCPToolConfig{Effects: []string{"read"}},
 		UserCredential: &config.MCPUserCredentialConfig{Scope: "per_user", Provider: "github",
 			Scopes: []string{"repo"}, Inject: "bearer"}}

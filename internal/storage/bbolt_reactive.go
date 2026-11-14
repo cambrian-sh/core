@@ -402,6 +402,55 @@ func (b *BBoltAdapter) RecordReactiveDeadLetter(rec ReactiveDeadLetterRecord) er
 	})
 }
 
+// PruneReactiveDeadLetters drops up to limit dead letters that failed before
+// `before` (limit <= 0 ⇒ unbounded) and reports whether more remained at the cap.
+// A dead letter embeds the full signal (user chat text included), so it gets a
+// retention like every other copy of personal content (ENG-472, owner decision
+// 2026-11-15: a separate knob, default 30 days — the premium JournalGC calls this).
+func (b *BBoltAdapter) PruneReactiveDeadLetters(before time.Time, limit int) (removed int, more bool, err error) {
+	err = b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(reactiveDeadLetterBucket)
+		if bucket == nil {
+			return nil
+		}
+		var victims [][]byte
+		c := bucket.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var rec ReactiveDeadLetterRecord
+			if json.Unmarshal(v, &rec) != nil || !rec.FailedAt.Before(before) {
+				continue
+			}
+			if limit > 0 && len(victims) >= limit {
+				more = true
+				break
+			}
+			victims = append(victims, append([]byte(nil), k...))
+		}
+		for _, k := range victims {
+			if derr := bucket.Delete(k); derr != nil {
+				return derr
+			}
+			removed++
+		}
+		return nil
+	})
+	return removed, more, err
+}
+
+// DeleteReactiveDeadLetter removes one dead letter by id (an operator resolving
+// it, ENG-472). found=false when no such entry exists.
+func (b *BBoltAdapter) DeleteReactiveDeadLetter(id string) (found bool, err error) {
+	err = b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(reactiveDeadLetterBucket)
+		if bucket == nil || bucket.Get([]byte(id)) == nil {
+			return nil
+		}
+		found = true
+		return bucket.Delete([]byte(id))
+	})
+	return found, err
+}
+
 // ListReactiveDeadLetters returns dead-letter entries newest-first, capped at limit
 // (limit <= 0 ⇒ all). Backs the operator ListWatchDeadLetters read RPC.
 func (b *BBoltAdapter) ListReactiveDeadLetters(limit int) ([]ReactiveDeadLetterRecord, error) {

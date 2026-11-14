@@ -254,7 +254,14 @@ type ObjectView struct {
 	DeclVersion       int64
 	UpdatedAt         time.Time
 	Properties        []ObjectProperty
-	Lifecycle         *ObjectLifecycle
+	// Extras are an OPEN kind's undeclared properties (the row's extra jsonb),
+	// read-only and each fenced by its own classification and parties; ordered by
+	// name. They are never filterable in ListObjects (D6 refuses unknown
+	// properties) and never make an object exist for a caller (D12): an object
+	// whose only readable values are extras is not found
+	// (T-20261113-listobjects-getobject-do-not-expose-undeclared).
+	Extras    []ObjectProperty
+	Lifecycle *ObjectLifecycle
 	// Aliases are confirmed identity links; Links every other confirmed link.
 	Aliases  []ObjectLink
 	Links    []ObjectLink

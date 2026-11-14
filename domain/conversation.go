@@ -44,15 +44,20 @@ const (
 	// ProfileEmployee is an internal user: recall on, narrowed by a caller_scope the
 	// manager supplies at conversation open.
 	ProfileEmployee ConversationProfile = "employee"
-	// ProfileCustomer is an external end user: NO shared-memory recall — grounded on tools
-	// only — plus a narrowing caller_scope.
+	// ProfileCustomer is an external end user: recall is ON but the kernel narrows every
+	// read to customer-visible tags (execution.chat.customer_visible_tags, default
+	// ["public"]; authz.ProfileNarrowingAuthorizer) — owner decision 2026-11-14, ENG-614.
 	ProfileCustomer ConversationProfile = "customer"
 )
 
-// Recall reports whether this profile may read shared long-term memory. Customer-facing
-// conversations are tools-only by construction, so an external user cannot pull on the
-// tenant's shared knowledge even if an agent would otherwise recall.
-func (p ConversationProfile) Recall() bool { return p != ProfileCustomer }
+// Recall reports whether this profile may read shared long-term memory (the
+// recall_lookup hint the chat worker receives). Every known profile may: a customer
+// conversation used to be tools-only by worker convention, which a different or
+// third-party worker could skip; since ENG-614 (owner decision 2026-11-14, option b) the
+// KERNEL narrows a customer conversation's reads to customer-visible tags at the decision
+// point, so the worker may recall and only customer-visible content can come back.
+// An unknown profile still recalls nothing (fail closed).
+func (p ConversationProfile) Recall() bool { return p.Valid() }
 
 // Valid reports whether the profile is one of the known postures. An unknown profile is a
 // configuration error, never a silent default — the fail-closed discipline.

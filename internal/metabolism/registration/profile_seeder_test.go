@@ -173,7 +173,7 @@ func TestSeed_SameVersionKeepsEarnedOutcomes(t *testing.T) {
 // Tool agents are verified by default (ADR-0033/0051) — unchanged by the deletion.
 func TestSeed_ToolAgentVerifiedByDefault(t *testing.T) {
 	s, _, prof, _, _ := newSeeder(fakeManifests{})
-	if err := s.Seed(t.Context(), domain.AgentDefinition{ID: "fs", SourceHash: "h", Trait: domain.TraitTool, Description: "files"}); err != nil {
+	if err := s.Seed(t.Context(), domain.AgentDefinition{ID: "fs", SourceHash: "h", Trait: domain.TraitDaemon, Description: "files"}); err != nil {
 		t.Fatal(err)
 	}
 	if p := prof.saved[0].profile; p.SuccessRate != 1.0 || p.TrustScore != 1.0 {

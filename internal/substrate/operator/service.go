@@ -33,6 +33,8 @@ type Service struct {
 	projection *Projection
 	sessions   SessionLister
 	idp        domain.Authenticator
+	// principalNames gives WhoAmI the caller's display name (contract 0102).
+	principalNames PrincipalNames
 	// logins is the per-source failure window Login consults BEFORE the
 	// credential is evaluated (ADR-0130 1f). Built in NewService — always on,
 	// never attached later.
@@ -64,17 +66,19 @@ type Service struct {
 	uploads UploadMatcher
 	// eventTimeTolerance is the ADR-0134 future-time clamp tolerance; nil = default.
 	eventTimeTolerance *time.Duration
-	watches            domain.WatchConfigHandler
-	pipelines          domain.PipelineLister
-	pipelineDryRun     domain.PipelineDryRunner
-	pipelineAuthor     domain.PipelineAuthor
-	pipelineWriter     domain.PipelineWriter
-	pipelineLifecycle  domain.PipelineLifecycle
-	deadletters        domain.WatchDeadLetterReader // REACT-01 / ADR-0061
-	watchMetrics       domain.WatchMetricsReader    // REACT-05 / ADR-0071
-	watchBacktest      domain.WatchBacktester       // REACT-05 / ADR-0071
-	routePreview       RoutePreviewer               // ROUTE-07 / ADR-0077
-	policy             domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
+	// sourceMetaCaps bounds IngestMemory's descriptive fields (ADR-0136 A3.5).
+	sourceMetaCaps    SourceMetaCaps
+	watches           domain.WatchConfigHandler
+	pipelines         domain.PipelineLister
+	pipelineDryRun    domain.PipelineDryRunner
+	pipelineAuthor    domain.PipelineAuthor
+	pipelineWriter    domain.PipelineWriter
+	pipelineLifecycle domain.PipelineLifecycle
+	deadletters       domain.WatchDeadLetterReader // REACT-01 / ADR-0061
+	watchMetrics      domain.WatchMetricsReader    // REACT-05 / ADR-0071
+	watchBacktest     domain.WatchBacktester       // REACT-05 / ADR-0071
+	routePreview      RoutePreviewer               // ROUTE-07 / ADR-0077
+	policy            domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
 
 	// Contract 0072 (Wave 1). Each is nil-able and its RPC then answers
 	// Unimplemented — never an empty success, so a console can distinguish
@@ -143,6 +147,9 @@ type Service struct {
 	// schedules is the operator view of principal-owned scheduled tasks
 	// (scheduled_tasks.go). nil ⇒ ListScheduledTasks answers Unimplemented.
 	schedules domain.PrincipalSchedules
+	// facts is the read-only fact inspection (contract 0103, facts.go); nil ⇒
+	// ListFacts / GetFactChain / GetFactCoverage answer Unimplemented.
+	facts domain.FactInspector
 
 	kernelVersion   string
 	contractVersion string

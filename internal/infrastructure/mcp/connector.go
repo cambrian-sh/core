@@ -14,6 +14,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/procenv"
 	"github.com/cambrian-sh/core/internal/sandbox"
+	"github.com/cambrian-sh/core/pkg/egress"
 )
 
 // ServerConfig is one MCP server's connection info, mapped from operator config
@@ -74,6 +75,32 @@ type ServerConfig struct {
 	UserInject     string
 	UserInjectName string
 	SharedFallback bool
+
+	// AllowPrivateNetwork opts this http/sse endpoint into loopback / private /
+	// link-local targets (config mcp.servers[].allow_private_network, ADR-0153).
+	// Without it the guarded egress dialer refuses them.
+	AllowPrivateNetwork bool
+}
+
+// egressPolicy is the guarded-egress policy this server's http/sse transport
+// dials under (ADR-0153, ENG-1419): any port and cleartext allowed (the operator
+// typed the URL), non-public address space only with the explicit opt-in.
+func (s ServerConfig) egressPolicy() egress.Policy {
+	return egress.EndpointPolicy(s.AllowPrivateNetwork)
+}
+
+// guardedHTTPClient is the http/sse transport's client over base: the guarded
+// egress transport when base is nil, every redirect hop re-validated and
+// stripped of credentials, no client-wide timeout (the SSE GET stream is
+// long-lived; each call is bounded by its own ctx, execution.tools
+// call_timeout_ms).
+func (s ServerConfig) guardedHTTPClient(wrap func(base http.RoundTripper) http.RoundTripper) *http.Client {
+	p := s.egressPolicy()
+	var rt http.RoundTripper = egress.NewTransport(p, nil)
+	if wrap != nil {
+		rt = wrap(rt)
+	}
+	return &http.Client{Transport: rt, CheckRedirect: egress.CheckRedirect(p)}
 }
 
 // ToolPolicy is the operator-set policy for one discovered tool (ADR-0043 D4/D9).
@@ -393,19 +420,20 @@ func appendSecret(list []string, v string) []string {
 // static credential when configured (ADR-0043 D9). The token resolves through
 // tokenFor (env first, then the ADR-0101 store), so a token saved from the
 // console is picked up on the next (re)connect without a restart.
+//
+// It dials through the guarded egress transport (ADR-0153, ENG-1419): before,
+// it used a bare http.Client over http.DefaultTransport, so an operator (or a
+// model granted register_mcp) could point a server at loopback, RFC1918 or the
+// cloud metadata address.
 func (s ServerConfig) httpClient(ctx context.Context) (*http.Client, string) {
-	c := &http.Client{}
 	var tok string
 	if s.AuthType != "" && s.AuthType != "none" {
 		tok = tokenFor(ctx, s.ID, s.AuthTokenEnv)
-		c.Transport = &authRoundTripper{
-			base:     http.DefaultTransport,
-			authType: s.AuthType,
-			header:   s.AuthHeader,
-			token:    tok,
-		}
+		return s.guardedHTTPClient(func(base http.RoundTripper) http.RoundTripper {
+			return &authRoundTripper{base: base, authType: s.AuthType, header: s.AuthHeader, token: tok}
+		}), tok
 	}
-	return c, tok
+	return s.guardedHTTPClient(nil), tok
 }
 
 // ToolSink receives a server's current tool set on each (re)discovery, and a

@@ -11,7 +11,8 @@ import (
 // quarantines a crash-looping one (REACT-04 / ADR-0070). It tracks restart attempts per
 // stream within a sliding window; once the attempt count in the window reaches
 // MaxAttempts the daemon is quarantined instead of restarted (the flap guard). Restart
-// delay is exponential with full jitter, bounded by [Base, Max]. Concurrency-safe.
+// delay is exponential with full jitter: uniform in [0, min(Max, Base·2ⁿ)] for the n-th
+// attempt in the window (ADR-0070 D1). Concurrency-safe.
 type DaemonRestartPolicy struct {
 	MaxAttempts int
 	Window      time.Duration

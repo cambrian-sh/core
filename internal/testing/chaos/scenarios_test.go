@@ -411,7 +411,7 @@ func (m *memStore) QueryByMetadata(context.Context, map[string]string, int) ([]d
 
 func chaosIngestionManager(t *testing.T, store domain.VectorStore, emb domain.Embedder) *memory.IngestionManager {
 	t.Helper()
-	agent := memory.NewAgent(memory.NewMemoryManager(store, emb), 0.7, 5, 3)
+	agent := memory.NewAgent(memory.NewMemoryManager(store, emb), 3)
 	return memory.NewIngestionManager(emb, agent, memory.IngestionConfig{}, config.ChunkerConfig{Default: "option_c"})
 }
 

@@ -93,20 +93,18 @@ type PlanConfig struct {
 	// production. Default false.
 	PlanPreviewOnly bool `json:"plan_preview_only"`
 
-	// MaxRecursionDepth is INERT: no code reads it (inert_keys.go). It limited nested
-	// sub-auctions (recursive bidding), which ADR-0100 retired with the auction; the
-	// key still loads so existing files keep working, and the kernel warns when one
-	// sets it. Nested delegation depth today is execution.lane.subtasks (ADR-0150 D6).
-	// Wiring or retiring it is open: T-20261113-execution-plan-max-recursion-depth-is-validated.
-	// Default: 3.
-	MaxRecursionDepth int `json:"max_recursion_depth"`
+	// RETIRED in schema v3 (owner decision 2026-11-14, ENG-1502): max_recursion_depth,
+	// max_partial_context_bytes and budget_exhaustion_alarm_rate had no reader. A layer
+	// that still sets them loads with a WARN and the value is dropped
+	// (retiredConfigKeys, execution_migrate.go). Nested delegation depth today is
+	// execution.lane.subtasks (ADR-0150 D6).
 
 	// FallbackConfidenceThreshold is the minimum confidence a runner-up must have
 	// to be eligible as a fallback agent when the winner fails. Default: 0.4.
 	FallbackConfidenceThreshold float64 `json:"fallback_confidence_threshold"`
 
 	// FallbackEnabled enables inter-step fallback to runner-up candidates when
-	// the auction winner fails. Default: true.
+	// the Gatekeeper's selected agent fails (planner lane; planner_lane.go). Default: true.
 	FallbackEnabled bool `json:"fallback_enabled"`
 
 	// MaxReplanAttempts is the maximum number of times one plan may re-ask the
@@ -140,10 +138,6 @@ type PlanConfig struct {
 	// (T-20261107-plan-fan-out-steps-run-one-at-a-time-on-a).
 	FanOutConcurrency int `json:"fan_out_concurrency"`
 
-	// MaxPartialContextBytes caps the size of partial context returned in
-	// PartialPlanError to bound memory usage. Default: 51200 (50 KB).
-	MaxPartialContextBytes int `json:"max_partial_context_bytes"`
-
 	// MaxPlanCost is the hard ceiling ($) for the total cost of a plan execution.
 	// Set to 0 to disable budget enforcement. Default: 0.0.
 	MaxPlanCost            float64 `json:"max_plan_cost"`
@@ -155,10 +149,6 @@ type PlanConfig struct {
 	// execution.content: a token budget sized from the receiving worker's prompt
 	// budget (content.go). An explicit dependency_results_max_chars is migrated to
 	// content.dependency_max_bytes on load (relocatedExecutionKey).
-
-	// BudgetExhaustionAlarmRate is the threshold above which PLAN_BUDGET_INSUFFICIENT
-	// signal is emitted. Default: 0.05 (5%). ADR-0018.
-	BudgetExhaustionAlarmRate float64 `json:"budget_exhaustion_alarm_rate"`
 
 	// MinStepEnergy is the adaptive histogram adjustment floor (tokens).
 	// Default: 256. ADR-0018.
@@ -403,17 +393,9 @@ type VerificationConfig struct {
 	// TrustScoreAbsWeight (w_abs) weights the absolute quality signal in the TrustScore formula.
 	TrustScoreAbsWeight float64 `json:"trust_score_abs_weight"`
 
-	// Pool health guard settings (D15).
-	// VerifierPoolMinSize is the minimum Pool size before threshold relaxation kicks in.
-	// Zero disables the health guard.
-	VerifierPoolMinSize int `json:"verifier_pool_min_size"`
-
-	// VerifierPoolThresholdStep is the relaxation increment per guard iteration.
-	VerifierPoolThresholdStep float64 `json:"verifier_pool_threshold_step"`
-
-	// VerifierPoolThresholdFloor is the hard floor for threshold relaxation.
-	// Explicit (not derived) so operators can control it independently of the base threshold.
-	VerifierPoolThresholdFloor float64 `json:"verifier_pool_threshold_floor"`
+	// RETIRED in schema v3 (owner decision 2026-11-14, ENG-1502): the D15 pool health
+	// guard keys verifier_pool_min_size, verifier_pool_threshold_step and
+	// verifier_pool_threshold_floor had no reader (retiredConfigKeys).
 
 	// CrossVerifyRate is the fraction of primary verifier outputs that are
 	// re-scored by a second Pool member (D16). Cross-verification events are
@@ -512,12 +494,9 @@ type RoutingConfig struct {
 	// Empty ⇒ no model wired (the arm stays inert even if the flag is on).
 	LearnedScorerModelPath string `json:"learned_scorer_model_path,omitempty"`
 
-	// ProposalTimeoutMs is INERT: no code reads it (inert_keys.go). It was the
-	// per-agent timeout of the auction's RequestProposal bid round, removed by
-	// ADR-0100 (its last kernel caller, the interview, was deleted 2026-11-05). The key
-	// still loads and the kernel warns when one sets it; retiring it is open:
-	// T-20261105-execution-routing-proposal-timeout-ms-is-parsed. Default: 2000.
-	ProposalTimeoutMs int `json:"proposal_timeout_ms"`
+	// RETIRED in schema v3 (owner decision 2026-11-14, ENG-1502): proposal_timeout_ms
+	// was the auction's RequestProposal bid-round timeout, removed by ADR-0100
+	// (retiredConfigKeys).
 
 	// MOVED 2026-11-13 to execution.lane (ADR-0150 D10): `bypass_selection` (the
 	// ADR-0050 D1 single-agent control arm, now the default lane:
@@ -718,9 +697,10 @@ type MemoryConfig struct {
 	// investigations/2026-11-05-memory-judge-assessment.md). A layer that still sets
 	// them loads unchanged — the decoder ignores keys with no field.
 
-	// ExperienceRecordsEnabled turns on the ADR-0049 §A2.2 experiential records: the
-	// mutation action events and, per completed plan, the ADR-0095 `experiences` row
-	// (episode open and close), the A2.3 failure record and procedure feedback. The
+	// ExperienceRecordsEnabled turns on the ADR-0049 §A2.2 plan-outcome hook: per
+	// completed plan, the ADR-0095 `experiences` row (episode open and close) and
+	// procedure feedback. The mutation action events and the A2.3 failure record it
+	// also turned on were stopped 2026-11-14 (owner decision, ENG-1595). The
 	// plan-level `mnemonic_scene` chunk it also wrote until 2026-11-05 was removed with
 	// scenes. Nothing raw is ever embedded.
 	//
@@ -742,25 +722,23 @@ type MemoryConfig struct {
 	// foreign_share ~0.43). Drift against those is the thing to watch.
 	ExperienceRecordsEnabled bool `json:"experience_records_enabled"`
 
-	// ExperienceSurpriseFloor is the ADR-0049 A2.3 gate: a failed episode whose
-	// prediction error reaches this writes a FAILURE RECORD (a negative edge). Surprise is |merit expectation - actual|, so
-	// 0.5 means "merit was wrong by half" — a confident agent that failed, or a
-	// distrusted one that succeeded. Both are worth remembering; a routine failure by
-	// an agent already known to fail is not.
-	//
-	// Default 0.5 is editorial, not measured.
-	ExperienceSurpriseFloor float64 `json:"experience_surprise_floor"`
+	// (execution.memory.experience_surprise_floor is RETIRED — owner decision
+	// 2026-11-14, ENG-1595: the A2.3 failure record it gated, a raw Manager.Save of a
+	// failed plan's step output, is no longer written. A layer that sets it loads with
+	// a WARN; retiredConfigKeys in execution_migrate.go.)
 
 	// (execution.scope_enforcement_enabled is GONE — ADR-0085. Access control is no
 	// longer a flag: the enforcement points always run, and whether they restrict
 	// anything depends on whether a policy plugin is installed. A flag that turned
 	// the CHOKEPOINT off, rather than the POLICY, meant an unscoped deployment had
 	// no gate at all instead of a permissive one.)
-	// MemoryRelevanceThreshold is the minimum similarity score to include a memory result
-	// in FetchContext. Default: 0.70.
+	// MemoryRelevanceThreshold is the minimum raw cosine a recalled dense memory needs
+	// to enter a watcher signal's prompt (supwatcher.WatcherConfig.RecallMinCosine;
+	// FetchContext was deleted with ENG-1339). Default: 0.70.
 	MemoryRelevanceThreshold float64 `json:"memory_relevance_threshold"`
 
-	// MaxMemoryResults is the maximum number of relevant memories returned by FetchContext.
+	// MaxMemoryResults is the maximum number of relevant memories injected into a
+	// watcher signal's prompt (supwatcher.WatcherConfig.RecallMaxResults).
 	// Default: 5.
 	MaxMemoryResults int `json:"max_memory_results"`
 
@@ -768,24 +746,10 @@ type MemoryConfig struct {
 	// result via graph traversal. Default: 3.
 	MaxNeighborExpansion int `json:"max_neighbor_expansion"`
 
-	// MinGCAgeDays is the minimum age (in days) before a zero-access memory is eligible
-	// for garbage collection by the nightly Ebbinghaus decay stored procedure.
-	// Default: 30. ADR-0015.
-	MinGCAgeDays int `json:"min_gc_age_days"`
-
-	// CircadianStaleDocWarnThreshold is the count of low-activation-strength documents above
-	// which CircadianRhythm logs a WARN on startup (indicating pg_cron may be disabled).
-	// Default: 50. ADR-0015.
-	CircadianStaleDocWarnThreshold int `json:"circadian_stale_doc_warn_threshold"`
-
-	// RememberDefaultActivation is the initial ActivationStrength (ADR-0015 lifecycle
-	// metric) stamped on a fact written via memory.remember()/IngestMemory when the
-	// caller supplies no importance hint. Without it a remembered fact defaults to 0,
-	// so its floor-multiplier recall score (cosine × (α + (1-α)·activation)) maxes at
-	// cosine·α ≈ 0.2 and can never clear RecallSimilarityFloor (0.25) — the fact is
-	// permanently unrecallable. A LoCoMo-tunable hyperparameter (sweep it alongside
-	// RecallSimilarityFloor / RetrievalFloor). Range [0,1]; 0 reproduces legacy behavior.
-	RememberDefaultActivation float64 `json:"remember_default_activation"`
+	// RETIRED in schema v3 (owner decision 2026-11-14, ENG-1502): min_gc_age_days,
+	// circadian_stale_doc_warn_threshold and remember_default_activation had no reader
+	// (retiredConfigKeys). The initial activation of an ingested chunk is the constant
+	// defaultExternalActivation in internal/memory/ingestion_chunks.go.
 
 	// RETIRED 2026-10-31 (owner decision, ADR-0029 / ADR-0030):
 	// `consolidation_threshold_doc_count` and `consolidation_threshold_bytes`. They
@@ -930,17 +894,41 @@ type RetrievalConfig struct {
 	// = O(max_hops)). Phase 2a runs hops=1 (plan once, retrieve once).
 	AgenticMaxHops int `json:"agentic_max_hops,omitempty"`
 
-	// AgenticPlannerModel is the model id the retrieval planner reasons with
-	// (e.g. "llm:gemini-flash"). "" ⇒ the gateway default. The planner is on the
-	// hot recall path, so a FAST model matters — a slow default (e.g. a remote
-	// deepseek) blows the query deadline and every plan fails open to the raw
-	// query. Pick a fast/local model here.
+	// AgenticPlannerModel is an explicit generator id the retrieval planner reasons
+	// with (e.g. "llm:gemini-flash"), overriding the role table. "" (the default
+	// since the owner decision of 2026-11-14, third round;
+	// T-20261102-agentic-planner-model-names-a-generator-id) ⇒ the planner follows
+	// the `retrieval_planner` role in llm_provider.roles, falling back to the
+	// `memory` role (llm.RoleFallbacks), then the gateway default — so switching
+	// roles moves the planner too. The planner is on the hot recall path, so a FAST
+	// model matters: a slow one blows the query deadline and every plan fails open
+	// to the raw query.
 	AgenticPlannerModel string `json:"agentic_planner_model,omitempty"`
 
 	// NeighborWindowEnabled expands each returned chunk with its document
 	// neighbors (preceding/following) for adjacent context (ADR-0060). Cheap id
 	// lookups, no model. Default off.
 	NeighborWindowEnabled bool `json:"neighbor_window_enabled,omitempty"`
+
+	// DocumentCompletionEnabled returns the rest of the source document (a whole
+	// ingested session, a whole short document) around the best-ranked hits: for
+	// each of the first DocumentCompletionDocuments distinct documents in the
+	// ranked results, the chunks before and after the hit are walked through the
+	// chunk_relations chain and appended, in document order, after every ranked
+	// result (non-displacing, like the neighbour window it generalises). This is
+	// how an assistant-written list ("the 7th item you listed") reaches the reader
+	// when only one of its chunks ranked (owner decision 2026-11-14, third round:
+	// such content is covered by session/document completion, not the fact layer;
+	// T-20261103-fact-extraction-yields-nothing-from-assistant). Cheap id lookups
+	// through the enforcing read store, no model. Default OFF until an A/B/A says
+	// otherwise.
+	DocumentCompletionEnabled bool `json:"document_completion_enabled,omitempty"`
+	// DocumentCompletionDocuments is how many top-ranked documents are completed.
+	// 0 ⇒ 1.
+	DocumentCompletionDocuments int `json:"document_completion_documents,omitempty"`
+	// DocumentCompletionMaxChunks caps the chunks added per completed document
+	// (split before/after the hit; a short document is returned whole). 0 ⇒ 24.
+	DocumentCompletionMaxChunks int `json:"document_completion_max_chunks,omitempty"`
 
 	// ChronologicalContextEnabled orders the passages handed to the FINAL answer
 	// synthesis by event time, each prefixed with its date, its precision and its
@@ -997,11 +985,12 @@ type RetrievalConfig struct {
 	// (Postgres full-text) via Reciprocal Rank Fusion, so exact-token chunks the
 	// embedder misses (names, titles, places) still enter the candidate pool.
 	// false ⇒ vector-only (legacy). HybridRRFK is the RRF constant (default 60).
-	HybridSearchEnabled     bool    `json:"hybrid_search_enabled,omitempty"`
-	HybridRRFK              int     `json:"hybrid_rrf_k,omitempty"`
-	HybridLexicalWeight     float64 `json:"hybrid_lexical_weight,omitempty"`     // >1 leans RRF toward exact-term/entity matches; ≤0 ⇒ 1.0
-	AgenticIrcotEnabled     bool    `json:"agentic_ircot_enabled,omitempty"`     // IRCoT: reason-then-retrieve loop (CoT step drives next retrieval)
-	AgenticDecomposeEnabled bool    `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
+	HybridSearchEnabled bool    `json:"hybrid_search_enabled,omitempty"`
+	HybridRRFK          int     `json:"hybrid_rrf_k,omitempty"`
+	HybridLexicalWeight float64 `json:"hybrid_lexical_weight,omitempty"` // >1 leans RRF toward exact-term/entity matches; ≤0 ⇒ 1.0
+	// (agentic_ircot_enabled RETIRED 2026-11-15, owner decision ENG-1321: IRCoT is a
+	// disqualified lever, its branch deleted like HyDE; a layer setting it loads with a WARN.)
+	AgenticDecomposeEnabled bool `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
 
 	// AgenticSubQuestionConcurrency bounds how many decomposition retrieval passes
 	// run at once: the coverage-floor pass plus every sub-question whose {n}
@@ -1301,13 +1290,18 @@ type IngestionConfig struct {
 
 	// SyncIngestWaitForFacts is SyncIngestWaitForKG for the ADR-0136 D4 fact layer:
 	// a SYNC ingest returns only after its document's facts are extracted and stored,
-	// so a benchmark that measures the fact lane measures stored facts, not a race
-	// with the extraction queue. No-op unless execution.facts.extract_enabled.
-	// Default false: product ingest latency is unchanged.
+	// so a reader (or a benchmark) right after the ingest sees stored facts, not a
+	// race with the extraction queue. It applies UNIFORMLY to every ingest path —
+	// agent-plane IngestMemory, operator ingest (UI uploads) and plugin/reactive
+	// ingests (owner decision 2026-11-14, ENG-488). No-op unless
+	// execution.facts.extract_enabled. Default false: ingest latency is unchanged.
 	SyncIngestWaitForFacts bool `json:"sync_ingest_wait_for_facts,omitempty"`
-	// SyncIngestFactsWaitTimeoutMs bounds that wait (one LLM call per extraction window, ADR-0136 A2.3). On
-	// expiry the ingest still SUCCEEDS with a WARN and facts_pending in the timing
-	// line. Default 120000; <=0 falls back to 120000.
+	// SyncIngestFactsWaitTimeoutMs bounds that wait (one LLM call per extraction window,
+	// ADR-0136 A2.3), so a stuck extractor never hangs an ingest. On expiry the ingest
+	// FAILS with memory.ErrFactsNotReady ("facts not stored within the sync wait";
+	// agent plane: gRPC DeadlineExceeded) — the content is stored and a retry is a safe
+	// no-op (ENG-488); facts_pending is in the timing line. Default 120000; <=0 falls
+	// back to 120000.
 	SyncIngestFactsWaitTimeoutMs int `json:"sync_ingest_facts_wait_timeout_ms,omitempty"`
 
 	// DocumentIdentity selects how an ingested document's id is derived (ADR-0138 D1/D2):
@@ -1387,20 +1381,11 @@ const (
 	KgTripletsFormatStructured = "structured"
 )
 
-// HippocampusConfig — Hippocampus retrieval policies.
-//
-// Split out of the former 198-field flat ExecutionConfig (config schema v2).
-// Field names, types and json tags are unchanged; only the nesting is new, so
-// each field means exactly what it meant before.
-type HippocampusConfig struct {
-	// HippocampusPolicies maps policy name to retrieval thresholds (ADR-0027).
-	// The Hippocampus looks up thresholds by the CachePolicy emitted by the Planner.
-	HippocampusPolicies map[string]domain.HippocampusPolicy `json:"hippocampus_policies,omitempty"`
-
-	// HippocampusDefaultPolicy is the fallback policy name when CachePolicy is empty
-	// or unknown. Must be a key in HippocampusPolicies.
-	HippocampusDefaultPolicy string `json:"hippocampus_default_policy,omitempty"`
-}
+// HippocampusConfig (execution.hippocampus: hippocampus_policies,
+// hippocampus_default_policy) was deleted 2026-11-14 with the ADR-0027 procedural
+// plan memory it tuned (owner decision, third round; ENG-1301). Both keys are
+// retired through retiredConfigKeys (execution_migrate.go): a layer that still
+// sets them loads, with one WARN each.
 
 // ToolsConfig — Tool execution policy and retrieval.
 //
@@ -1503,8 +1488,12 @@ type ToolsConfig struct {
 	// Schema at the dispatch boundary (ADR-0145 D9), coercing what is
 	// unambiguous (a JSON-encoded array or object sent as a string, a numeric or
 	// boolean string) and refusing the rest with an error the model can correct.
-	// Default false.
-	ValidateArgs bool `json:"validate_args,omitempty"`
+	// Default true (owner decision 2026-11-14, third round,
+	// T-20261104-toolexecutor-never-validates-tool-arguments): a malformed call
+	// is a structured refusal to the agent instead of reaching the tool server.
+	// Operators may still set it false. No omitempty: an explicit false must
+	// survive a marshal/merge round trip over the true default.
+	ValidateArgs bool `json:"validate_args"`
 	// IdempotentWrites gives every side-effecting tool call made by a plan step an
 	// idempotency key, hash(run, step, tool, canonical arguments) (ADR-0145 D9): a
 	// retry of the same call returns the stored result instead of running again.
@@ -1518,7 +1507,9 @@ type ToolsConfig struct {
 	// min, max, avg, group-by and filters over ledger rows by reference) and
 	// calc_compare (threshold and rule comparisons). With the run ledger on, every
 	// result is recorded as a computed ledger entry with its inputs, so a figure
-	// can cite it. Default false.
+	// can cite it. Default TRUE (owner decision 2026-11-15, ENG-897: dates,
+	// deadlines, totals and rule checks must not be computed by the model); an
+	// explicit false in any layer turns it off.
 	CalcTools bool `json:"calc_tools,omitempty"`
 	// StagedInputs is how an execution tool (a tool whose MCP policy says
 	// staged_inputs, e.g. the code sandbox) sees a person's files: per call, in a
@@ -1758,6 +1749,13 @@ type ChatConfig struct {
 	// them up to 20k); everything else is in the structured summary. Read only with
 	// transcript_budget_tokens > 0. Default 20000; 0 keeps none.
 	KeepUserMessagesTokens int `json:"keep_user_messages_tokens"`
+	// CustomerVisibleTags are the classification tags a CUSTOMER conversation may read
+	// (ADR-0084 D7; owner decision 2026-11-14, ENG-614): its read predicate is the
+	// decision point's AND "carries one of these" — kernel-enforced by
+	// authz.ProfileNarrowingAuthorizer for every reader, including plans delegated
+	// from the conversation. Default ["public"] (e.g. a public FAQ). Empty: a customer
+	// conversation reads no memory at all.
+	CustomerVisibleTags []string `json:"customer_visible_tags"`
 }
 
 // AgentsConfig — Agent process runtime: resource caps, env passthrough and daemon restart policy.
@@ -1809,6 +1807,10 @@ type AgentsConfig struct {
 	// (full-jitter) restart backoff. Defaults 1000 / 30000.
 	DaemonRestartBaseBackoffMs int `json:"daemon_restart_base_backoff_ms"`
 	DaemonRestartMaxBackoffMs  int `json:"daemon_restart_max_backoff_ms"`
+
+	// Sandbox is the per-trust-tier containment of kernel-spawned agents
+	// (ADR-0139 D8; agents_sandbox.go).
+	Sandbox AgentSandboxConfig `json:"sandbox"`
 }
 
 // SupervisionConfig — Supervision statistics: aggregation cadence, EWMA/latency windows and histogram sizing.
@@ -1901,9 +1903,8 @@ type LLMConfig struct {
 	// GenerateViaModelStream stream initializations. Default: 20. ADR-0018.
 	LLMGatewayMaxConcurrency int `json:"llm_gateway_max_concurrency"`
 
-	// LLMGatewayRetryBackoffMs is the base backoff for jittered retry on
-	// ErrGatewayOverloaded. Default: 100. ADR-0018.
-	LLMGatewayRetryBackoffMs int `json:"llm_gateway_retry_backoff_ms"`
+	// RETIRED in schema v3 (owner decision 2026-11-14, ENG-1502):
+	// llm_gateway_retry_backoff_ms had no reader (retiredConfigKeys).
 }
 
 type ExecutionConfig struct {
@@ -1941,9 +1942,6 @@ type ExecutionConfig struct {
 	// Document ingest: the HTTP inbox, queue/worker sizing and per-chunk enrichment.
 	Ingestion IngestionConfig `json:"ingestion"`
 
-	// Hippocampus retrieval policies.
-	Hippocampus HippocampusConfig `json:"hippocampus"`
-
 	// Tool execution policy and retrieval.
 	Tools ToolsConfig `json:"tools"`
 
@@ -1967,6 +1965,10 @@ type ExecutionConfig struct {
 
 	// Pipelines holds reactive-pipeline execution settings (ADR-0114).
 	Pipelines PipelinesConfig `json:"pipelines"`
+
+	// Retention is how long rows nothing else prunes are kept (ENG-128): operator
+	// audit 365 days by default, derived/cache tables opt-in (retention.go).
+	Retention RetentionConfig `json:"retention"`
 
 	// Facts is the ADR-0136 D4/D5 fact layer: per-document fact extraction, the fact
 	// retrieval lane and valid-time supersession. Every switch defaults off.
@@ -2262,19 +2264,26 @@ func (h HooksConfig) validate() []string {
 }
 
 // FactsConfig is the ADR-0136 fact layer (D4 fact-augmented keys into chunks, D5
-// valid-time supersession). Owner-assumed defaults (2026-11-03): the whole layer is
-// DEFAULT OFF (its extraction spends one LLM call per ingested document, ADR-0131), the
+// valid-time supersession). Defaults: extraction and the fact lane are ON in the
+// shipped default (owner decision 2026-11-14, ENG-1496: the fact lane is the retrieval
+// base AND leaderboards measure the shipped default, so the two now agree; extraction
+// spends LLM calls per ingested document — up to max_calls_per_document windows —
+// through the "facts" role, ADR-0131). Supersession and assessments stay off; the
 // attribute registry is empty so every attribute is multi (nothing supersedes until an
-// operator declares it single).
+// operator declares it single). An operator turns either switch off with false in any
+// layer (e.g. CAMBRIAN_EXECUTION__FACTS__EXTRACT_ENABLED=false).
 type FactsConfig struct {
 	// ExtractEnabled runs asynchronous LLM extraction (one call per A2.3 window) per ingested document after
 	// its chunks are stored (never on the ingest RPC path), writing each fact as a
 	// memory_fact knowledge item (ADR-0136 A1) through the write chokepoint. The generator is the "facts" system role
-	// (llm_provider.roles.facts; unset = the default generator). Default false.
+	// (llm_provider.roles.facts; unset = the default generator). Default TRUE since
+	// 2026-11-14 (ENG-1496); needs the knowledge substrate (Postgres), else the boot
+	// line logs it false with a WARN.
 	ExtractEnabled bool `json:"extract_enabled,omitempty"`
 	// LaneEnabled adds the fact lane to retrieval: a fact vector search under the
 	// caller's read predicate whose hits contribute their SOURCE CHUNKS as primary hits,
-	// plus the fact_match Stage-A feature and the fact text as hit metadata. Default false.
+	// plus the fact_match Stage-A feature and the fact text as hit metadata. Default
+	// TRUE since 2026-11-14 (ENG-1496).
 	LaneEnabled bool `json:"lane_enabled,omitempty"`
 	// SupersessionEnabled (D5, as amended by A1) seeds the declared predicate profiles,
 	// lets a change-language cue (supersedes_prior) give an undated fact the session time
@@ -2409,14 +2418,17 @@ type GraphConfig struct {
 	EnergyFloor float64 `json:"energy_floor"`
 }
 
-// TelemetryConfig controls runtime observability (OTel, Prometheus, OTLP).
-// Zero values disable all exporters — safe default for OSS deployments.
+// TelemetryConfig controls runtime observability (OTel). The only exporter this build
+// has is stdout; zero values disable it — safe default for OSS deployments.
+//
+// otlp_endpoint and prometheus_port were RETIRED in schema v3 (owner decision
+// 2026-11-14, ENG-203): no OTLP or Prometheus exporter was ever built, so setting them
+// exported nothing. A layer that still sets them loads with a WARN and the value is
+// dropped (retiredConfigKeys). Telemetry export is a future feature with new keys.
 type TelemetryConfig struct {
-	OTLPEndpoint                 string  `json:"otlp_endpoint"`
 	TraceSamplingRate            float64 `json:"trace_sampling_rate"`             // default 1.0 when set
 	MetricsExportIntervalSeconds int     `json:"metrics_export_interval_seconds"` // default 10 when set
 	EnableStdoutExporter         bool    `json:"enable_stdout_exporter"`
-	PrometheusPort               int     `json:"prometheus_port"` // 0 = disabled
 }
 
 // ADR-0057: Langfuse is a PREMIUM feature. Its config lives in the premium module,
@@ -2427,6 +2439,8 @@ type Config struct {
 	//
 	//	1 (or absent) — the original flat `execution` block, 198 keys at one level.
 	//	2             — `execution` grouped into named blocks (retrieval, routing, …).
+	//	3             — v2 minus the keys retired 2026-11-14 (retiredConfigKeys): a v2
+	//	                layer that still sets one loads with a WARN and the value dropped.
 	//
 	// Absent means 1, because every config written before v2 existed has no such
 	// field and treating "unstamped" as "current" would skip the migration for
@@ -2961,6 +2975,15 @@ type MCPServerConfig struct {
 	// on. Read by the composition root (boot ConnectAll/Watch filter) and by the
 	// integrations write path (start/stop live). Use IsEnabled.
 	Enabled *bool `json:"enabled,omitempty"`
+	// AllowPrivateNetwork is the explicit per-endpoint opt-in for an http/sse
+	// server on loopback, private (RFC1918 / unique-local), CGNAT or link-local
+	// space (ADR-0153, owner decision 2026-11-14, ENG-1419). Every http/sse
+	// connection goes through the guarded egress dialer (pkg/egress): resolve
+	// once, validate every address, dial the validated one, re-check redirects,
+	// no environment proxy. Without this flag a server at http://localhost:3006/
+	// or an intranet address is refused at save and at dial; set it for an
+	// enterprise's own private MCP server. Default false. Ignored for stdio.
+	AllowPrivateNetwork bool `json:"allow_private_network,omitempty"`
 	// EnvValues are LITERAL, non-secret environment values given to this stdio
 	// server only (T-20261105-mcp-server-config-cannot-set-literal-env-values):
 	// SANDBOX_NETWORK_MODE=none for the code sandbox, ALLOW_COMMANDS for the
@@ -3081,17 +3104,14 @@ func DefaultConfig() *Config {
 				PlanMaxDurationMs:           DefaultPlanMaxDurationMs,
 				CallerDeadlineReserveMs:     DefaultCallerDeadlineReserveMs,
 				ContextGrowthK:              0.001,
-				MaxRecursionDepth:           3,
 				FallbackConfidenceThreshold: 0.4,
 				FallbackEnabled:             true,
 				MaxReplanAttempts:           2,
 				MaxWorkerDelegationDepth:    1,
 				MaxFanOutWidth:              64,
 				FanOutConcurrency:           4,
-				MaxPartialContextBytes:      51200,
 				PlanDriftDays:               7,
 				ContextRefSnippetChars:      500,
-				BudgetExhaustionAlarmRate:   0.05,
 				MinStepEnergy:               256,
 				MaxStepEnergy:               32768,
 				StepCacheDefaultTTLMinutes:  60, // ADR-0145 D9; was a hardcoded 7 days
@@ -3110,17 +3130,14 @@ func DefaultConfig() *Config {
 				MeritUnverifiedWeight: 0,
 			},
 			Verification: VerificationConfig{
-				VerifierPoolThreshold:      0.8,
-				TrustBoostThreshold:        0.4,
-				VerificationQueueCapacity:  256,
-				MinVerifiedEvents:          3,
-				VerifierRecencyWindow:      3,
-				TrustScoreCalWeight:        0.6,
-				TrustScoreAbsWeight:        0.4,
-				VerifierPoolMinSize:        2,
-				VerifierPoolThresholdStep:  0.05,
-				VerifierPoolThresholdFloor: 0.6,
-				CrossVerifyRate:            0.05,
+				VerifierPoolThreshold:     0.8,
+				TrustBoostThreshold:       0.4,
+				VerificationQueueCapacity: 256,
+				MinVerifiedEvents:         3,
+				VerifierRecencyWindow:     3,
+				TrustScoreCalWeight:       0.6,
+				TrustScoreAbsWeight:       0.4,
+				CrossVerifyRate:           0.05,
 			},
 			Routing: RoutingConfig{
 				// ADR-0100: default ON. Capability-typed dispatch gates on
@@ -3132,7 +3149,6 @@ func DefaultConfig() *Config {
 				AgentPinning:           true, // honour an explicit "use agent X" directive
 				RoutingTraceEnabled:    true,
 				ExplorationRate:        0.05,
-				ProposalTimeoutMs:      2000,
 				DispatchCheapEnergyMax: 0,     // cheapest-competent branch OFF until the A/B lands (P0 = pure argmax)
 				DispatchMeritFloor:     0.5,   // neutral prior; a candidate must be at least average to be "competent"
 				YieldMaxDepth:          3,     // step agent → delegate → delegate's delegate; deeper is a decomposition the planner should own
@@ -3158,15 +3174,11 @@ func DefaultConfig() *Config {
 				SessionTokenTTLMultiplier:            5.0,
 			},
 			Memory: MemoryConfig{
-				MemoryRelevanceThreshold:       0.70,
-				MaxMemoryResults:               5,
-				MaxNeighborExpansion:           3,
-				MinGCAgeDays:                   30,
-				CircadianStaleDocWarnThreshold: 50,
-				RememberDefaultActivation:      0.5,
+				MemoryRelevanceThreshold: 0.70,
+				MaxMemoryResults:         5,
+				MaxNeighborExpansion:     3,
 				// ADR-0049 A2.2 experiential records: ON (owner decision 2026-07-28).
 				ExperienceRecordsEnabled: true,
-				ExperienceSurpriseFloor:  0.5,
 			},
 			Procedure: ProcedureConfig{
 				ProcedureDeprecateBelow: 0.3, // ADR-0094 D4 retirement floor for stored routines
@@ -3202,7 +3214,7 @@ func DefaultConfig() *Config {
 				AgenticMaxHops:                4,
 				AgenticDecomposeEnabled:       true, // grounded decomposition — the one agentic lever that measured a win
 				AgenticSubQuestionConcurrency: 4,    // T-20261102: independent sub-questions retrieved in parallel
-				AgenticPlannerModel:           "llm:deepseek",
+				AgenticPlannerModel:           "",   // follows the retrieval_planner → memory role (ENG-329)
 				HybridSearchEnabled:           true, // dense+lexical RRF fusion (ADR-0054)
 				HybridRRFK:                    60,
 				HybridLexicalWeight:           1,
@@ -3288,21 +3300,6 @@ func DefaultConfig() *Config {
 				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
 				StructureJunkFilterBackends: []string{"docling"},
 			},
-			Hippocampus: HippocampusConfig{
-				HippocampusPolicies: map[string]domain.HippocampusPolicy{
-					"codegen":   {SimilarityThreshold: 0.92, ConfidenceFloor: 0.85, MaxAgeHours: 24},
-					"cognitive": {SimilarityThreshold: 0.85, ConfidenceFloor: 0.70, MaxAgeHours: 168},
-					"tool":      {SimilarityThreshold: 0.80, ConfidenceFloor: 0.60, MaxAgeHours: 720},
-					"research":  {SimilarityThreshold: 0.88, ConfidenceFloor: 0.75, MaxAgeHours: 72},
-					"default":   {SimilarityThreshold: 0.85, ConfidenceFloor: 0.70, MaxAgeHours: 168},
-					// The ADR-0029 "episodic" policy was removed 2026-10-31 (owner
-					// decision): its only consumer, the WorkspaceStage episodic lane, was
-					// deleted with its writer on 2026-07-18. An operator file that still
-					// declares `hippocampus_policies.episodic` loads fine — the map takes
-					// any name — it simply has no reader.
-				},
-				HippocampusDefaultPolicy: "default",
-			},
 			Agents: AgentsConfig{
 				// AgentEnvPassthrough deliberately stays EMPTY (owner rule
 				// 2026-08-11): a knob that reaches agents through the kernel's
@@ -3328,6 +3325,12 @@ func DefaultConfig() *Config {
 				// tool whose policy declares staged_inputs, reads only what the
 				// caller could read, and deletes each folder after its call.
 				StagedInputs: StagedInputsConfig{Enabled: true},
+				// ADR-0145 D9 argument validation, on by default (owner decision
+				// 2026-11-14, third round; ENG-562).
+				ValidateArgs: true,
+				// ADR-0145 D4 calculation tools, on by default (owner decision
+				// 2026-11-15, ENG-897; no prior A/B/A).
+				CalcTools: true,
 			},
 			Supervision: SupervisionConfig{
 				ProfileAggregatorIntervalSeconds: 300,
@@ -3344,19 +3347,23 @@ func DefaultConfig() *Config {
 			},
 			LLM: LLMConfig{
 				LLMGatewayMaxConcurrency: 20,
-				LLMGatewayRetryBackoffMs: 100,
 				// TracePipelinePayloads deliberately NOT promoted with the rest of
 				// the 2026-08-11 defaults: its own doc comment names the reason —
 				// item values are real deployment data, and a default that ships
 				// them to the operator plane turns a diagnostic view into an
 				// exfiltration surface. The rig keeps it on via tuning.local.json.
 			},
+			// ENG-128 (owner decision 2026-11-15): audit kept a year, caches opt-in.
+			Retention: DefaultRetentionConfig(),
 			Chat: ChatConfig{
 				// ADR-0084 conversation lane ON by default (owner 2026-08-11):
 				// a kernel with chat_pool_size 0 hides the whole chat surface.
 				ChatPoolSize:      2,
 				ChatPoolQueueSize: 8,
 				ChatPoolAgentID:   "chat_agent",
+				// ENG-614 (owner decision 2026-11-14): customer conversations read
+				// only memory tagged public.
+				CustomerVisibleTags: []string{"public"},
 				// The values internal/chat hardcoded until 2026-11-07.
 				ChatTurnTimeoutSeconds:  240,
 				ChatStallTimeoutSeconds: 90,
@@ -3374,9 +3381,12 @@ func DefaultConfig() *Config {
 				MaxDepth:    3,
 				EnergyFloor: 0.15,
 			},
-			// ADR-0136 D4/D5: the fact layer is off; the tunables below are read only
-			// when a switch is on.
+			// ADR-0136 D4: extraction and the fact lane ON (owner decision
+			// 2026-11-14, ENG-1496); supersession/assessments off. The tunables below
+			// are read only when a switch is on.
 			Facts: FactsConfig{
+				ExtractEnabled:       true,
+				LaneEnabled:          true,
 				QueueSize:            1024,
 				Workers:              2,
 				LLMTimeoutMs:         120000,
@@ -3711,6 +3721,11 @@ func loadMergedReport(path string, store Store) (*Config, Provenance, []string, 
 	// provider maps values too.
 	envMapValue := func(key, value string) (string, any) {
 		path := envMap(key)
+		// v2→v3: a variable naming a retired key is dropped with a WARN, exactly as
+		// the key is dropped from a file or the store (retiredConfigKeys).
+		if retiredEnvKey(path) {
+			return "", nil
+		}
 		return laneEnvKey(path, value, os.LookupEnv)
 	}
 	_ = k.Load(env.ProviderWithValue("CAMBRIAN_", ".", envMapValue), nil)
@@ -4008,9 +4023,6 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Verification.CrossVerifyRate < 0 || c.Verification.CrossVerifyRate > 1 {
 		errs = append(errs, "cross_verify_rate must be in [0, 1]")
 	}
-	if c.Plan.MaxRecursionDepth < 0 {
-		errs = append(errs, "max_recursion_depth must be >= 0")
-	}
 	if c.Plan.FallbackConfidenceThreshold < 0 || c.Plan.FallbackConfidenceThreshold > 1 {
 		errs = append(errs, "fallback_confidence_threshold must be in [0, 1]")
 	}
@@ -4040,9 +4052,6 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Plan.FanOutConcurrency < 0 {
 		errs = append(errs, "fan_out_concurrency must be >= 0 (0 and 1 = fan-out children one at a time)")
-	}
-	if c.Plan.MaxPartialContextBytes < 0 {
-		errs = append(errs, "max_partial_context_bytes must be >= 0")
 	}
 	if c.Supervision.SignalNoiseThreshold < 0 {
 		errs = append(errs, "signal_noise_threshold must be >= 0")
@@ -4090,9 +4099,6 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Plan.PlanDriftDays < 0 {
 		errs = append(errs, "plan_drift_days must be >= 0")
-	}
-	if c.Routing.ProposalTimeoutMs < 0 {
-		errs = append(errs, "proposal_timeout_ms must be >= 0")
 	}
 	if c.Memory.MemoryRelevanceThreshold < 0 || c.Memory.MemoryRelevanceThreshold > 1 {
 		errs = append(errs, "memory_relevance_threshold must be in [0, 1]")
@@ -4188,6 +4194,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	errs = append(errs, c.Hooks.validate()...)
 	errs = append(errs, c.MemoryNotes.validate()...)
+	errs = append(errs, c.Retention.validate()...)
 	errs = append(errs, c.StepOutput.validate()...)
 	errs = append(errs, c.Skills.validate()...)
 	errs = append(errs, c.Schedules.validate()...)
@@ -4196,6 +4203,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	errs = append(errs, c.Chat.validateGrounding(c.Ledger.Enabled)...)
 	errs = append(errs, c.Workers.validate(c.Ledger.Enabled)...)
 	errs = append(errs, c.Lane.validate()...)
+	errs = append(errs, c.Agents.Sandbox.validate()...)
 	if c.Plan.ChecklistEnabled && !c.Ledger.Enabled {
 		errs = append(errs, "execution.plan.checklist_enabled requires execution.ledger.enabled: item evidence is read from the run ledger")
 	}
@@ -4261,10 +4269,8 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Retrieval.HnswMaxScanTuples < 0 {
 		errs = append(errs, "retrieval.hnsw_max_scan_tuples must be >= 0")
 	}
-	if c.Hippocampus.HippocampusDefaultPolicy != "" {
-		if _, ok := c.Hippocampus.HippocampusPolicies[c.Hippocampus.HippocampusDefaultPolicy]; !ok {
-			errs = append(errs, fmt.Sprintf("hippocampus_default_policy %q is not a key in hippocampus_policies", c.Hippocampus.HippocampusDefaultPolicy))
-		}
+	if c.Retrieval.DocumentCompletionDocuments < 0 || c.Retrieval.DocumentCompletionMaxChunks < 0 {
+		errs = append(errs, "retrieval.document_completion_documents and document_completion_max_chunks must be >= 0")
 	}
 	// Effect-checked dispatch: an invalid vocabulary is refused at load, never
 	// discovered at the first dispatch it would have refused. (This check once

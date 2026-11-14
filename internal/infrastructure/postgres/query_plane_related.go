@@ -122,7 +122,7 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 			SELECT e1.id AS aid, e1.occurred_at AS at1, e1.evidence_id AS aev,
 			       r1.entity_id AS x, r1.role AS role1
 			FROM events e1 JOIN event_roles r1 ON r1.event_id = e1.id
-			WHERE e1.id = ANY($1) AND e1.namespace_id = $2`+notRetired("e1")+`
+			WHERE e1.id = ANY($1) AND e1.namespace_id = $2`+notRetired("e1")+latestRevision("e1")+`
 			  AND (cardinality($4::text[]) = 0 OR r1.role = ANY($4::text[]))
 		), d AS (
 			SELECT a.aid, a.x, count(DISTINCT oe.id) AS df
@@ -130,7 +130,7 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 			JOIN event_roles r ON r.entity_id = a.x
 			JOIN events oe ON oe.id = r.event_id AND oe.namespace_id = $2
 			 AND oe.occurred_at >= a.at1 - make_interval(secs => $3::float8)
-			 AND oe.occurred_at <= a.at1`+notRetired("oe")+dfFence+`
+			 AND oe.occurred_at <= a.at1`+notRetired("oe")+latestRevision("oe")+dfFence+`
 			GROUP BY a.aid, a.x
 		)
 		SELECT a.aid, a.at1, a.aev, a.x, a.role1, d.df,
@@ -143,7 +143,7 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 			WHERE d.df <= $5 AND r2.entity_id = a.x AND r2.event_id <> a.aid
 			  AND (cardinality($4::text[]) = 0 OR r2.role = ANY($4::text[]))
 			  AND e2.occurred_at >= a.at1 - make_interval(secs => $3::float8)
-			  AND e2.occurred_at <= a.at1`+notRetired("e2")+candFence+`
+			  AND e2.occurred_at <= a.at1`+notRetired("e2")+latestRevision("e2")+candFence+`
 		) c ON true
 		ORDER BY a.aid, a.x, a.role1, c.id`, args...)
 	if err != nil {
@@ -267,7 +267,7 @@ func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.Ta
 			       array_agg(DISTINCT r.role ORDER BY r.role) AS roles
 			FROM event_roles r
 			JOIN events oe ON oe.id = r.event_id AND oe.namespace_id = $2
-			WHERE r.entity_id = ANY($1)`+notRetired("oe")+fence+`
+			WHERE r.entity_id = ANY($1)`+notRetired("oe")+latestRevision("oe")+fence+`
 			GROUP BY r.entity_id, oe.id, oe.event_type, oe.occurred_at, oe.evidence_id
 		), w AS (
 			SELECT ev.*, count(*) OVER (PARTITION BY x ORDER BY occurred_at

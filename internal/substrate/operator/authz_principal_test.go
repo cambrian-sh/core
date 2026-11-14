@@ -37,7 +37,7 @@ func TestAuth_HandlerSeesTheLoggedInPrincipal(t *testing.T) {
 	token := login(t, idp, "op", "pw")
 
 	var got domain.PrincipalRef
-	interceptor := operator.UnaryAuthInterceptor(idp, nil)
+	interceptor := operator.UnaryAuthInterceptor(idp, nil, nil)
 	if _, err := interceptor(ctxWithToken(token), nil,
 		&grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/IngestMemoryOp"},
 		func(ctx context.Context, _ any) (any, error) {
@@ -63,7 +63,7 @@ func TestAuth_FailClosedHandlerAdmitsAnAuthenticatedOperator(t *testing.T) {
 	idp := newIDP()
 	token := login(t, idp, "op", "pw")
 
-	interceptor := operator.UnaryAuthInterceptor(idp, nil)
+	interceptor := operator.UnaryAuthInterceptor(idp, nil, nil)
 	_, err := interceptor(ctxWithToken(token), nil,
 		&grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/IngestMemoryOp"},
 		func(ctx context.Context, _ any) (any, error) { return nil, failClosedAuthorize(ctx) })
@@ -87,7 +87,7 @@ func TestAuth_StreamHandlerSeesTheLoggedInPrincipal(t *testing.T) {
 	token := login(t, idp, "op", "pw")
 
 	var got domain.PrincipalRef
-	interceptor := operator.StreamAuthInterceptor(idp, nil)
+	interceptor := operator.StreamAuthInterceptor(idp, nil, nil)
 	err := interceptor(nil, stubStream{ctx: ctxWithToken(token)},
 		&grpc.StreamServerInfo{FullMethod: "/cambrian.OperatorConsole/StreamEvents"},
 		func(_ any, ss grpc.ServerStream) error {

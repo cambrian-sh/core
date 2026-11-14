@@ -21,17 +21,6 @@ var checklistPrompts = prompts.MustPair("requirement_checklist", "requirement_ch
 
 var checklistDataTags = []string{"effects", "repair", "request"}
 
-func init() {
-	h := checklistPrompts.StaticHash()
-	domain.PromptRegistry[h] = domain.PromptEntry{
-		ID: "requirements.checklist",
-		Version: fmt.Sprintf("%s.v%d+%s.v%d", checklistPrompts.System.ID, checklistPrompts.System.Version,
-			checklistPrompts.Input.ID, checklistPrompts.Input.Version),
-		Hash:   h,
-		Schema: string(checklistPrompts.Schema()),
-	}
-}
-
 // Deriver builds a request's requirement checklist (ADR-0145 D5 "Derivation"):
 // ONE strict-schema model call over the user's own message — never the chat
 // agent's paraphrase — whose every item carries a verbatim quote that code checks.

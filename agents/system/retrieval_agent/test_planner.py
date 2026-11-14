@@ -124,24 +124,6 @@ def test_decide_continue_paths():
     assert d5["reject_reason"] == "ungrounded"
 
 
-# ── reason_step (interleaved retrieval) ─────────────────────────────────────
-
-
-def test_reason_step_is_grounded_and_fails_safe():
-    p = planner.LIBRARY.get("retrieval_reason_step").body
-    assert "well-known knowledge" not in p and "Use only facts stated in the documents" in p
-    llm, seen = capture(json.dumps({"thought": "Alice reports to Bob Chen.", "done": False,
-                                    "search_query": "Bob Chen approved"}))
-    out = planner.reason_step({"query": "q", "chunks": ["Alice reports to Bob Chen"], "cot": []}, llm)
-    assert out == {"thought": "Alice reports to Bob Chen.", "done": False, "search_query": "Bob Chen approved"}
-    u = seen[0].user
-    assert u.index("<documents>") < u.index("<reasoning_so_far>") < u.index("<question>")
-    assert planner.reason_step({"query": "q", "chunks": []}, fake_bad)["done"] is True
-    fin = planner.reason_step({"query": "q", "chunks": ["x"]},
-                              const('{"thought": "So the answer is X.", "done": false, "search_query": "y"}'))
-    assert fin["done"] is True and fin["search_query"] == ""
-
-
 # ── synthesize ──────────────────────────────────────────────────────────────
 
 
@@ -216,33 +198,6 @@ def test_answer_subquestion_strict_then_forced_and_grounded():
     # Ungrounded on both passes -> "".
     assert planner.answer_subquestion("Who?", ["Alice"], const('{"answer": "Zed"}')) == ""
     assert planner.answer_subquestion("Who?", [], const('{"answer": "Zed"}')) == ""
-
-
-# ── extract_provenance ──────────────────────────────────────────────────────
-
-
-def test_provenance_schema_bounded_and_fail_safe():
-    pv = planner.extract_provenance(
-        "Dana rotated the API keys on June 12 2025.",
-        const('{"valid_time":"2025-06-12","actors":["Dana"],"source_type":"system_event"}'))
-    assert pv == {"valid_time": "2025-06-12", "actors": ["Dana"], "source_type": "system_event",
-                  "origin": "inferred"}
-    assert planner.extract_provenance("x", const('{"source_type":"bogus","actors":["A"]}'))["source_type"] == ""
-    g = planner.extract_provenance("x", fake_bad)
-    assert g["valid_time"] == "" and g["actors"] == []
-    assert planner.extract_provenance("x", const('{"valid_time":"last Tuesday"}'))["valid_time"] == ""
-
-
-def test_provenance_sends_a_reference_date():
-    llm, seen = capture('{"valid_time":"","actors":[],"source_type":""}')
-    planner.extract_provenance("Dana rotated the keys yesterday.", llm, ref_date="2026-03-04T10:00:00Z")
-    assert "<reference_date>\n2026-03-04\n</reference_date>" in seen[0].user
-    assert "against the reference date" in seen[0].system[0]["text"]
-    # No caller time -> today's date (UTC).
-    planner.extract_provenance("x", llm)
-    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    assert f"<reference_date>\n{today}\n</reference_date>" in seen[1].user
-    assert planner.reference_date("garbage", now=dt.datetime(2030, 1, 2, tzinfo=dt.timezone.utc)) == "2030-01-02"
 
 
 # ── the prompt files themselves ─────────────────────────────────────────────

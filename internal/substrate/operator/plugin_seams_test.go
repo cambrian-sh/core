@@ -38,7 +38,7 @@ func TestAccountsPlane_RoleGating(t *testing.T) {
 		"/cambrian.operator.OperatorConsole/StartAccountConnect": true,
 		"/cambrian.operator.OperatorConsole/DisconnectMyAccount": true,
 	} {
-		if got := isOperatorOnly(m); got != want {
+		if got := isOperatorOnly(m, premiumRolesFixture); got != want {
 			t.Errorf("%s operator-only = %v, want %v", m, got, want)
 		}
 	}

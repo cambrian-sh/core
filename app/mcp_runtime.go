@@ -38,6 +38,7 @@ func mcpServerFromConfig(s config.MCPServerConfig, sb *sandbox.Policy) mcp.Serve
 		DefaultPolicy:             def,
 		DefaultClassificationTags: s.ClassificationTags,
 		Sandbox:                   containmentSpec(s, sb),
+		AllowPrivateNetwork:       s.AllowPrivateNetwork,
 	}
 	// ADR-0140: the credential model travels with the server, so the
 	// connector selects a per-principal session for per_user / either.

@@ -127,16 +127,20 @@ func TestInertConfigKeys_AreDeclaredAndUnread(t *testing.T) {
 }
 
 func TestSetInertConfigKeys_OnlyAboveDefaults(t *testing.T) {
-	t.Parallel()
+	// inertConfigKeys is empty today (schema v3 retired its keys); exercise the
+	// reporting with temporary entries.
+	saved := inertConfigKeys
+	inertConfigKeys = map[string]string{"a.default_only": "T-x", "a.from_file": "T-y", "a.from_env": "T-z"}
+	t.Cleanup(func() { inertConfigKeys = saved })
 	prov := Provenance{
-		"execution.plan.max_recursion_depth":         SourceDefault,
-		"execution.routing.proposal_timeout_ms":      SourceTuningLocal,
-		"execution.llm.llm_gateway_retry_backoff_ms": EnvSource("CAMBRIAN_EXECUTION__LLM__LLM_GATEWAY_RETRY_BACKOFF_MS"),
+		"a.default_only": SourceDefault,
+		"a.from_file":    SourceTuningLocal,
+		"a.from_env":     EnvSource("CAMBRIAN_A__FROM_ENV"),
 	}
 	got := setInertConfigKeys(prov)
 	want := []string{
-		"execution.llm.llm_gateway_retry_backoff_ms (env:CAMBRIAN_EXECUTION__LLM__LLM_GATEWAY_RETRY_BACKOFF_MS)",
-		"execution.routing.proposal_timeout_ms (tuning.local.json)",
+		"a.from_env (env:CAMBRIAN_A__FROM_ENV)",
+		"a.from_file (tuning.local.json)",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -236,7 +240,8 @@ func unreadConfigLeaves(t *testing.T) []string {
 // (T-20261113-add-a-reflective-every-config-key-has-a). Every Config leaf must have a
 // reader in core or premium; the only exceptions are the ticketed inertConfigKeys,
 // which the kernel also names at load. A new unread key fails here: wire it in the
-// same change, or (with the owner) declare it inert with its ticket.
+// same change, retire it through schema migration (retiredConfigKeys), or (with the
+// owner) declare it inert with its ticket.
 func TestEveryConfigKeyHasAConsumer(t *testing.T) {
 	for _, key := range unreadConfigLeaves(t) {
 		if _, ok := inertConfigKeys[key]; !ok {

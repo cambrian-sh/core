@@ -16,14 +16,3 @@ type LTMEnrichment struct {
 	// is why a routine names capabilities and never agents.
 	Procedures []Procedure
 }
-
-// PlanLTMEntry carries a prior successful ExecutionPlan and its review metadata
-// for injection into the <PlanLTM> Planner prompt section. ADR-0025.
-type PlanLTMEntry struct {
-	PlanJSON   string  // serialised ExecutionPlan JSON
-	Similarity float64 // cosine similarity to the current query
-	Confidence float64 // mean per-step selection confidence from Hippocampus (an auction-era
-	// field name: it was the mean BID confidence until ADR-0100 P3 removed bids)
-	Outcome     string // plan_outcome from PlanEvent (e.g. "success", "partial")
-	ReplanCount int    // replan_count from PlanEvent
-}

@@ -292,7 +292,7 @@ func (p *Provider) streamRequest(ctx context.Context, lr domain.LLMRequest, req 
 }
 
 func (p *Provider) capabilitiesFor(lr domain.LLMRequest) domain.Capabilities {
-	id, err := p.resolve(context.Background(), lr)
+	id, err := p.resolve(lr)
 	if err != nil {
 		return domain.Capabilities{}
 	}
@@ -343,12 +343,17 @@ func (p *Provider) withFallback(ctx context.Context, lr domain.LLMRequest, call 
 func (p *Provider) fallbackLoop(ctx context.Context, label string, acquire func(excluded map[string]bool) (domain.Generator, string, error), call func(domain.Generator) error) (string, error) {
 	var excluded map[string]bool
 	var lastErr error
+	var lastFailed string
 	for {
 		gen, id, err := acquire(excluded)
 		if err != nil {
 			if lastErr != nil {
 				// Nothing left to fall back to: the provider's own error is the
-				// useful one, not "no healthy generator".
+				// useful one, not "no healthy generator". Loud (ENG-453): with the
+				// fallback restricted to equivalent generators, this is where a dead
+				// backbone stops a run instead of being papered over by another model.
+				p.log.Error("llm provider: generator failed and nothing may serve the call in its place",
+					"purpose", label, "failed", lastFailed, "why", err, "err", lastErr)
 				return "", lastErr
 			}
 			return "", err
@@ -371,7 +376,7 @@ func (p *Provider) fallbackLoop(ctx context.Context, label string, acquire func(
 			excluded = make(map[string]bool)
 		}
 		excluded[id] = true
-		lastErr = err
+		lastErr, lastFailed = err, id
 		p.log.Warn("llm provider: generator unavailable for this call; falling back",
 			"purpose", label, "generator", id, "err", err)
 	}
@@ -580,6 +585,16 @@ func (p *Provider) StreamOn(ctx context.Context, candidates []string, req domain
 func (p *Provider) chainAcquirer(candidates []string) func(excluded map[string]bool) (domain.Generator, string, error) {
 	return func(excluded map[string]bool) (domain.Generator, string, error) {
 		reg := p.tab().registry
+		// ENG-453: the chain's first REGISTERED candidate is the step's own model;
+		// a later candidate serves only when marked equivalent to it, and never
+		// when llm_provider.pinned.
+		first := ""
+		for _, id := range candidates {
+			if _, ok := reg.Lookup(id); id != "" && ok {
+				first = id
+				break
+			}
+		}
 		var skipped []string
 		for _, id := range candidates {
 			if id == "" || excluded[id] {
@@ -588,6 +603,10 @@ func (p *Provider) chainAcquirer(candidates []string) func(excluded map[string]b
 			entry, ok := reg.Lookup(id)
 			if !ok {
 				skipped = append(skipped, id+": not a configured generator")
+				continue
+			}
+			if !p.fallback.admits(first, id) {
+				skipped = append(skipped, id+": not a fallback for "+first+" ("+p.fallback.describe(first)+")")
 				continue
 			}
 			if !p.breaker.Healthy(id) {

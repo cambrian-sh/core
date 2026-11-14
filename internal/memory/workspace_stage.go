@@ -11,13 +11,37 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
+// PrincipalRecall is the one recall WorkspaceStage reads through:
+// QueryService.RecallFor (ENG-465, owner decision 2026-11-14). Consumer-side
+// narrowing of *QueryService.
+type PrincipalRecall interface {
+	RecallFor(ctx context.Context, p domain.PrincipalRef, query, docType string) ([]domain.SearchResult, error)
+}
+
 // WorkspaceStageImpl enriches the Planner and DAGExecutor with cross-session LTM facts.
 // It implements domain.WorkspaceStage. ADR-0016.
+//
+// ENG-465 (owner decision 2026-11-14): every lane reads AS THE PLANNING PRINCIPAL
+// (domain.PrincipalFromContext — the authenticated caller of the Execute that is
+// planning) through QueryService.RecallFor, so priming gets what that principal's
+// own recall gets: the query-prefixed embedding, hybrid/RRF, the ADR-0136 fact lane
+// with its current_fact / supersession features, the Stage-A blend, the relevance
+// floor and the decision record. It used to search the store directly at
+// ScopeSystem — every principal's rows primed every plan, superseded values
+// included, embedded without the query prefix. No principal on ctx ⇒ no priming.
+//
+// ENG-540 (owner decision 2026-11-15) refines which lanes are personal: FACTS are read
+// under the planning person's scope; PROCEDURES and NEGATIVE memories are global
+// company knowledge, read as domain.SystemPrincipal (whose predicate keeps the owner
+// fence, so a row tagged to one person never reaches another's plan). ADR-0034 records
+// that those two kinds must hold no personal content. (Scenes, the fourth lane the
+// decision names, were deleted 2026-11-05.)
 type WorkspaceStageImpl struct {
-	Store                  domain.VectorStore
+	Recall PrincipalRecall
+	// Embedder embeds the query for the ADR-0021 retrieval-session log only
+	// (QueryEmbedding), through the shared embedQuery helper.
 	Embedder               domain.Embedder
 	Generator              domain.Generator
-	SpreadingEngine        *SpreadingEngine // ADR-0017: may be nil; nil disables spreading
 	PlanningSlots          int
 	ExecutionSlots         int
 	RetrievalFloor         float64
@@ -41,7 +65,7 @@ type WorkspaceStageImpl struct {
 
 // NewWorkspaceStage creates a new WorkspaceStageImpl.
 func NewWorkspaceStage(
-	store domain.VectorStore,
+	recall PrincipalRecall,
 	embedder domain.Embedder,
 	gen domain.Generator,
 	planningSlots, executionSlots int,
@@ -57,7 +81,7 @@ func NewWorkspaceStage(
 		retrievalFloor = 0.2
 	}
 	return &WorkspaceStageImpl{
-		Store:          store,
+		Recall:         recall,
 		Embedder:       embedder,
 		Generator:      gen,
 		PlanningSlots:  planningSlots,
@@ -82,15 +106,7 @@ func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery str
 	// that returns nothing.
 	//
 	// Best-effort, as before: a failure here costs enrichment, never the plan.
-	var negatives []domain.SearchResult
-	if negVec, embedErr := w.Embedder.Embed(ctx, taskQuery); embedErr == nil {
-		negatives, _ = w.Store.Search(ctx, negVec, domain.SearchOptions{
-			DocumentType:   domain.DocTypeNegativeEdge,
-			TopK:           3,
-			RetrievalFloor: w.RetrievalFloor,
-			Scope:          domain.ScopeSystem, // ADR-0034: workspace enrichment is a kernel read
-		})
-	}
+	negatives := w.recallLane(ctx, taskQuery, domain.DocTypeNegativeEdge, 3, laneGlobal)
 
 	enrichment := domain.LTMEnrichment{Facts: facts, Negatives: negatives}
 	// The ADR-0049 D11 precedent lane (scene transitions) was removed 2026-11-05 with
@@ -123,35 +139,79 @@ func resultsToMap(results []domain.SearchResult) map[string]string {
 	return m
 }
 
-func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int, caller string) ([]domain.SearchResult, error) {
-	// 1. Embed raw query.
-	rawVec, err := w.Embedder.Embed(ctx, query)
+// laneScope says whose predicate a WorkspaceStage lane reads under (ENG-540).
+type laneScope bool
+
+const (
+	lanePersonal laneScope = false // the planning principal's own scope
+	laneGlobal   laneScope = true  // company-wide knowledge: domain.SystemPrincipal (owner fence kept)
+)
+
+// recallLane is one similarity lane, floored and capped. A personal lane reads as the
+// planning principal; a global lane (procedures, negatives — ENG-540) reads as
+// domain.SystemPrincipal. Either way there is no priming without a planning principal:
+// global knowledge is primed FOR someone's plan, never on its own. Best-effort: a
+// failure costs enrichment, never the plan.
+func (w *WorkspaceStageImpl) recallLane(ctx context.Context, query, docType string, max int, scope laneScope) []domain.SearchResult {
+	if w.Recall == nil {
+		return nil
+	}
+	p := domain.PrincipalFromContext(ctx)
+	if p.ID == "" {
+		return nil
+	}
+	if scope == laneGlobal {
+		// ENG-540: explicit, greppable global read — procedures and negative memories
+		// are company knowledge and must hold no personal content (ADR-0034).
+		p = domain.SystemPrincipal
+	}
+	hits, err := w.Recall.RecallFor(ctx, p, query, docType)
 	if err != nil {
-		slog.Warn("WorkspaceStage: embed failed", "caller", caller, "err", err)
+		slog.WarnContext(ctx, "WorkspaceStage: recall failed", "doc_type", docType, "err", err)
+		return nil
+	}
+	hits = w.floored(hits)
+	if len(hits) > max {
+		hits = hits[:max]
+	}
+	return hits
+}
+
+// floored drops dense hits whose raw cosine is below RetrievalFloor
+// (execution.retrieval.retrieval_floor, which the direct store search used to
+// apply in SQL). Rows with no cosine (RawScore == 0: lexical- or fact-lane-only
+// hits) are kept — the same rule QueryService's own relevance floor follows, so a
+// hybrid hit is never dropped for lacking a dense score.
+func (w *WorkspaceStageImpl) floored(hits []domain.SearchResult) []domain.SearchResult {
+	if w.RetrievalFloor <= 0 {
+		return hits
+	}
+	out := hits[:0:0]
+	for _, h := range hits {
+		if h.RawScore > 0 && h.RawScore < w.RetrievalFloor {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int, caller string) ([]domain.SearchResult, error) {
+	// ENG-465: no principal on ctx ⇒ no priming (owner decision 2026-11-14). There
+	// is no kernel-wide fallback read any more.
+	p := domain.PrincipalFromContext(ctx)
+	if p.ID == "" || w.Recall == nil {
+		slog.InfoContext(ctx, "WorkspaceStage: no planning principal; no priming", "caller", caller)
 		return nil, nil
 	}
-
-	// 2. The ADR-0016 §4 SCENE query priming (blend the query vector with the nearest
-	// `mnemonic_scene`, guarded by a drift threshold) was removed 2026-11-05 with
-	// scenes (decisions/scenes-cancelled.md). The FACT query uses the raw embedding.
-	// An A/B/A planner-retrieval check of that removal is ticketed (AGENTS.md §0.5).
-	queryVec := rawVec
-
-	// 3. FACT query.
-	overFetch := slots * 3
-	if overFetch < 10 {
-		overFetch = 10
-	}
-	results, err := w.Store.Search(ctx, queryVec, domain.SearchOptions{
-		DocumentType:   domain.DocTypeMnemonicFact,
-		TopK:           overFetch,
-		RetrievalFloor: w.RetrievalFloor,
-		Scope:          domain.ScopeSystem, // ADR-0034: workspace enrichment is a kernel read
-	})
+	// The ADR-0016 §4 SCENE query priming was removed 2026-11-05 with scenes
+	// (decisions/scenes-cancelled.md).
+	results, err := w.Recall.RecallFor(ctx, p, query, domain.DocTypeMnemonicFact)
 	if err != nil {
 		slog.Warn("WorkspaceStage: FACT query failed", "caller", caller, "err", err)
 		return nil, nil
 	}
+	results = w.floored(results)
 
 	factHits := len(results)
 	if factHits == 0 {
@@ -160,33 +220,19 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 		return nil, nil
 	}
 
-	// ADR-0017: Spread activation from FACT hits through document_edges graph.
-	if w.SpreadingEngine != nil && factHits > 0 {
-		expansions := w.SpreadingEngine.Spread(ctx, results)
-		// Merge graph-discovered nodes into results.
-		seen := make(map[string]bool)
-		for _, r := range results {
-			seen[r.Document.ID] = true
-		}
-		for _, exp := range expansions {
-			if !seen[exp.Document.ID] {
-				results = append(results, domain.SearchResult{
-					Document: exp.Document,
-					Score:    exp.ActivationEnergy,
-				})
-				seen[exp.Document.ID] = true
-			}
-		}
-	}
+	// ADR-0017 spreading over document_edges now runs inside the recall pass
+	// (QueryService.EnableSpreading, execution.retrieval.recall_spreading_enabled),
+	// read as the same principal; spreading here again would add the expansion twice
+	// and outside the principal's read.
 
-	// 5. MinFactCosine filter (PLANNERREQ REQ1).
-	// Discard facts whose raw cosine similarity to the query is below the threshold.
-	// This removes low-relevance documents that pass the broad RetrievalFloor.
+	// MinFactCosine filter (PLANNERREQ REQ1): discard facts whose raw cosine to the
+	// query is below the threshold. Rows with no cosine (lexical- or fact-lane-only,
+	// RawScore == 0) are kept, as QueryService's floor keeps them.
 	if w.MinFactCosine > 0 {
 		filtered := results[:0]
 		dropped := 0
 		for _, r := range results {
-			if r.RawScore >= w.MinFactCosine {
+			if r.RawScore == 0 || r.RawScore >= w.MinFactCosine {
 				filtered = append(filtered, r)
 			} else {
 				dropped++
@@ -226,6 +272,10 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 		if n, err := rand.Int(rand.Reader, big.NewInt(100)); err == nil && n.Int64() < 5 {
 			isExploration = true
 		}
+		var queryVec []float32
+		if w.Embedder != nil {
+			queryVec, _ = embedQuery(ctx, w.Embedder, query) // best-effort: the log row is kept without it
+		}
 		session := domain.RetrievalSession{
 			SessionID:       fmt.Sprintf("ret-%d", time.Now().UnixNano()),
 			Query:           query,
@@ -260,20 +310,8 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 // reaching a prompt at all would undo the point of retiring it, and "it scored low" is a
 // weaker guarantee than "it was not returned".
 func (w *WorkspaceStageImpl) retrieveProcedureLane(ctx context.Context, query string) []domain.Procedure {
-	if w.Store == nil || w.Embedder == nil {
-		return nil
-	}
-	vec, err := w.Embedder.Embed(ctx, query)
-	if err != nil {
-		return nil
-	}
-	hits, err := w.Store.Search(ctx, vec, domain.SearchOptions{
-		DocumentType:   domain.DocTypeMnemonicProcedure,
-		TopK:           3, // a planner needs the best routine, not a catalogue
-		RetrievalFloor: w.RetrievalFloor,
-		Scope:          domain.ScopeSystem,
-	})
-	if err != nil || len(hits) == 0 {
+	hits := w.recallLane(ctx, query, domain.DocTypeMnemonicProcedure, 3, laneGlobal) // a planner needs the best routine, not a catalogue
+	if len(hits) == 0 {
 		return nil
 	}
 	out := make([]domain.Procedure, 0, len(hits))

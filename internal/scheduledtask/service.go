@@ -47,7 +47,11 @@ type Proposal struct {
 	Cron     string
 	RRule    string
 	Timezone string
-	// RunAgent is the agent profile asked to run the task ("" = chat default).
+	// RunAgent is the DEPRECATED agent_id of the proposal. It was recorded and
+	// never routed — every firing runs as the owner on the chat lane — so a
+	// non-empty value is refused rather than accepted and ignored (owner decision
+	// 2026-11-15, ENG-753; the default single-agent lane, ADR-0150, has no
+	// per-task agent choice).
 	RunAgent string
 	Delivery string
 }
@@ -87,6 +91,9 @@ func (s *Service) Limits() domain.ScheduleLimits { return s.limits }
 
 // spec validates and normalises a proposal into the spec the store creates.
 func spec(p Proposal) (domain.ScheduledTaskSpec, string) {
+	if strings.TrimSpace(p.RunAgent) != "" {
+		return domain.ScheduledTaskSpec{}, "agent_id is deprecated and must be empty: a scheduled task always runs as its owner on the chat lane"
+	}
 	goal := strings.TrimSpace(p.Goal)
 	if goal == "" {
 		return domain.ScheduledTaskSpec{}, "goal is required"
@@ -123,7 +130,7 @@ func spec(p Proposal) (domain.ScheduledTaskSpec, string) {
 	}
 	return domain.ScheduledTaskSpec{
 		OwnerID: p.OwnerID, Title: title, Goal: goal, Cron: cron,
-		Timezone: strings.TrimSpace(p.Timezone), AgentID: strings.TrimSpace(p.RunAgent),
+		Timezone: strings.TrimSpace(p.Timezone),
 		Delivery: delivery, ProposedBy: p.AgentID,
 	}, ""
 }

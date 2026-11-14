@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -158,7 +159,9 @@ func (m *AgentManager) scheduleRestart(agentID, streamID string, params map[stri
 			return
 		case <-timer.C:
 		}
-		if _, err := m.SpawnDaemon(agentID, streamID, params); err != nil {
+		// A kernel-owned restart: no request started it, so there is no caller ctx
+		// to carry (the original spawn's values are not retained across a crash).
+		if _, err := m.SpawnDaemon(context.Background(), agentID, streamID, params); err != nil {
 			slog.Warn("daemon auto-restart failed; retrying with backoff", "agent_id", agentID, "stream_id", streamID, "err", err)
 			m.scheduleRestart(agentID, streamID, params, "restart-failed")
 			return

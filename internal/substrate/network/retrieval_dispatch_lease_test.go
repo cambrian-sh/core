@@ -41,7 +41,7 @@ func TestRetrievalDispatch_LeaseIsSessionBoundChargedAndCleared(t *testing.T) {
 	t.Parallel()
 	meter := llm.NewSpendMeter(0, nil, nil)
 	gw := meteredGateway(meter, &usageStreamer{text: "x", prompt: 40, compl: 10})
-	s := NewServer(nil, nil, nil, config.ExecutionConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, gw, nil, nil)
+	s := NewServer(nil, nil, nil, config.ExecutionConfig{}, nil, nil, nil, nil, nil, nil, gw, nil, nil)
 	overlay := domain.NewRunGrantOverlay()
 	s.ToolExecutor = &domain.ToolExecutor{Overlay: overlay}
 

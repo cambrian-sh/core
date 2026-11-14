@@ -95,9 +95,14 @@ func (t *DaemonTransport) Deliver(ctx context.Context, d domain.IngressDelivery)
 
 	resp, err := t.caller.CallDaemon(ctx, t.streamFor(d.Address.IngressAgentID), h)
 	if err != nil {
-		// A transport-level failure is transient by default. The daemon may be
-		// restarting (ADR-0070 supervises it), and assuming permanence here would
-		// dead-letter messages that a retry seconds later would deliver.
+		if errors.Is(err, domain.ErrDaemonUnavailable) {
+			// No live daemon: the call never started, so nothing was sent. The daemon
+			// may be restarting (ADR-0070 supervises it); a retry will deliver.
+			return domain.TransientDelivery(fmt.Errorf("calling ingress %s: %w", d.Address.IngressAgentID, err))
+		}
+		// Any other failure may have happened after the daemon received the
+		// handoff, so it is left unlabelled: the journal records it as ambiguous
+		// rather than resending it (ADR-0090 D8.1, ADR-0114 D18).
 		return fmt.Errorf("delivery: calling ingress %s: %w", d.Address.IngressAgentID, err)
 	}
 	return interpret(resp)
@@ -106,9 +111,8 @@ func (t *DaemonTransport) Deliver(ctx context.Context, d domain.IngressDelivery)
 // interpret turns the daemon's answer into the delivery vocabulary.
 //
 // Only the ingress knows whether "the user blocked this bot" is permanent, so it
-// says so and anything unlabelled is treated as transient — the recoverable
-// assumption, since wrongly retrying costs a duplicate attempt while wrongly
-// giving up loses the message.
+// says so. A failure the daemon REPORTED without the permanent flag is positive
+// evidence it did not send, so it is transient and retried (ADR-0090 D8.1).
 func interpret(resp *domain.Handoff) error {
 	if resp == nil || resp.Payload == nil {
 		return nil // accepted, nothing to report
@@ -139,7 +143,7 @@ func interpret(resp *domain.Handoff) error {
 	if ack.Permanent {
 		return domain.PermanentDelivery(errors.New(reason))
 	}
-	return errors.New("delivery: ingress reported " + reason)
+	return domain.TransientDelivery(errors.New("ingress reported " + reason))
 }
 
 var _ domain.IngressTransport = (*DaemonTransport)(nil)

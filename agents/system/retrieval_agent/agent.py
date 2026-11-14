@@ -2,20 +2,18 @@
 
 The "thin stateless Python endpoint" from AGENTIC_RETRIEVAL_SPEC §2.1. The Go
 loop (QueryService.AgenticQuery) owns control + the retrieval tiers and calls
-this agent once per step via ``Auctioneer.CallAgent`` with a JSON Handoff
+this agent once per step via ``agentplane.Transport.CallAgent`` with a JSON Handoff
 ``{op, ...}``. This agent is a pure function of its input: it holds NO loop
 state (Go passes it in each call), so it is trivially restartable + testable.
 
 Ops (dispatched in :meth:`run`):
   * ``plan_step``         → {query[, scratchpad, history, hop]} → the lexical QuerySpec.
-  * ``reason_step``       → {query, cot, chunks} → {thought, done, search_query}.
   * ``decide_continue``   → {query, chunks, history} → the stop/continue decision.
   * ``synthesize``        → {query, chunks} → the typed answer {status, text[, failure]}.
   * ``synthesize_cited``  → the same with inline [n] citations (ADR-0081).
   * ``decompose``         → {query[, routes]} → {sub_questions, refs}; with
     ``"routes": true`` (ADR-0135) also the planner's ``route`` (direct|facets|chain).
   * ``answer_subq``       → {subq, chunks} → {answer}.
-  * ``extract_provenance``→ {text[, hint, reference_date|event_time]} → provenance.
 
 LLM access: a kernel-invoked agent receives a valid ``session_token_id`` on the
 task (from the Handoff), so ``self.substrate.generate_request(token, ...)``
@@ -97,12 +95,6 @@ class RetrievalAgent(CognitiveAgent):
             chunks = obj.get("chunks") if isinstance(obj.get("chunks"), list) else []
             state = {"query": str(obj.get("query", "")), "chunks": chunks}
             return self._ok(planner.synthesize_cited(state, llm))
-        if op == "reason_step":
-            llm = self._make_llm(task, _PLAN_MAX_TOKENS)
-            chunks = obj.get("chunks") if isinstance(obj.get("chunks"), list) else []
-            cot = obj.get("cot") if isinstance(obj.get("cot"), list) else []
-            state = {"query": str(obj.get("query", "")), "chunks": chunks, "cot": cot}
-            return self._ok(planner.reason_step(state, llm))
         if op == "decompose":
             if _DECOMPOSE_OLLAMA_MODEL:
                 llm = self._make_ollama_llm(_PLAN_MAX_TOKENS)
@@ -119,17 +111,6 @@ class RetrievalAgent(CognitiveAgent):
             chunks = obj.get("chunks") if isinstance(obj.get("chunks"), list) else []
             ans = planner.answer_subquestion(str(obj.get("subq", "")), chunks, llm)
             return self._ok({"answer": ans})
-        if op == "extract_provenance":
-            llm = self._make_llm(task, _PLAN_MAX_TOKENS)
-            # Relative dates resolve against the caller's event time when it sends
-            # one (reference_date, or event_time), else today's date (UTC).
-            ref = obj.get("reference_date") or obj.get("event_time") or ""
-            return self._ok(
-                planner.extract_provenance(
-                    str(obj.get("text", "")), llm, hint=str(obj.get("hint", "")),
-                    ref_date=str(ref),
-                )
-            )
         return self._ok({"error": f"unknown op {op!r}"})
 
     # ── internals ────────────────────────────────────────────────────────────

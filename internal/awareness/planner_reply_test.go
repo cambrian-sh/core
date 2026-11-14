@@ -11,7 +11,7 @@ import (
 func TestPlanner_ReasoningFieldIsDecodedNotExecuted(t *testing.T) {
 	t.Parallel()
 	gen := &requestRecorder{reply: `{"reasoning":"I need the music tool.","subject":"Music","cache_policy":"tool","steps":[{"query":"play KMFDM","depends_on":[]}]}`}
-	plan, err := NewPlanner(gen, &mockAgentProvider{}, nil).GetExecutionPlan(context.Background(), "play some KMFDM")
+	plan, err := NewPlanner(gen, &mockAgentProvider{}).GetExecutionPlan(context.Background(), "play some KMFDM")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestPlanner_ReasoningFieldIsDecodedNotExecuted(t *testing.T) {
 func TestPlanner_ValidatedReplyIsNotScraped(t *testing.T) {
 	t.Parallel()
 	gen := &requestRecorder{reply: `<thought>x</thought>{"reasoning":"","subject":"s","cache_policy":"","steps":[]}`}
-	if _, err := NewPlanner(gen, &mockAgentProvider{}, nil).GetExecutionPlan(context.Background(), "x"); err == nil {
+	if _, err := NewPlanner(gen, &mockAgentProvider{}).GetExecutionPlan(context.Background(), "x"); err == nil {
 		t.Fatal("a reply that is not JSON must fail; the provider layer validates real replies")
 	}
 }
@@ -39,7 +39,7 @@ func TestPlanner_UncheckedReplyToleratesOnlyAFence(t *testing.T) {
 		"<thought>reasoning</thought>" + js: false,
 		"<thought>some reasoning</thought>": false,
 	} {
-		plan, err := NewPlanner(&mockGenerator{response: raw}, &mockAgentProvider{}, nil).GetExecutionPlan(context.Background(), "do something")
+		plan, err := NewPlanner(&mockGenerator{response: raw}, &mockAgentProvider{}).GetExecutionPlan(context.Background(), "do something")
 		if (err == nil) != ok {
 			t.Errorf("%q: err = %v, want ok=%v", raw, err, ok)
 		}

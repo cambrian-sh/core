@@ -22,8 +22,6 @@ func TestNoopTelemetryObserver_AllMethodsNoPanic(t *testing.T) {
 
 	obs.OnConwipWait(150)
 
-	obs.OnAuctionNoWinner("task-1")
-
 	obs.OnSchemaMismatch("agent-1", "missing-field")
 
 	obs.OnPlanCompleted(domain.PlanEvent{

@@ -4,13 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"runtime"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/prompts"
@@ -70,25 +68,6 @@ var plannerDataTags = []string{"capability_clusters", "host", "today", "document
 // system block warm between requests minutes apart.
 const plannerCacheTTL = domain.CacheTTLLong
 
-func init() {
-	registerPairPrompt("planner.plan", plannerPrompts)
-	registerPairPrompt("planner.plan.capability_contract", plannerCapPrompts)
-	registerPairPrompt("planner.plan.checklist", plannerChecklistPrompts)
-	registerPairPrompt("planner.plan.staged", plannerStagedPrompts)
-}
-
-// registerPairPrompt records a library pair in the compile-time PromptRegistry
-// under its static hash, so an audit record's prompt version resolves to an id.
-func registerPairPrompt(id string, p prompts.Pair) {
-	h := p.StaticHash()
-	domain.PromptRegistry[h] = domain.PromptEntry{
-		ID:      id,
-		Version: fmt.Sprintf("%s.v%d+%s.v%d", p.System.ID, p.System.Version, p.Input.ID, p.Input.Version),
-		Hash:    h,
-		Schema:  string(p.Schema()),
-	}
-}
-
 // planReply is the planner and replanner reply contract: the plan, plus a
 // reasoning field the schema asks for FIRST. It replaces the free-form
 // <thought>…</thought> preamble the model used to write before its JSON (which
@@ -126,17 +105,18 @@ type TokenUsageAdvisor interface {
 }
 
 // Planner builds an ExecutionPlan by calling the LLM with a structured system
-// prompt. If a ProceduralMemory is wired in, it attempts to retrieve a prior
-// successful plan template and injects it into the prompt before the user
-// request so the Cortex can use it as procedural context.
+// prompt.
+//
+// The ADR-0027 procedural plan memory (a Hippocampus read injecting a prior plan
+// as <PlanLTM>, and the cache_policy thresholds that tuned it) was deleted
+// 2026-11-14 (owner decision, third round; ENG-1301): nothing had written a plan
+// template since 2026-07-18, so the read could only return nothing or a stale
+// pre-July plan. Learned routines are ADR-0139 D13 skills.
 type Planner struct {
 	client         Generator
 	provider       AgentProvider
-	hippocampus    domain.ProceduralMemory // nil means no procedural memory
-	policyProvider domain.PolicyProvider   // ADR-0027: nil skips cache_policy validation
-	WorkspaceStage domain.WorkspaceStage   // ADR-0016: may be nil; nil disables enrichment
-	advisor        TokenUsageAdvisor       // nil means no adaptive energy tuning
-	spcAlarm       *SPCAlarm               // nil means no PLAN_BUDGET_INSUFFICIENT alarm
+	WorkspaceStage domain.WorkspaceStage // ADR-0016: may be nil; nil disables enrichment
+	advisor        TokenUsageAdvisor     // nil means no adaptive energy tuning
 	// capabilityContract enables the ROUTE-03 arm: the planner emits per-step
 	// required_capabilities (extended prompt + schema, distinct prompt hash).
 	// Default false ⇒ byte-identical to the pre-ROUTE-03 planner.
@@ -181,27 +161,14 @@ func (p *Planner) hostGOOS() string {
 	return runtime.GOOS
 }
 
-// NewPlanner creates a Planner. Pass nil for hippocampus to disable procedural
-// memory injection; existing callers are unaffected.
-func NewPlanner(client Generator, provider AgentProvider, hippocampus domain.ProceduralMemory) *Planner {
-	return &Planner{client: client, provider: provider, hippocampus: hippocampus}
-}
-
-// SetPolicyProvider wires a PolicyProvider for cache_policy validation (ADR-0027).
-// Unknown policy names emitted by the LLM are normalised to "" so the Hippocampus
-// falls back to its default policy at retrieval time.
-func (p *Planner) SetPolicyProvider(pp domain.PolicyProvider) {
-	p.policyProvider = pp
+// NewPlanner creates a Planner.
+func NewPlanner(client Generator, provider AgentProvider) *Planner {
+	return &Planner{client: client, provider: provider}
 }
 
 // SetAdvisor wires an adaptive token usage advisor (nil clears it).
 func (p *Planner) SetAdvisor(a TokenUsageAdvisor) {
 	p.advisor = a
-}
-
-// SetSPCAlarm wires a PLAN_BUDGET_INSUFFICIENT alarm (nil clears it).
-func (p *Planner) SetSPCAlarm(a *SPCAlarm) {
-	p.spcAlarm = a
 }
 
 // SetCapabilityContract toggles the ROUTE-03 capability contract (arm toggle;
@@ -288,27 +255,6 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		}
 	}
 
-	// Retrieve prior successful plan from Hippocampus (procedural memory).
-	var planEntry *domain.PlanLTMEntry
-	if p.hippocampus != nil && !fresh {
-		priorPlan, similarity, conf, _ := p.hippocampus.Retrieve(ctx, userInput)
-		if priorPlan != nil {
-			// The REQ-CACHE-1 exact-match fast path (replay a stored plan verbatim,
-			// skipping the model) was removed (ADR-0145 D9, owner 2026-11-08):
-			// Hippocampus.Store has no production caller, so its only possible hits
-			// were old dated plans replayed as new. A prior plan still informs
-			// planning as a <PlanLTM> structural reference.
-			priorJSON, err := json.Marshal(priorPlan)
-			if err == nil {
-				planEntry = &domain.PlanLTMEntry{
-					PlanJSON:   string(priorJSON),
-					Confidence: conf,
-					Similarity: similarity,
-				}
-			}
-		}
-	}
-
 	// The stable system block is the arm's library prompt; everything per call —
 	// the capability clusters, the host, remembered context and, last, the request —
 	// goes into the user message as tagged data (ADR-0139 D2), and the reply shape
@@ -336,7 +282,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		"capability_clusters": clusterBlock,
 		"host":                buildHostBlock(p.hostGOOS()),
 		"today":               p.calendar.Block(),
-		"documents":           buildLTMBlock(planEntry, ltmEnrichment),
+		"documents":           buildLTMBlock(ltmEnrichment),
 		"request":             userInput,
 	}
 	// ADR-0145 D5/D6: the checklist arm. The checklist rides ctx from the server
@@ -499,13 +445,10 @@ func (p *Planner) finishPlan(ctx context.Context, plan domain.ExecutionPlan, ltm
 	// Effect contract: normalised and checked, but never dropped (fail closed).
 	normalizeDeclaredEffects(ctx, &plan, effectVocab)
 
-	// ADR-0027: validate LLM-emitted cache_policy against the configured policy set.
-	// Unknown names are normalised to "" so the Hippocampus falls back to default.
-	if plan.CachePolicy != "" && p.policyProvider != nil {
-		if _, ok := p.policyProvider.GetPolicy(plan.CachePolicy); !ok {
-			plan.CachePolicy = ""
-		}
-	}
+	// plan.CachePolicy (the prompt's cache_policy label) is no longer validated: the
+	// ADR-0027 policy table it was checked against was retired with the procedural
+	// plan memory it tuned (ENG-1301). It is a descriptive label carried on plan
+	// events only; nothing routes on it.
 
 	for i, step := range plan.Steps {
 		fanOut := -1
@@ -605,12 +548,10 @@ func (p *Planner) CapabilityContract(ctx context.Context) (block string, vocab m
 // Cluster keys are sorted alphabetically for deterministic output.
 // buildLTMBlock produces the typed XML-tag LTM prompt section. ADR-0025.
 // REQ-DEDUP-1: deduplicates facts by content hash before injection.
-func buildLTMBlock(plan *domain.PlanLTMEntry, enrichment domain.LTMEnrichment) string {
+// The <PlanLTM> prior-plan section went with the ADR-0027 procedural plan memory
+// (ENG-1301).
+func buildLTMBlock(enrichment domain.LTMEnrichment) string {
 	var sb strings.Builder
-	if plan != nil && plan.PlanJSON != "" {
-		fmt.Fprintf(&sb, "<PlanLTM similarity=\"%.2f\" confidence=\"%.2f\" outcome=\"%s\" replan_count=\"%d\">\n  %s\n</PlanLTM>\n",
-			plan.Similarity, plan.Confidence, plan.Outcome, plan.ReplanCount, plan.PlanJSON)
-	}
 	if len(enrichment.Facts) > 0 {
 		sb.WriteString("<FactLTM>\n")
 		seen := make(map[string]struct{}, len(enrichment.Facts))
@@ -792,8 +733,8 @@ func agentToolLine(agentID string, allowlist []string) string {
 //     Concrete paths therefore belong to the executor. plannerDecisionRules
 //     states that division of labour; this block is what makes the OS half of
 //     it available without inviting the path half.
-//   - Plans are STORED and replayed into later plans as <PlanLTM> structural
-//     references. An absolute "C:\Users\<someone>\Desktop\..." baked into a step
+//   - Plans are STORED (run store, plan events) and were once replayed into later
+//     plans as <PlanLTM> structural references (removed 2026-11-14, ENG-1301). An absolute "C:\Users\<someone>\Desktop\..." baked into a step
 //     is wrong the moment it is recalled under a different user or host, and it
 //     leaks a username into memory. The OS is a property of the deployment; a
 //     home directory is a property of one account.
@@ -879,42 +820,4 @@ func extractStepType(query string) string {
 		return "unknown"
 	}
 	return strings.ToLower(fields[0])
-}
-
-// SPCAlarm tracks budget exhaustion signals per plan and fires a
-// PLAN_BUDGET_INSUFFICIENT alarm when the threshold is crossed.
-type SPCAlarm struct {
-	mu         sync.Mutex
-	rate       float64 // threshold rate (e.g. 0.05 for 5%)
-	planCounts map[string]int
-	planFired  map[string]bool
-}
-
-// NewSPCAlarm creates an SPCAlarm with the given alarm rate (e.g. 0.05).
-func NewSPCAlarm(rate float64) *SPCAlarm {
-	return &SPCAlarm{
-		rate:       rate,
-		planCounts: make(map[string]int),
-		planFired:  make(map[string]bool),
-	}
-}
-
-// RecordBudgetExhaustion records a budget exhaustion event for planID and
-// stepType. Returns true when the signal should fire (≥2 steps AND > rate
-// threshold, once per plan).
-func (a *SPCAlarm) RecordBudgetExhaustion(planID, stepType string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.planFired[planID] {
-		return false
-	}
-	a.planCounts[planID]++
-	count := a.planCounts[planID]
-	if count >= 2 {
-		exhaustionRate := float64(count) / float64(count)
-		_ = exhaustionRate // placeholder for step-level rate tracking
-		a.planFired[planID] = true
-		return true
-	}
-	return false
 }

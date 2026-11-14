@@ -29,6 +29,7 @@ package memory
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -150,6 +151,11 @@ func splitBySentence(para string) []string {
 		}
 		if cutAt <= 0 {
 			cutAt = maxChunkChars
+			// Hard cut: never inside a multi-byte rune (Turkish text would get
+			// an invalid UTF-8 byte at both ends of the cut).
+			for cutAt > 1 && !utf8.RuneStart(remaining[cutAt]) {
+				cutAt--
+			}
 		}
 		out = append(out, strings.TrimSpace(remaining[:cutAt]))
 		remaining = strings.TrimSpace(remaining[cutAt:])

@@ -14,7 +14,6 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
-	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // The owner fence (domain/owner_scope.go, ADR-0141 position 3,
@@ -370,7 +369,7 @@ func TestPg_OwnerFence_DocumentListingRetagAndUpsert(t *testing.T) {
 	}
 	list := func(owners ...string) []string {
 		t.Helper()
-		page, _, total, err := p.ListDocuments(ctx, memory.DocumentFilter{IDPrefix: ofPrefix, Limit: 50, Owners: owners})
+		page, _, total, err := p.ListDocuments(ctx, domain.DocumentFilter{IDPrefix: ofPrefix, Limit: 50, Owners: owners})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -442,4 +441,48 @@ func toInt(v any) int {
 		}
 	}
 	return -1
+}
+
+// ENG-725: a principal-serving listing (DocumentFilter.Scope, the MCP
+// list_documents tool) applies the reader's WHOLE predicate in SQL — forbidden,
+// required and the owner fence — before LIMIT, and the total counts exactly the
+// readable rows (a total over refused rows would be an existence oracle).
+func TestPg_DocumentListing_AppliesTheReadersPredicate(t *testing.T) {
+	pool, ctx := newOwnerFencePool(t)
+	p := &PgVectorAdapter{pool: pool, dim: eventTestDim}
+	for id, tags := range map[string][]string{
+		"eng": {"eng"}, "hr": {"eng", "hr"}, "fin": {"finance"}, "mine": {"eng", "owner:alice"},
+		"theirs": {"eng", "owner:bob"},
+	} {
+		if _, err := p.SaveDocument(ctx, domain.SourceDocument{ID: ofPrefix + "sc-" + id, Title: id, Tags: tags}); err != nil {
+			t.Fatalf("save document %s: %v", id, err)
+		}
+	}
+	list := func(scope *domain.TagPredicate, limit int) ([]string, int) {
+		t.Helper()
+		page, _, total, err := p.ListDocuments(ctx, domain.DocumentFilter{IDPrefix: ofPrefix + "sc-", Limit: limit, Scope: scope})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, d := range page {
+			ids = append(ids, d.ID)
+		}
+		return ofStripIDs(ids), total
+	}
+	pred := &domain.TagPredicate{RequiredTags: []string{"eng"}, ForbiddenTags: []string{"hr"}, Owners: []string{"alice"}}
+	got, total := list(pred, 50)
+	if !ofEqual(got, []string{"sc-eng", "sc-mine"}) || total != 2 {
+		t.Errorf("scoped listing = %v (total %d), want [sc-eng sc-mine] (2)", got, total)
+	}
+	// Filter before LIMIT: a one-row page is a readable row, and the total is unchanged.
+	got, total = list(pred, 1)
+	if len(got) != 1 || total != 2 {
+		t.Errorf("one-row page = %v (total %d), want one readable row of 2", got, total)
+	}
+	// Bypass keeps the owner fence (ADR-0141): bob's row stays hidden from a bypass reader.
+	got, _ = list(&domain.TagPredicate{Bypass: true}, 50)
+	if !ofEqual(got, []string{"sc-eng", "sc-fin", "sc-hr"}) {
+		t.Errorf("bypass listing = %v, want the three unowned rows", got)
+	}
 }

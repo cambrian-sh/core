@@ -19,7 +19,7 @@ func TestPlannerPrompt_ContainsCapabilityClusters(t *testing.T) {
 		},
 	}
 	gen := &mockGenerator{response: minimalPlanJSON()}
-	planner := NewPlanner(gen, provider, nil)
+	planner := NewPlanner(gen, provider)
 
 	_, err := planner.GetExecutionPlan(context.Background(), "read the image")
 	if err != nil {
@@ -40,7 +40,7 @@ func TestPlannerPrompt_ContainsCapabilityClusters(t *testing.T) {
 func TestPlannerPrompt_ContainsRuntimeSelectionInstruction(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
-	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
+	planner := NewPlanner(gen, &mockAgentProvider{})
 
 	_, err := planner.GetExecutionPlan(context.Background(), "do something")
 	if err != nil {

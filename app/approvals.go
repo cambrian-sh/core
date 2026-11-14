@@ -47,3 +47,18 @@ func buildApprovalHub(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 		SweepInterval:  cfg.Approvals.SweepInterval(),
 	}), nil
 }
+
+// buildActionRecordStore returns the ADR-0154 durable action record over the
+// shared pool, or nil when there is no database or migration 0046 is missing
+// (logged): idempotent writes then stay in memory, as before (ADR-0154 D6).
+func buildActionRecordStore(ctx context.Context, pool *pgxpool.Pool) domain.ActionRecordStore {
+	if pool == nil {
+		return nil
+	}
+	pg := postgres.NewPgActionRecordStore(pool)
+	if !pg.Ready(ctx) {
+		slog.Warn("ADR-0154: action_records table missing (migration 0046 not applied); side-effecting call records stay in memory and do not survive a restart")
+		return nil
+	}
+	return pg
+}

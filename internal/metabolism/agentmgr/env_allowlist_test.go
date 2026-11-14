@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -18,24 +19,24 @@ func TestEffectiveMemLimitMB(t *testing.T) {
 		"heavy_user_agent": {MemoryLimitMB: 8192}, // declares its own headroom
 		"docling_agent":    {MemoryLimitMB: 6144}, // system organ WITH a declared limit
 	}
-	im.SetManifestResolver(func(id string) *domain.AgentManifest { return manifests[id] })
+	im.SetManifestResolver(func(_ context.Context, id string) *domain.AgentManifest { return manifests[id] })
 
 	// A declared limit always wins (user or system).
-	if got := im.effectiveMemLimitMB("heavy_user_agent"); got != 8192 {
+	if got := im.effectiveMemLimitMB(context.Background(), "heavy_user_agent"); got != 8192 {
 		t.Errorf("declared user limit: want 8192, got %d", got)
 	}
-	if got := im.effectiveMemLimitMB("docling_agent"); got != 6144 {
+	if got := im.effectiveMemLimitMB(context.Background(), "docling_agent"); got != 6144 {
 		t.Errorf("declared system limit: want 6144, got %d", got)
 	}
 	// A user agent with no declared limit gets the global default.
-	if got := im.effectiveMemLimitMB("analyst_agent"); got != 1024 {
+	if got := im.effectiveMemLimitMB(context.Background(), "analyst_agent"); got != 1024 {
 		t.Errorf("undeclared user agent: want global default 1024, got %d", got)
 	}
 	// A system organ with no declared limit is EXEMPT from the fleet-wide default.
 	if !domain.IsSystemAgent("retrieval_agent") {
 		t.Fatal("test precondition: retrieval_agent should be a system agent")
 	}
-	if got := im.effectiveMemLimitMB("retrieval_agent"); got != 0 {
+	if got := im.effectiveMemLimitMB(context.Background(), "retrieval_agent"); got != 0 {
 		t.Errorf("undeclared system organ must be uncapped by the default, got %d", got)
 	}
 }

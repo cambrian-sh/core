@@ -44,15 +44,15 @@ never close from commit messages.
 **Default execution lane (ADR-0150, owner decision 2026-11-13).** A request runs in the
 **single-agent lane** by default: one agent holds the person's tools and answers itself, fanning
 out read-only work through the kernel-run `run_subtasks` tool (`execution.lane.default:
-single_agent`, `cambrian-core/internal/config/lane.go`). The ADR-0145 **planner lane** (planner →
+single_agent`, `cambrian-core/internal/config/lane.go`). The ADR-0145 **multi-agent research lane** (planner →
 Gatekeeper → Dispatcher → DAG, coverage, verifier) runs only under `execution.lane.default:
 planner` and is kept for research — so plan views, dispatch events and Gatekeeper scoring appear
 only in that lane. See [`decisions/default-lane-single-agent-with-fan-out.md`](../cambrian-knowledge/decisions/default-lane-single-agent-with-fan-out.md).
 
 ## Orientation
 - Read **`docs/ARCHITECTURE.md`** first for the layering, the two execution lanes (single-agent
-  default; planner lane behind config) and domain terms. Gatekeeper, Dispatcher and
-  capability-typed dispatch belong to the planner lane only.
+  default; multi-agent research lane behind config) and domain terms. Gatekeeper, Dispatcher and
+  capability-typed dispatch belong to the multi-agent research lane only.
 - Per-area facts are in the knowledge cards listed in `CONTEXT.md` (`brief <path>` in HQ).
 
 ## Cross-repo pointer

@@ -64,6 +64,11 @@ func (r *Reader) Get(ctx context.Context, scope *domain.TagPredicate, namespace,
 				return err
 			}
 		}
+		// After the existence decision on purpose: extras never make an object
+		// visible (D12 stays narrower, fail-closed).
+		if err := readExtras(ctx, tx, scope, spec, ns, entityID, &view); err != nil {
+			return err
+		}
 		return readTimeline(ctx, tx, scope, ns, entityID, &view)
 	})
 	if errors.Is(err, domain.ErrObjectNotFound) {
@@ -142,6 +147,80 @@ func readObjectRow(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, s
 		view.FirstSeenEvidence, _ = vals[n-1].(string)
 	}
 	return known, conflicted, rows.Err()
+}
+
+// readExtras reads an open kind's undeclared properties from the row's extra
+// jsonb, each entry fenced by its own tags/parties (sqlfence.ObjectExtra), in name
+// order. A key the kind now declares is skipped: the declared column is the value
+// of record, and a row written before the declaration may still carry it in extra.
+func readExtras(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, spec domain.KindSpec,
+	ns, entityID string, view *domain.ObjectView) error {
+	b := &sqlb{scope: scope}
+	sql := "SELECT x.key, x.value FROM " + ident(TableName(spec.Kind)) + " o, jsonb_each(o." + colExtra + ") AS x(key, value)" +
+		" WHERE o.namespace_id = " + b.arg(ns) + " AND o.entity_id = " + b.arg(entityID)
+	fence, args := sqlfence.ObjectExtra("x.value").Expr(scope, len(b.args))
+	b.args = append(b.args, args...)
+	if fence != "TRUE" {
+		sql += " AND " + fence
+	}
+	sql += " ORDER BY x.key"
+	rows, err := tx.Query(ctx, sql, b.args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var raw map[string]any
+		if err := rows.Scan(&key, &raw); err != nil {
+			return err
+		}
+		if _, declared := spec.Predicates[key]; declared {
+			continue
+		}
+		pv := decodeProv(raw)
+		v, ok := extraValue(key, pv)
+		if !ok {
+			continue // a malformed entry yields nothing, never a wrong value
+		}
+		view.Extras = append(view.Extras, domain.ObjectProperty{
+			Property: key, Value: v, Source: pv.Source, At: pv.at(), EvidenceID: pv.Evidence, Conflict: pv.Conflict,
+		})
+	}
+	return rows.Err()
+}
+
+// extraValue is an extra entry's typed value (written by jsonValue).
+func extraValue(key string, pv provenance) (domain.StatementValue, bool) {
+	v := domain.StatementValue{Predicate: key, Type: pv.Type}
+	switch pv.Type {
+	case "number":
+		f, ok := pv.Value.(float64)
+		if !ok {
+			return domain.StatementValue{}, false
+		}
+		v.Number = f
+	case "date":
+		s, _ := pv.Value.(string)
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			return domain.StatementValue{}, false
+		}
+		v.Date = t.UTC()
+	case "entity":
+		s, ok := pv.Value.(string)
+		if !ok {
+			return domain.StatementValue{}, false
+		}
+		v.EntityRef = s
+	default:
+		s, ok := pv.Value.(string)
+		if !ok {
+			return domain.StatementValue{}, false
+		}
+		v.Text = s
+	}
+	return v, true
 }
 
 func decodeProv(raw map[string]any) provenance {
@@ -429,6 +508,9 @@ func citedEvidence(v domain.ObjectView) []string {
 		for _, a := range p.Alternatives {
 			add(a.EvidenceID)
 		}
+	}
+	for _, p := range v.Extras {
+		add(p.EvidenceID)
 	}
 	for _, l := range append(append([]domain.ObjectLink{}, v.Aliases...), v.Links...) {
 		add(l.EvidenceID)

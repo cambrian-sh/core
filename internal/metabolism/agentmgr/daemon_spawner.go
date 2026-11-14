@@ -21,7 +21,7 @@ type DaemonInstance struct {
 // DaemonSpawner is the consumer-side interface used by the premium ReactiveEngine
 // to drive daemon lifecycle via WatchConfig CRUD. ADR-0033.
 type DaemonSpawner interface {
-	SpawnDaemon(agentID, streamID string, params map[string]any) (instanceID string, err error)
+	SpawnDaemon(ctx context.Context, agentID, streamID string, params map[string]any) (instanceID string, err error)
 	StopDaemon(streamID string) error
 	ListRunningDaemons() []DaemonInstance
 }
@@ -48,7 +48,13 @@ func newDaemonRegistry() *daemonRegistry {
 // SpawnDaemon boots a TraitDaemon agent and starts the crash-watcher goroutine.
 // Subsequent calls for the same streamID increment the ref-count without spawning
 // a second process. ADR-0033.
-func (m *AgentManager) SpawnDaemon(agentID, streamID string, params map[string]any) (string, error) {
+//
+// ctx is the caller's (AGENTS.md §2.7, ENG-1467): the registry read runs on it, and
+// the boot on context.WithoutCancel(ctx) — the daemon outlives the request that
+// started it (its log forwarding runs on the boot ctx), so the caller's values
+// (principal, trace) are kept but its cancellation must not stop the daemon; the boot
+// is bounded by execution.agents.agent_boot_timeout_ms.
+func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string, params map[string]any) (string, error) {
 	m.daemons.mu.Lock()
 	state, exists := m.daemons.byStream[streamID]
 	if exists && state.refCount > 0 {
@@ -70,11 +76,11 @@ func (m *AgentManager) SpawnDaemon(agentID, streamID string, params map[string]a
 			return "", fmt.Errorf("SpawnDaemon: boot hook failed for %q: %w", agentID, hookErr)
 		}
 	} else {
-		def, err := m.Registry.GetAgentByName(context.Background(), agentID)
+		def, err := m.Registry.GetAgentByName(ctx, agentID)
 		if err != nil || def == nil {
 			return "", fmt.Errorf("SpawnDaemon: agent %q not found: %w", agentID, err)
 		}
-		inst, bootErr := m.InstanceManager.bootDaemonAgent(context.Background(), def, streamID, params)
+		inst, bootErr := m.InstanceManager.bootDaemonAgent(context.WithoutCancel(ctx), def, streamID, params)
 		if bootErr != nil {
 			return "", fmt.Errorf("SpawnDaemon: boot failed for %q: %w", agentID, bootErr)
 		}
@@ -112,7 +118,6 @@ func (m *AgentManager) SpawnDaemon(agentID, streamID string, params map[string]a
 	return instanceID, nil
 }
 
-// StopDaemon marks the exit as expected and evicts the daemon instance. ADR-0033.
 // DaemonRunning reports whether a daemon is currently spawned for streamID.
 //
 // The console needs it to tell "armed" from "armed, and its entry organ is
@@ -131,6 +136,7 @@ func (m *AgentManager) DaemonRunning(streamID string) bool {
 	return ok
 }
 
+// StopDaemon marks the exit as expected and evicts the daemon instance. ADR-0033.
 func (m *AgentManager) StopDaemon(streamID string) error {
 	m.daemons.mu.Lock()
 	state, ok := m.daemons.byStream[streamID]

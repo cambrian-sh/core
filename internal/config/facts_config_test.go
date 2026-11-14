@@ -5,15 +5,16 @@ import (
 	"testing"
 )
 
-// ADR-0136 D4/D5: execution.facts ships OFF, its keys reach the fields from env
+// ADR-0136 D4/D5: execution.facts ships extraction + lane ON and supersession OFF
+// (owner decision 2026-11-14, ENG-1496), its keys reach the fields from env
 // (CAMBRIAN_EXECUTION__FACTS__*, the names the adr0136-gate experiment spec uses), bad
 // values are refused while their switch is on, and the retrieval fingerprint changes
 // only when the lane (or lane + supersession) is on.
 func TestFacts_DefaultsEnvValidationFingerprint(t *testing.T) {
 	d := DefaultConfig().Execution
 	f := d.Facts
-	if f.ExtractEnabled || f.LaneEnabled || f.SupersessionEnabled || d.Ingestion.SyncIngestWaitForFacts {
-		t.Fatalf("the fact layer must default off: %+v / wait %v", f, d.Ingestion.SyncIngestWaitForFacts)
+	if !f.ExtractEnabled || !f.LaneEnabled || f.SupersessionEnabled || f.AssessmentsEnabled || d.Ingestion.SyncIngestWaitForFacts {
+		t.Fatalf("the fact layer must default to extraction + lane on, supersession/assessments off: %+v / wait %v", f, d.Ingestion.SyncIngestWaitForFacts)
 	}
 	if f.QueueSize != 1024 || f.Workers != 2 || f.LLMTimeoutMs != 120000 || f.MaxFactsPerDocument != 64 ||
 		f.MaxPromptChars != 48000 || f.LaneTopK != 20 || f.FactMatchWeight != 0.2 || f.CurrentFactWeight != 0.1 ||
@@ -82,8 +83,10 @@ func TestFacts_DefaultsEnvValidationFingerprint(t *testing.T) {
 		t.Fatalf("defaults must validate: %v", err)
 	}
 
-	base := DefaultConfig().Execution
-	same := DefaultConfig().Execution
+	// A lane-OFF baseline (the shipped default has it on since ENG-1496).
+	laneOff := func() ExecutionConfig { e := DefaultConfig().Execution; e.Facts.LaneEnabled = false; e.Facts.ExtractEnabled = false; return e }
+	base := laneOff()
+	same := laneOff()
 	same.Facts.ExtractEnabled = true // the corpus changes, not the ranking function
 	same.Facts.LaneTopK = 99         // read only when lane_enabled
 	same.Facts.SupersessionEnabled = true
@@ -91,7 +94,7 @@ func TestFacts_DefaultsEnvValidationFingerprint(t *testing.T) {
 	if base.RetrievalFingerprint("e") != same.RetrievalFingerprint("e") {
 		t.Fatal("extraction and lane-off tunables must not change the fingerprint")
 	}
-	lane := DefaultConfig().Execution
+	lane := laneOff()
 	lane.Facts.LaneEnabled = true
 	sup := lane
 	sup.Facts.SupersessionEnabled = true

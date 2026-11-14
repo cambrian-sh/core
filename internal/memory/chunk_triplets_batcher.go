@@ -52,6 +52,13 @@ type ChunkTripletsBatcher struct {
 
 	queue   chan tripletItem
 	pending []tripletItem
+	// maxPending caps pending (2 x QueueSize). The drain loop stops moving items
+	// out of the channel at the cap, so a lagging extractor fills the bounded
+	// queue and Enqueue drops (counted) instead of pending growing without bound
+	// (T-20261103-chunktripletsbatcher-pending-buffer-is: ~+0.5 GB/hour when the
+	// extractor runs slower than ingest). Re-queued failures may overshoot it by
+	// at most one batch.
+	maxPending int
 	// waitedPending counts pending items that carry a TripletsWait. While it is
 	// non-zero the drain loop drains at once instead of waiting for a full batch
 	// or the idle timer: a sync ingest is blocked on those items
@@ -86,9 +93,15 @@ type ChunkTripletsBatcher struct {
 
 	enqueued uint64 // total chunks enqueued
 	dropped  uint64 // dropped because the queue was full
-	drained  uint64 // total chunks drained (for which the LLM ran)
-	llmCalls uint64 // total LLM calls made
-	triplets uint64 // total triplets persisted
+	drained  uint64 // total chunks drained (for which the extractor ran)
+	// extractorCalls counts every ExtractBatch call; llmCalls only those made
+	// through the LLM extractor. They used to be one counter logged as
+	// llm_calls_total, so with the deterministic, no-LLM kg_extractor agent
+	// installed (UseExtractor) KG ingest read as one LLM call per batch
+	// (T-20261103-chunktripletsbatcher-logs-llm-calls-total-for).
+	extractorCalls uint64
+	llmCalls       uint64
+	triplets       uint64 // total triplets persisted
 	// extractFailed counts chunks settled as failed because extraction errored
 	// (after any re-queues); requeued counts re-queue events.
 	extractFailed uint64
@@ -134,6 +147,7 @@ func NewChunkTripletsBatcher(gen domain.Generator, store domain.ChunkTripletsSto
 		store:       store,
 		extractor:   &llmTripletExtractor{gen: gen, structured: cfg.StructuredLLMFormat}, // default: LLM residue tier
 		queue:       make(chan tripletItem, cfg.QueueSize),
+		maxPending:  2 * cfg.QueueSize,
 		batchSize:   cfg.BatchSize,
 		maxIdle:     cfg.MaxIdle,
 		llmTimeout:  cfg.LLMTimeout,
@@ -198,6 +212,11 @@ func (b *ChunkTripletsBatcher) EnqueueTracked(docs []*domain.Document) *Triplets
 }
 
 func (b *ChunkTripletsBatcher) enqueue(it tripletItem) {
+	// Queue a slim copy: extraction and persistence read only ID and Text, and
+	// the full chunk Document carries its embedding (4 KB at 1024 dims) and
+	// metadata, which used to sit in the queue and pending buffer for as long as
+	// the extractor lagged.
+	it.doc = &domain.Document{ID: it.doc.ID, Text: it.doc.Text}
 	b.closeMu.RLock()
 	defer b.closeMu.RUnlock()
 	if b.closed {
@@ -283,7 +302,8 @@ func (b *ChunkTripletsBatcher) probeReady(ctx context.Context) {
 }
 
 // Stats returns (enqueued, dropped, drained, llmCalls, tripletsPersisted) —
-// for the operator feed.
+// for the operator feed. llmCalls counts only calls through the LLM extractor;
+// ExtractorCalls counts every batch whatever the backend.
 func (b *ChunkTripletsBatcher) Stats() (enqueued, dropped, drained, llmCalls, triplets uint64) {
 	return atomic.LoadUint64(&b.enqueued),
 		atomic.LoadUint64(&b.dropped),
@@ -292,12 +312,27 @@ func (b *ChunkTripletsBatcher) Stats() (enqueued, dropped, drained, llmCalls, tr
 		atomic.LoadUint64(&b.triplets)
 }
 
+// ExtractorCalls is the number of ExtractBatch calls made, whatever the backend.
+func (b *ChunkTripletsBatcher) ExtractorCalls() uint64 {
+	return atomic.LoadUint64(&b.extractorCalls)
+}
+
+// extractorBackend names the installed extractor for the drain log: "llm" for the
+// default LLM adapter, "agent" for an injected one (the kg_extractor system agent).
+func (b *ChunkTripletsBatcher) extractorBackend() string {
+	if _, ok := b.extractor.(*llmTripletExtractor); ok {
+		return "llm"
+	}
+	return "agent"
+}
+
 // drainLoop is the long-running consumer. Same invariant as EdgeBatcher:
 // the channel is drained non-blockingly into the pending buffer BEFORE any
 // blocking LLM call. Without this, a slow LLM (the hosted reasoning model
 // can be 60-180s per call) leaves the channel unread, the bounded queue
 // fills, and Enqueue drops the enrichment. With this, Enqueue only sees
-// backpressure when pending is itself at a sane cap.
+// backpressure when pending is at its cap (maxPending): at the cap the loop
+// stops reading the channel, so the bounded queue fills and Enqueue drops.
 func (b *ChunkTripletsBatcher) drainLoop(ctx, probeCtx context.Context) {
 	defer close(b.doneCh)
 	b.probeReady(probeCtx)
@@ -325,6 +360,12 @@ func (b *ChunkTripletsBatcher) drainLoop(ctx, probeCtx context.Context) {
 			continue
 		}
 
+		// At the pending cap, stop reading the channel (a nil channel never
+		// receives): backpressure reaches Enqueue through the bounded queue.
+		queue := b.queue
+		if n >= b.maxPending {
+			queue = nil
+		}
 		select {
 		case <-b.stopCh:
 			stopRequested()
@@ -332,7 +373,7 @@ func (b *ChunkTripletsBatcher) drainLoop(ctx, probeCtx context.Context) {
 		case <-ctx.Done():
 			stopRequested()
 			return
-		case it := <-b.queue:
+		case it := <-queue:
 			b.appendPending(it)
 		case <-timer.C:
 			if n > 0 {
@@ -355,6 +396,12 @@ func resetTripletsTimer(t *time.Timer, d time.Duration) {
 
 func (b *ChunkTripletsBatcher) drainQueueToPending() {
 	for {
+		b.mu.Lock()
+		full := len(b.pending) >= b.maxPending
+		b.mu.Unlock()
+		if full {
+			return
+		}
 		select {
 		case it := <-b.queue:
 			b.appendPending(it)
@@ -384,12 +431,23 @@ func (b *ChunkTripletsBatcher) releaseRemaining() {
 	b.closeMu.Lock()
 	b.closed = true
 	b.closeMu.Unlock()
-	b.drainQueueToPending()
 	b.mu.Lock()
 	rest := b.pending
 	b.pending = nil
 	b.waitedPending = 0
 	b.mu.Unlock()
+	// Everything still in the channel too — regardless of the pending cap, which
+	// drainQueueToPending honours: an item left in the channel would leave its
+	// waiter blocked until its timeout.
+	for {
+		select {
+		case it := <-b.queue:
+			rest = append(rest, it)
+			continue
+		default:
+		}
+		break
+	}
 	for _, it := range rest {
 		it.wait.stop(1)
 	}
@@ -435,7 +493,10 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 	llmCtx, cancel := context.WithTimeout(parentCtx, b.llmTimeout)
 	defer cancel()
 	tripletsPerChunk, extractErr := b.extractor.ExtractBatch(llmCtx, texts, ids)
-	atomic.AddUint64(&b.llmCalls, 1)
+	atomic.AddUint64(&b.extractorCalls, 1)
+	if b.extractorBackend() == "llm" {
+		atomic.AddUint64(&b.llmCalls, 1)
+	}
 	if extractErr != nil {
 		b.failBatch(batch, extractErr)
 		return
@@ -470,7 +531,9 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 		it.wait.settle(1, true)
 	}
 	slog.Info("ChunkTripletsBatcher: drained batch",
-		"batch_size", len(batch), "with_triplets", saved, "llm_calls_total", atomic.LoadUint64(&b.llmCalls))
+		"batch_size", len(batch), "with_triplets", saved, "extractor", b.extractorBackend(),
+		"extractor_calls_total", atomic.LoadUint64(&b.extractorCalls),
+		"llm_calls_total", atomic.LoadUint64(&b.llmCalls))
 }
 
 // failBatch handles a batch the extractor did not extract

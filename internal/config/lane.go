@@ -39,6 +39,10 @@ type LaneConfig struct {
 
 	// Subtasks is run_subtasks (ADR-0150 D2/D6; lane_subtasks.go).
 	Subtasks LaneSubtasksConfig `json:"subtasks"`
+
+	// Context is the context-engine settings carried to every spawned agent on
+	// its handoff; a key set here wins over execution.content (lane_context.go).
+	Context LaneContextConfig `json:"context"`
 }
 
 // SingleAgentLaneConfig is execution.lane.single_agent.
@@ -107,5 +111,6 @@ func (c LaneConfig) validate() []string {
 		errs = append(errs, "execution.lane.single_agent.max_tool_rounds, max_wall_seconds and execution.lane.stuck.same_result_repeats must be >= 0")
 	}
 	errs = append(errs, c.Subtasks.validate()...)
+	errs = append(errs, c.Context.validate()...)
 	return errs
 }

@@ -405,6 +405,33 @@ func (s *Service) RetryWatchDeadLetter(ctx context.Context, req *pb.RetryWatchDe
 		func() error { return s.deadletterRetry.RetryDeadLetter(ctx, req.GetDeadLetterId()) })
 }
 
+// DeleteWatchDeadLetter removes one dead letter an operator has dealt with
+// (ENG-472, owner decision 2026-11-15). Mutating: command_id + reason, audited.
+// The reader SetDeadLetterReader wired (the OSS bbolt journal decorator) also
+// deletes; a reader that cannot answers Unimplemented.
+func (s *Service) DeleteWatchDeadLetter(ctx context.Context, req *pb.DeleteWatchDeadLetterOpRequest) (*pb.CommandAck, error) {
+	deleter, ok := s.deadletters.(domain.WatchDeadLetterDeleter)
+	if !ok || deleter == nil {
+		return nil, status.Error(codes.Unimplemented, "deleting a dead letter needs the reactive journal, which this kernel does not run")
+	}
+	id := req.GetDeadLetterId()
+	if id == "" {
+		return nil, status.Error(codes.InvalidArgument, "dead_letter_id is required")
+	}
+	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
+		"delete_watch_dead_letter", "watch_dead_letter", id, id,
+		func() error {
+			found, err := deleter.DeleteDeadLetter(id)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return status.Errorf(codes.NotFound, "no dead letter %q", id)
+			}
+			return nil
+		})
+}
+
 // SetWatchLiveness wires the contract-0074 stream registry, fire history and
 // plane-budget readers. Any may be nil, and a nil source leaves its fields at
 // the "cannot tell" value rather than a default that reads as healthy.

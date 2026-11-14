@@ -17,9 +17,19 @@ import (
 
 // ChunksFromLeaves turns a parsed document's ordered leaves into the chunk set.
 // With structure_graph_enabled the leaves ARE the chunks, so chunk boundaries
-// match the hierarchy and each chunk's section stamp is exact (chunk_i == leaf_i).
-// One chunk per ordered leaf, preserving order (no filtering) so the positional
-// alignment BuildStructureGraph relies on is guaranteed. Returns nil for no leaves.
+// match the hierarchy and each chunk's section stamp is exact. Small consecutive
+// leaves of one section are merged up to defaultChunkMergeTarget; a leaf LONGER
+// than maxChunkChars is split (splitOversizedLeaf) into several chunks that all
+// inherit that leaf's section. The second return value is the representative leaf
+// of each chunk, positionally aligned with the chunks (BuildStructureGraph relies
+// on chunk_i <-> reps_i). Returns nil for no leaves.
+//
+// Why split: the merge loop never split, so a sidecar that returned one text leaf
+// for a whole document (a 70 KB conversation with single-newline turns) stored ONE
+// 70,230-char chunk. The embedder reads only its first ~512 tokens, so the rest was
+// invisible to dense retrieval and one hit carried 70 KB
+// (T-20261103-structure-aware-ingestion-stores-an-oversized). The flat default
+// (OptionCChunker) splits at the same maxChunkChars.
 const defaultChunkMergeTarget = 500 // chars: merge tiny leaves up to ~this size
 
 func ChunksFromLeaves(doc *StructuredDocument) ([]domain.Chunk, []StructNode) {
@@ -28,29 +38,72 @@ func ChunksFromLeaves(doc *StructuredDocument) ([]domain.Chunk, []StructNode) {
 	}
 	leaves := doc.OrderedLeaves()
 	var chunks []domain.Chunk
-	var reps []StructNode // representative (first) leaf per merged chunk — drives stamping
+	var reps []StructNode // representative (first) leaf per chunk — drives stamping
+	add := func(rep StructNode, body string) {
+		chunks = append(chunks, domain.Chunk{
+			Body:     body,
+			Metadata: map[string]any{"struct_kind": rep.Kind, "section_path": rep.SectionPath},
+		})
+		reps = append(reps, rep)
+	}
 	i := 0
 	for i < len(leaves) {
 		rep := leaves[i]
+		if len(rep.Text) > maxChunkChars {
+			for _, piece := range splitOversizedLeaf(rep.Text, maxChunkChars) {
+				add(rep, piece)
+			}
+			i++
+			continue
+		}
 		var b strings.Builder
 		b.WriteString(rep.Text)
 		j := i + 1
 		// Merge following leaves that live in the SAME section, until the target
 		// size — so chunks are retrieval-sized without crossing a section boundary
-		// (keeps each merged chunk's inherited section path unambiguous).
-		for j < len(leaves) && leaves[j].ParentID == rep.ParentID && b.Len() < defaultChunkMergeTarget {
+		// (keeps each merged chunk's inherited section path unambiguous). An
+		// oversized leaf is never merged in: it is split on its own turn.
+		for j < len(leaves) && leaves[j].ParentID == rep.ParentID && b.Len() < defaultChunkMergeTarget &&
+			len(leaves[j].Text) <= maxChunkChars {
 			b.WriteByte(10)
 			b.WriteString(leaves[j].Text)
 			j++
 		}
-		chunks = append(chunks, domain.Chunk{
-			Body:     b.String(),
-			Metadata: map[string]any{"struct_kind": rep.Kind, "section_path": rep.SectionPath},
-		})
-		reps = append(reps, rep)
+		add(rep, b.String())
 		i = j
 	}
 	return chunks, reps
+}
+
+// splitOversizedLeaf cuts one leaf's text into pieces of at most max bytes,
+// preferring line boundaries (conversation turns, list items) and packing whole
+// lines up to max; a single line longer than max falls back to OptionC's sentence
+// splitter. Every piece is non-empty and trimmed.
+func splitOversizedLeaf(text string, max int) []string {
+	var out []string
+	var b strings.Builder
+	flush := func() {
+		if t := strings.TrimSpace(b.String()); t != "" {
+			out = append(out, t)
+		}
+		b.Reset()
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if len(line) > max {
+			flush()
+			out = append(out, splitBySentence(strings.TrimSpace(line))...)
+			continue
+		}
+		if b.Len() > 0 && b.Len()+1+len(line) > max {
+			flush()
+		}
+		if b.Len() > 0 {
+			b.WriteByte(10)
+		}
+		b.WriteString(line)
+	}
+	flush()
+	return out
 }
 
 // StructNode mirrors the sidecar's node JSON (agents/system/docling_agent/structure.py).
@@ -135,40 +188,16 @@ type StructureParseRequest struct {
 
 // ── persisted primitives ─────────────────────────────────────────────────────
 
-// SectionRow is a structural section node persisted as a documents row.
-type SectionRow struct {
-	ID              string // "<documentID>::sec:<path>"
-	DocumentID      string // the source document id
-	Title           string
-	Level           int
-	Order           int
-	SectionPath     string // human breadcrumb
-	SectionLtree    string // ltree ordinal path (e.g. "n0.n2")
-	ParentSectionID string // parent section row id, or "" if under the document root
-}
-
-// ChunkStamp inherits a leaf's structural location onto an ingested chunk.
-type ChunkStamp struct {
-	ChunkID         string
-	SectionPath     string
-	SectionLtree    string
-	ParentSectionID string
-}
-
-// StructuralEdge is a typed structure-graph edge (PART_OF / NEXT).
-type StructuralEdge struct {
-	SourceID string
-	TargetID string
-	Type     domain.EdgeType
-}
-
-// StructureGraphStore persists the assembled structure graph. Implemented by the
-// pgvector adapter; nil = structure graph disabled (legacy).
-type StructureGraphStore interface {
-	SaveSections(ctx context.Context, sections []SectionRow) error
-	StampChunks(ctx context.Context, stamps []ChunkStamp) error
-	SaveStructuralEdges(ctx context.Context, edges []StructuralEdge) error
-}
+// The persisted structure-graph types and the StructureGraphStore port live in
+// domain/memory_ports.go (owner decision 2026-11-14, ENG-1104: the postgres adapter
+// must not import this service package). Aliases keep this package's callers and the
+// operator plane compiling unchanged.
+type (
+	SectionRow          = domain.SectionRow
+	ChunkStamp          = domain.ChunkStamp
+	StructuralEdge      = domain.StructuralEdge
+	StructureGraphStore = domain.StructureGraphStore
+)
 
 // BuildStructureGraph is the pure assembly step: given a parsed StructuredDocument,
 // the source document id, and the ingested chunk ids in reading order, it returns

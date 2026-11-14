@@ -17,7 +17,6 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 	"github.com/cambrian-sh/core/internal/config"
-	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/migrate"
 
 	"github.com/doug-martin/goqu/v9"
@@ -99,7 +98,7 @@ func mapError(op string, err error) error {
 
 type PgVectorAdapter struct {
 	pool        *pgxpool.Pool
-	dim         int  // Dynamic dimension support (ADR-0012)
+	dim         int  // embedder dimension from config (ADR-0042: the embedder owns it; dimension rules ADR-0107)
 	autoMigrate bool // PLAT-02 / ADR-0064: run the migration runner at boot (default true)
 	// migrations is the boot-time guard (database.migrations): which databases boot may
 	// not migrate on its own. Zero value = apply, nothing protected (pre-guard behaviour).
@@ -412,8 +411,9 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 	// path is destructive recreation.
 	//
 	// SAFETY GUARD (post-incident): an embedder dim change — OR a misconfigured
-	// dim (cfg.Embedder.Dimensions==0 silently defaults to 1536 above) — must
-	// never SILENTLY destroy the corpus. A restart once wiped 5882 ingested
+	// dim (a zero dim no longer reaches here: NewPgVectorAdapter refuses to boot
+	// on embedder.dimensions==0 instead of guessing 1536) — must never SILENTLY
+	// destroy the corpus. A restart once wiped 5882 ingested
 	// chunks this way. So a mismatch is only allowed to recreate when it cannot
 	// lose real data:
 	//   - No memory documents present (only system-seeded tool/skill/agent_profile,
@@ -506,6 +506,18 @@ func (p *PgVectorAdapter) runMigrations(ctx context.Context) error {
 	return migrate.Boot(ctx, p.pool, p.dim, p.migrations)
 }
 
+// BootPluginMigrations applies the plugins' schema migration lanes (app
+// Registry.AddMigrations) after core's, under the same storage.auto_migrate gate and
+// database.migrations policy as runMigrations — a protected or refuse_pending
+// database names the pending plugin versions and is left untouched
+// (T-20261113-premium-has-no-schema-migration-chain-41-create).
+func (p *PgVectorAdapter) BootPluginMigrations(ctx context.Context, lanes []migrate.Lane) error {
+	if !p.autoMigrate || len(lanes) == 0 {
+		return nil
+	}
+	return migrate.BootLanes(ctx, p.pool, p.migrations, lanes)
+}
+
 // migrationPool opens a plain pool for the CLI migration paths (no vector-type
 // registration needed to run DDL).
 func migrationPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
@@ -541,6 +553,38 @@ func RunMigrations(ctx context.Context, cfg *config.Config) error {
 	})
 }
 
+// RunPluginMigrations is RunMigrations for the plugins' lanes: the explicit
+// `migrate up` path, with the same protected-database refusal. Core's migrations run
+// first (RunMigrations), because a plugin's tables may reference core's.
+func RunPluginMigrations(ctx context.Context, cfg *config.Config, lanes []migrate.Lane) error {
+	if len(lanes) == 0 {
+		return nil
+	}
+	pool, err := migrationPool(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("migrate: connect: %w", err)
+	}
+	defer pool.Close()
+	return migrate.BootLanes(ctx, pool, migrate.Policy{
+		Mode:             migrate.ModeAuto,
+		ProtectedDBNames: cfg.Database.Migrations.ProtectedDBNames,
+		AllowPending:     cfg.Database.Migrations.AllowPending,
+	}, lanes)
+}
+
+// PluginMigrationStatus lists every plugin lane migration for `migrate status`.
+func PluginMigrationStatus(ctx context.Context, cfg *config.Config, lanes []migrate.Lane) ([]migrate.LaneRecord, error) {
+	if len(lanes) == 0 {
+		return nil, nil
+	}
+	pool, err := migrationPool(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("migrate: connect: %w", err)
+	}
+	defer pool.Close()
+	return migrate.StatusLanes(ctx, pool, lanes)
+}
+
 // MigrationStatus returns the applied/pending migration list for the `migrate status` CLI.
 func MigrationStatus(ctx context.Context, cfg *config.Config) ([]migrate.Record, error) {
 	pool, err := migrationPool(ctx, cfg)
@@ -552,8 +596,15 @@ func MigrationStatus(ctx context.Context, cfg *config.Config) ([]migrate.Record,
 }
 
 // getUpsertBuilder: Hem Save hem SaveBatch için tek bir kaynak (Audit 3)
-func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDataset {
-	metadataBytes, _ := json.Marshal(doc.Metadata)
+func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) (*goqu.InsertDataset, error) {
+	// AGENTS.md §3.2: a metadata value json cannot encode (a NaN/Inf float, a func,
+	// a channel) used to be discarded here, and the row was upserted with NULL
+	// metadata — silently dropping its tags, i.e. its classification. Refuse the
+	// write instead (T-20261113-persisted-writes-and-builder-resolver-errors).
+	metadataBytes, err := json.Marshal(doc.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("encode metadata of %q: %w", doc.ID, err)
+	}
 
 	record := goqu.Record{
 		"id":                     doc.ID,
@@ -569,7 +620,7 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 	}
 	// REQ-DATA-1: only include created_at when explicitly set so PostgreSQL's
 	// DEFAULT NOW() fires for new inserts. Go zero-value would store 0001-01-01,
-	// breaking Ebbinghaus decay GC age predicates.
+	// breaking every age predicate on created_at.
 	if !doc.CreatedAt.IsZero() {
 		record["created_at"] = doc.CreatedAt.UTC()
 	}
@@ -638,7 +689,17 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 
 	return dialect.Insert(tableFor(doc.DocumentType)).Rows(record).OnConflict(
 		goqu.DoUpdate("id", update),
-	)
+	), nil
+}
+
+// upsertSQL renders doc's upsert, surfacing both the metadata encoding error and
+// the builder's own ToSQL error instead of executing empty SQL.
+func (p *PgVectorAdapter) upsertSQL(doc *domain.Document) (string, []any, error) {
+	ds, err := p.getUpsertBuilder(doc)
+	if err != nil {
+		return "", nil, err
+	}
+	return ds.ToSQL()
 }
 
 // eventStampValues maps a stated stamp onto its five columns (NULL for an unset part).
@@ -711,7 +772,10 @@ func (p *PgVectorAdapter) projectEmbedding(ctx context.Context, on execer, doc *
 }
 
 func (p *PgVectorAdapter) Save(ctx context.Context, doc *domain.Document) error {
-	sql, args, _ := p.getUpsertBuilder(doc).ToSQL()
+	sql, args, err := p.upsertSQL(doc)
+	if err != nil {
+		return mapError("SaveBuild", err)
+	}
 	if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
 		return mapError("Save", err)
 	}
@@ -723,20 +787,34 @@ func (p *PgVectorAdapter) Save(ctx context.Context, doc *domain.Document) error 
 
 func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document) error {
 	// The ingest timing line splits chunk_save into what only this adapter sees:
-	// the row upserts, the ADR-0107 projection upserts and the commit (memory.
+	// the row upserts, the ADR-0107 projection upserts and the commit (domain.
 	// StageChunkSave*). Without a clock on ctx this costs a few time.Now calls.
 	clock := domain.StageClockFrom(ctx)
+	// Render every upsert before opening the transaction: a document that cannot
+	// be encoded refuses the whole batch without a round trip.
+	type stmt struct {
+		sql  string
+		args []any
+	}
+	stmts := make([]stmt, len(docs))
+	for i, doc := range docs {
+		sql, args, err := p.upsertSQL(doc)
+		if err != nil {
+			return mapError("BuildBatch", err)
+		}
+		stmts[i] = stmt{sql, args}
+	}
 	t := time.Now()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return mapError("BeginBatch", err)
 	}
 	defer tx.Rollback(ctx)
-	clock.Since(memory.StageChunkSaveBegin, t)
+	clock.Since(domain.StageChunkSaveBegin, t)
 
 	var upsert, projection time.Duration
-	for _, doc := range docs {
-		sql, args, _ := p.getUpsertBuilder(doc).ToSQL()
+	for i, doc := range docs {
+		sql, args := stmts[i].sql, stmts[i].args
 		t = time.Now()
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {
 			return mapError("ExecBatch", err)
@@ -748,11 +826,11 @@ func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document
 		}
 		projection += time.Since(t)
 	}
-	clock.Add(memory.StageChunkSaveUpsert, upsert)
-	clock.Add(memory.StageChunkSaveProject, projection)
+	clock.Add(domain.StageChunkSaveUpsert, upsert)
+	clock.Add(domain.StageChunkSaveProject, projection)
 	t = time.Now()
 	err = tx.Commit(ctx)
-	clock.Since(memory.StageChunkSaveCommit, t)
+	clock.Since(domain.StageChunkSaveCommit, t)
 	return err
 }
 
@@ -1248,7 +1326,10 @@ func (p *PgVectorAdapter) deleteIDs(ctx context.Context, op string, ids []string
 		}
 	}
 	for _, table := range idLookupTables {
-		sql, args, _ := dialect.Delete(table).Where(goqu.Ex{"id": ids}).ToSQL()
+		sql, args, err := dialect.Delete(table).Where(goqu.Ex{"id": ids}).ToSQL()
+		if err != nil {
+			return mapError(op, err)
+		}
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {
 			return mapError(op, err)
 		}
@@ -1400,16 +1481,6 @@ func (p *PgVectorAdapter) UpdateActivationStrength(ctx context.Context, docID st
 	return mapError("UpdateActivationStrength", err)
 }
 
-// CountStaleDocuments returns the number of documents with activation_strength below the given threshold.
-// Used by CircadianRhythm to detect pg_cron being disabled (ADR-0015).
-func (p *PgVectorAdapter) CountStaleDocuments(ctx context.Context, threshold float64) (int, error) {
-	var count int
-	err := p.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM chunks WHERE activation_strength < $1", threshold,
-	).Scan(&count)
-	return count, mapError("CountStaleDocuments", err)
-}
-
 func (p *PgVectorAdapter) IncrementAccess(ctx context.Context, id string) error {
 	sql, args, _ := dialect.Update(TableChunks).
 		Set(goqu.Record{
@@ -1441,7 +1512,10 @@ func (p *PgVectorAdapter) QueryByMetadata(ctx context.Context, filter map[string
 	if limit > 0 {
 		q = q.Limit(uint(limit))
 	}
-	sqlStr, args, _ := q.ToSQL()
+	sqlStr, args, err := q.ToSQL()
+	if err != nil {
+		return nil, mapError("BuildQuery", err)
+	}
 
 	rows, err := p.pool.Query(ctx, sqlStr, args...)
 	if err != nil {
@@ -1832,7 +1906,10 @@ func (p *PgVectorAdapter) ChunksForEntities(ctx context.Context, entities []stri
 	} else {
 		order = append(order, goqu.L("cand.chunk_id").Asc()) // deterministic tie-break
 	}
-	sql, args, _ := ds.Order(order...).Limit(uint(limit)).ToSQL()
+	sql, args, err := ds.Order(order...).Limit(uint(limit)).ToSQL()
+	if err != nil {
+		return nil, mapError("ChunksForEntities", err)
+	}
 	rows, err := p.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, mapError("ChunksForEntities", err)
@@ -1871,7 +1948,7 @@ func (p *PgVectorAdapter) queryChunkTriplets(ctx context.Context, sql string, ar
 
 // LoadChunkEntities returns every chunk with its triplet entities (h+t), the
 // input to ComputePageRank. One scan of chunk_triplets, folded in Go.
-func (p *PgVectorAdapter) LoadChunkEntities(ctx context.Context) ([]memory.ChunkEntities, error) {
+func (p *PgVectorAdapter) LoadChunkEntities(ctx context.Context) ([]domain.ChunkEntities, error) {
 	rows, err := p.pool.Query(ctx, fmt.Sprintf(`SELECT chunk_id, h, t FROM %s`, TableChunkTriplets))
 	if err != nil {
 		return nil, mapError("LoadChunkEntities", err)
@@ -1903,13 +1980,13 @@ func (p *PgVectorAdapter) LoadChunkEntities(ctx context.Context) ([]memory.Chunk
 	if err := rows.Err(); err != nil {
 		return nil, mapError("LoadChunkEntities", err)
 	}
-	out := make([]memory.ChunkEntities, 0, len(order))
+	out := make([]domain.ChunkEntities, 0, len(order))
 	for _, id := range order {
 		ents := make([]string, 0, len(byChunk[id]))
 		for e := range byChunk[id] {
 			ents = append(ents, e)
 		}
-		out = append(out, memory.ChunkEntities{ChunkID: id, Entities: ents})
+		out = append(out, domain.ChunkEntities{ChunkID: id, Entities: ents})
 	}
 	return out, nil
 }

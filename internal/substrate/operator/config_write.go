@@ -58,9 +58,10 @@ type ConfigWriteOutcome struct {
 
 	// ADR-0101 D8 — where the value went relative to the file layers.
 	//
-	// WrittenTo names the config file the value was written into (write-through:
-	// the file already set the key and is writable, so the store override was
-	// removed and the file is the value's one durable home).
+	// WrittenTo names the config file the value was mirrored into: the file already
+	// set the key and is writable. The store holds the value too and is
+	// authoritative (owner decision 2026-11-14, ENG-1417); the mirror keeps the file
+	// from contradicting it.
 	//
 	// Overrides names the file layer the STORED value now overrides (the file sets
 	// the key but is not writable — committed, read-only), and OverridesValue is

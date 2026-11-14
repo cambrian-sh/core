@@ -34,6 +34,7 @@
 package stepoutput
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -56,8 +57,9 @@ type Options struct {
 	// carry the lease only.
 	Leases domain.LeaseResolver
 	// StreamsOutput reports whether an agent declared streams_output (it pushes
-	// its own output). nil ⇒ none does.
-	StreamsOutput func(agentID string) bool
+	// its own output). nil ⇒ none does. ctx is the gateway call's (ENG-1467 item 7):
+	// the lookup reads the agent registry for the caller.
+	StreamsOutput func(ctx context.Context, agentID string) bool
 	// Sinks receive every chunk (the operator feed).
 	Sinks []Sink
 	Log   *slog.Logger
@@ -78,7 +80,7 @@ type Stream struct {
 	cfg           config.StepOutputConfig
 	hooks         *domain.HookChain
 	leases        domain.LeaseResolver
-	streamsOutput func(string) bool
+	streamsOutput func(context.Context, string) bool
 	sinks         []Sink
 	log           *slog.Logger
 	now           func() time.Time
@@ -133,7 +135,7 @@ func (s *Stream) FinalAnswerArg() string { return s.cfg.FinalAnswerArgName() }
 // SuppressReason says why gateway deltas are not forwarded for a step under lease,
 // or "" when they are. agentID is the caller's header id; the lease's bound agent
 // is checked too (a post_model hook matching either suppresses).
-func (s *Stream) SuppressReason(lease domain.LeaseID, agentID string) string {
+func (s *Stream) SuppressReason(ctx context.Context, lease domain.LeaseID, agentID string) string {
 	if s == nil {
 		return "no stream"
 	}
@@ -158,7 +160,7 @@ func (s *Stream) SuppressReason(lease domain.LeaseID, agentID string) string {
 		if bound != "" {
 			agentID = bound
 		}
-		if agentID != "" && s.streamsOutput(agentID) {
+		if agentID != "" && s.streamsOutput(ctx, agentID) {
 			return "the agent declares streams_output"
 		}
 	}
@@ -166,8 +168,8 @@ func (s *Stream) SuppressReason(lease domain.LeaseID, agentID string) string {
 }
 
 // GatewayForwarding reports whether gateway deltas are forwarded for the step.
-func (s *Stream) GatewayForwarding(lease domain.LeaseID, agentID string) bool {
-	return s.SuppressReason(lease, agentID) == ""
+func (s *Stream) GatewayForwarding(ctx context.Context, lease domain.LeaseID, agentID string) bool {
+	return s.SuppressReason(ctx, lease, agentID) == ""
 }
 
 // EmitGateway delivers one gateway delta. The caller checked GatewayForwarding

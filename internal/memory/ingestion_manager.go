@@ -41,17 +41,29 @@ type IngestionConfig struct {
 	SyncKGWaitTimeout time.Duration
 	// SyncWaitForFacts makes ProcessSync return only after its document's ADR-0136
 	// facts are extracted and stored (execution.ingestion.sync_ingest_wait_for_facts):
-	// read-your-writes for the fact lane, for benchmarks that must measure stored
-	// facts. false = async, as the KG lane. A no-op without a fact extractor.
+	// read-your-writes for the fact lane. It applies to EVERY ProcessSync caller alike —
+	// agent-plane IngestMemory, operator ingest and plugin/reactive ingests (owner
+	// decision 2026-11-14, ENG-488): there is one ingest path, so one wait rule.
+	// false = async, as the KG lane. A no-op without a fact extractor.
 	SyncWaitForFacts bool
-	// SyncFactsWaitTimeout bounds that wait (sync_ingest_facts_wait_timeout_ms). On
-	// expiry the ingest still SUCCEEDS with a WARN. <=0 means the 120 s default.
+	// SyncFactsWaitTimeout bounds that wait (sync_ingest_facts_wait_timeout_ms), so a
+	// stuck extractor can never hang an ingest. On expiry ProcessSync returns
+	// ErrFactsNotReady (the content IS stored; a retry is an idempotent no-op that
+	// waits again). <=0 means the 120 s default.
 	SyncFactsWaitTimeout time.Duration
 	// LegacyDocumentIdentity derives document ids exactly as before ADR-0138
 	// (execution.ingestion.document_identity = "legacy"): no writer, Body-only digest,
 	// no grandfathering lookup. Default false (scheme v2).
 	LegacyDocumentIdentity bool
 }
+
+// ErrFactsNotReady is returned by ProcessSync when sync_ingest_wait_for_facts is on and
+// the document's facts were not stored within sync_ingest_facts_wait_timeout_ms (or the
+// extractor stopped first). The ingest's content IS stored — chunks, entity, evidence —
+// and a retry is safe (deterministic ids); only the read-your-writes guarantee for the
+// fact lane was not met. Owner decision 2026-11-14 (ENG-488): a bounded wait with a
+// clear timeout error, never a silent success and never an unbounded hang.
+var ErrFactsNotReady = errors.New("facts not stored within the sync wait (the document content is stored; retry is safe)")
 
 // defaultSyncFactsWaitTimeout is the fallback for IngestionConfig.SyncFactsWaitTimeout:
 // one LLM call per extraction window (ADR-0136 A2.3), so it is longer than the KG wait.
@@ -392,13 +404,18 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	// this document's chunks have their triplets. After the entity mint, so the
 	// wait overlaps nothing the caller still needs and a failed mint never waits.
 	im.waitForKG(ctx, clock, doc.SourceURI, outcome.KGWait)
-	// Read-your-writes for the fact lane (sync_ingest_wait_for_facts), the same shape.
-	im.waitForFacts(ctx, clock, doc.SourceURI, outcome.FactsWait)
+	// Read-your-writes for the fact lane (sync_ingest_wait_for_facts), the same shape,
+	// except that a timed-out wait is an ERROR (ENG-488). The content is stored either
+	// way, so the written event is still published before the error is returned.
+	factsErr := im.waitForFacts(ctx, clock, doc.SourceURI, outcome.FactsWait)
 	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount,
 		"dropped_leaves", outcome.DroppedLeaves)
 	t = time.Now()
 	im.publishWritten(doc, entityID, chunkCount)
 	clock.Since(StagePublish, t)
+	if factsErr != nil {
+		return entityID, factsErr
+	}
 	return entityID, nil
 }
 
@@ -591,12 +608,14 @@ func (im *IngestionManager) waitForKG(ctx context.Context, clock *domain.StageCl
 }
 
 // waitForFacts is waitForKG for the ADR-0136 fact extractor: it blocks until this
-// document's facts are stored, ctx is done, or SyncFactsWaitTimeout expires, records
-// facts_wait, and never fails the ingest (the content is stored; facts are keys).
+// document's facts are stored, ctx is done, or SyncFactsWaitTimeout expires, and records
+// facts_wait. A wait that ran out of time, or whose extractor stopped, returns
+// ErrFactsNotReady (owner decision 2026-11-14, ENG-488: a clear timeout error); an
+// extraction that FINISHED with failures, or a caller that went away, only warns.
 // w == nil (flag off, or no extractor) is a no-op.
-func (im *IngestionManager) waitForFacts(ctx context.Context, clock *domain.StageClock, sourceURI string, w *FactsWait) {
+func (im *IngestionManager) waitForFacts(ctx context.Context, clock *domain.StageClock, sourceURI string, w *FactsWait) error {
 	if w == nil {
-		return
+		return nil
 	}
 	t := time.Now()
 	wctx, cancel := context.WithTimeout(ctx, im.cfg.SyncFactsWaitTimeout)
@@ -610,7 +629,7 @@ func (im *IngestionManager) waitForFacts(ctx context.Context, clock *domain.Stag
 		clock.Count(CountFactsFailed, 1)
 	}
 	if err == nil && !w.Failed() {
-		return
+		return nil
 	}
 	reason := "incomplete"
 	switch {
@@ -627,6 +646,12 @@ func (im *IngestionManager) waitForFacts(ctx context.Context, clock *domain.Stag
 		"source_uri", sourceURI, "reason", reason, "waited_ms", time.Since(t).Milliseconds(),
 		"timeout_ms", im.cfg.SyncFactsWaitTimeout.Milliseconds(),
 		"effect", "the content is stored; the fact lane sees this document once extraction catches up")
+	switch reason {
+	case "timeout", "extractor_stopped":
+		return fmt.Errorf("%w: %s after %d ms (timeout %d ms), document %q",
+			ErrFactsNotReady, reason, time.Since(t).Milliseconds(), im.cfg.SyncFactsWaitTimeout.Milliseconds(), sourceURI)
+	}
+	return nil
 }
 
 // sourceDocEntityID is the deterministic id of a document's source-doc entity.

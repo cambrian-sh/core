@@ -170,21 +170,6 @@ func TestLayer3_BodyTruncation(t *testing.T) {
 	}
 }
 
-// Cycle 35 — PromptRegistry has "router.classify" entry after init().
-func TestLayer3_PromptRegistry_HasClassifyEntry(t *testing.T) {
-	t.Parallel()
-	found := false
-	for _, entry := range domain.PromptRegistry {
-		if entry.ID == "router.classify" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected 'router.classify' to be registered in domain.PromptRegistry")
-	}
-}
-
 // ── Config defaults ───────────────────────────────────────────────────────────
 
 // Cycle 36 — RouterMinClassificationConfidence default is 0.5.

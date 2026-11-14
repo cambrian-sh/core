@@ -132,13 +132,13 @@ func TestIntegrations_RequireCommandIDReasonAndArgs(t *testing.T) {
 // a process) is Operator-only.
 func TestIntegrations_RoleGating(t *testing.T) {
 	for _, m := range []string{"ListIntegrationCatalog", "ListIntegrations"} {
-		if isOperatorOnly("/cambrian.operator.OperatorConsole/" + m) {
+		if isOperatorOnly("/cambrian.operator.OperatorConsole/"+m, nil) {
 			t.Errorf("%s should be readable by a Viewer", m)
 		}
 	}
 	for _, m := range []string{"InstallIntegration", "UpdateIntegration", "SetIntegrationSecret", "ClearIntegrationSecret",
 		"SetIntegrationEnabled", "TestIntegration", "RemoveIntegration", "RevertIntegrationToFile"} {
-		if !isOperatorOnly("/cambrian.operator.OperatorConsole/" + m) {
+		if !isOperatorOnly("/cambrian.operator.OperatorConsole/"+m, nil) {
 			t.Errorf("%s must be Operator-only", m)
 		}
 	}

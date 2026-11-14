@@ -44,10 +44,6 @@ type QueryService struct {
 	graphWriter      domain.GraphStore         // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
 	heb              hebbianParams             // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
 	hebInflight      chan struct{}             // ADR-0049 D10: bounds concurrent reinforcement goroutines (AGENTS.md §3.3)
-	entityIdx        *EntityIndex              // ADR-0053 (T-Mem hop): in-memory entity reverse index; nil = surface-only recall
-	assocWeight      float64                   // ADR-0053 (T-Mem hop): β in the re-rank formula; default 0.2
-	assocLambda      float64                   // ADR-0053 (T-Mem hop): λ for the temporal-decay term in the re-rank; default 0.005
-	assocTopK        int                       // ADR-0053 (T-Mem hop): top-K entity keys to seed from; default 3
 	chunkTriplets    domain.ChunkTripletsStore // ADR-0053 Phase 0: per-chunk KG; nil = no KG expansion (legacy)
 	kgHops           int                       // ADR-0053 Phase 0: KG expansion depth; default 1
 	kgMaxExpanded    int                       // ADR-0053 Phase 0: max new chunks added by KG expansion; default 20
@@ -57,6 +53,7 @@ type QueryService struct {
 	anchorConstraint bool                      // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
 	sectionStore     SectionScopedStore        // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
 	neighborWindow   bool                      // ADR-0060: expand each returned chunk with its document neighbors
+	docCompletion    docCompletion             // ENG-430: return the rest of the top documents (document_completion.go); zero = off
 	chronoContext    bool                      // ADR-0134 D5a: order + date the final synthesis context by event time (chronological_context.go)
 	blender          atomic.Pointer[Blender]   // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
 	recencyCurve     RecencyCurve              // Stage-A recency curve (SetRecencyCurve); zero = pool min-max
@@ -68,7 +65,6 @@ type QueryService struct {
 	lexical          LexicalSearcher           // ADR-0054 hybrid: nil = vector-only recall
 	rrfK             int                       // ADR-0054 hybrid: RRF constant; 0 ⇒ 60
 	lexicalWeight    float64                   // hybrid: multiplier on the lexical lane's RRF contribution (entity-anchoring); ≤0 ⇒ 1.0
-	ircotEnabled     bool                      // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
 	decompEnabled    bool                      // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
 	subqConcurrency  int                       // decomposition: independent sub-questions retrieved in parallel, bounded; <=1 = sequential (execution.retrieval.agentic_subquestion_concurrency)
 	adaptiveRoutes   bool                      // ADR-0135: execute the planner's route (direct|facets|chain); false = route logged only, chain semantics (execution.retrieval.agentic_adaptive_routes_enabled)
@@ -119,16 +115,6 @@ type Planner interface {
 // it, so its answer text stays citation-marker-free.
 type CitedSynthesizer interface {
 	SynthesizeCited(ctx context.Context, query string, chunks []string) (status, text string, err error)
-}
-
-// ReasoningPlanner is an OPTIONAL planner capability for IRCoT (interleave
-// retrieval with chain-of-thought): given the query, the CoT so far, and the
-// retrieved chunks, emit the next reasoning sentence (which may NAME an
-// intermediate entity from reasoning), whether the answer is reached, and the
-// next search query. The loop type-asserts for it and uses it only when IRCoT is
-// enabled; absence ⇒ the legacy bridge-extraction loop.
-type ReasoningPlanner interface {
-	ReasonStep(ctx context.Context, query string, cot, chunks []string) (thought string, done bool, nextQuery string, err error)
 }
 
 // DecomposePlanner is an OPTIONAL planner capability for UP-FRONT GROUNDED
@@ -267,9 +253,8 @@ type hopTrace struct {
 	Hop          int        `json:"hop"`
 	PlannedQuery string     `json:"planned_query"`
 	Retrieved    []traceDoc `json:"retrieved"`
-	Decision     string     `json:"decision"` // continue | stop | stop_repeat_bridge | max_hops | reason_continue | reason_done
+	Decision     string     `json:"decision"` // continue | stop | stop_repeat_bridge | max_hops
 	Bridge       string     `json:"bridge,omitempty"`
-	Thought      string     `json:"thought,omitempty"` // IRCoT: the CoT sentence generated at this hop
 }
 
 // agenticTrace is the full per-query record attached to the control result.
@@ -421,10 +406,6 @@ func (q *QueryService) EnableHybrid(lex LexicalSearcher, rrfK int) {
 // large noisy store. ≤0 or 1 ⇒ the symmetric default.
 func (q *QueryService) SetLexicalWeight(w float64) { q.lexicalWeight = w }
 
-// SetIrcotEnabled toggles the IRCoT reason-then-retrieve loop. Requires the
-// planner to implement ReasoningPlanner; otherwise it silently no-ops (legacy loop).
-func (q *QueryService) SetIrcotEnabled(on bool) { q.ircotEnabled = on }
-
 // SetDecomposeEnabled toggles up-front grounded decomposition (needs a planner
 // that implements DecomposePlanner; absence ⇒ falls back to the greedy loop).
 func (q *QueryService) SetDecomposeEnabled(on bool) { q.decompEnabled = on }
@@ -483,42 +464,6 @@ func (q *QueryService) SetRelevanceFloor(f float64) { q.floor = f }
 // agent's one upfront seed_recall is associatively rich. Flag-gated at the call
 // site (main.go) — nil spreader leaves recall as a flat top-k.
 func (q *QueryService) EnableSpreading(s Spreader) { q.spreader = s }
-
-// EnableEntityRouting turns on ADR-0053 (T-Mem associative hop) entity-aware
-// routing: the recall path
-// embeds the query, finds the top-K entity keys by name-embedding cosine, and
-// pre-loads the index's doc associations for those entities as additional
-// seeds. Re-ranking then blends BFS energy with the T-Mem associative term
-// (β × reachability). nil idx leaves recall as surface-similarity-only.
-func (q *QueryService) EnableEntityRouting(idx *EntityIndex) {
-	q.entityIdx = idx
-	if q.assocWeight == 0 {
-		q.assocWeight = 0.2
-	}
-	if q.assocLambda == 0 {
-		q.assocLambda = 0.005
-	}
-	if q.assocTopK == 0 {
-		q.assocTopK = 3
-	}
-}
-
-// SetAssociativeWeight overrides β (default 0.2). 0 disables the associative
-// re-rank term (the BFS energy alone determines the final order).
-func (q *QueryService) SetAssociativeWeight(beta float64) { q.assocWeight = beta }
-
-// SetAssociativeLambda overrides the temporal-decay λ used in the re-rank's
-// effective term (default 0.005/hr; matches MnemonicFact).
-func (q *QueryService) SetAssociativeLambda(lambda float64) { q.assocLambda = lambda }
-
-// SetAssociativeTopK overrides the number of entity keys used to seed the
-// associative expansion (default 3). Larger values widen the first hop at
-// the cost of noisy seed candidates.
-func (q *QueryService) SetAssociativeTopK(k int) {
-	if k > 0 {
-		q.assocTopK = k
-	}
-}
 
 // NewQueryService creates a QueryService.
 //
@@ -723,23 +668,17 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 	scratchpad := ""
 	visited := map[string]bool{}          // bridges already searched — guard against loops
 	history := make([]string, 0, maxHops) // ReAct trace: entities resolved so far (fed to decide_continue)
-	cot := make([]string, 0, maxHops)     // IRCoT: accumulated chain-of-thought sentences
 	hopResults := make([][]domain.SearchResult, 0, maxHops)
 	trace := make([]hopTrace, 0, maxHops)
 	for hop := 0; hop < maxHops; hop++ {
-		// hop-1 always plans (decomposition). IRCoT later hops retrieve on the
-		// CoT-derived query directly (natural language, no lexical re-planning);
-		// the legacy loop re-plans FOR the bridge entity.
-		var planned string
-		if q.ircotEnabled && hop > 0 {
-			planned = scratchpad
-		} else {
-			planned = q.planQuery(ctx, query, scratchpad, history, hop)
-		}
+		// Every hop plans FOR the bridge entity found so far. (The IRCoT
+		// reason-then-retrieve branch was deleted 2026-11-15 — owner decision,
+		// ENG-1321: IRCoT is a disqualified lever, removed like HyDE.)
+		planned := q.planQuery(ctx, query, scratchpad, history, hop)
 		hits, err := q.searchByType(ctx, planned, callerID, docType, spread)
 		if err != nil {
 			if len(hopResults) > 0 {
-				return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), nil, trace, cot), nil // fail-open to what we have
+				return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), nil, trace), nil // fail-open to what we have
 			}
 			return nil, err
 		}
@@ -749,25 +688,6 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 			ht.Decision = "max_hops"
 			trace = append(trace, ht)
 			break
-		}
-		// IRCoT: generate the next CoT step and retrieve on it; else legacy bridge extraction.
-		if q.ircotEnabled {
-			thought, done, nextQuery := q.reasonStep(ctx, query, cot, interleaveDedup(hopResults))
-			nextQuery = strings.TrimSpace(nextQuery)
-			ht.Thought = thought
-			if done || nextQuery == "" || visited[strings.ToLower(nextQuery)] {
-				ht.Decision = "reason_done"
-				trace = append(trace, ht)
-				break
-			}
-			ht.Decision = "reason_continue"
-			trace = append(trace, ht)
-			visited[strings.ToLower(nextQuery)] = true
-			if thought != "" {
-				cot = append(cot, thought)
-			}
-			scratchpad = nextQuery
-			continue
 		}
 		stop, bridge := q.decideContinue(ctx, query, history, interleaveDedup(hopResults))
 		bridge = strings.TrimSpace(bridge)
@@ -790,7 +710,7 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 		history = append(history, bridge) // ReAct: record the resolved entity for later hops
 		scratchpad = bridge
 	}
-	return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), nil, trace, cot), nil
+	return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), nil, trace), nil
 }
 
 // decompSearch is the UP-FRONT GROUNDED decomposition loop: decompose the whole
@@ -850,7 +770,9 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	// the single pass — with its own per-hop rerank, so the rows are exactly what
 	// the non-agentic path returns — and record the echo in the trace.
 	if isEchoPlan(query, subqs) {
-		slog.InfoContext(ctx, "agentic-trace decompose echo; single pass", "query", query, "sub_question", subqs[0])
+		// Person's text: fingerprints at INFO, raw text only at DEBUG (TextLogAttrs).
+		slog.InfoContext(ctx, "agentic-trace decompose echo; single pass", TextLogAttrs("query", query)...)
+		slog.DebugContext(ctx, "agentic-trace decompose echo text", "query", query, "sub_question", subqs[0])
 		return rt.annotate(q.singlePassPlan(ctx, query, callerID, docType, spread, "echo_single_pass"))
 	}
 	// LEVER A (coverage floor): always retrieve the FULL original question as a
@@ -963,7 +885,7 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	if len(interleaved) > budget {
 		interleaved = interleaved[:budget:budget]
 	}
-	return rt.annotate(q.finalizeAgentic(ctx, query, union, interleaved, trace, nil), nil)
+	return rt.annotate(q.finalizeAgentic(ctx, query, union, interleaved, trace), nil)
 }
 
 // substituteAnswers replaces {1},{2},... in a sub-question with the matching
@@ -991,7 +913,7 @@ func substituteAnswers(subq string, subst []string) string {
 // from — decompSearch passes the pre-rerank hop-interleaved union so a global
 // rerank (scored against the surface question) cannot starve synthesis of
 // mid-chain evidence. The RETURNED rows keep acc's order. nil ⇒ acc.
-func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc, contextOrder []domain.SearchResult, hops []hopTrace, cot []string) []domain.SearchResult {
+func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc, contextOrder []domain.SearchResult, hops []hopTrace) []domain.SearchResult {
 	// Honor the server-side recall window. Each hop is individually capped, but
 	// the interleaved union of N hops is not — without this, the agentic paths
 	// returned up to N×topK rows to the wire, which querymemory.go documents as
@@ -1001,7 +923,7 @@ func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc, c
 	if topK := q.effRecallTopK(); topK > 0 && len(acc) > topK {
 		acc = acc[:topK:topK]
 	}
-	return q.withControlRow(ctx, query, acc, contextOrder, hops, cot)
+	return q.withControlRow(ctx, query, acc, contextOrder, hops)
 }
 
 // withControlRow is finalizeAgentic minus the recall-window truncation: it
@@ -1012,7 +934,7 @@ func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc, c
 // synthesis was pure cost (T-20261102-agentic-synthesis-llm-call-is-computed-for);
 // they get acc unchanged and no row at all. The echo path calls this directly so
 // its rows stay exactly the single pass's.
-func (q *QueryService) withControlRow(ctx context.Context, query string, acc, contextOrder []domain.SearchResult, hops []hopTrace, cot []string) []domain.SearchResult {
+func (q *QueryService) withControlRow(ctx context.Context, query string, acc, contextOrder []domain.SearchResult, hops []hopTrace) []domain.SearchResult {
 	if q.planner == nil {
 		// Misconfiguration, not a normal state: the agentic paths only run when a
 		// planner was wired, so a nil planner here silently drops the typed-status
@@ -1030,11 +952,6 @@ func (q *QueryService) withControlRow(ctx context.Context, query string, acc, co
 	}
 	const maxContextChunks = 16
 	texts := make([]string, 0, maxContextChunks+1)
-	// IRCoT: put the reasoning chain (which often already NAMES the answer) FIRST,
-	// so synthesis can use its conclusion instead of re-deriving from noisy chunks.
-	if len(cot) > 0 {
-		texts = append(texts, "REASONING CHAIN (prefer its conclusion when the passages support it):\n- "+strings.Join(cot, "\n- "))
-	}
 	ctxRows := acc
 	if contextOrder != nil {
 		ctxRows = contextOrder
@@ -1088,30 +1005,6 @@ func (q *QueryService) decideContinue(ctx context.Context, query string, history
 		return true, ""
 	}
 	return stop, bridge
-}
-
-// reasonStep (IRCoT) generates the next CoT sentence + done + next search query
-// from the accumulated chunks. FAIL-OPEN = done: a planner that isn't a
-// ReasoningPlanner, or any error, ⇒ stop with what's accumulated.
-func (q *QueryService) reasonStep(ctx context.Context, query string, cot []string, acc []domain.SearchResult) (string, bool, string) {
-	rp, ok := q.planner.(ReasoningPlanner)
-	if !ok {
-		return "", true, ""
-	}
-	const maxContextChunks = 16
-	texts := make([]string, 0, maxContextChunks)
-	for i, h := range acc {
-		if i >= maxContextChunks {
-			break
-		}
-		texts = append(texts, h.Document.Text)
-	}
-	thought, done, nextQuery, err := rp.ReasonStep(ctx, query, cot, texts)
-	if err != nil {
-		slog.WarnContext(ctx, "agentic: reason_step failed; stopping (fail-open)", "err", err)
-		return "", true, ""
-	}
-	return thought, done, nextQuery
 }
 
 // ctxKeySkipRerank suppresses the per-hop Stage-B rerank inside searchByType so
@@ -1686,7 +1579,7 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 		}
 		ids, err := q.chunkTriplets.ChunksMentioningEntity(ctx, term, perEntity, scope)
 		if err != nil {
-			slog.WarnContext(ctx, "query-entity seeding: lookup failed", "term", term, "err", err)
+			slog.WarnContext(ctx, "query-entity seeding: lookup failed", append(TextLogAttrs("term", term), "err", err)...) // query text: fingerprint only (ENG-447)
 			continue
 		}
 		for _, id := range ids {
@@ -1696,7 +1589,9 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 			if seen[id] {
 				continue
 			}
-			doc, derr := q.vectorStore.GetByID(ctx, id)
+			// The enforcing by-id read applies the stamped predicate (AGENTS.md §2.5);
+			// a forbidden row comes back nil, like a missing one.
+			doc, derr := q.vectorStore.GetByID(domain.WithScope(ctx, scope), id)
 			if derr != nil || doc == nil {
 				continue
 			}
@@ -1917,16 +1812,22 @@ func (t *passTimer) mark(stage string) {
 
 func (t *passTimer) log(ctx context.Context, query string) {
 	total := time.Since(t.started)
-	attrs := append([]slog.Attr{
-		slog.Int64("total_ms", total.Milliseconds()),
-		slog.String("query", clip(query, 80)),
-	}, t.attrs...)
 	level := slog.LevelDebug
 	msg := "memory pass timing"
 	if total > slowPassThreshold {
 		level = slog.LevelInfo
 		msg = "memory pass timing (SLOW)"
 	}
+	attrs := []slog.Attr{slog.Int64("total_ms", total.Milliseconds())}
+	if level == slog.LevelDebug {
+		attrs = append(attrs, slog.String("query", clip(query, 80)))
+	} else {
+		// The SLOW line is INFO: the person's text appears only as a fingerprint
+		// (TextLogAttrs, T-20261103-kernel-logs-print-raw-query-text-and-leaf).
+		fp := TextLogAttrs("query", query)
+		attrs = append(attrs, slog.Any(fp[0].(string), fp[1]), slog.Any(fp[2].(string), fp[3]))
+	}
+	attrs = append(attrs, t.attrs...)
 	slog.LogAttrs(ctx, level, msg, attrs...)
 }
 
@@ -1938,15 +1839,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// from document (ADR-0048, e.g. bge-large's query instruction), use EmbedQuery
 	// so the query carries the right prefix while stored docs stay bare. Embedders
 	// without it (symmetric, e.g. nomic) fall through to plain Embed — non-breaking.
-	var vec []float32
-	var err error
-	if qe, ok := q.embedder.(interface {
-		EmbedQuery(context.Context, string) ([]float32, error)
-	}); ok {
-		vec, err = qe.EmbedQuery(ctx, embedInput)
-	} else {
-		vec, err = q.embedder.Embed(ctx, embedInput)
-	}
+	vec, err := embedQuery(ctx, q.embedder, embedInput)
 	if err != nil {
 		return nil, fmt.Errorf("memory query: embed: %w", err)
 	}
@@ -2102,15 +1995,10 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		primaryIDs[r.Document.ID] = true
 	}
 
-	// ADR-0053 (T-Mem associative hop): entity-aware seeding. If the EntityIndex is wired and has
-	// stored entity-name embeddings, find the top-K entity keys most
-	// relevant to the query and append their doc associations as additional
-	// seeds. Each appended seed carries a base score = query→entity cosine,
-	// which the BFS treats identically to a vector seed.
-	if q.entityIdx != nil {
-		results = q.injectEntitySeeds(ctx, results, vec, docType, callerID)
-	}
-	pt.mark("entity_seeds")
+	// The ADR-0053 (T-Mem associative hop) EntityIndex seed lane was deleted
+	// 2026-11-15 (owner decision, ENG-76): nothing ever populated the index, so it
+	// returned its input unchanged on every recall. The graph-rescue path is
+	// query-entity seeding + KG²RAG below, over chunk_triplets.
 
 	// ADR-0053 Phase 0: KG²RAG one-hop chunk expansion. If the
 	// domain.ChunkTripletsStore is wired, walk the per-chunk triplets from the
@@ -2132,11 +2020,6 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 			MaxExpanded: q.kgMaxExpanded,
 			MaxEntities: q.kgMaxEntities,
 			PerEntity:   q.kgPerEntity,
-		}
-		if q.entityIdx != nil {
-			// Query-time synonym linking over the entity-name embeddings the
-			// entity index already holds (nil when entity routing is unwired).
-			opts.AliasIndex = q.entityIdx
 		}
 		results = kgExpand(ctx, results, q.chunkTriplets, q.vectorStore, vec, eff, opts)
 	}
@@ -2269,6 +2152,11 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// (preceding/following) for adjacent context. Runs last so ranking is untouched.
 	if q.neighborWindow {
 		filtered = keepInWindow(q.applyNeighborWindow(ctx, filtered), window)
+	}
+	// ENG-430: document/session completion — the rest of the top documents, after
+	// every ranked row (non-displacing), in document order.
+	if q.docCompletion.enabled {
+		filtered = keepInWindow(q.applyDocumentCompletion(ctx, filtered), window)
 	}
 	// ADR-0136 D4: the matched fact text (and supersession notes) for the reader.
 	filtered = annotateFactHits(filtered, factHits)
@@ -2448,163 +2336,11 @@ func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchR
 		seen[e.Document.ID] = true
 		out = append(out, domain.SearchResult{Document: e.Document, Score: e.ActivationEnergy})
 	}
-	// ADR-0053 (T-Mem hop): re-rank with the associative term. If the entity index is
-	// not wired (or the recall missed any doc with entity neighbors), the
-	// reachability map is empty and the term is a no-op.
-	if q.entityIdx != nil && q.assocWeight > 0 && len(out) > 0 {
-		// The query vector is not carried on the seeds, and re-embedding the query
-		// here would cost an extra embedder call per recall, so reachability is
-		// computed from the top seed's STORED chunk embedding as a proxy for the
-		// query vector (ComputeReachabilityFromSeedText; despite its name it reads
-		// seeds[0].Document.Embedding, not the text): for the working set the proxy
-		// is within ~0.05 cosine of the original, well inside the β-scaled term's
-		// noise floor.
-		// TODO(entity-routing): pass queryVec through the BFS so reachability uses
-		// the original query embedding, not the seed-text proxy. The
-		// current proxy is correct-enough for β=0.2.
-		reachability := ComputeReachabilityFromSeedText(out, q.entityIdx, seeds)
-		out = ReRankWithAssociative(out, reachability, q.assocLambda, q.assocWeight, time.Now())
-	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	if k := q.effRecallTopK(); len(out) > k {
 		out = out[:k]
 	}
 	return out
-}
-
-// injectEntitySeeds finds the top-K entity keys by query-embedding cosine and
-// adds their associated docs to the candidate set with a base score equal to
-// the query→entity cosine. The appended seeds are real documents (looked up
-// via VectorStore.GetByID) so the rest of the pipeline (ACL, same-session
-// exclusion, relevance floor, BFS) treats them uniformly. ADR-0053 (T-Mem hop).
-func (q *QueryService) injectEntitySeeds(
-	ctx context.Context,
-	results []domain.SearchResult,
-	queryVec []float32,
-	docType string,
-	callerID string,
-) []domain.SearchResult {
-	if q.entityIdx == nil || q.assocTopK <= 0 {
-		return results
-	}
-	// Use the FIRST seed's stored embedding as a proxy for the query
-	// embedding (the EntityIndex stores entity-name embeddings). This is
-	// the same proxy used in spreadAndRank; see ComputeReachabilityFromSeedText
-	// for the rationale and the TODO to plumb the real queryVec.
-	if len(results) == 0 || len(queryVec) == 0 {
-		return results
-	}
-	embs := q.entityIdx.SnapshotEmbeddings()
-	if len(embs) == 0 {
-		return results
-	}
-	type scored struct {
-		key   string
-		score float64
-	}
-	picks := make([]scored, 0, len(embs))
-	for k, emb := range embs {
-		if len(emb.Vector) == 0 {
-			continue
-		}
-		s := cosineSimilarity(queryVec, emb.Vector)
-		if s > 0 {
-			picks = append(picks, scored{k, s})
-		}
-	}
-	sort.Slice(picks, func(i, j int) bool { return picks[i].score > picks[j].score })
-	if len(picks) > q.assocTopK {
-		picks = picks[:q.assocTopK]
-	}
-	if len(picks) == 0 {
-		return results
-	}
-
-	// Collect candidate doc IDs from the top-K entity keys, dedup'd.
-	seen := make(map[string]bool, len(results))
-	for _, r := range results {
-		seen[r.Document.ID] = true
-	}
-	docIDs := make([]string, 0, q.assocTopK*5)
-	for _, p := range picks {
-		for _, assoc := range q.entityIdx.DocsFor(p.key) {
-			if assoc.DocID == "" || seen[assoc.DocID] {
-				continue
-			}
-			seen[assoc.DocID] = true
-			docIDs = append(docIDs, assoc.DocID)
-		}
-	}
-	if len(docIDs) == 0 {
-		return results
-	}
-
-	// Fetch the docs and stamp them with the entity's cosine as a base
-	// score. We use a per-entity score average: if a doc is associated
-	// with multiple top-K entities, it gets the average of their cosines.
-	// Cost: O(topK * avg_assoc_per_entity) fetches. For LoCoMo's
-	// working set this is a handful of GetByID calls.
-	docScores := make(map[string]float64, len(docIDs))
-	docScoreCount := make(map[string]int, len(docIDs))
-	for _, p := range picks {
-		for _, assoc := range q.entityIdx.DocsFor(p.key) {
-			docScores[assoc.DocID] += p.score
-			docScoreCount[assoc.DocID]++
-		}
-	}
-	for id := range docScores {
-		if docScoreCount[id] > 0 {
-			docScores[id] /= float64(docScoreCount[id])
-		}
-	}
-
-	// Materialize the seeds. We use VectorStore.GetByID; for the LoCoMo
-	// benchmark the vector store is pgvector with a fast PK lookup. GetByID is a
-	// point lookup, so the caller's predicate is applied per row here — the
-	// entity-seed lane must not become a way around the read gate.
-	eff, _ := q.readFilter(ctx, callerID)
-	out := results
-	for _, id := range docIDs {
-		doc, err := q.vectorStore.GetByID(ctx, id)
-		if err != nil || doc == nil {
-			continue
-		}
-		if docType != "" && string(doc.DocumentType) != docType {
-			continue
-		}
-		if !eff.Allows(docTags(doc.Metadata)) {
-			continue
-		}
-		// Scale the seed's base score so it sits in the same band as the
-		// vector seeds. 0.5× the average entity cosine keeps the term from
-		// dominating the BFS while still letting it influence the order.
-		base := 0.5 * docScores[id]
-		out = append(out, domain.SearchResult{Document: *doc, Score: base})
-	}
-	return out
-}
-
-// vector is plumbed through the BFS. It picks the first seed's embedding as
-// the query proxy, which is semantically close enough for β=0.2 re-ranking.
-//
-// TODO(entity-routing): replace with a real queryVec parameter once the
-// MemorySearcher.Search signature carries it through.
-func ComputeReachabilityFromSeedText(
-	candidates []domain.SearchResult,
-	entityIdx *EntityIndex,
-	seeds []domain.SearchResult,
-) map[string]float64 {
-	if entityIdx == nil || len(seeds) == 0 {
-		return map[string]float64{}
-	}
-	// The seeds carry the original vector — re-derive the proxy from the
-	// first seed's stored embedding.
-	proxy := seeds[0].Document.Embedding.Vector
-	if len(proxy) == 0 {
-		// Fall back to surface-only by returning an empty reachability map.
-		return map[string]float64{}
-	}
-	return ComputeReachability(candidates, entityIdx, proxy)
 }
 
 const (
@@ -2656,16 +2392,22 @@ func excludeSameSessionStepRecords(results []domain.SearchResult, sid domain.Ses
 // The session's caller term, the agent's own scope, and any policy terms are
 // composed INSIDE the decision point — this method only asks (ADR-0085).
 func (q *QueryService) readFilter(ctx context.Context, callerID string) (*domain.TagPredicate, domain.AccessDecision) {
+	a := q.authz
+	if a == nil {
+		a = domain.AllowAllAuthorizer{}
+	}
+	// RecallFor (ENG-1339 / ENG-465): kernel priming reads AS the principal the
+	// work is for, whatever its kind — checked first, so nothing inherited on ctx
+	// can widen it.
+	if p, ok := readAsFrom(ctx); ok {
+		return a.ReadFilter(ctx, p, domain.SurfaceFromContext(ctx))
+	}
 	// ADR-0047 D13 (Amendment A2): a kernel-internal reader (the operator plane at
 	// ScopeSystem) seeds domain.ScopeSystem SERVER-SIDE via ctx — never from the
 	// wire, so an agent's x-agent-id cannot forge it. Honour it above per-caller
 	// resolution. SearchSystem is the sole entry that seeds it.
 	if s, ok := domain.ScopeFromContext(ctx); ok && s != nil && s.Bypass {
 		return s, domain.AccessDecision{Allowed: true, Reason: domain.ReasonBypass}
-	}
-	a := q.authz
-	if a == nil {
-		a = domain.AllowAllAuthorizer{}
 	}
 	return a.ReadFilter(ctx, domain.AgentPrincipal(callerID), domain.SurfaceFromContext(ctx))
 }

@@ -430,8 +430,8 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 		}
 	}
 
-	if scope.Bypass {
-		// The subject's slice of the review inbox, filtered to the subject IN SQL
+	if seesReviewCandidates(ctx, scope) {
+		// ENG-1536: operators only (seesReviewCandidates). The subject's slice of the review inbox, filtered to the subject IN SQL
 		// before the limit and paged past owner-fenced rows by pageVisible — so a
 		// subject's candidates are never lost behind other subjects'
 		// higher-confidence ones (they were, when this read the whole inbox to

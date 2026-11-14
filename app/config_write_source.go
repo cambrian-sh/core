@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/storage"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/pkg/egress"
 )
 
 // configWriteSource implements operator.ConfigWriter and operator.SecretWriter
@@ -23,10 +25,9 @@ import (
 type configWriteSource struct {
 	store *storage.BoltConfigStore
 	// configPath is the primary config file (configs/config.json). It locates the
-	// file layers for ADR-0101 D8: a write to a key a writable file already sets
-	// goes into that file instead of the store. "" disables write-through (every
-	// write lands in the store, the pre-D8 behaviour) — used by tests that have no
-	// config bundle.
+	// file layers for ADR-0101 D8: a write to a key a writable file already sets is
+	// stored AND mirrored into that file (ENG-1417). "" disables the mirror (every
+	// write lands in the store only) — used by tests that have no config bundle.
 	configPath string
 	// prov is the boot provenance. It answers "is a layer ABOVE the store
 	// supplying this key?", which is how a shadowed write is detected at write
@@ -290,46 +291,51 @@ func hotApplyFor(effects interface {
 
 // ── ADR-0101 D8: one write path for every config key ─────────────────────────
 
-// persist durably records key=value where ADR-0101 D8 says it belongs, and notes
-// where on res. Every config write in this file goes through here (or through
-// persistGenerator for D9's per-id generators), so the file-versus-store rule is
-// stated once rather than per RPC.
+// persist durably records key=value and notes where on res. Every config write in
+// this file goes through here (or through persistGenerator for D9's per-id
+// generators), so the file-versus-store rule is stated once rather than per RPC.
 //
-//   - A WRITABLE file layer already sets the key: the value is written into that
-//     file (the highest one that sets it) in place, and the store override is
-//     removed, so the value has one durable home and the two cannot drift.
-//     res.WrittenTo names the file.
-//   - A file sets the key but cannot be written (committed tuning.json,
-//     read-only mount, or the write failed): stored as before, and
-//     res.Overrides / OverridesValue name the file and the value it loses to.
-//   - No file sets it: stored as before.
+// The STORE is authoritative for an operator-decided value (owner decision
+// 2026-11-14, ENG-1417; ADR-0123 direction, ADR-0101 D8 as amended): every write
+// lands in the store. A file that sets the key is a MIRROR, kept equal so that
+// files never contradict the store:
 //
-// Secret-shaped keys are never written into a file (D5). Env still wins over
-// both (D1); the caller's D3 PinnedAbove check reports that independently.
+//   - A WRITABLE file layer sets the key: the value is also written into that file
+//     (the highest one that sets it) in place. res.WrittenTo names the file.
+//   - A file sets the key but cannot be written (committed tuning.json, read-only
+//     mount, or the write failed): res.Overrides / OverridesValue name the file
+//     and the value the stored one beats, so the operator learns the file now
+//     disagrees.
+//   - No file sets it: stored only.
+//
+// Before 2026-11-14 a write-through REMOVED the store override (the file was the
+// value's one home); that is gone because it made the file, not the store, the
+// home of operator decisions. Secret-shaped keys are never written into a file
+// (D5). Env still wins over both (D1); the caller's D3 PinnedAbove check reports
+// that independently.
 func (c configWriteSource) persist(key string, value any, res *operator.ConfigWriteOutcome) error {
-	if c.configPath != "" && !config.IsSecretKey(key) {
-		if o, ok := config.ResolveFileSetting(c.configPath, key); ok {
-			if o.Writable {
-				err := config.WriteFileSetting(o, key, value)
-				if err == nil {
-					if err := c.deleteStoreKey(key); err != nil {
-						return fmt.Errorf("written to %s, but the old store override could not be removed: %w", o.Source, err)
-					}
-					res.WrittenTo = o.Source
-					slog.Info("config write went to the file that sets the key (ADR-0101 D8)",
-						"key", key, "file", o.Path)
-					return nil
-				}
-				o.Reason = err.Error()
-			}
-			if err := c.store.SetOverride(key, value); err != nil {
-				return err
-			}
-			noteOverride(res, key, o)
+	if err := c.store.SetOverride(key, value); err != nil {
+		return err
+	}
+	if c.configPath == "" || config.IsSecretKey(key) {
+		return nil
+	}
+	o, ok := config.ResolveFileSetting(c.configPath, key)
+	if !ok {
+		return nil
+	}
+	if o.Writable {
+		err := config.WriteFileSetting(o, key, value)
+		if err == nil {
+			res.WrittenTo = o.Source
+			slog.Info("config write stored and mirrored into the file that sets the key (ADR-0101 D8, ENG-1417)",
+				"key", key, "file", o.Path)
 			return nil
 		}
+		o.Reason = err.Error()
 	}
-	return c.store.SetOverride(key, value)
+	noteOverride(res, key, o)
+	return nil
 }
 
 // noteOverride records (and logs) that a stored value overrides a file value it
@@ -416,25 +422,24 @@ func (c configWriteSource) persistGenerator(entry config.GeneratorConfig, remove
 
 	if c.configPath != "" {
 		if o, ok := config.ResolveGeneratorFile(c.configPath, entry.ID); ok {
-			if o.Writable {
-				werr := config.WriteFileGenerator(o, entry.ID, entry, remove)
-				if werr == nil {
-					if err := c.store.DeleteOverride(key); err != nil {
-						return fmt.Errorf("written to %s, but the old store entry could not be removed: %w", o.Source, err)
-					}
-					res.WrittenTo = o.Source
-					slog.Info("generator write went to the file that declares it (ADR-0101 D8)",
-						"generator", entry.ID, "file", o.Path, "removed", remove)
-					return nil
-				}
-				o.Reason = werr.Error()
-			}
+			// The store is authoritative (ENG-1417): the entry (or, for a removal, a
+			// tombstone) is stored, and the declaring file is mirrored when writable.
 			var stored any = config.StoredGenerator{GeneratorConfig: entry}
 			if remove {
 				stored = tombstone
 			}
 			if err := c.store.SetOverride(key, stored); err != nil {
 				return err
+			}
+			if o.Writable {
+				werr := config.WriteFileGenerator(o, entry.ID, entry, remove)
+				if werr == nil {
+					res.WrittenTo = o.Source
+					slog.Info("generator write stored and mirrored into the file that declares it (ADR-0101 D8, ENG-1417)",
+						"generator", entry.ID, "file", o.Path, "removed", remove)
+					return nil
+				}
+				o.Reason = werr.Error()
 			}
 			noteOverride(res, key, o)
 			return nil
@@ -677,6 +682,9 @@ var assignableRoles = map[string]bool{
 	// In-kernel thought steps. Unbound, they borrow the planner's generator
 	// (llm.RoleFallbacks); binding one moves only thought steps.
 	string(domain.PurposeThought): true,
+	// The agentic retrieval planner. Unbound, it borrows the memory role's
+	// generator (llm.RoleFallbacks); binding one moves only the planner (ENG-329).
+	string(domain.PurposeRetrievalPlanner): true,
 }
 
 // SetRoleAssignment durably binds a system role to a generator and hot-applies
@@ -690,7 +698,7 @@ func (c configWriteSource) SetRoleAssignment(role, generatorID string) (operator
 
 	if !assignableRoles[role] {
 		res.Effect = operator.EffectRejected
-		res.Error = fmt.Sprintf("unknown role %q; roles are planner, verifier, router, memory, facts, thought", role)
+		res.Error = fmt.Sprintf("unknown role %q; roles are planner, verifier, router, memory, facts, thought, retrieval_planner", role)
 		return res, nil
 	}
 	// Refused rather than stored, like a credential against a missing generator:
@@ -865,6 +873,9 @@ func mcpConfigFromSpec(spec operator.MCPServerSpec, prior *config.MCPServerConfi
 		entry.CatalogVersion = prior.CatalogVersion
 		entry.DisplayName = prior.DisplayName
 		entry.Category = prior.Category
+		// The private-network opt-in (ADR-0153) is not on the operator wire
+		// either; a console save keeps it.
+		entry.AllowPrivateNetwork = prior.AllowPrivateNetwork
 	}
 	return entry
 }
@@ -898,6 +909,20 @@ func (c configWriteSource) saveMCPEntry(entry config.MCPServerConfig) operator.C
 		res.Effect = operator.EffectRejected
 		res.Error = strings.Join(errs, "; ")
 		return res
+	}
+	// ADR-0153 (ENG-1419): an http/sse endpoint must be a permitted egress
+	// target, refused here so the console shows it before the first dial (the
+	// guarded dialer refuses it at connect time regardless). Not a boot-time
+	// check: a kernel that will not start over one MCP entry helps nobody.
+	if entry.Transport == "http" || entry.Transport == "sse" {
+		if err := egress.CheckEndpointURL(entry.Endpoint, entry.AllowPrivateNetwork); err != nil {
+			res.Effect = operator.EffectRejected
+			res.Error = err.Error()
+			if errors.Is(err, egress.ErrBlockedAddr) && !entry.AllowPrivateNetwork {
+				res.Error += " (a private or loopback MCP server needs allow_private_network: true on its mcp.servers entry)"
+			}
+			return res
+		}
 	}
 	if err := c.persistMCPServer(entry, false, &res); err != nil {
 		res.Effect = operator.EffectRejected

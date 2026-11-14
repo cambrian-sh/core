@@ -38,8 +38,10 @@ type sidecarManifest struct {
 // declare (ADR-0125 D5). "cognitive" normalizes to the domain zero value "".
 // A missing trait still skips: an unrelated *.manifest.json in the agents tree
 // must not silently become a cognitive agent.
+//
+// "tool" is NOT accepted (owner decision 2026-11-14, ENG-1351): the trait is
+// deleted, so a sidecar declaring it is skipped like any unknown trait.
 var sidecarTraits = map[string]string{
-	"tool":      "tool",
 	"cognitive": "",
 	"model":     "model",
 	"daemon":    "daemon",
@@ -102,6 +104,10 @@ func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id stri
 		db.Close()
 		return nil, err
 	}
+	if err := migrateRetiredToolTrait(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return adapter, nil
 }
@@ -122,6 +128,10 @@ func NewBBoltAdapterNoScan(dbPath string) (*BBoltAdapter, error) {
 	}
 	// ADR-0061 A2.10: move a pre-A2 flat journal into per-stream buckets.
 	if _, _, err := migrateReactiveJournal(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateRetiredToolTrait(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -186,6 +196,8 @@ func createBuckets(tx *bbolt.Tx) error {
 		// the A2 per-stream parent; the legacy flat bucket is never created, only
 		// migrated (migrateReactiveJournal).
 		reactiveJournalBucket, reactiveCursorBucket, reactiveIdempotencyBucket, reactiveDeadLetterBucket,
+		// ADR-0090 D8.1: two-phase outbound delivery intents.
+		deliveryIntentBucket,
 	} {
 		if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 			return err
@@ -380,6 +392,10 @@ func upsertDiscovered(tx *bbolt.Tx, da DiscoveredAgent) error {
 	// point or a runtime override forever for the new shapes.
 	existing.ExecPath = da.Agent.ExecPath
 	existing.Runtime = da.Agent.Runtime
+	// The trait is source-derived too: it used to stay as first registered, so an
+	// organ moved off DeterministicAgent kept a stale "tool" record forever
+	// (ENG-1351).
+	existing.Trait = da.Agent.Trait
 	// Agent stack v2 profile fields are source-derived too (the profile file is
 	// part of the SourceHash), so they refresh with it.
 	existing.LaunchArgs = da.Agent.LaunchArgs
@@ -484,6 +500,12 @@ func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bo
 	}
 	sourceHash := ComputeSourceHash(manifest.Version, fileContent)
 
+	// ENG-1351: the "tool" trait is deleted; a manifest still declaring it is
+	// refused (the agent is not registered) rather than silently re-typed.
+	if manifest.Trait == "tool" {
+		slog.Warn("DB (BBOLT): agent manifest declares the retired trait \"tool\"; not registered (subclass CognitiveAgent, or expose the capability as a kernel tool)", "id", id, "file", fullPath)
+		return DiscoveredAgent{}, false
+	}
 	execPath := filepath.ToSlash(fullPath)
 	// ExecPath must be relative to Dir — buildAgentCmd resolves it under
 	// cmd.Dir=def.Dir (same rule as pythonAgentRecord).
@@ -587,6 +609,12 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 	}
 	sourceHash := ComputeSourceHash(manifest.Version, fileContent)
 
+	// ENG-1351: the "tool" trait is deleted; a manifest still declaring it is
+	// refused (the agent is not registered) rather than silently re-typed.
+	if manifest.Trait == "tool" {
+		slog.Warn("DB (BBOLT): agent manifest declares the retired trait \"tool\"; not registered (subclass CognitiveAgent, or expose the capability as a kernel tool)", "id", id, "file", fullPath)
+		return DiscoveredAgent{}, false
+	}
 	execPath := filepath.ToSlash(fullPath)
 	// ExecPath must be relative to Dir — buildAgentCmd resolves it under cmd.Dir=def.Dir,
 	// so a full path produces a doubled 'agents/agents/...' and python can't open the file.
@@ -1619,4 +1647,64 @@ func titleSeparator(r rune) bool {
 		return false
 	}
 	return unicode.IsSpace(r)
+}
+
+// migrateRetiredToolTrait rewrites registry records stored with the deleted
+// "tool" trait (owner decision 2026-11-14, ENG-1351). Discovery never refreshed a
+// record's trait before, so a kernel database written before the 2026-10-31
+// organ migration can still hold "tool" for a system organ (docling,
+// kg_extractor, reranker). Such a record must never surface as an ordinary
+// cognitive agent — the verifier pool and the profile seeder excluded "tool":
+//   - a SYSTEM record becomes cognitive: system organs stay excluded from the
+//     verifier pool and selection by IsSystemDefinition, whatever their trait;
+//   - any other record is DELETED from the registry with a WARN: a third-party
+//     tool agent is refused, exactly as discovery now refuses its manifest.
+//
+// Idempotent; runs at every open.
+func migrateRetiredToolTrait(db *bbolt.DB) error {
+	return db.Update(func(tx *bbolt.Tx) error {
+		bkt := tx.Bucket(agentBucket)
+		if bkt == nil {
+			return nil
+		}
+		type change struct {
+			key  []byte
+			data []byte // nil = delete
+		}
+		var changes []change
+		if err := bkt.ForEach(func(k, v []byte) error {
+			var rec AgentRecord
+			if json.Unmarshal(v, &rec) != nil || rec.Trait != "tool" {
+				return nil
+			}
+			key := append([]byte(nil), k...)
+			if rec.System {
+				rec.Trait = ""
+				data, err := json.Marshal(rec)
+				if err != nil {
+					return fmt.Errorf("re-type stored agent %s: %w", rec.ID, err)
+				}
+				slog.Info("DB (BBOLT): stored system agent re-typed from the retired trait \"tool\" to cognitive", "id", rec.ID)
+				changes = append(changes, change{key, data})
+				return nil
+			}
+			slog.Warn("DB (BBOLT): stored agent with the retired trait \"tool\" removed from the registry", "id", rec.ID)
+			changes = append(changes, change{key, nil})
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, c := range changes {
+			var err error
+			if c.data == nil {
+				err = bkt.Delete(c.key)
+			} else {
+				err = bkt.Put(c.key, c.data)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

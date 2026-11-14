@@ -77,7 +77,7 @@ func TestRunSubtask_ChildLeaseBoundLikeTheParentAndComposed(t *testing.T) {
 		"parent": {SessionID: "ses-1", RunID: "run-1", StepIndex: 0, AgentID: "composed_worker",
 			ConversationID: "conv-1", OriginMessageID: "msg-1", ActedBy: "operator:ops", DelegationDepth: 0},
 	}}
-	sub := domain.NewSubtasks(0)
+	sub := domain.NewSubtasks(0, nil)
 	sub.RegisterParent("parent", "composed_worker")
 	disp := &subtaskDispatcher{resp: &domain.Handoff{Payload: &domain.Payload{Type: "text", Data: []byte("3 invoices"),
 		Metadata: map[string]string{domain.AgentResultPartial: "true"}}}}
@@ -138,7 +138,7 @@ func TestRunSubtask_ChildLeaseBoundLikeTheParentAndComposed(t *testing.T) {
 
 func TestRunSubtask_UnavailableWithoutTheComposedRuntime(t *testing.T) {
 	s := &Server{LLMGateway: &subtaskGateway{bindings: map[domain.LeaseID]domain.LeaseBinding{}},
-		Dispatcher: &subtaskDispatcher{}, Subtasks: domain.NewSubtasks(0)}
+		Dispatcher: &subtaskDispatcher{}, Subtasks: domain.NewSubtasks(0, nil)}
 	if _, err := s.RunSubtask(context.Background(), domain.SubtaskDispatch{}); !errors.Is(err, domain.ErrSubtaskUnavailable) {
 		t.Fatalf("want ErrSubtaskUnavailable, got %v", err)
 	}

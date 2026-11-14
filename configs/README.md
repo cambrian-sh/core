@@ -91,6 +91,34 @@ For per-machine tuning (gatekeeper weights, plan timeout, etc.), edit
 `tuning.local.json` (or just rely on the committed `tuning.json` defaults).
 Don't tune anything unless you know why.
 
+## Model fallback (`providers.json`)
+
+A call is served by its first-choice generator: the step's suggested model, else
+the purpose's role (`llm_provider.roles`), else `llm_provider.default`. When that
+generator is unhealthy or fails with an endpoint error (429, 5xx, transport,
+401/403 after one credential refresh), the kernel falls back **only** to a
+generator you mark equivalent (owner decision 2026-11-14, ENG-453):
+
+```json
+"llm_provider": {
+  "equivalent_generators": [["haiku-local", "haiku-cloud"]],
+  "pinned": false
+}
+```
+
+- `equivalent_generators` (default empty): groups of ids that may stand in for
+  each other. Empty means **no fallback to another model** — the call fails with
+  the first choice's own error, logged at ERROR. Before 2026-11-14 a failed call
+  walked on to the default and then to any generator with matching capabilities,
+  which could put a different (paid) model behind a run.
+- `pinned` (default false): no fallback at all, even to an equivalent generator.
+  Benchmark kernels set it (`CAMBRIAN_LLM_PROVIDER__PINNED=true`) so a dead
+  backbone fails the run loudly instead of mixing models.
+
+Every Execute result names the generators that answered it in `_llm_models`
+(`id=calls,…`); memory calls carry `generator:<id>.calls#` in their
+`cambrian-llm-usage` trailer.
+
 ## Secrets
 
 Secrets **never go in these files**. They come from environment variables

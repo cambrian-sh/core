@@ -190,3 +190,126 @@ func TestMCPTaskLane_BeneficiaryOfUnknownTaskIsZero(t *testing.T) {
 		t.Fatalf("BeneficiaryOf(unknown) = %+v, want zero", got)
 	}
 }
+
+// T-20261103-per-plan-maps-in-memory-agent-stepdocs: the task index is bounded.
+// A FINISHED task older than the retention window is dropped on the next
+// submission; a task still running is kept however old it is (BeneficiaryOf
+// must keep answering for it), and a recent finished task stays pollable.
+func TestMCPTaskLane_PrunesFinishedTasksPastRetention(t *testing.T) {
+	release := make(chan struct{})
+	lane := newMCPTaskLane(session.New(newMemSessions()), nil,
+		func(_ context.Context, _, task string) (string, map[string]string, error) {
+			if task == "slow" {
+				<-release
+			}
+			return "done", nil, nil
+		})
+	defer close(release)
+	submit := func(task string) string {
+		t.Helper()
+		id, err := lane.Submit(context.Background(), task, "", domain.AgentPrincipal("mcp:alice"))
+		if err != nil {
+			t.Fatalf("submit %s: %v", task, err)
+		}
+		return id
+	}
+	old := submit("old")
+	waitTerminal(t, lane, old)
+	recent := submit("recent")
+	waitTerminal(t, lane, recent)
+	slow := submit("slow")
+
+	stale := time.Now().UTC().Add(-mcpTaskRetention - time.Hour)
+	lane.mu.Lock()
+	lane.tasks[domain.SessionID(old)].updatedAt = stale
+	lane.tasks[domain.SessionID(slow)].updatedAt = stale
+	lane.mu.Unlock()
+
+	submit("next")
+	if _, ok := lane.Status(context.Background(), old); ok {
+		t.Errorf("finished task past retention is still indexed")
+	}
+	if _, ok := lane.Status(context.Background(), recent); !ok {
+		t.Errorf("recent finished task was pruned")
+	}
+	if lane.BeneficiaryOf(domain.SessionID(slow)).IsZero() {
+		t.Errorf("a running task was pruned (its beneficiary is gone)")
+	}
+}
+
+// ENG-1467 (owner decision 2026-11-14): the task runs on the authenticated MCP
+// caller's context, detached from its cancellation — the principal and surface
+// reach Execute, and the submitting request ending does not cancel the run.
+func TestMCPTaskLane_ExecuteCarriesCallerPrincipalDetached(t *testing.T) {
+	type seen struct {
+		principal domain.PrincipalRef
+		surface   domain.SurfaceRef
+		ctxErr    error
+	}
+	got := make(chan seen, 1)
+	release := make(chan struct{})
+	lane := newMCPTaskLane(session.New(newMemSessions()), nil,
+		func(ctx context.Context, _, _ string) (string, map[string]string, error) {
+			<-release // the submitting request is cancelled before the run proceeds
+			got <- seen{domain.PrincipalFromContext(ctx), domain.SurfaceFromContext(ctx), ctx.Err()}
+			return "ok", nil, nil
+		})
+
+	caller := domain.AgentPrincipal("mcp:alice")
+	reqCtx, cancel := context.WithCancel(context.Background())
+	reqCtx = domain.WithPrincipal(reqCtx, caller)
+	reqCtx = domain.WithSurface(reqCtx, domain.SurfaceRef{Kind: domain.SurfaceMCP})
+	id, err := lane.Submit(reqCtx, "do the thing", "", caller)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	cancel()
+	close(release)
+
+	s := <-got
+	if s.principal != caller {
+		t.Fatalf("Execute principal = %+v, want the MCP caller %+v", s.principal, caller)
+	}
+	if s.surface.Kind != domain.SurfaceMCP {
+		t.Fatalf("Execute surface = %+v, want mcp", s.surface)
+	}
+	if s.ctxErr != nil {
+		t.Fatalf("Execute ctx err = %v: the request's cancellation reached the task", s.ctxErr)
+	}
+	if v := waitTerminal(t, lane, id); v.State != mcpserve.TaskStateSucceeded {
+		t.Fatalf("terminal view = %+v, want succeeded", v)
+	}
+}
+
+// ENG-1467 / AGENTS.md §3.3: the lane owns its runs — Stop cancels an in-flight
+// run (whose submit request is long gone), waits for it, and refuses new work.
+func TestMCPTaskLane_StopCancelsAndDrainsRuns(t *testing.T) {
+	started := make(chan struct{})
+	lane := newMCPTaskLane(session.New(newMemSessions()), nil,
+		func(ctx context.Context, _, _ string) (string, map[string]string, error) {
+			close(started)
+			<-ctx.Done() // a long run: only Stop can end it
+			return "", nil, ctx.Err()
+		})
+	caller := domain.AgentPrincipal("mcp:alice")
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	id, err := lane.Submit(reqCtx, "long task", "", caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelReq() // the request ending must not end the run
+	<-started
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	lane.Stop(stopCtx)
+	if stopCtx.Err() != nil {
+		t.Fatal("Stop did not drain the run within its budget")
+	}
+	if v, _ := lane.Status(context.Background(), id); v.State != mcpserve.TaskStateFailed {
+		t.Fatalf("stopped run state = %q, want failed", v.State)
+	}
+	if _, err := lane.Submit(context.Background(), "late", "", caller); err == nil {
+		t.Fatal("a stopped lane accepted a new task")
+	}
+}

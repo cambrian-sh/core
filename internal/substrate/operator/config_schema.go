@@ -39,6 +39,10 @@ type ConfigSchemaReporter interface {
 	// change a value, it saves, and nothing happens because something upstream
 	// pins it. Without it the form can only disclaim.
 	ValueSource() map[string]string
+	// FileOverrides names, for each key the durable store overrides AND a config
+	// file also states, that file layer and its value there (display form) — ADR-0101
+	// D8, contract 0104. Keys no file states are absent; secret values never appear.
+	FileOverrides() (files, values map[string]string)
 }
 
 // SetConfigSchemaReporter wires the runtime-config read surface. nil ⇒
@@ -54,7 +58,7 @@ func (s *Service) GetConfigSchema(_ context.Context, _ *pb.GetConfigSchemaOpRequ
 		return nil, status.Error(codes.Unimplemented, "this kernel does not report its configuration schema")
 	}
 	schema, version, hash := s.configSchema.SchemaJSON()
-	return &pb.ConfigSchemaOp{
+	op := &pb.ConfigSchemaOp{
 		SchemaVersion:  version,
 		SchemaJson:     schema,
 		SchemaHash:     hash,
@@ -62,7 +66,9 @@ func (s *Service) GetConfigSchema(_ context.Context, _ *pb.GetConfigSchemaOpRequ
 		KernelOnlyKeys: s.configSchema.KernelOnlyKeys(),
 		CurrentValues:  s.configSchema.CurrentValues(),
 		ValueSource:    s.configSchema.ValueSource(),
-	}, nil
+	}
+	op.OverridesFile, op.OverridesFileValue = s.configSchema.FileOverrides()
+	return op, nil
 }
 
 // HasConfigSchema reports whether the runtime-config read surface is wired, so

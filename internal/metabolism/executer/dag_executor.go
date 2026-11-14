@@ -129,7 +129,6 @@ type DAGExecutor struct {
 	EventBus               domain.EventBus          // ADR-0047 D7/0047-17: may be nil; publishes PlanStateChanged for the operator feed
 	InjectPlanner          InjectPlanner            // ADR-0047 A1.1: may be nil; nil ⇒ deterministic instruction-as-step default
 	ThoughtFn              StepFunc                 // used for IsThought=true steps; may be nil
-	PauseController        *PauseController         // optional; nil disables HITL pausing
 	ReplanHandler          ReplanHandler            // optional; nil disables plan-level replan
 	CheckpointStore        CheckpointStore          // optional; nil disables checkpointing
 	ContentStore           domain.ContentStore      // ADR-0022 Phase 1: may be nil; nil disables CAS
@@ -301,25 +300,6 @@ func (d *DAGExecutor) executeStep(
 	ctx = domain.WithPlanGeneration(ctx, d.planGeneration())
 
 	slog.Info("🚀 Dispatching Step", "index", stepIndex)
-
-	if d.PauseController != nil && d.PauseController.NeedsIntervention(plan.Steps[stepIndex].Query) {
-		// ADR-0047 0047-19: surface the intervention on the operator feed. This
-		// destructive-step pause is resolved via PauseSession/ResumeSession on the
-		// control hub (the dangerous-tool path pairs with ResolveHITL separately).
-		if d.EventBus != nil {
-			_ = d.EventBus.Publish(domain.HITLRaisedEvent{
-				InterventionID: fmt.Sprintf("%s:%d", planID, stepIndex),
-				SessionID:      string(d.CurrentSessionID),
-				Description:    plan.Steps[stepIndex].Query,
-				IsDestructive:  true,
-			})
-		}
-		d.PauseController.Pause()
-		d.PauseController.Wait()
-		if d.PauseController.IsAborted() {
-			return stepResult{index: stepIndex, err: fmt.Errorf("plan aborted by user at step %d", stepIndex)}
-		}
-	}
 
 	// The step as dispatched: a fan-out source is told to end with its items as a
 	// JSON array (fanout_source.go). The cache key reads the dispatched query, so a
@@ -753,13 +733,16 @@ type SessionCloser interface {
 // transition would be refused anyway; a DORMANT one the kernel put to sleep and
 // may still wake. Reading the status first keeps a legitimate refusal out of the
 // log, so a warning here means something actually went wrong.
-func (d *DAGExecutor) closeSession() {
+func (d *DAGExecutor) closeSession(runCtx context.Context) {
 	if d.SessionCloser == nil || d.CurrentSessionID == "" {
 		return
 	}
-	// Detached: the caller's context is finished with the run, and cancellation
-	// on the way out must not be what stops the task being closed.
-	ctx := context.WithoutCancel(context.Background())
+	// Detached from the RUN's context (AGENTS.md §2.7): the caller is finished
+	// with the run and its cancellation on the way out must not be what stops the
+	// task being closed — but its values (session, principal, scope, trace) are
+	// kept, which a bare context.Background() would discard
+	// (T-20261113-context-background-on-request-paths-drops item 8).
+	ctx := context.WithoutCancel(runCtx)
 
 	ses, err := d.SessionCloser.GetSession(ctx, d.CurrentSessionID)
 	if err != nil || ses == nil {
@@ -1090,7 +1073,7 @@ func (d *DAGExecutor) ExecuteFrom(
 		// human and `completed` is irreversible — closing it would file the
 		// failure away as "Finished" and remove the one row worth looking at.
 		if retErr == nil {
-			d.closeSession()
+			d.closeSession(ctx)
 		}
 	}()
 

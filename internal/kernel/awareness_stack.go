@@ -17,22 +17,17 @@ type AwarenessStack struct {
 }
 
 // NewAwarenessStack constructs the planning layer.
-// The planner needs the AgentRegistry (as AgentProvider) and a ProceduralMemory
-// (from MemoryStack) for procedural memory injection.
+// The planner needs the AgentRegistry (as AgentProvider).
 // WorkspaceStage (ADR-0016) enriches the Planner with cross-session LTM facts.
-// policyProvider (ADR-0027) validates the LLM-emitted cache_policy; nil = skip validation.
+// (The ADR-0027 procedural memory and cache_policy provider were removed
+// 2026-11-14, ENG-1301.)
 func NewAwarenessStack(
 	llm domain.Generator,
 	registry domain.AgentRegistry,
-	hippocampus domain.ProceduralMemory,
 	workspaceStage domain.WorkspaceStage,
-	policyProvider ...domain.PolicyProvider,
 ) *AwarenessStack {
-	planner := awareness.NewPlanner(llm, registry, hippocampus)
+	planner := awareness.NewPlanner(llm, registry)
 	planner.WorkspaceStage = workspaceStage
-	if len(policyProvider) > 0 && policyProvider[0] != nil {
-		planner.SetPolicyProvider(policyProvider[0])
-	}
 	return &AwarenessStack{
 		LLM:     llm,
 		Planner: planner,

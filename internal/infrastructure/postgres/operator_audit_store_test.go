@@ -58,4 +58,14 @@ func TestPgAuditStore_RecordDedupAndQuery(t *testing.T) {
 	if rows, _ := store.Query(ctx, domain.AuditFilter{Actor: "bob"}); len(rows) != 0 {
 		t.Fatalf("expected no rows for bob, got %d", len(rows))
 	}
+	// ENG-666: Actors matches any recorded form of one person and replaces Actor.
+	legacy := e
+	legacy.ID, legacy.CommandID, legacy.Actor = "id-3", "cmd-3", "agent:alice"
+	if _, err := store.Record(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = store.Query(ctx, domain.AuditFilter{Actor: "ignored", Actors: []string{"alice", "user:alice", "agent:alice"}})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("Actors must match both forms: rows=%+v err=%v", rows, err)
+	}
 }

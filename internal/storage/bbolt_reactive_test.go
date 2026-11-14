@@ -678,3 +678,37 @@ func TestReactive_KeysSortBySeq(t *testing.T) {
 		t.Fatal("itob keys do not sort in seq order")
 	}
 }
+
+// ENG-472: dead letters get a retention (prune by age, bounded per pass) and an
+// operator delete by id.
+func TestReactive_DeadLetterPruneAndDelete(t *testing.T) {
+	a, cleanup := newReactiveTestAdapter(t)
+	defer cleanup()
+	now := time.Now()
+	for i, age := range []time.Duration{40 * 24 * time.Hour, 35 * 24 * time.Hour, 31 * 24 * time.Hour, time.Hour} {
+		if err := a.RecordReactiveDeadLetter(ReactiveDeadLetterRecord{
+			ID: "dl-" + string(rune('a'+i)), WatchID: "w1", Reason: "boom", FailedAt: now.Add(-age),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cutoff := now.Add(-30 * 24 * time.Hour)
+	removed, more, err := a.PruneReactiveDeadLetters(cutoff, 2)
+	if err != nil || removed != 2 || !more {
+		t.Fatalf("bounded pass: removed=%d more=%v err=%v", removed, more, err)
+	}
+	removed, more, err = a.PruneReactiveDeadLetters(cutoff, 2)
+	if err != nil || removed != 1 || more {
+		t.Fatalf("second pass: removed=%d more=%v err=%v", removed, more, err)
+	}
+	left, _ := a.ListReactiveDeadLetters(0)
+	if len(left) != 1 || left[0].ID != "dl-d" {
+		t.Fatalf("only the recent entry must remain: %+v", left)
+	}
+	if found, err := a.DeleteReactiveDeadLetter("dl-d"); err != nil || !found {
+		t.Fatalf("delete: %v %v", found, err)
+	}
+	if found, err := a.DeleteReactiveDeadLetter("dl-d"); err != nil || found {
+		t.Fatalf("a second delete finds nothing: %v %v", found, err)
+	}
+}

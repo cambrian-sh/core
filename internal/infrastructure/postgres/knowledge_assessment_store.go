@@ -198,6 +198,17 @@ func scanAssessment(row pgx.Row) (domain.Assessment, error) {
 	return a, nil
 }
 
+// assessmentsCiting reads the assessments that cite any of ids, with NO
+// classification predicate. That is deliberate, and it is not what the schema
+// comment on knowledge_assessments.classification (migration 0022, "Reads filter
+// on it like items") says — the comment describes an intent no read implements
+// (ENG-1043 item 2). Both assessment reads are kernel-internal write-path reads,
+// not principal-serving: this one feeds key derivation inside PutAssessment /
+// deriveKeys, whose output is itself fenced when read (ki.classification above),
+// and GetAssessment is the fact extractor's own idempotency check. An assessment
+// carries its inputs' classification (candidates never cross a scope key), so a
+// future read that serves a principal must push
+// sqlfence.TextArray("classification") into its SQL like the item reads do.
 func assessmentsCiting(ctx context.Context, q pgxQuerier, ns, kind string, ids []string) ([]domain.Assessment, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -245,7 +256,10 @@ func currentCardinalities(ctx context.Context, q pgxQuerier, ns, kind string, pr
 	return out, rows.Err()
 }
 
-// GetAssessment implements domain.AssessmentStore.
+// GetAssessment implements domain.AssessmentStore. Unfenced by design: its callers
+// are the fact extractor's replay checks of its own prior write by keyed id
+// (kernel-internal); see assessmentsCiting for the fence rule a
+// principal-serving read would need (ENG-1043 item 2).
 func (s *PgKnowledgeStore) GetAssessment(ctx context.Context, id string) (*domain.Assessment, error) {
 	a, err := scanAssessment(s.pool.QueryRow(ctx, `SELECT `+assessmentColumns+` FROM knowledge_assessments WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {

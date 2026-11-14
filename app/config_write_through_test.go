@@ -55,9 +55,9 @@ func readFile(t *testing.T, p string) string {
 	return string(b)
 }
 
-// A role a writable providers.local.json sets goes into THAT file (the highest
-// layer), not providers.json and not the store; a stale store override is removed.
-func TestD8_RoleWriteGoesToTheHighestWritableFileAndClearsTheStore(t *testing.T) {
+// A role a writable providers.local.json sets is stored (the store is authoritative,
+// ENG-1417) and mirrored into THAT file (the highest layer), not providers.json.
+func TestD8_RoleWriteIsStoredAndMirroredIntoTheHighestWritableFile(t *testing.T) {
 	local := `{"llm_provider": {"roles": {"planner": "deepseek"}}, "keep": [1, 2, 3]}`
 	src, dir := d8Source(t, map[string]string{"providers.json": d8Providers, "providers.local.json": local})
 	// A pre-D8 console write left an override behind.
@@ -76,12 +76,43 @@ func TestD8_RoleWriteGoesToTheHighestWritableFileAndClearsTheStore(t *testing.T)
 		t.Fatal("providers.json (the lower layer) must not be touched")
 	}
 	ov, _ := src.store.Overrides()
-	if _, ok := ov["llm_provider.roles.planner"]; ok {
-		t.Fatal("the store override must be removed after write-through")
+	if ov["llm_provider.roles.planner"] != "mimo" {
+		t.Fatalf("the store is authoritative and must hold the new value: %v", ov)
 	}
 	cfg, _, err := config.LoadConfigWithStore(src.configPath, src.store)
 	if err != nil || cfg.LLMProvider.Roles["planner"] != "mimo" {
 		t.Fatalf("reload: roles=%v err=%v", cfg.LLMProvider.Roles, err)
+	}
+}
+
+// ENG-1417 (owner decision 2026-11-14): the config store is authoritative for an
+// operator-decided knob. After a console write mirrored into a file, a later hand
+// edit of that file does not change what the kernel runs with; the boot override
+// report names the disagreement instead.
+func TestENG1417_StoreIsAuthoritativeOverAHandEditedMirror(t *testing.T) {
+	local := `{"execution": {"supervision": {"ewma_alpha": 0.6}}}`
+	src, dir := d8Source(t, map[string]string{"tuning.local.json": local})
+	outs, err := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := outcomeFor(t, outs, "execution.ewma_alpha"); o.WrittenTo != config.SourceTuningLocal {
+		t.Fatalf("want mirrored into tuning.local.json, got %+v", o)
+	}
+	// Someone edits the file by hand afterwards.
+	if err := os.WriteFile(filepath.Join(dir, "tuning.local.json"),
+		[]byte(`{"execution": {"supervision": {"ewma_alpha": 0.2}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, prov, err := config.LoadConfigWithStore(src.configPath, src.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Execution.Supervision.EWMAAlpha; got != 0.7 {
+		t.Fatalf("the stored operator decision must win over the hand-edited file: got %v", got)
+	}
+	if src := prov["execution.supervision.ewma_alpha"]; src != config.SourceStore {
+		t.Fatalf("provenance = %q, want the store", src)
 	}
 }
 
@@ -159,8 +190,8 @@ func TestD8_TrackedTuningJSONIsNeverRewritten(t *testing.T) {
 		t.Fatalf("tuning.local.json:\n%s", got)
 	}
 	ov, _ := src.store.Overrides()
-	if _, ok := ov["execution.ewma_alpha"]; ok {
-		t.Fatal("the earlier store override must be removed once the value lives in a file")
+	if ov["execution.ewma_alpha"] != 0.7 {
+		t.Fatalf("the store must hold the latest value (authoritative, ENG-1417): %v", ov)
 	}
 	if readFile(t, filepath.Join(dir, "tuning.json")) != tuning {
 		t.Fatal("tuning.json changed")
@@ -198,8 +229,8 @@ func TestD8_SecretsAreNeverWrittenToAFile(t *testing.T) {
 
 // ── D9 + D8: generators ──────────────────────────────────────────────────────
 
-// Editing a file-declared generator writes that element into providers.json
-// (keeping catalogue cost and api_key_env), and nothing lands in the store.
+// Editing a file-declared generator stores it per id (authoritative, ENG-1417) and
+// mirrors that element into providers.json (keeping catalogue cost and api_key_env).
 func TestD8_SaveGeneratorEditsTheFileElement(t *testing.T) {
 	src, dir := d8Source(t, map[string]string{"providers.json": d8Providers})
 	out, err := src.SaveGenerator(operator.GeneratorSpec{ID: "deepseek", Provider: "openai", Model: "deepseek-v5", Endpoint: "https://a"})
@@ -211,8 +242,8 @@ func TestD8_SaveGeneratorEditsTheFileElement(t *testing.T) {
 		t.Fatalf("the other generator must be byte-identical:\n%s", got)
 	}
 	ov, _ := src.store.Overrides()
-	if len(ov) != 0 {
-		t.Fatalf("store must stay empty, got %v", ov)
+	if _, ok := ov[config.GeneratorOverrideKey("deepseek")]; !ok || len(ov) != 1 {
+		t.Fatalf("store must hold exactly the edited generator, got %v", ov)
 	}
 	cfg, _, err := config.LoadConfigWithStore(src.configPath, src.store)
 	if err != nil {

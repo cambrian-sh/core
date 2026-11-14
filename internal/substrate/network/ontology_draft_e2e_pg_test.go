@@ -126,7 +126,7 @@ func TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite(t *testing.T) {
 	}
 	// The operator plane's own authentication: the bearer token resolves the person.
 	auth := operator.UnaryAuthInterceptor(tokenAuth{"tok-alice": {Principal: domain.UserPrincipal("alice"), Roles: []string{"member"}},
-		"tok-bob": {Principal: domain.UserPrincipal("bob"), Roles: []string{"operator"}}}, nil)
+		"tok-bob": {Principal: domain.UserPrincipal("bob"), Roles: []string{"operator"}}}, nil, nil)
 	answer := func(token, command string) (*pb.AnswerApprovalOpResponse, error) {
 		md := metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+token))
 		out, err := auth(md, &pb.AnswerApprovalOpRequest{CommandId: command, Reason: "reviewed", Id: ap.ID, Approve: true},

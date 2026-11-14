@@ -253,6 +253,13 @@ const (
 	// ReasonSkillGrantClipped — NOT a denial. A skill's tool grant was narrowed to
 	// the principal's existing privilege (ADR-0085 D4).
 	ReasonSkillGrantClipped DecisionReason = "skill_grant_clipped"
+	// ReasonNoLease — an agent-plane memory read that presented no lease the
+	// kernel resolved and bound to the calling agent (ENG-518, owner decision
+	// 2026-11-14): with no lease there is no caller term, and reading at the
+	// agent's own (wider) floor is the escalation the caller term exists to
+	// prevent. Kernel-internal reads use the explicit system path. The decision
+	// point keys it on ResolvedLeaseFromContext.
+	ReasonNoLease DecisionReason = "no_lease"
 	// ReasonNotAuthorized is the generic denial for a decision point that declines
 	// to explain further. A plugin returning this is losing the property that makes
 	// the whole mechanism usable; it exists so the enum is total.

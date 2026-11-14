@@ -20,7 +20,7 @@ import (
 // logoutVia runs Logout behind the production auth interceptor, as a client does.
 func logoutVia(t *testing.T, idp domain.Authenticator, svc *operator.Service, token string) error {
 	t.Helper()
-	_, err := operator.UnaryAuthInterceptor(idp, nil)(ctxWithToken(token), &pb.LogoutRequest{},
+	_, err := operator.UnaryAuthInterceptor(idp, nil, nil)(ctxWithToken(token), &pb.LogoutRequest{},
 		&grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/Logout"},
 		func(ctx context.Context, req any) (any, error) { return svc.Logout(ctx, req.(*pb.LogoutRequest)) })
 	return err

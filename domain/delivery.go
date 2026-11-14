@@ -104,26 +104,104 @@ func PermanentDelivery(err error) error {
 	return fmt.Errorf("%w: %v", ErrDeliveryPermanent, err)
 }
 
-// UndeliverableDelivery records a delivery that will not be retried, so a message
-// that failed after its turn already succeeded is visible somewhere rather than
-// silently lost. This is the honest cost of going asynchronous: a synchronous
-// design would have returned the error to the caller.
-type UndeliverableDelivery struct {
-	ConversationID string
-	Address        DeliveryAddress
-	TxnID          string
-	Reason         string
-	At             time.Time
+// ErrDeliveryTransient marks a failure with POSITIVE evidence that nothing reached
+// the far side — no live ingress daemon to hand it to, or the daemon itself said it
+// did not send. Only such a failure is retried automatically (ADR-0090 D8.1).
+//
+// An unlabelled failure after the message may have left the process (a timeout, a
+// reset) is NOT transient: absence of a receipt is not evidence of failure, so it is
+// recorded as ambiguous instead of being resent (ADR-0114 D18).
+var ErrDeliveryTransient = errors.New("delivery: transient failure, nothing was sent")
+
+// ErrDeliveryAmbiguous is returned when an earlier attempt at the same message may
+// have reached the far side without a confirmation. The kernel refuses to send it
+// again rather than risk a duplicate; the intent stays visible as ambiguous.
+var ErrDeliveryAmbiguous = errors.New("delivery: an earlier attempt may have been delivered; not resending")
+
+// ErrDeliveryStateConflict is returned by DeliveryJournal.AdvanceDelivery when the
+// intent is not in the expected state — another attempt moved it first.
+var ErrDeliveryStateConflict = errors.New("delivery: intent is not in the expected state")
+
+// ErrDaemonUnavailable marks a daemon call that could not start because no live
+// daemon serves the stream. Nothing was sent, so it is transient evidence.
+var ErrDaemonUnavailable = errors.New("daemon: no live daemon for stream")
+
+// TransientDelivery wraps err as a failure where nothing was sent.
+func TransientDelivery(err error) error {
+	if err == nil {
+		return ErrDeliveryTransient
+	}
+	return fmt.Errorf("%w: %v", ErrDeliveryTransient, err)
 }
 
-// DeliveryJournal is the durable half of outbound delivery. nil is valid and
-// means best-effort: deliveries are attempted, retries may duplicate, and an
-// undeliverable message is logged rather than recorded.
+// DeliveryIntentState is a delivery intent's position (ADR-0090 D8.1). The states
+// and their meaning are the pipeline effect-intent protocol's (ADR-0114 D19),
+// restated here because core never imports premium.
+type DeliveryIntentState string
+
+const (
+	// DeliveryPrepared: recorded, nothing has left the process — safe to send.
+	DeliveryPrepared DeliveryIntentState = "prepared"
+	// DeliveryDispatched: the send is in progress or the process died during it.
+	DeliveryDispatched DeliveryIntentState = "dispatched"
+	// DeliveryConfirmed: the ingress accepted it. Terminal.
+	DeliveryConfirmed DeliveryIntentState = "confirmed"
+	// DeliveryAmbiguous: it may or may not have reached the far side. Never resent
+	// automatically; an operator decides.
+	DeliveryAmbiguous DeliveryIntentState = "ambiguous"
+	// DeliveryFailed: permanently undeliverable, or retries exhausted. Terminal —
+	// this is the dead letter.
+	DeliveryFailed DeliveryIntentState = "failed"
+)
+
+// legalDeliveryTransitions mirrors pipeline.legalIntentTransitions. dispatched →
+// prepared is legal only on positive evidence nothing was sent (ErrDeliveryTransient).
+var legalDeliveryTransitions = map[DeliveryIntentState]map[DeliveryIntentState]bool{
+	DeliveryPrepared:   {DeliveryDispatched: true, DeliveryFailed: true},
+	DeliveryDispatched: {DeliveryConfirmed: true, DeliveryAmbiguous: true, DeliveryFailed: true, DeliveryPrepared: true},
+	DeliveryAmbiguous:  {DeliveryConfirmed: true, DeliveryFailed: true},
+	DeliveryConfirmed:  {},
+	DeliveryFailed:     {},
+}
+
+// CanDeliveryTransition reports whether from → to is a legal intent transition.
+func CanDeliveryTransition(from, to DeliveryIntentState) bool {
+	return legalDeliveryTransitions[from][to]
+}
+
+// DeliveryIntent is one outbound message the kernel decided to send. Its key is
+// its identity: delivering message M is the same act however often it is tried.
+type DeliveryIntent struct {
+	Key            string
+	ConversationID string
+	TxnID          string
+	Address        DeliveryAddress
+	// Text is kept while the intent can still be (re)sent and dropped once it is
+	// confirmed, so the journal does not become a second copy of the conversation.
+	Text      string
+	State     DeliveryIntentState
+	Attempts  int
+	Err       string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// DeliveryJournal is the durable half of outbound delivery (ADR-0090 D8.1): a
+// two-phase intent record per message. nil is valid and means best-effort: a
+// delivery is attempted once, a retry may duplicate, and a failure is only logged.
 type DeliveryJournal interface {
-	// MarkDeliveredOnce returns true only the first time key is seen, so a retried
-	// delivery does not send twice. Mirrors the reactive journal's exactly-once
-	// primitive rather than inventing a second one.
-	MarkDeliveredOnce(key string) (firstTime bool, err error)
-	// RecordUndeliverable persists a delivery that will not be retried.
-	RecordUndeliverable(d UndeliverableDelivery) error
+	// PrepareDelivery records in as a prepared intent unless its key already
+	// exists, and returns the stored intent; created reports whether it was new.
+	PrepareDelivery(ctx context.Context, in DeliveryIntent) (stored DeliveryIntent, created bool, err error)
+	// AdvanceDelivery moves key from → to (compare-and-set) and records reason.
+	// Moving to dispatched counts an attempt; moving to confirmed drops the text.
+	// Returns ErrDeliveryStateConflict when the intent is not in state from, and
+	// an error for an illegal transition or an unknown key.
+	AdvanceDelivery(ctx context.Context, key string, from, to DeliveryIntentState, reason string) error
+	// ListDeliveries returns intents in any of states, least recently updated
+	// first, at most limit (limit <= 0 ⇒ all).
+	ListDeliveries(ctx context.Context, states []DeliveryIntentState, limit int) ([]DeliveryIntent, error)
+	// PruneDeliveries removes up to limit confirmed, failed or ambiguous intents
+	// last updated before `before`; more reports whether eligible ones remain.
+	PruneDeliveries(ctx context.Context, before time.Time, limit int) (removed int, more bool, err error)
 }

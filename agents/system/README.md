@@ -33,9 +33,15 @@ agents/system/
 │       ├── common.py
 │       ├── metadata_extractor.py
 │       └── spacy_pattern_extractor.py
-└── reranker_agent/          # ADR-0054
+├── reranker_agent/          # ADR-0054
+│   ├── __init__.py
+│   └── agent.py
+├── docling_agent/           # ADR-0060
+│   ├── __init__.py
+│   └── agent.py             # (+ docling_backend.py, structure.py)
+└── retrieval_agent/         # AGENTIC_RETRIEVAL_SPEC
     ├── __init__.py
-    └── agent.py
+    └── agent.py             # (+ planner.py)
 ```
 
 ## Running

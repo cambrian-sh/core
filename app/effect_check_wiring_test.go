@@ -27,7 +27,7 @@ func (w wiringTools) AvailableTools(_ context.Context, id string) []domain.Syste
 // source, so the planner plans from the tools an agent can call, not from its
 // declared globs (T-20261107-world-system-asks-are-planned-as-local-file).
 func TestWireEffectCheckGivesThePlannerTheLiveToolMenu(t *testing.T) {
-	planner := awareness.NewPlanner(nil, wiringAgents{}, nil)
+	planner := awareness.NewPlanner(nil, wiringAgents{})
 	planner.SetCapabilityContract(true)
 	tools := wiringTools{"assistant": {{Name: "mcp:erp/finance_aging_report", Description: "AR aging by customer.", Effects: []domain.ToolEffect{domain.EffectRead}}}}
 	wireEffectCheck(config.DefaultConfig().Execution.Capability, tools, nil, planner)

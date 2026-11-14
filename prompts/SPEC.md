@@ -114,6 +114,32 @@ result) always sits inside a named tag (`<goal>`, `<documents>`, ...) with a
 sentence telling the model the tag holds data, not instructions. The task comes
 last. The caller neutralises a closing tag inside the value before rendering.
 
+### 3.2 Fragment sets (SDK)
+
+Some prompts are not sent whole: the SDK's ReAct loop assembles its system prompt
+from pieces chosen by protocol (text or native tool-calling), budget and menu
+(`sdk/cambrian_agent_sdk/prompts/react-*/`). Such a file is a **fragment set**: its
+body is a sequence of named sections, each introduced by a line of exactly
+
+```
+<!-- section: <name> -->
+```
+
+(`<name>` matches `[a-z][a-z0-9_-]*`). The file is still ONE prompt under this spec:
+one `id`, one `version`, one `inputs` list (the union of every section's slots), one
+static hash over the whole body (§4), and the same lint (§5) — the delimiter line is
+ordinary body text to every rule here. Rendering is per section
+(`prompt_library.fragment(id, section).render(values)`; `prompt_library.sections`):
+
+- a section's text is the lines between its delimiter and the next, with leading
+  and trailing blank lines dropped; the delimiter line itself is never sent;
+- a section requires exactly its own slots (missing or extra is an error);
+- text before the first delimiter, a repeated section name, or a file with no
+  section are load errors.
+
+The Go loader has no fragment API: no core prompt is a fragment set. A core prompt
+that needs one gets a Go `Sections` helper and a parity case against the SDK first.
+
 ## 4. The static hash
 
 `StaticHash` certifies exactly the static text the model is sent:

@@ -41,14 +41,33 @@ func writeSidecarFiles(t *testing.T, dir, name, manifestJSON, binaryContent stri
 }
 
 // Cycle 1 — Test 1:
-// A valid sidecar manifest with "trait":"tool" registers an AgentDefinition
-// with Trait=TraitTool and ExecPath resolved relative to the manifest dir.
-func TestSidecar_ValidToolManifest_RegistersWithTraitTool(t *testing.T) {
+// ENG-1351: the "tool" trait is deleted — a sidecar declaring it is skipped.
+func TestSidecar_RetiredToolTrait_IsSkipped(t *testing.T) {
+	agentsDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	writeSidecarFiles(t, agentsDir, "file_writer", `{"trait":"tool","version":"1.0","exec_path":"./file_writer","description":"d"}`, "bin")
+	adapter, err := NewBBoltAdapter(dbPath, agentsDir, nil)
+	if err != nil {
+		t.Fatalf("NewBBoltAdapter: %v", err)
+	}
+	defer adapter.Close()
+	agents, err := adapter.GetAllAgentRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("a retired-trait sidecar registered: %+v", agents)
+	}
+}
+
+// A valid sidecar manifest registers an AgentDefinition with its trait and the
+// ExecPath resolved relative to the manifest dir.
+func TestSidecar_ValidManifest_RegistersWithItsTrait(t *testing.T) {
 	agentsDir := t.TempDir()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
 	manifestJSON := `{
-		"trait": "tool",
+		"trait": "daemon",
 		"version": "1.0",
 		"exec_path": "./file_writer",
 		"description": "Writes content to a file.",
@@ -72,8 +91,8 @@ func TestSidecar_ValidToolManifest_RegistersWithTraitTool(t *testing.T) {
 	}
 
 	got := agents[0]
-	if got.Trait != "tool" {
-		t.Errorf("expected Trait=%q, got %q", "tool", got.Trait)
+	if got.Trait != "daemon" {
+		t.Errorf("expected Trait=%q, got %q", "daemon", got.Trait)
 	}
 	// ExecPath must be resolved (absolute) and point to the binary alongside the manifest
 	wantExecPath := relExec(t, agentsDir, filepath.Join(agentsDir, "file_writer"))
@@ -89,7 +108,7 @@ func TestSidecar_AbsentRuntime_DefaultsBinary(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
 	manifestJSON := `{
-		"trait": "tool",
+		"trait": "daemon",
 		"version": "1.0",
 		"exec_path": "./calc",
 		"description": "A deterministic calculator."
@@ -118,7 +137,7 @@ func TestSidecar_AbsentRuntime_DefaultsBinary(t *testing.T) {
 // Cycle 3 — Test 3:
 // ComputeSidecarSourceHash changes when binary bytes change.
 func TestSidecar_SourceHashChangesWhenBinaryChanges(t *testing.T) {
-	manifestJSON := []byte(`{"trait":"tool","version":"1.0","exec_path":"./fw","description":"d"}`)
+	manifestJSON := []byte(`{"trait":"daemon","version":"1.0","exec_path":"./fw","description":"d"}`)
 	binary1 := []byte("binary version 1")
 	binary2 := []byte("binary version 2")
 
@@ -132,8 +151,8 @@ func TestSidecar_SourceHashChangesWhenBinaryChanges(t *testing.T) {
 // Cycle 3 — Test 4:
 // ComputeSidecarSourceHash changes when manifest JSON bytes change.
 func TestSidecar_SourceHashChangesWhenManifestChanges(t *testing.T) {
-	manifest1 := []byte(`{"trait":"tool","version":"1.0","exec_path":"./fw","description":"d"}`)
-	manifest2 := []byte(`{"trait":"tool","version":"2.0","exec_path":"./fw","description":"d"}`)
+	manifest1 := []byte(`{"trait":"daemon","version":"1.0","exec_path":"./fw","description":"d"}`)
+	manifest2 := []byte(`{"trait":"daemon","version":"2.0","exec_path":"./fw","description":"d"}`)
 	binary := []byte("stable binary")
 
 	h1 := ComputeSidecarSourceHash("1.0", manifest1, binary)
@@ -268,7 +287,7 @@ AGENT_MANIFEST = '''
 
 	// Write a sidecar Tool-Agent
 	manifestJSON := `{
-		"trait": "tool",
+		"trait": "daemon",
 		"version": "1.0",
 		"exec_path": "./writer",
 		"description": "Binary writer tool."
@@ -299,7 +318,7 @@ func TestSidecar_MissingBinary_IsSkipped(t *testing.T) {
 
 	// Write manifest only — no binary file
 	manifestJSON := `{
-		"trait": "tool",
+		"trait": "daemon",
 		"version": "1.0",
 		"exec_path": "./ghost",
 		"description": "Ghost agent."
@@ -457,7 +476,7 @@ func TestSeed_NestedSidecarAgent_RegistersAndResolvesExecPath(t *testing.T) {
 	}
 
 	manifestJSON := `{
-		"trait": "tool",
+		"trait": "daemon",
 		"version": "1.0",
 		"exec_path": "./sys_tool",
 		"description": "Nested system tool.",

@@ -49,6 +49,9 @@ func operatorIngestSourceType(filename string) string {
 // body is bytes, so deriving a title from text is impossible; and for a report
 // "2026-W29-ops-review.pdf" is a better title than its first 80 characters anyway.
 func operatorIngestTitle(req operator.IngestRequest) string {
+	if req.Title != "" { // the operator's explicit title (contract 0104) wins
+		return req.Title
+	}
 	if req.Filename != "" {
 		return req.Filename
 	}
@@ -119,11 +122,16 @@ func operatorIngestDoc(req operator.IngestRequest) domain.ExternalDocument {
 		SourceURI:  sourceURI,
 		SourceType: operatorIngestSourceType(req.Filename),
 		Title:      operatorIngestTitle(req),
-		Body:       applyIngestContext(text, req.Context),
-		Author:     req.Author,
-		ThreadID:   req.SessionID,
-		Tags:       req.Tags,
-		Importance: req.Importance,
+		// ADR-0136 A3.5 (contract 0104): descriptive only. SourceKind never steers the
+		// parser (SourceType above is kernel-derived); AuthorLabel never replaces Author,
+		// the authenticated operator who is the writer of record.
+		SourceKind:  req.SourceKind,
+		AuthorLabel: req.AuthorLabel,
+		Body:        applyIngestContext(text, req.Context),
+		Author:      req.Author,
+		ThreadID:    req.SessionID,
+		Tags:        req.Tags,
+		Importance:  req.Importance,
 		// ADR-0138 Amendment B1: an uploaded file is a NAMED source — keyed by (the
 		// operator, the classification scope, the normalised file name) — so a changed
 		// re-upload replaces its earlier version and an identical one is a no-op. A

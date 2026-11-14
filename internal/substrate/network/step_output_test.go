@@ -179,7 +179,7 @@ func TestGenerateWithTools_StreamsOutputAgentGetsNoGatewayDeltas(t *testing.T) {
 	models := &streamingModels{Models: fakemodels.New().Set("m1", c1Model{resp: finalAnswerTurn}),
 		script: finalAnswerScript, resp: finalAnswerTurn}
 	s, lease, ctx, tl := stepOutputServer(t, models, func(o *stepoutput.Options) {
-		o.StreamsOutput = func(agent string) bool { return agent == "a1" }
+		o.StreamsOutput = func(_ context.Context, agent string) bool { return agent == "a1" }
 	})
 	nativeTurn(t, s, ctx, lease)
 	if _, chunks := tl.snapshot(); len(chunks) != 0 {
@@ -356,7 +356,7 @@ func TestLeaseCompletionEndsStepOutputState(t *testing.T) {
 	// NewServer installs the gateway's lease-complete hook; that hook must end the
 	// stream's per-lease state.
 	_, gw := newLeaseServer(t)
-	srv := NewServer(nil, nil, nil, config.ExecutionConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, gw, nil, nil)
+	srv := NewServer(nil, nil, nil, config.ExecutionConfig{}, nil, nil, nil, nil, nil, nil, gw, nil, nil)
 	srv.StepOutput = stepoutput.New(stepoutput.Options{Leases: gw})
 	lease, err := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Minute)
 	if err != nil {

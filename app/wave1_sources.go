@@ -369,7 +369,7 @@ func vectorCounterFor(v any) func(ctx context.Context) int64 {
 // a planner-produced plan takes (see network.AuthoredPlanMetadataKey).
 type planSubmitter struct {
 	sessions func(ctx context.Context, goal string) (string, error)
-	execute  func(sessionID, planJSON string)
+	execute  func(ctx context.Context, sessionID, planJSON string)
 	known    func(id string) bool
 }
 
@@ -411,7 +411,7 @@ func (p planSubmitter) SubmitPlan(ctx context.Context, sessionID, subject string
 	if p.execute == nil {
 		return "", "", fmt.Errorf("no execution path is wired")
 	}
-	p.execute(sessionID, string(planJSON))
+	p.execute(ctx, sessionID, string(planJSON))
 
 	// The run id is minted inside the execution path, so it is not available to
 	// return here. The session id is what the console needs to follow the plan on

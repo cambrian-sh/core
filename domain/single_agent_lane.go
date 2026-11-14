@@ -68,3 +68,48 @@ func (l LaneLimits) Stamp(ctx map[string]string) {
 	ctx[HandoffKeyLaneSameResult] = strconv.Itoa(l.SameResultRepeats)
 	ctx[HandoffKeyLaneSameFailure] = strconv.Itoa(l.SameFailureRepeats)
 }
+
+// The context-engine handoff keys (ADR-0150 D10, execution.lane.context; owner
+// decision 2026-11-14, T-20261105-context-engine-budgets-cannot-be-tuned-for).
+// The kernel stamps them on every handoff to a kernel-spawned agent
+// (agentplane.Transport.CallAgent); the SDK's ContextConfig.resolve applies them
+// above every other layer (the operator's lane block wins). Each key is
+// "_context_" + the SDK ContextConfig field name.
+const (
+	HandoffKeyContextBudgetTokens           = "_context_budget_tokens"
+	HandoffKeyContextToolOutputCompactChars = "_context_tool_output_compact_chars"
+	HandoffKeyContextProtectTail            = "_context_protect_tail"
+	HandoffKeyContextKeepRecentToolResults  = "_context_keep_recent_tool_results"
+)
+
+// AgentContextLimits are the context-engine settings execution.lane.context sets.
+// A zero field is not set and is not stamped, so the agent's own resolution
+// (the CAMBRIAN_CONTEXT_* env the kernel serves from execution.content, then the
+// agent's context_config) stands for it.
+type AgentContextLimits struct {
+	BudgetTokens           int
+	ToolOutputCompactChars int
+	ProtectTail            int
+	KeepRecentToolResults  int
+}
+
+// IsZero reports whether no setting is set.
+func (l AgentContextLimits) IsZero() bool { return l == AgentContextLimits{} }
+
+// Stamp writes the set keys onto a handoff context, overwriting any copy (a
+// caller-supplied "_context_" key never survives a set one).
+func (l AgentContextLimits) Stamp(ctx map[string]string) {
+	if ctx == nil {
+		return
+	}
+	for k, v := range map[string]int{
+		HandoffKeyContextBudgetTokens:           l.BudgetTokens,
+		HandoffKeyContextToolOutputCompactChars: l.ToolOutputCompactChars,
+		HandoffKeyContextProtectTail:            l.ProtectTail,
+		HandoffKeyContextKeepRecentToolResults:  l.KeepRecentToolResults,
+	} {
+		if v > 0 {
+			ctx[k] = strconv.Itoa(v)
+		}
+	}
+}

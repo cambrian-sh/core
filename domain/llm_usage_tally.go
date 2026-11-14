@@ -29,7 +29,10 @@ import (
 type LLMUsageTally struct {
 	mu        sync.Mutex
 	byPurpose map[string]LLMUsage
-	parent    *LLMUsageTally
+	// byGenerator counts calls per generator id that ANSWERED them (ENG-453:
+	// every result records the answering model).
+	byGenerator map[string]int
+	parent      *LLMUsageTally
 }
 
 // LLMUsage is the usage of a set of LLM calls. Token counts are provider-reported
@@ -61,7 +64,7 @@ type llmUsageTallyKey struct{}
 // WithLLMUsageTally returns ctx carrying a fresh tally, and the tally. When ctx
 // already carries one, the new tally forwards to it.
 func WithLLMUsageTally(ctx context.Context) (context.Context, *LLMUsageTally) {
-	t := &LLMUsageTally{byPurpose: map[string]LLMUsage{}, parent: LLMUsageTallyFrom(ctx)}
+	t := &LLMUsageTally{byPurpose: map[string]LLMUsage{}, byGenerator: map[string]int{}, parent: LLMUsageTallyFrom(ctx)}
 	return context.WithValue(ctx, llmUsageTallyKey{}, t), t
 }
 
@@ -84,6 +87,35 @@ func (t *LLMUsageTally) Add(purpose string, u LLMUsage) {
 		t.byPurpose[purpose] = t.byPurpose[purpose].Add(u)
 		t.mu.Unlock()
 	}
+}
+
+// AddGenerator books n calls answered by the generator id ("" is ignored).
+func (t *LLMUsageTally) AddGenerator(id string, n int) {
+	if id == "" || n == 0 {
+		return
+	}
+	for ; t != nil; t = t.parent {
+		t.mu.Lock()
+		if t.byGenerator == nil {
+			t.byGenerator = map[string]int{}
+		}
+		t.byGenerator[id] += n
+		t.mu.Unlock()
+	}
+}
+
+// ByGenerator returns a copy of the per-generator call counts.
+func (t *LLMUsageTally) ByGenerator() map[string]int {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]int, len(t.byGenerator))
+	for id, n := range t.byGenerator {
+		out[id] = n
+	}
+	return out
 }
 
 // Total is the sum over every purpose.
@@ -120,3 +152,34 @@ func (t *LLMUsageTally) ByPurpose() []PurposeUsage {
 	sort.Slice(out, func(i, j int) bool { return out[i].Purpose < out[j].Purpose })
 	return out
 }
+
+type llmCallLabelKey struct{}
+
+// WithLLMCallLabel returns ctx whose LLM calls the SpendMeter books under label
+// instead of the generator's purpose — a sub-label for one organ's distinct kind
+// of call on a shared purpose handle. The fact extractor's extraction and its
+// assessment judge both use GeneratorFor(PurposeFacts); the judge's calls carry
+// LLMCallLabelFactsAssess so a per-request report (the cambrian-llm-usage trailer)
+// and the session ledger split them
+// (T-20261104-fact-extraction-and-fact-assessment-share-llm). Admission and the
+// spend ceiling are unchanged: only the label a booked call is counted under moves.
+// "" leaves ctx as it is.
+func WithLLMCallLabel(ctx context.Context, label string) context.Context {
+	if label == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, llmCallLabelKey{}, label)
+}
+
+// LLMCallLabelFrom returns the call label on ctx, or "".
+func LLMCallLabelFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	l, _ := ctx.Value(llmCallLabelKey{}).(string)
+	return l
+}
+
+// LLMCallLabelFactsAssess labels the ADR-0136 A1.2 fact-assessment judge's calls.
+// No '.', ',' or '=' — the trailer grammar's separators.
+const LLMCallLabelFactsAssess = "facts_assess"

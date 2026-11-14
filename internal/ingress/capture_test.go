@@ -119,10 +119,6 @@ func (f *fakeEntities) GetEntity(context.Context, string, string) (domain.Entity
 	return domain.Entity{}, false, nil
 }
 
-func (f *fakeEntities) ListEntitiesByKind(context.Context, string, string, int) ([]domain.Entity, error) {
-	return nil, nil
-}
-
 func (f *fakeEntities) ResolveEntityByLocal(context.Context, string, string, int) ([]domain.Entity, error) {
 	return nil, nil
 }

@@ -9,6 +9,7 @@ import (
 )
 
 type fakeCloser struct {
+	gotCtx     context.Context
 	session    *domain.Session
 	getErr     error
 	closedTo   domain.SessionStatus
@@ -20,8 +21,9 @@ func (f *fakeCloser) GetSession(context.Context, domain.SessionID) (*domain.Sess
 	return f.session, f.getErr
 }
 
-func (f *fakeCloser) TransitionStatusReason(_ context.Context, _ domain.SessionID, target domain.SessionStatus, reason string) error {
+func (f *fakeCloser) TransitionStatusReason(ctx context.Context, _ domain.SessionID, target domain.SessionStatus, reason string) error {
 	f.calls++
+	f.gotCtx = ctx
 	f.closedTo = target
 	f.closedWith = reason
 	return nil
@@ -38,7 +40,7 @@ func TestCloseSession_ClosesAnActiveTask(t *testing.T) {
 	c := &fakeCloser{session: activeSession()}
 	d := &DAGExecutor{CurrentSessionID: "s1", SessionCloser: c}
 
-	d.closeSession()
+	d.closeSession(context.Background())
 
 	if c.calls != 1 {
 		t.Fatalf("want one transition, got %d", c.calls)
@@ -57,7 +59,7 @@ func TestCloseSession_LeavesAPausedTaskAlone(t *testing.T) {
 	c := &fakeCloser{session: &domain.Session{ID: "s1", Status: domain.SessionPaused}}
 	d := &DAGExecutor{CurrentSessionID: "s1", SessionCloser: c}
 
-	d.closeSession()
+	d.closeSession(context.Background())
 
 	if c.calls != 0 {
 		t.Fatal("a paused task was closed out from under the operator")
@@ -70,7 +72,7 @@ func TestCloseSession_LeavesADormantTaskAlone(t *testing.T) {
 	c := &fakeCloser{session: &domain.Session{ID: "s1", Status: domain.SessionDormant}}
 	d := &DAGExecutor{CurrentSessionID: "s1", SessionCloser: c}
 
-	d.closeSession()
+	d.closeSession(context.Background())
 
 	if c.calls != 0 {
 		t.Fatal("a dormant task was closed; it may still wake")
@@ -83,7 +85,7 @@ func TestCloseSession_DoesNotReCloseAFinishedTask(t *testing.T) {
 	c := &fakeCloser{session: &domain.Session{ID: "s1", Status: domain.SessionCompleted}}
 	d := &DAGExecutor{CurrentSessionID: "s1", SessionCloser: c}
 
-	d.closeSession()
+	d.closeSession(context.Background())
 
 	if c.calls != 0 {
 		t.Fatalf("re-closed an already finished task (%d calls)", c.calls)
@@ -93,10 +95,10 @@ func TestCloseSession_DoesNotReCloseAFinishedTask(t *testing.T) {
 // A run with no session, or a kernel that wires no closer, must be a no-op
 // rather than a panic — that is the previous behaviour and it stays correct.
 func TestCloseSession_NoSessionOrNoCloserIsANoOp(t *testing.T) {
-	(&DAGExecutor{CurrentSessionID: "s1"}).closeSession()
+	(&DAGExecutor{CurrentSessionID: "s1"}).closeSession(context.Background())
 
 	c := &fakeCloser{session: activeSession()}
-	(&DAGExecutor{SessionCloser: c}).closeSession()
+	(&DAGExecutor{SessionCloser: c}).closeSession(context.Background())
 	if c.calls != 0 {
 		t.Fatal("closed a task for a run that belongs to none")
 	}
@@ -108,9 +110,31 @@ func TestCloseSession_UnreadableSessionIsLeftOpen(t *testing.T) {
 	c := &fakeCloser{getErr: errors.New("store down")}
 	d := &DAGExecutor{CurrentSessionID: "s1", SessionCloser: c}
 
-	d.closeSession()
+	d.closeSession(context.Background())
 
 	if c.calls != 0 {
 		t.Fatal("closed a task whose status could not be read")
+	}
+}
+
+// T-20261113-context-background-on-request-paths-drops item 8: the close runs on
+// the RUN's context detached from its cancellation — the run's values (session,
+// principal, scope) survive, and an already-cancelled run still closes its task.
+func TestCloseSession_DetachesTheRunContextKeepingItsValues(t *testing.T) {
+	c := &fakeCloser{session: activeSession()}
+	d := &DAGExecutor{CurrentSessionID: "s1", SessionCloser: c}
+
+	runCtx, cancel := context.WithCancel(domain.WithPrincipal(context.Background(), domain.UserPrincipal("alice")))
+	cancel()
+	d.closeSession(runCtx)
+
+	if c.calls != 1 {
+		t.Fatalf("a cancelled run did not close its task (%d calls)", c.calls)
+	}
+	if c.gotCtx.Err() != nil {
+		t.Fatal("the close ran on a cancelled context")
+	}
+	if domain.PrincipalFromContext(c.gotCtx) != domain.UserPrincipal("alice") {
+		t.Fatal("the close lost the run's context values")
 	}
 }

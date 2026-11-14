@@ -130,13 +130,16 @@ func TestPg_FenceDifferential(t *testing.T) {
 		`CREATE TEMP TABLE fence_docs (id text PRIMARY KEY, metadata jsonb NOT NULL)`,
 		// ADR-0149 P4: an object table property's companions; tags may be NULL.
 		`CREATE TEMP TABLE fence_objects (id text PRIMARY KEY, p__tags text[], p__parties text[])`,
+		// An open kind's undeclared property: one extra jsonb entry per row, with its
+		// own tags/parties; no "tags" key = unclassified (ENG-1109).
+		`CREATE TEMP TABLE fence_extras (id text PRIMARY KEY, entry jsonb NOT NULL)`,
 	} {
 		if _, err := conn.Exec(ctx, ddl); err != nil {
 			t.Fatalf("%s: %v", ddl, err)
 		}
 	}
 	defer func() {
-		_, _ = conn.Exec(ctx, `DROP TABLE IF EXISTS pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs, pg_temp.fence_objects`) // best-effort: the session ends with the test anyway
+		_, _ = conn.Exec(ctx, `DROP TABLE IF EXISTS pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs, pg_temp.fence_objects, pg_temp.fence_extras`) // best-effort: the session ends with the test anyway
 	}()
 
 	query := func(q string, args []any) ([]string, error) {
@@ -158,7 +161,7 @@ func TestPg_FenceDifferential(t *testing.T) {
 	}
 
 	rapid.Check(t, func(rt *rapid.T) {
-		if _, err := conn.Exec(ctx, `TRUNCATE pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs, pg_temp.fence_objects`); err != nil {
+		if _, err := conn.Exec(ctx, `TRUNCATE pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs, pg_temp.fence_objects, pg_temp.fence_extras`); err != nil {
 			rt.Fatalf("truncate: %v", err)
 		}
 		var rows []fenceRow
@@ -180,6 +183,7 @@ func TestPg_FenceDifferential(t *testing.T) {
 				{`INSERT INTO fence_items VALUES ($1,$2)`, []any{r.id, tags}},
 				{`INSERT INTO fence_docs VALUES ($1,$2)`, []any{r.id, map[string]any{"tags": tags}}},
 				{`INSERT INTO fence_objects VALUES ($1,$2,$3)`, objectRowArgs(rt, r, objectNull)},
+				{`INSERT INTO fence_extras VALUES ($1,$2)`, []any{r.id, extraEntry(r, objectNull)}},
 			} {
 				if _, err := conn.Exec(ctx, q.sql, q.args...); err != nil {
 					rt.Fatalf("seed %s: %v", r.id, err)
@@ -210,6 +214,32 @@ func TestPg_FenceDifferential(t *testing.T) {
 			sort.Strings(want)
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				rt.Fatalf("Go/SQL divergence on object property\npredicate: %+v\nrows: %+v nulls: %v\nSQL admits: %v\nGo admits:  %v\nsql: %s\nargs: %#v",
+					*p, rows, objectNull, got, want, q, fargs)
+			}
+		}
+
+		// ENG-1109: an extra entry is fenced exactly like a declared property over its
+		// own tags/parties; an entry without tags (the null rows) is unclassified.
+		{
+			body, fargs := sqlfence.ObjectExtra("entry").Expr(p, 0)
+			q := `SELECT id FROM fence_extras WHERE ` + body
+			got, err := query(q, fargs)
+			if err != nil {
+				rt.Fatalf("object extra: %v\n%s", err, q)
+			}
+			want := []string{}
+			for _, row := range rows {
+				ok := p.Unfiltered()
+				if !ok && !objectNull[row.id] {
+					_, ok = p.CheckRow(row.tags, row.parties)
+				}
+				if ok {
+					want = append(want, row.id)
+				}
+			}
+			sort.Strings(want)
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				rt.Fatalf("Go/SQL divergence on object extra\npredicate: %+v\nrows: %+v nulls: %v\nSQL admits: %v\nGo admits:  %v\nsql: %s\nargs: %#v",
 					*p, rows, objectNull, got, want, q, fargs)
 			}
 		}
@@ -260,6 +290,19 @@ func TestPg_FenceDifferential(t *testing.T) {
 
 // objectRowArgs seeds one fence_objects row for r: its tags and parties, or —
 // drawn — NULL tags (a value with no classification), recorded in null.
+// extraEntry is the row as an extra jsonb entry, the shape objects.upsertRow
+// writes: tags omitted when unclassified (the null rows), parties omitted when none.
+func extraEntry(r fenceRow, null map[string]bool) map[string]any {
+	e := map[string]any{"t": "text", "v": "x", "src": "s", "at": "", "id": r.id, "conflict": false}
+	if !null[r.id] {
+		e["tags"] = nonNil(r.tags)
+	}
+	if len(r.parties) > 0 {
+		e["parties"] = r.parties
+	}
+	return e
+}
+
 func objectRowArgs(t *rapid.T, r fenceRow, null map[string]bool) []any {
 	if rapid.Bool().Draw(t, r.id+":null-tags") {
 		null[r.id] = true

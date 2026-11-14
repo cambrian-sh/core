@@ -89,7 +89,7 @@ func (vp *VerifierPool) Select(
 
 	var candidates []agentWithMetrics
 	for _, agent := range agents {
-		if excluded[agent.ID] || agent.Provisional || agent.Trait == domain.TraitTool || agent.Trait == domain.TraitDaemon {
+		if excluded[agent.ID] || agent.Provisional || agent.Trait == domain.TraitDaemon {
 			continue
 		}
 		// Privileged system organs (ADR-0051 class) are kernel-invoked directly and never

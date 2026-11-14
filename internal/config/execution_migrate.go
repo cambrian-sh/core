@@ -17,13 +17,150 @@ import (
 // `execution.routing`, …). The fields, their types and their leaf json names are
 // unchanged — only the nesting is new — so a v1 file is mechanically convertible
 // and this package converts it on load rather than making operators migrate by hand.
+//
+// SchemaV3Retired is v2 minus the keys retiredConfigKeys lists (owner decision
+// 2026-11-14, ENG-1502 / ENG-203): keys that were declared, defaulted and in some
+// cases validated, but read by nothing. Every layer is migrated v2→v3 on load
+// (retireConfigKeys for files and the ADR-0101 store, retiredEnvKey for CAMBRIAN_*
+// variables): a retired key is dropped with one WARN naming it, so an existing
+// deployment keeps starting and learns the setting never had an effect.
 const (
-	SchemaV1Flat   = 1
-	SchemaV2Nested = 2
+	SchemaV1Flat    = 1
+	SchemaV2Nested  = 2
+	SchemaV3Retired = 3
 
 	// CurrentSchemaVersion is what this build writes and expects.
-	CurrentSchemaVersion = SchemaV2Nested
+	CurrentSchemaVersion = SchemaV3Retired
 )
+
+// retiredConfigKeys are the keys schema v3 removed, by their v2 path, with the
+// reason. A v1 flat spelling ("execution.max_recursion_depth") is retired with its
+// nested one. None of them had a reader, so dropping the value changes no behaviour.
+//
+// Why drop them in the migration rather than leave them to the unknown-key warning:
+// that warning skips the environment layer (CAMBRIAN_* is shared with non-config
+// variables) and calls the key "unknown, misspelled or retired", while these are
+// known to be retired and each has a reason an operator can act on.
+var retiredConfigKeys = map[string]string{
+	"execution.plan.max_recursion_depth":                   "nested sub-auctions retired with the auction (ADR-0100); nesting depth is execution.lane.subtasks",
+	"execution.plan.max_partial_context_bytes":             "no reader",
+	"execution.plan.budget_exhaustion_alarm_rate":          "no reader",
+	"execution.memory.min_gc_age_days":                     "no reader",
+	"execution.memory.circadian_stale_doc_warn_threshold":  "no reader; Ebbinghaus decay it guarded was deleted (owner decision, ENG-74)",
+	"execution.memory.remember_default_activation":         "no reader",
+	"execution.llm.llm_gateway_retry_backoff_ms":           "no reader",
+	"execution.routing.proposal_timeout_ms":                "the auction bid round it timed was removed by ADR-0100",
+	"execution.verification.verifier_pool_min_size":        "the D15 pool health guard was never built",
+	"execution.verification.verifier_pool_threshold_step":  "the D15 pool health guard was never built",
+	"execution.verification.verifier_pool_threshold_floor": "the D15 pool health guard was never built",
+	"telemetry.otlp_endpoint":                              "no OTLP exporter was ever built; telemetry export is a future feature",
+	"telemetry.prometheus_port":                            "no Prometheus exporter was ever built; telemetry export is a future feature",
+	// Retired 2026-11-14 (owner decision, third round; ENG-1301) with the ADR-0027
+	// procedural plan memory: they tuned a Hippocampus read whose writer had no
+	// production caller since 2026-07-18, so they never changed a plan. A map key's
+	// sub-paths (hippocampus_policies.<name>.<field>) retire with it.
+	"execution.hippocampus.hippocampus_policies":       "the ADR-0027 procedural plan memory it tuned was deleted (ENG-1301); learned routines are ADR-0139 D13 skills",
+	"execution.hippocampus.hippocampus_default_policy": "the ADR-0027 procedural plan memory it tuned was deleted (ENG-1301); learned routines are ADR-0139 D13 skills",
+	// Retired 2026-11-14 (owner decision, ENG-1595): it gated the ADR-0049 A2.3
+	// failure record, a raw Manager.Save of a failed plan's output that is no longer
+	// written.
+	"execution.memory.experience_surprise_floor": "the A2.3 failure record it gated is no longer written (owner decision, ENG-1595)",
+	// Retired 2026-11-15 (owner decision, ENG-1321): IRCoT was recorded as a disqualified
+	// lever and its reason-then-retrieve branch is deleted, as HyDE's was.
+	"execution.retrieval.agentic_ircot_enabled": "IRCoT is a disqualified retrieval lever; its branch was deleted (owner decision, ENG-1321)",
+}
+
+// retiredLogged makes each retired key's WARN appear once per process and origin.
+var retiredLogged sync.Map
+
+func logRetiredKey(path, origin string) {
+	if _, seen := retiredLogged.LoadOrStore(path+"|"+origin, true); seen {
+		return
+	}
+	slog.Warn("config: retired key ignored (schema v3); it never had an effect, remove it",
+		slog.String("key", path),
+		slog.String("origin", origin),
+		slog.String("reason", retiredConfigKeys[path]),
+		slog.String("ticket", "ENG-1502"))
+}
+
+// retiredFlatSpelling returns the v1 flat path of a retired execution key
+// ("execution.plan.x" → "execution.x"), or "" for a key outside execution.
+func retiredFlatSpelling(path string) string {
+	rest, ok := strings.CutPrefix(path, "execution.")
+	if !ok {
+		return ""
+	}
+	_, leaf, ok := strings.Cut(rest, ".")
+	if !ok {
+		return ""
+	}
+	return "execution." + leaf
+}
+
+// retireConfigKeys deletes every retiredConfigKeys entry (and its v1 flat
+// spelling) from a decoded config document, in place, logging each, and returns the
+// paths it removed, sorted. It runs after the v1→v2 steps, per layer.
+func retireConfigKeys(doc map[string]any, origin string) []string {
+	var removed []string
+	drop := func(path, reportAs string) {
+		segs := strings.Split(path, ".")
+		m := doc
+		chain := []map[string]any{doc}
+		for _, seg := range segs[:len(segs)-1] {
+			next, ok := m[seg].(map[string]any)
+			if !ok {
+				return
+			}
+			m = next
+			chain = append(chain, m)
+		}
+		leaf := segs[len(segs)-1]
+		if _, present := m[leaf]; !present {
+			return
+		}
+		delete(m, leaf)
+		// A block emptied by the retirement goes too (execution.hippocampus once both
+		// of its keys are dropped), so it is not reported as an unknown key. Never
+		// the top-level document, and never a block the layer left non-empty.
+		for i := len(chain) - 1; i >= 1 && len(chain[i]) == 0; i-- {
+			delete(chain[i-1], segs[i-1])
+		}
+		logRetiredKey(reportAs, origin)
+		removed = append(removed, path)
+	}
+	for path := range retiredConfigKeys {
+		drop(path, path)
+		if flat := retiredFlatSpelling(path); flat != "" {
+			drop(flat, path)
+		}
+	}
+	sort.Strings(removed)
+	return removed
+}
+
+// retiredEnvKey reports whether an environment-derived config path names a retired
+// key (nested or v1 flat spelling), logging it once. The caller drops the variable.
+func retiredEnvKey(path string) bool {
+	if _, ok := retiredConfigKeys[path]; ok {
+		logRetiredKey(path, "environment")
+		return true
+	}
+	// A variable may also name a path INSIDE a retired map key
+	// (CAMBRIAN_EXECUTION__HIPPOCAMPUS__HIPPOCAMPUS_POLICIES__CODEGEN__SIMILARITY).
+	under := func(p, key string) bool { return p == key || strings.HasPrefix(p, key+".") }
+	for retired := range retiredConfigKeys {
+		if under(path, retired) {
+			logRetiredKey(retired, "environment")
+			return true
+		}
+		if flat := retiredFlatSpelling(retired); flat != "" && under(path, flat) {
+			logRetiredKey(retired, "environment")
+			return true
+		}
+	}
+	return false
+}
 
 // migrateExecutionBlock rewrites a v1 flat `execution` map into v2 nested form,
 // in place. It returns the flat keys it moved, in sorted order, so the caller can
@@ -368,7 +505,8 @@ func deprecatedEnvKey(path string, lookupEnv func(string) (string, bool)) string
 	return "execution." + block + "." + newKey
 }
 
-// migrateJSON converts one config document's bytes from v1 to v2 when needed.
+// migrateJSON converts one config document's bytes to the current schema when
+// needed (v1→v2 nesting, deprecated and relocated keys, v2→v3 retirements).
 //
 // It returns the original bytes unchanged when there is nothing to do, so a v2
 // file is never rewritten, reformatted, or reordered on the way through — the
@@ -387,6 +525,11 @@ func migrateJSON(b []byte, origin string) []byte {
 	moved := migrateConfigMap(doc)
 	renamed := renameDeprecatedExecutionKeys(doc, origin)
 	renamed = append(renamed, laneMigration(doc, origin)...)
+	// v2→v3: retired keys are dropped from this layer (each logged once).
+	if retired := retireConfigKeys(doc, origin); len(retired) > 0 {
+		doc["schema_version"] = CurrentSchemaVersion
+		renamed = append(renamed, retired...)
+	}
 	if len(moved) == 0 && len(renamed) == 0 {
 		return b
 	}
@@ -415,8 +558,9 @@ func migrateFile(path string) []byte {
 	return migrateJSON(b, path)
 }
 
-// MigrateFileInPlace rewrites a v1 config file on disk to v2, returning the keys
-// it moved. It is NOT called during load — loading migrates in memory and leaves
+// MigrateFileInPlace rewrites an older config file on disk to the current schema
+// (v1 flat → v2 nested, deprecated keys to their successors, retired v3 keys
+// removed), returning the keys it moved or removed. It is NOT called during load — loading migrates in memory and leaves
 // the operator's file alone. This exists for an explicit, opt-in
 // `cambrian config migrate`, where rewriting the file is the point.
 //
@@ -436,6 +580,10 @@ func MigrateFileInPlace(path string) ([]string, error) {
 	// should leave a file that loads without a deprecation notice.
 	moved = append(moved, renameDeprecatedExecutionKeys(doc, path)...)
 	moved = append(moved, laneMigration(doc, path)...)
+	if retired := retireConfigKeys(doc, path); len(retired) > 0 {
+		doc["schema_version"] = CurrentSchemaVersion
+		moved = append(moved, retired...)
+	}
 	if len(moved) == 0 {
 		return nil, nil
 	}
@@ -475,13 +623,13 @@ func CanonicalKey(key string) string {
 // not routed into a block, so the key stays at the top of `execution`, where the
 // struct decoder ignores it (unknown keys are tolerated, never an error). The
 // retired set and the reason for each is retiredExecutionFields in
-// execution_migration_test.go.
+// execution_migration_test.go. Keys retired in schema v3 are removed outright, with
+// a WARN, by retireConfigKeys / retiredEnvKey (retiredConfigKeys above).
 var legacyExecutionKey = map[string]string{
 	"agent_env_passthrough":                    "agents",
 	"agent_memory_limit_mb":                    "agents",
 	"agent_pinning":                            "routing",
 	"agentic_decompose_enabled":                "retrieval",
-	"agentic_ircot_enabled":                    "retrieval",
 	"agentic_max_hops":                         "retrieval",
 	"agentic_planner_model":                    "retrieval",
 	"agentic_retrieval_enabled":                "retrieval",
@@ -495,7 +643,6 @@ var legacyExecutionKey = map[string]string{
 	"blend_weight_lexical":                     "retrieval",
 	"blend_weight_pagerank":                    "retrieval",
 	"blend_weight_recency":                     "retrieval",
-	"budget_exhaustion_alarm_rate":             "plan",
 	"canonical_vocab":                          "capability",
 	"capability_aliases":                       "capability",
 	"capability_contract":                      "routing",
@@ -505,7 +652,6 @@ var legacyExecutionKey = map[string]string{
 	"chat_pool_agent_id":                       "chat",
 	"chat_pool_queue_size":                     "chat",
 	"chat_pool_size":                           "chat",
-	"circadian_stale_doc_warn_threshold":       "memory",
 	"classification_vocabulary":                "router",
 	"context_growth_k":                         "plan",
 	"context_ref_snippet_chars":                "plan",
@@ -523,7 +669,6 @@ var legacyExecutionKey = map[string]string{
 	"edge_extraction_queue_size":               "ingestion",
 	"ewma_alpha":                               "supervision",
 	"experience_records_enabled":               "memory",
-	"experience_surprise_floor":                "memory",
 	"exploration_rate":                         "routing",
 	"fallback_confidence_threshold":            "plan",
 	"fallback_enabled":                         "plan",
@@ -539,8 +684,6 @@ var legacyExecutionKey = map[string]string{
 	"hebbian_learning_rate":                    "retrieval",
 	"hebbian_max_weight":                       "retrieval",
 	"hebbian_top_n":                            "retrieval",
-	"hippocampus_default_policy":               "hippocampus",
-	"hippocampus_policies":                     "hippocampus",
 	"histogram_alpha":                          "supervision",
 	"histogram_min_samples":                    "supervision",
 	"hnsw_ef_search":                           "retrieval",
@@ -563,18 +706,14 @@ var legacyExecutionKey = map[string]string{
 	"learned_scorer":                           "routing",
 	"learned_scorer_model_path":                "routing",
 	"llm_gateway_max_concurrency":              "llm",
-	"llm_gateway_retry_backoff_ms":             "llm",
 	"max_fanout_width":                         "plan",
 	"max_memory_results":                       "memory",
 	"max_neighbor_expansion":                   "memory",
-	"max_partial_context_bytes":                "plan",
 	"max_plan_cost":                            "plan",
-	"max_recursion_depth":                      "plan",
 	"max_replan_attempts":                      "plan",
 	"max_session_tokens":                       "session",
 	"max_step_energy":                          "plan",
 	"memory_relevance_threshold":               "memory",
-	"min_gc_age_days":                          "memory",
 	"min_step_energy":                          "plan",
 	"min_verified_events":                      "verification",
 	"neighbor_window_enabled":                  "retrieval",
@@ -584,13 +723,11 @@ var legacyExecutionKey = map[string]string{
 	"plan_timeout_ms":                          "plan",
 	"procedure_deprecate_below":                "procedure",
 	"profile_aggregator_interval_seconds":      "supervision",
-	"proposal_timeout_ms":                      "routing",
 	"query_entity_seeding_enabled":             "retrieval",
 	"recall_over_fetch":                        "retrieval",
 	"recall_similarity_floor":                  "retrieval",
 	"recall_spreading_enabled":                 "retrieval",
 	"recall_top_k":                             "retrieval",
-	"remember_default_activation":              "memory",
 	"require_explicit_session":                 "session",
 	"reranker_enabled":                         "retrieval",
 	"reranker_top_k":                           "retrieval",
@@ -622,10 +759,7 @@ var legacyExecutionKey = map[string]string{
 	"trust_score_cal_weight":                   "verification",
 	"use_global_workspace":                     "workspace",
 	"verification_queue_capacity":              "verification",
-	"verifier_pool_min_size":                   "verification",
 	"verifier_pool_threshold":                  "verification",
-	"verifier_pool_threshold_floor":            "verification",
-	"verifier_pool_threshold_step":             "verification",
 	"verifier_recency_window":                  "verification",
 	"workspace_execution_slots":                "workspace",
 	"workspace_min_fact_cosine":                "workspace",

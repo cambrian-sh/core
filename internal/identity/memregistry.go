@@ -173,6 +173,29 @@ func (m *MemRegistry) SetRoles(_ context.Context, id string, roles []string) err
 	return nil
 }
 
+// UpdateProfile implements domain.PrincipalRegistry (empty argument = keep).
+func (m *MemRegistry) UpdateProfile(_ context.Context, id, displayName, email string) error {
+	displayName, email = strings.TrimSpace(displayName), strings.TrimSpace(email)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.principals[domain.NormalizePrincipalID(id)]
+	if !ok {
+		return domain.ErrPrincipalNotFound
+	}
+	changed := false
+	if displayName != "" && displayName != p.DisplayName {
+		p.DisplayName, changed = displayName, true
+	}
+	if email != "" && email != p.Email {
+		p.Email, changed = email, true
+	}
+	if changed {
+		p.UpdatedAt = m.now().UTC()
+		m.principals[p.ID] = p
+	}
+	return nil
+}
+
 // LinkIdentity implements domain.PrincipalRegistry.
 func (m *MemRegistry) LinkIdentity(_ context.Context, ident domain.ExternalIdentity) error {
 	if strings.TrimSpace(ident.Issuer) == "" || strings.TrimSpace(ident.Subject) == "" {

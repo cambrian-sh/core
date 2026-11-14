@@ -108,7 +108,10 @@ func main() {
 	deadline := time.Now().Add(30 * time.Minute)
 	lastLog := time.Now()
 	for time.Now().Before(deadline) {
-		e, dr, _, llm, tr := b.Stats()
+		// Stats is (enqueued, dropped, drained, llmCalls, triplets): the third
+		// value is drained. This once read the second (dropped) as drained, so
+		// the loop never saw the drain finish and waited out the 30 min deadline.
+		e, _, dr, llm, tr := b.Stats()
 		if e == dr && time.Since(lastLog) > 500*time.Millisecond {
 			slog.Info("chunk-fill: drain status",
 				"enqueued", e, "drained", dr, "llm_calls", llm, "triplets_persisted", tr)
@@ -119,7 +122,7 @@ func main() {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	e, dr, _, llm, tr := b.Stats()
+	e, _, dr, llm, tr := b.Stats()
 	slog.Info("chunk-fill: done",
 		"enqueued", e, "drained", dr, "llm_calls", llm, "triplets_persisted", tr)
 }

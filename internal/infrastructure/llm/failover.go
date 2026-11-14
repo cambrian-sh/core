@@ -86,3 +86,65 @@ func hasAllCapabilities(id string, hints []string, capIndex map[string][]string)
 	}
 	return true
 }
+
+// firstChoice is the generator the ladder would pick for a call if every
+// generator were healthy: the first KNOWN id of suggested → purpose preference →
+// default, else the first capability candidate. It is the call's own model; any
+// other generator serving the call is a fallback (ENG-453).
+func firstChoice(suggestedID string, capabilityHints, preferenceIDs, allIDs []string, defaultID string, capIndex map[string][]string) string {
+	id, _ := resolveModel(suggestedID, capabilityHints, preferenceIDs, allIDs, defaultID,
+		func(string) bool { return true }, capIndex)
+	return id
+}
+
+// fallbackPolicy decides which generator may serve a call its first choice could
+// not (owner decision 2026-11-14, ENG-453): benchmark and pinned kernels never
+// fall back; production falls back only to generators an operator marked
+// equivalent (llm_provider.equivalent_generators). Immutable after construction.
+type fallbackPolicy struct {
+	pinned bool
+	// equiv[a][b] ⇔ a and b share a configured group.
+	equiv map[string]map[string]bool
+}
+
+func newFallbackPolicy(pinned bool, groups [][]string) fallbackPolicy {
+	fp := fallbackPolicy{pinned: pinned, equiv: map[string]map[string]bool{}}
+	for _, g := range groups {
+		for _, a := range g {
+			for _, b := range g {
+				if a == "" || b == "" || a == b {
+					continue
+				}
+				if fp.equiv[a] == nil {
+					fp.equiv[a] = map[string]bool{}
+				}
+				fp.equiv[a][b] = true
+			}
+		}
+	}
+	return fp
+}
+
+// admits reports whether id may serve a call whose first choice is first. The
+// first choice itself always may; with no first choice (nothing resolvable) there
+// is nothing to fall back from, so nothing is refused here.
+func (fp fallbackPolicy) admits(first, id string) bool {
+	if first == "" || id == first {
+		return true
+	}
+	if fp.pinned {
+		return false
+	}
+	return fp.equiv[first][id]
+}
+
+// describe says, for an error, why nothing else served the call.
+func (fp fallbackPolicy) describe(first string) string {
+	if fp.pinned {
+		return "llm_provider.pinned forbids any fallback"
+	}
+	if len(fp.equiv[first]) == 0 {
+		return "no generator is marked equivalent to it (llm_provider.equivalent_generators)"
+	}
+	return "no generator marked equivalent to it is available"
+}

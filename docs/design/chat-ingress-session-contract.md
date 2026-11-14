@@ -6,8 +6,8 @@
 > API), of which chat is one payload type. The contract below is unchanged; only the noun is.
 
 > **Superseded lane (2026-11-06, ADR-0142 K-5).** The premium Go chat ingress described
-> below as the default in-process manager was DELETED; the SDK `HTTPChatIngress` is
-> deprecated (loopback-only). The canonical conversation lane is the operator-plane
+> below as the default in-process manager was DELETED; the SDK `HTTPChatIngress` was
+> deleted too (2026-11-14, ENG-1449). The canonical conversation lane is the operator-plane
 > `OpenConversation`/`SendTurn`, authenticated per person through the kernel Authenticator.
 > Decision: `cambrian-knowledge/decisions/canonical-conversation-lane.md`.
 

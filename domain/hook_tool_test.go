@@ -145,3 +145,23 @@ func TestToolHooks_EventCarriesTheCall(t *testing.T) {
 		t.Errorf("principal chain = %v", got.Principals)
 	}
 }
+
+// ENG-629 (owner decision 2026-11-15): pre_tool and post_tool annotations reach the
+// agent on ToolCallResponse.Annotations, BESIDE the result — the result bytes (and so
+// the ledger record and replay hash) are unchanged.
+func TestToolHooks_AnnotationsReachTheAgentBesideTheResult(t *testing.T) {
+	t.Parallel()
+	grant := ToolGrant{Tool: "web", Policy: ToolResourcePolicy{AllowAll: true}}
+	pre := funcHook{preTool("pre", 0), answer(HookResult{Annotations: []string{"pre: rate limited source"}})}
+	post := funcHook{HookSpec{Name: "post", Points: []HookPoint{HookPostTool}},
+		answer(HookResult{Annotations: []string{"post: figures unverified"}})}
+	h := &fakeHandler{result: []byte(`{"body":"x"}`)}
+	r := hookedExec(t, SystemTool{Name: "web"}, grant, h, pre, post).
+		Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "web"})
+	if r.Denied || string(r.ResultJSON) != `{"body":"x"}` || r.ResultHash != hashBytes([]byte(`{"body":"x"}`)) {
+		t.Fatalf("result must be untouched: %+v", r)
+	}
+	if len(r.Annotations) != 2 || !strings.Contains(r.Annotations[0], "rate limited") || !strings.Contains(r.Annotations[1], "unverified") {
+		t.Fatalf("annotations = %q", r.Annotations)
+	}
+}

@@ -7,7 +7,11 @@ import (
 
 // AuditFilter constrains an audit query (ADR-0047 0047-08). Zero fields match all.
 type AuditFilter struct {
-	Actor      string
+	Actor string
+	// Actors, when non-empty, matches any of these actor strings and replaces
+	// Actor: one person recorded under several forms (bare id, `user:<id>`, the
+	// pre-ADR-0142 `agent:<id>` alias — PrincipalForms).
+	Actors     []string
 	TargetType string
 	TargetID   string
 	ActionType string

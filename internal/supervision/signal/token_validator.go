@@ -10,14 +10,13 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// ManagerAccess is the consumer-side interface signal needs from AgentManager
-// to look up instances by auth token. Both OSS Watcher and premium ReactiveEngine
-// satisfy this interface. ADR-0032.
-type ManagerAccess interface {
-	FindInstanceByToken(token string) *domain.Instance
-	GetInstanceIDs(agentID string) []string
-	EvictInstance(instanceID string)
-}
+// ManagerAccess is what signal needs from the agent manager to look up instances
+// by auth token. Both OSS Watcher and premium ReactiveEngine supply one. ADR-0032.
+//
+// An ALIAS of the domain port, not a copy of its method set (AGENTS.md §3.1): it
+// uses every method of domain.AgentManager, so a restated interface would only
+// drift from the port silently.
+type ManagerAccess = domain.AgentManager
 
 // ValidateToken extracts the Bearer token from gRPC metadata and validates it
 // against the manager's instance registry. Returns the matching Instance or

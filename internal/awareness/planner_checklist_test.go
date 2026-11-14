@@ -21,7 +21,7 @@ func TestPlanner_ChecklistArmOnlyWithAChecklist(t *testing.T) {
 	}
 
 	gen := &mockGenerator{response: minimalPlanJSON()}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil)
+	p := NewPlanner(gen, &mockAgentProvider{})
 	plan, err := p.GetExecutionPlan(context.Background(), "list overdue customers")
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestPlanner_ChecklistArmOnlyWithAChecklist(t *testing.T) {
 		Open:    []domain.OpenItem{{ID: "R1", Reason: "members with no result: CUS-007", Missing: []string{"CUS-007"}}},
 		Earlier: "Results of stage 1 (read an entry with ledger_get):\n- step 0 \"list\" -> led_x: CUS-004"})
 	gen2 := &mockGenerator{response: minimalPlanJSON()}
-	p2 := NewPlanner(gen2, &mockAgentProvider{}, nil)
+	p2 := NewPlanner(gen2, &mockAgentProvider{})
 	plan, err = p2.GetExecutionPlan(ctx, "list overdue customers")
 	if err != nil {
 		t.Fatal(err)

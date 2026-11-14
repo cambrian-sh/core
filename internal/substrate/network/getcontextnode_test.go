@@ -31,20 +31,13 @@ func (f *fakeCS) Has(_ context.Context, cid domain.CID) (bool, error) {
 }
 func (f *fakeCS) GC(context.Context, []domain.CID) error { return nil }
 
-// leakyVS would happily return raw LTM document text by id — the old fallback.
-type leakyVS struct{ *capturingVS }
-
-func (l *leakyVS) GetByID(_ context.Context, id string) (*domain.Document, error) {
-	return &domain.Document{ID: id, Text: "SECRET LTM TEXT"}, nil
-}
-
-// ADR-0048 D5: a cid absent from the ContentStore but present in the VectorStore
-// must NOT leak the LTM document text — the scope-bypassing fallback is removed.
+// ADR-0048 D5: a cid absent from the ContentStore must NOT be looked up in long-term
+// memory — the scope-bypassing GetByID fallback is removed. The server holds no raw
+// vector store at all any more (ENG-1462), so there is nothing to fall back to.
 func TestGetContextNode_NoLTMFallback(t *testing.T) {
 	t.Parallel()
 	s := &Server{
 		ContentStore: &fakeCS{nodes: map[domain.CID]*domain.ContextNode{}},
-		VectorStore:  &leakyVS{&capturingVS{saved: make(chan *domain.Document, 1)}},
 	}
 	resp, err := s.GetContextNode(context.Background(), &pb.ContextNodeRequest{Cid: "some-ltm-uuid"})
 	if err != nil {

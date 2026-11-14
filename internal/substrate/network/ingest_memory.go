@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -162,6 +159,12 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 				// ADR-0138 Q1: another writer holds this caller-named document id. Refused,
 				// never taken over — the earlier writer keeps read access to its content.
 				return nil, status.Error(codes.PermissionDenied, err.Error())
+			case errors.Is(err, memory.ErrFactsNotReady):
+				// ENG-488: sync_ingest_wait_for_facts ran out of time. The content IS
+				// stored; DeadlineExceeded tells the caller the read-your-writes wait,
+				// not the ingest, failed — and a retry is an idempotent no-op that
+				// waits again.
+				return nil, status.Error(codes.DeadlineExceeded, err.Error())
 			default:
 				return nil, status.Error(codes.Internal, "ingestion manager: "+err.Error())
 			}
@@ -246,28 +249,15 @@ func (s *Server) resolveIngestSourceMeta(req *pb.IngestMemoryRequest) (ingestSou
 	return m, nil
 }
 
-// descriptiveField normalises one free-text descriptive value (ADR-0136 A3.1): trimmed,
-// refused with INVALID_ARGUMENT when it holds a control character (a newline in a label
-// would let a value forge extra lines in a prompt's Source block or a passage label),
-// and cut to max characters at a rune boundary. Empty stays empty.
+// descriptiveField normalises one free-text descriptive value (ADR-0136 A3.1) through
+// the one rule both planes share (domain.NormalizeDescriptiveField); a refusal is
+// INVALID_ARGUMENT naming the field.
 func descriptiveField(field, v string, max int) (string, error) {
-	v = strings.TrimSpace(v)
-	for _, r := range v {
-		if unicode.IsControl(r) {
-			return "", status.Errorf(codes.InvalidArgument, "%s: control character %U is not allowed", field, r)
-		}
+	out, err := domain.NormalizeDescriptiveField(v, max)
+	if err != nil {
+		return "", status.Errorf(codes.InvalidArgument, "%s: %v", field, err)
 	}
-	if max > 0 && utf8.RuneCountInString(v) > max {
-		n := 0
-		for i := range v {
-			if n == max {
-				v = strings.TrimSpace(v[:i])
-				break
-			}
-			n++
-		}
-	}
-	return v, nil
+	return out, nil
 }
 
 // wireTime converts an optional wire Timestamp. A Timestamp is an absolute UTC

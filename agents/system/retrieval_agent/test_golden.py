@@ -27,8 +27,6 @@ def _cases():
     return {
         "plan_step_first": planner.plan_step_request(q),
         "plan_step_hop": planner.plan_step_request(q, "Bob Chen", ["Alice", "Bob Chen"], 2),
-        "reason_step": _capture(lambda llm: planner.reason_step(
-            {"query": q, "chunks": CHUNKS, "cot": ["Alice reports to Bob Chen."]}, llm)),
         "decide_continue": _capture(lambda llm: planner.decide_continue(
             {"query": q, "chunks": CHUNKS, "history": ["Alice"]}, llm)),
         "synthesize": planner.synthesize_request(q, CHUNKS, cited=False),
@@ -36,8 +34,6 @@ def _cases():
         "decompose": planner.decompose_request(q, routes=False),
         "decompose_routed": planner.decompose_request(q, routes=True),
         "answer_subq": _capture(lambda llm: planner.answer_subquestion("Who approved it?", CHUNKS, llm)),
-        "extract_provenance": _capture(lambda llm: planner.extract_provenance(
-            "Dana rotated the keys yesterday.", llm, hint="ops channel", ref_date="2026-03-04")),
     }
 
 

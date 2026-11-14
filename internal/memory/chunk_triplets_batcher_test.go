@@ -112,17 +112,18 @@ Triplets 2: <bob##works at##ibm>`,
 	b.Start(context.Background())
 	defer b.Stop()
 
-	b.Enqueue(&domain.Document{ID: "c1", Text: "caroline researched quantum and lives in Melbourne."})
-	b.Enqueue(&domain.Document{ID: "c2", Text: "bob works at IBM."})
-
-	// Wait for the batcher to drain.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		e, _, dr, _, _ := b.Stats()
-		if e >= 2 && dr >= 2 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait on the batcher's own completion signal (a tracked enqueue settles only
+	// after the chunks' triplets are PERSISTED), not on wall-clock polling of the
+	// drained counter, which ticks before persistence and made this test flake under
+	// load (T-20261102-three-more-wall-clock-timed-tests-flake-under, item 3).
+	w := b.EnqueueTracked([]*domain.Document{
+		{ID: "c1", Text: "caroline researched quantum and lives in Melbourne."},
+		{ID: "c2", Text: "bob works at IBM."},
+	})
+	wctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := w.Wait(wctx); err != nil {
+		t.Fatalf("tracked extraction did not complete: %v", err)
 	}
 
 	e, _, dr, llm, tr := b.Stats()
@@ -324,4 +325,43 @@ func (g *countingBatchGen) GenerateStream(_ context.Context, prompt string) (<-c
 	ch <- domain.StreamChunk{IsFinal: true}
 	close(ch)
 	return ch, nil
+}
+
+// ENG-415 regression: with an extractor slower than ingest, pending must stay
+// capped (2 x QueueSize, plus at most one re-queued batch) and the overflow must
+// surface as counted drops — before the fix the loop moved every queued item into
+// an uncapped pending slice, so nothing was ever dropped and memory grew without
+// bound. Queued items are slim copies: no embedding is retained.
+func TestChunkTripletsBatcher_PendingIsCapped(t *testing.T) {
+	t.Parallel()
+	store := &testBatcherStore{fakeChunkTripletsStore: newFakeChunkTripletsStore()}
+	b := NewChunkTripletsBatcher(&blockingGen{}, store, ChunkTripletsBatcherConfig{
+		QueueSize: 2, BatchSize: 1, MaxIdle: 5 * time.Millisecond, LLMTimeout: 10 * time.Millisecond,
+	})
+	b.Start(context.Background())
+	defer b.Stop()
+
+	maxSeen := 0
+	for i := 0; i < 200; i++ {
+		b.Enqueue(&domain.Document{ID: "c" + itoa(i), Text: "x",
+			Embedding: domain.Embedding{Vector: make([]float32, 1024)}})
+		time.Sleep(time.Millisecond)
+		b.mu.Lock()
+		if len(b.pending) > maxSeen {
+			maxSeen = len(b.pending)
+		}
+		for _, it := range b.pending {
+			if len(it.doc.Embedding.Vector) != 0 {
+				b.mu.Unlock()
+				t.Fatal("a queued item retains its embedding")
+			}
+		}
+		b.mu.Unlock()
+	}
+	if limit := b.maxPending + 1; maxSeen > limit {
+		t.Fatalf("pending reached %d, cap is %d (+1 re-queued batch)", maxSeen, limit)
+	}
+	if _, dropped, _, _, _ := b.Stats(); dropped == 0 {
+		t.Fatal("a lagging extractor produced no counted drops; backpressure never reached Enqueue")
+	}
 }

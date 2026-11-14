@@ -36,7 +36,7 @@ func TestRoleFromRoles(t *testing.T) {
 func principalVia(t *testing.T, idp domain.Authenticator, token, method string) (domain.PrincipalRef, error) {
 	t.Helper()
 	var got domain.PrincipalRef
-	_, err := operator.UnaryAuthInterceptor(idp, nil)(ctxWithToken(token), nil,
+	_, err := operator.UnaryAuthInterceptor(idp, nil, nil)(ctxWithToken(token), nil,
 		&grpc.UnaryServerInfo{FullMethod: method},
 		func(ctx context.Context, _ any) (any, error) { got = domain.PrincipalFromContext(ctx); return nil, nil })
 	return got, err
@@ -76,7 +76,7 @@ func TestDescribeAuth_IsUnauthenticatedAndHonest(t *testing.T) {
 	reg := identity.NewMemRegistry()
 	la := identity.NewLocalAccounts(reg, reg)
 	called := false
-	_, err := operator.UnaryAuthInterceptor(la, nil)(context.Background(), nil,
+	_, err := operator.UnaryAuthInterceptor(la, nil, nil)(context.Background(), nil,
 		&grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/DescribeAuth"},
 		func(context.Context, any) (any, error) { called = true; return nil, nil })
 	if err != nil || !called {

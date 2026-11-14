@@ -32,7 +32,8 @@ func plannerRequestFor(t *testing.T, capContract bool, input string) (domain.Gen
 	t.Helper()
 	gen := &requestRecorder{reply: `{"reasoning":"one step","subject":"s","cache_policy":"tool","steps":[{"query":"q","depends_on":[]}]}`}
 	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents(), caps: map[string][]string{"worker_agent": {"file_read"}},
-		tools: map[string][]string{"worker_agent": {"mcp:filesystem/read_*", "mcp:filesystem/move_file", "mcp:pdf-reader/*"}}}, nil)
+		tools: map[string][]string{"worker_agent": {"mcp:filesystem/read_*", "mcp:filesystem/move_file", "mcp:pdf-reader/*"}}})
+
 	p.SetCapabilityContract(capContract)
 	p.goos = "linux"
 	p.SetCalendar(goldenCalendar())
@@ -65,9 +66,6 @@ func TestPlannerSendsSystemMessagesAndSchema(t *testing.T) {
 		assertPairRequest(t, req, pair, domain.CacheTTLLong, "<request>\ndo something\n</request>\n\nPlan the request above. Resolve every relative date in it (\"the last two weeks\", \"this quarter\", \"tomorrow\") against <today>: take the dates from its reference lines rather than computing them, and write the exact dates into the steps that need them.")
 		if plan.PlannerPromptVersion != arm.want || arm.want != pair.StaticHash() {
 			t.Errorf("cap=%v: PlannerPromptVersion %q is not the pair's static hash", arm.cap, plan.PlannerPromptVersion)
-		}
-		if e, ok := domain.PromptRegistry[arm.want]; !ok || e.Schema != string(pair.Schema()) {
-			t.Errorf("cap=%v: prompt hash not registered with its schema", arm.cap)
 		}
 		// Every rule block the version certifies is in the bytes sent.
 		for _, section := range []string{"How to write steps:", "Dependencies:", "Fan-out:", "Checkpoints:", "Agent pinning:", "The reply:"} {
@@ -255,11 +253,11 @@ func TestReplan_FailedStepQueryStaysOutOfSystem(t *testing.T) {
 func TestPlannerForwardsItsRequestGenerator(t *testing.T) {
 	t.Parallel()
 	rec := &requestRecorder{reply: replanCapReply}
-	p := NewPlanner(rec, &mockAgentProvider{}, nil)
+	p := NewPlanner(rec, &mockAgentProvider{})
 	if _, ok := domain.AsRequestGenerator(p); !ok {
 		t.Fatal("a Planner over a RequestGenerator must report one")
 	}
-	if _, ok := domain.AsRequestGenerator(NewPlanner(&mockGenerator{}, &mockAgentProvider{}, nil)); ok {
+	if _, ok := domain.AsRequestGenerator(NewPlanner(&mockGenerator{}, &mockAgentProvider{})); ok {
 		t.Fatal("a Planner over a legacy generator must not claim RequestGenerator")
 	}
 	if _, err := NewPlannerReplanHandler(p).Replan(context.Background(), 0, errString("x"), nil, makePlan(domain.Step{Query: "q"})); err != nil {

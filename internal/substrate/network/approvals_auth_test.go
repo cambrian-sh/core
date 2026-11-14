@@ -58,8 +58,8 @@ func startApprovalServer(t *testing.T, hub domain.ApprovalHub, idp domain.Authen
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(nil), operator.UnaryAuthInterceptor(idp, nil)),
-		grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(nil), operator.StreamAuthInterceptor(idp, nil)),
+		grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(nil), operator.UnaryAuthInterceptor(idp, nil, nil)),
+		grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(nil), operator.StreamAuthInterceptor(idp, nil, nil)),
 	)
 	pb.RegisterOrchestratorServer(srv, &network.Server{ApprovalHub: hub})
 	go func() { _ = srv.Serve(lis) }()

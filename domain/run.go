@@ -12,6 +12,9 @@ const (
 	RunCompleted RunStatus = "completed"
 	// RunFailed stopped on an error (including a partial plan).
 	RunFailed RunStatus = "failed"
+	// RunCancelled was ended by an operator's CancelRun (contract 0102). Terminal:
+	// never resumable, distinct from a pause.
+	RunCancelled RunStatus = "cancelled"
 )
 
 // Run is ONE plan execution within a Session — the aggregate the kernel has always had at

@@ -67,7 +67,7 @@ func (p *PgQueryPlane) why(ctx context.Context, q domain.KnowledgeQuery,
 	rootExpanded := false
 
 	state := domain.LinkStateConfirmed
-	if scope.Bypass {
+	if seesReviewCandidates(ctx, scope) { // ENG-1536: operators only
 		state = ""
 	}
 	for hop := 1; hop <= depth && len(frontier) > 0; hop++ {

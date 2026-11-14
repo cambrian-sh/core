@@ -18,11 +18,10 @@ type TaskEventReader interface {
 	ReadAllAgentIDs() ([]string, error)
 }
 
-// AggregatorProfileStore persists computed AgentProfiles.
-type AggregatorProfileStore interface {
-	SaveProfile(ctx context.Context, agentID, sourceHash string, embedding []float32, profile domain.AgentProfile) error
-	GetProfile(ctx context.Context, agentID, sourceHash string) (*domain.AgentProfile, error)
-}
+// AggregatorProfileStore persists computed AgentProfiles. It is the whole
+// domain.VerifierProfileStore port, so an alias of it rather than a restated copy
+// (AGENTS.md §3.1).
+type AggregatorProfileStore = domain.VerifierProfileStore
 
 // neutralSuccessRate is the success rate of an agent with no VERIFIED outcome: the
 // same 0.5 cold-start prior gatekeeper.ScoreMerit uses for a missing profile, so

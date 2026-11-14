@@ -11,7 +11,6 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/memory"
 
 	"google.golang.org/grpc/codes"
@@ -60,16 +59,17 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	// sessionID left every turn from a Telegram user authorised as a plain agent
 	// call, with the policy linked to `surface:chat:telegram` never consulted and
 	// no decision ever attributed to the entry point.
-	if convID := s.callerConversation(ctx); sessionID != "" || convID != "" {
-		ctx = domain.WithSurface(ctx, authz.ResolveSurfaceForTurn(ctx, s.SessionMgr, s.ConvSurfaces, convID))
-	}
+	ctx = s.withTurnSurface(ctx, sessionID)
 
 	// The conversation this recall is for: its owner's read predicate narrows the
 	// agent's (T-20261106-conversations-cannot-be-opened-as-a-given). Resolved from
 	// the lease, like the session above.
 	ctx = s.withConversationOwner(ctx)
 
-	slog.Info("QueryMemory called", "caller", callerID, "query", req.GetQuery())
+	// The query is a person's text: INFO carries its length and fingerprint only;
+	// the raw text is DEBUG (T-20261103-kernel-logs-print-raw-query-text-and-leaf).
+	slog.InfoContext(ctx, "QueryMemory called", append([]any{"caller", callerID}, memory.TextLogAttrs("query", req.GetQuery())...)...)
+	slog.DebugContext(ctx, "QueryMemory query text", "caller", callerID, "query", req.GetQuery())
 
 	// The agentic control row is a loop artifact, not a memory: its Text is the
 	// LLM-SYNTHESIZED answer and its metadata carries the whole hop trace. Shipping
@@ -274,7 +274,10 @@ func (s *Server) policyNote(ctx context.Context, callerID string, resultCount in
 	if resultCount > 0 || s.Authz == nil {
 		return ""
 	}
-	pred, dec := s.Authz.ReadFilter(ctx, domain.AgentPrincipal(callerID), domain.SurfaceRef{Kind: domain.SurfaceAgent})
+	// The same surface the recall was decided on (the D7 re-stamp above), so the
+	// note explains the decision that was actually made.
+	pred, dec := s.Authz.ReadFilter(ctx, domain.AgentPrincipal(callerID),
+		domain.SurfaceFromContextOr(ctx, domain.SurfaceRef{Kind: domain.SurfaceAgent}))
 	switch {
 	case pred == nil:
 		// The principal did not resolve at all — the single most silent failure in

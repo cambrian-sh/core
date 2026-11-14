@@ -4,6 +4,9 @@
 package kernel
 
 import (
+	"fmt"
+	"log/slog"
+
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
@@ -12,7 +15,6 @@ import (
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
-	"log/slog"
 )
 
 // ProvideServer assembles the gRPC server from the four domain stacks.
@@ -40,15 +42,7 @@ func ProvideServer(
 		meta.Manager,
 		mem.Agent,
 		cfg,
-		// VecDB (raw tier 0, AGENTS.md §2.2): the server's only use of this store is
-		// writing agent neural traces (network.storeNeuralTrace). NO ADR permits it:
-		// whether traces are memory (→ mem.WriteStore, classified like their
-		// context) or telemetry (→ the run ledger / trace sink, store removed) is an
-		// open owner decision on T-20261113-agent-neural-traces-full-prompt-response-are.
-		// Do not add any other use of this store to the server.
-		mem.VecDB,
 		mem.QueryService,
-		mem.Hippocampus,
 		meta.EnqueueVerification(),
 		// ADR-0100: the DAG executor selects through meta.Selector (the
 		// capability-typed Dispatcher; the auction is deleted). Privileged organs keep calling
@@ -105,6 +99,14 @@ func ProvideServer(
 	llmProvider.SetSpendMeter(meter)
 	if gw, ok := llmGateway.(interface{ SetSpendMeter(*llm.SpendMeter) }); ok {
 		gw.SetSpendMeter(meter)
+	} else {
+		// The session spend ceiling (ADR-0131 D1-D3, max_session_tokens) reaches
+		// agent-stream LLM calls only through this setter. A gateway type that does
+		// not match used to skip it silently, so every agent-stream call ran with no
+		// ceiling; say so loudly until the typed backend bundle makes it a compile
+		// error (T-20261113-replace-optional-interface-probing-in-the).
+		slog.Error("LLM gateway does not accept a spend meter: agent-stream LLM calls run WITHOUT the session spend ceiling",
+			"gateway", fmt.Sprintf("%T", llmGateway), "max_session_tokens", cfg.Session.MaxSessionTokens)
 	}
 	srv.SpendMeter = meter
 

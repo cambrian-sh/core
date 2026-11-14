@@ -32,17 +32,17 @@ func rec(level slog.Level, component, msg string, attrs map[string]any) util.Log
 func TestLogRPCs_AreOperatorOnly(t *testing.T) {
 	t.Parallel()
 	for _, m := range []string{"QueryLogs", "TailLogs"} {
-		if !isOperatorOnly(operatorMethodPrefix + m) {
+		if !isOperatorOnly(operatorMethodPrefix+m, nil) {
 			t.Fatalf("%s is open to a Viewer", m)
 		}
 	}
 	// The guard has to beat the naming convention, which would otherwise open
 	// anything called Query* by its spelling alone.
-	if !isOperatorOnly(operatorMethodPrefix + "QueryLogs") {
+	if !isOperatorOnly(operatorMethodPrefix+"QueryLogs", nil) {
 		t.Fatal("the Query* convention overrode the explicit operator-only list")
 	}
 	// And the convention still holds for genuine reads.
-	if isOperatorOnly(operatorMethodPrefix + "QueryMemory") {
+	if isOperatorOnly(operatorMethodPrefix+"QueryMemory", nil) {
 		t.Fatal("an ordinary read became operator-only")
 	}
 }

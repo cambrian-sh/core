@@ -29,11 +29,15 @@ import (
 func TestPlanCeiling_KeepsAPlanThatKeepsMovingAlive(t *testing.T) {
 	t.Parallel()
 	act := newPlanActivity()
-	ctx, stop := startPlanCeiling(context.Background(), time.Minute, 60*time.Millisecond, act.at)
+	// The idle limit is 12x the touch interval (ENG-761): with a 60 ms limit a
+	// loaded Windows host once stalled this goroutine 73 ms between touches and
+	// cut a plan that WAS moving. 250 ms leaves a scheduler stall of 230 ms of
+	// headroom while still spanning several idle windows.
+	ctx, stop := startPlanCeiling(context.Background(), time.Minute, 250*time.Millisecond, act.at)
 	defer stop()
 
-	// Ten idle windows of real time, with a step boundary every 20 ms.
-	deadline := time.Now().Add(600 * time.Millisecond)
+	// Three idle windows of real time, with a step boundary every 20 ms.
+	deadline := time.Now().Add(750 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		act.touch()
 		time.Sleep(20 * time.Millisecond)
@@ -189,7 +193,7 @@ func (sleepyModel) Capabilities() domain.Capabilities { return domain.Capabiliti
 func watchdogServer(t *testing.T, steps int, plan config.PlanConfig, caller callerFunc, model any) *Server {
 	t.Helper()
 	reg := metabolism.NewInMemoryRegistry()
-	reg.SetAgent(domain.AgentDefinition{ID: "worker", Name: "worker", Runtime: domain.RuntimePython, Trait: domain.TraitTool})
+	reg.SetAgent(domain.AgentDefinition{ID: "worker", Name: "worker", Runtime: domain.RuntimePython, Trait: domain.TraitCognitive})
 	mgr := agentmgr.NewAgentManager(reg, "python", "unix://tmp/cambrian.sock", nil)
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{Gatekeeper: config.GatekeeperConfig{
 		GatekeeperMaxCandidates: 5, GatekeeperW1: 0.4, GatekeeperW2: 0.4, GatekeeperW3: 0.2,

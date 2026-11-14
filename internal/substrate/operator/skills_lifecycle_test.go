@@ -120,12 +120,12 @@ func TestSkillLifecycleRPCs_UnimplementedWithoutStore(t *testing.T) {
 // Mutations are Operator-only; the reads are open to a Viewer.
 func TestSkillLifecycleRPCs_RoleGate(t *testing.T) {
 	for _, m := range []string{"DecideSkillProposal", "SetSkillLock", "RollbackSkill"} {
-		if !isOperatorOnly(operatorMethodPrefix + m) {
+		if !isOperatorOnly(operatorMethodPrefix+m, nil) {
 			t.Errorf("%s must be operator-only", m)
 		}
 	}
 	for _, m := range []string{"ListSkillProposals", "ListSkillLedger"} {
-		if isOperatorOnly(operatorMethodPrefix + m) {
+		if isOperatorOnly(operatorMethodPrefix+m, nil) {
 			t.Errorf("%s is a read", m)
 		}
 	}

@@ -49,6 +49,16 @@ const (
 	FactPredErasedCloses    = "erased_closes"     // text: the item id the erased statement had closed
 )
 
+// IsReservedKnowledgeKind reports whether kind is kernel-reserved: written only by the
+// kernel (authz.ReservedKindGuard refuses plugin writes; app/app.go) and keyed per
+// WRITING principal, so two people's values for one key are two memories, not a
+// conflict. Operator surfaces that list business-object contradictions exclude these
+// kinds (owner decision 2026-11-14, ENG-468: "contradictions there mean
+// business-object conflicts only").
+func IsReservedKnowledgeKind(kind string) bool {
+	return kind == KindMemoryFact
+}
+
 // Reason codes of the valid_time_supersession authority.
 const (
 	ReasonFactCurrent = "current_value"

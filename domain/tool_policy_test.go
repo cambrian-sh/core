@@ -59,6 +59,11 @@ func TestToolResourcePolicy_AllowsURL(t *testing.T) {
 		{"rfc1918 denied (SSRF)", "http://10.0.0.5/x", false},
 		{"link-local cloud-metadata denied (SSRF)", "http://169.254.169.254/latest/meta-data", false},
 		{"malformed denied", "not a url", false},
+		// ENG-1419: one definition of a non-public address (pkg/egress).
+		{"CGNAT denied", "http://100.64.0.1/x", false},
+		{"IPv4-mapped metadata denied", "http://[::ffff:169.254.169.254]/x", false},
+		{"unique-local IPv6 denied", "http://[fd00::1]/x", false},
+		{"public IP literal allowed", "https://93.184.216.34/x", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

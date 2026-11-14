@@ -3,8 +3,10 @@ package ingress
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -50,28 +52,79 @@ func (f *fakeTransport) count() int {
 	return len(f.sent)
 }
 
+// fakeJournal is an in-memory DeliveryJournal with the real compare-and-set
+// semantics (the bbolt one is tested in internal/storage and internal/kernel).
 type fakeJournal struct {
-	seen    map[string]bool
-	dead    []domain.UndeliverableDelivery
-	markErr error
+	mu      sync.Mutex
+	intents map[string]domain.DeliveryIntent
+	prepErr error
 }
 
-func newFakeJournal() *fakeJournal { return &fakeJournal{seen: map[string]bool{}} }
-
-func (f *fakeJournal) MarkDeliveredOnce(key string) (bool, error) {
-	if f.markErr != nil {
-		return false, f.markErr
-	}
-	if f.seen[key] {
-		return false, nil
-	}
-	f.seen[key] = true
-	return true, nil
+func newFakeJournal() *fakeJournal {
+	return &fakeJournal{intents: map[string]domain.DeliveryIntent{}}
 }
 
-func (f *fakeJournal) RecordUndeliverable(d domain.UndeliverableDelivery) error {
-	f.dead = append(f.dead, d)
+func (f *fakeJournal) PrepareDelivery(_ context.Context, in domain.DeliveryIntent) (domain.DeliveryIntent, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.prepErr != nil {
+		return domain.DeliveryIntent{}, false, f.prepErr
+	}
+	if got, ok := f.intents[in.Key]; ok {
+		return got, false, nil
+	}
+	in.State = domain.DeliveryPrepared
+	in.UpdatedAt = in.CreatedAt
+	f.intents[in.Key] = in
+	return in, true, nil
+}
+
+func (f *fakeJournal) AdvanceDelivery(_ context.Context, key string, from, to domain.DeliveryIntentState, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	in, ok := f.intents[key]
+	if !ok {
+		return errors.New("unknown key")
+	}
+	if !domain.CanDeliveryTransition(from, to) {
+		return errors.New("illegal transition")
+	}
+	if in.State != from {
+		return domain.ErrDeliveryStateConflict
+	}
+	in.State, in.Err = to, reason
+	if to == domain.DeliveryDispatched {
+		in.Attempts++
+	}
+	if to == domain.DeliveryConfirmed {
+		in.Text = ""
+	}
+	f.intents[key] = in
 	return nil
+}
+
+func (f *fakeJournal) ListDeliveries(_ context.Context, states []domain.DeliveryIntentState, _ int) ([]domain.DeliveryIntent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.DeliveryIntent
+	for _, in := range f.intents {
+		for _, st := range states {
+			if in.State == st {
+				out = append(out, in)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeJournal) PruneDeliveries(context.Context, time.Time, int) (int, bool, error) {
+	return 0, false, nil
+}
+
+func (f *fakeJournal) get(txnID string) domain.DeliveryIntent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.intents[deliveryKey(convID, txnID)]
 }
 
 const convID = "conv-7"
@@ -187,26 +240,24 @@ func TestDeliver_IsIdempotentOnTxnID(t *testing.T) {
 	}
 }
 
-// A journal that cannot answer must not silently become a duplicate sender.
-// Refusing is the safe direction: late beats twice.
+// A journal that cannot record must not silently become a duplicate (or lost)
+// sender. Refusing is the safe direction: late beats twice.
 func TestDeliver_JournalFailureRefusesRatherThanDuplicating(t *testing.T) {
 	tr := &fakeTransport{}
 	j := newFakeJournal()
-	j.markErr = errors.New("journal unavailable")
+	j.prepErr = errors.New("journal unavailable")
 	s := NewDeliveryService(bound(), registered(), tr)
 	s.SetJournal(j)
 
 	if err := s.Deliver(context.Background(), convID, "hello", "msg-1"); err == nil {
-		t.Fatal("a failed idempotency check must surface as an error")
+		t.Fatal("a failed prepare must surface as an error")
 	}
 	if tr.count() != 0 {
-		t.Error("nothing may be sent when idempotency cannot be established")
+		t.Error("nothing may be sent when the intent cannot be recorded")
 	}
 }
 
-// Permanent failures are dead-lettered and not retried; that is the whole reason
-// the distinction exists. A message that failed after its turn already succeeded
-// has nowhere else to surface.
+// Permanent failures settle as failed (the dead letter) and are never retried.
 func TestDeliver_PermanentFailureIsDeadLettered(t *testing.T) {
 	tr := &fakeTransport{err: domain.PermanentDelivery(errors.New("403 bot was blocked by the user"))}
 	j := newFakeJournal()
@@ -217,32 +268,171 @@ func TestDeliver_PermanentFailureIsDeadLettered(t *testing.T) {
 	if !errors.Is(err, domain.ErrDeliveryPermanent) {
 		t.Fatalf("expected a permanent error, got %v", err)
 	}
-	if len(j.dead) != 1 {
-		t.Fatalf("expected 1 dead letter, got %d", len(j.dead))
+	in := j.get("msg-1")
+	if in.State != domain.DeliveryFailed {
+		t.Fatalf("intent state = %s, want failed", in.State)
 	}
-	if j.dead[0].ConversationID != convID || j.dead[0].TxnID != "msg-1" {
-		t.Errorf("dead letter lost its provenance: %+v", j.dead[0])
+	if in.ConversationID != convID || in.TxnID != "msg-1" || in.Address.ExternalID != "tg:12345" {
+		t.Errorf("dead letter lost its provenance: %+v", in)
 	}
-	if j.dead[0].Address.ExternalID != "tg:12345" {
-		t.Errorf("dead letter must record where it was headed: %+v", j.dead[0].Address)
+	// A retry returns the recorded failure without sending again.
+	tr.err = nil
+	if err := s.Deliver(context.Background(), convID, "hello", "msg-1"); !errors.Is(err, domain.ErrDeliveryPermanent) {
+		t.Fatalf("retry of a failed intent: %v", err)
+	}
+	if tr.count() != 0 {
+		t.Error("a failed intent must not be resent")
 	}
 }
 
-// A transient failure is NOT dead-lettered — the caller may retry, and recording
-// it as terminal would hide a message that would have gone through.
-func TestDeliver_TransientFailureIsNotDeadLettered(t *testing.T) {
-	tr := &fakeTransport{err: errors.New("429 too many requests")}
+// ENG-1172's root cause: the old journal marked a message delivered BEFORE the
+// send, so a transient failure followed by a retry returned success without
+// sending. Two-phase: the transient failure puts the intent back to prepared and
+// the retry sends it — exactly once.
+func TestDeliver_TransientFailureThenRetrySendsExactlyOnce(t *testing.T) {
+	tr := &fakeTransport{err: domain.TransientDelivery(errors.New("no live daemon"))}
 	j := newFakeJournal()
 	s := NewDeliveryService(bound(), registered(), tr)
 	s.SetJournal(j)
 
 	err := s.Deliver(context.Background(), convID, "hello", "msg-1")
-	if err == nil || errors.Is(err, domain.ErrDeliveryPermanent) {
+	if !errors.Is(err, domain.ErrDeliveryTransient) {
 		t.Fatalf("expected a transient error, got %v", err)
 	}
-	if len(j.dead) != 0 {
-		t.Errorf("a transient failure must not be dead-lettered, got %d", len(j.dead))
+	if st := j.get("msg-1").State; st != domain.DeliveryPrepared {
+		t.Fatalf("after a transient failure the intent is %s, want prepared", st)
 	}
+	tr.err = nil
+	for i := 0; i < 2; i++ {
+		if err := s.Deliver(context.Background(), convID, "hello", "msg-1"); err != nil {
+			t.Fatalf("retry %d: %v", i, err)
+		}
+	}
+	if tr.count() != 1 {
+		t.Fatalf("sent %d times, want exactly 1 (no drop, no duplicate)", tr.count())
+	}
+	in := j.get("msg-1")
+	if in.State != domain.DeliveryConfirmed || in.Text != "" {
+		t.Errorf("confirmed intent = %+v; want confirmed with the text dropped", in)
+	}
+}
+
+// An unlabelled failure after dispatch may have reached the far side: it is
+// recorded as ambiguous and never resent automatically.
+func TestDeliver_UnlabelledFailureIsAmbiguousAndNotResent(t *testing.T) {
+	tr := &fakeTransport{err: errors.New("context deadline exceeded")}
+	j := newFakeJournal()
+	s := NewDeliveryService(bound(), registered(), tr)
+	s.SetJournal(j)
+
+	if err := s.Deliver(context.Background(), convID, "hello", "msg-1"); !errors.Is(err, domain.ErrDeliveryAmbiguous) {
+		t.Fatalf("expected ErrDeliveryAmbiguous, got %v", err)
+	}
+	if st := j.get("msg-1").State; st != domain.DeliveryAmbiguous {
+		t.Fatalf("state = %s, want ambiguous", st)
+	}
+	tr.err = nil
+	if err := s.Deliver(context.Background(), convID, "hello", "msg-1"); !errors.Is(err, domain.ErrDeliveryAmbiguous) {
+		t.Fatalf("retry of an ambiguous intent: %v", err)
+	}
+	s.RedriveGrace = 0
+	s.Redrive(context.Background())
+	if tr.count() != 0 {
+		t.Error("an ambiguous intent must not be resent by a retry or the redriver")
+	}
+}
+
+// A crash between prepare and dispatch leaves a prepared intent nobody retries;
+// the redriver sends it once its grace period has passed.
+func TestRedrive_SendsAPreparedIntentLeftByACrash(t *testing.T) {
+	tr := &fakeTransport{}
+	j := newFakeJournal()
+	s := NewDeliveryService(bound(), registered(), tr)
+	s.SetJournal(j)
+	now := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	_, _, _ = j.PrepareDelivery(context.Background(), domain.DeliveryIntent{
+		Key: deliveryKey(convID, "msg-9"), ConversationID: convID, TxnID: "msg-9",
+		Address: bound()[convID].Delivery, Text: "the answer", CreatedAt: now,
+	})
+	s.Redrive(context.Background()) // inside the grace period: left to its caller
+	if tr.count() != 0 {
+		t.Fatal("an intent inside the grace period must be left to its caller")
+	}
+	now = now.Add(DefaultRedriveGrace + time.Second)
+	s.Redrive(context.Background())
+	if tr.count() != 1 || tr.sent[0].Text != "the answer" || tr.sent[0].TxnID != "msg-9" {
+		t.Fatalf("redrive sent %+v", tr.sent)
+	}
+	if st := j.get("msg-9").State; st != domain.DeliveryConfirmed {
+		t.Errorf("state = %s, want confirmed", st)
+	}
+}
+
+// A process that died mid-send leaves a dispatched intent: the redriver marks it
+// ambiguous rather than resending it.
+func TestRedrive_StaleDispatchedBecomesAmbiguous(t *testing.T) {
+	tr := &fakeTransport{}
+	j := newFakeJournal()
+	s := NewDeliveryService(bound(), registered(), tr)
+	s.SetJournal(j)
+	s.RedriveGrace = 0
+	key := deliveryKey(convID, "msg-3")
+	_, _, _ = j.PrepareDelivery(context.Background(), domain.DeliveryIntent{
+		Key: key, ConversationID: convID, TxnID: "msg-3", Address: bound()[convID].Delivery, Text: "x",
+	})
+	_ = j.AdvanceDelivery(context.Background(), key, domain.DeliveryPrepared, domain.DeliveryDispatched, "")
+
+	s.Redrive(context.Background())
+	if st := j.get("msg-3").State; st != domain.DeliveryAmbiguous {
+		t.Fatalf("state = %s, want ambiguous", st)
+	}
+	if tr.count() != 0 {
+		t.Error("a possibly-sent intent must not be resent")
+	}
+}
+
+// Retries are bounded: past MaxAttempts a prepared intent fails (visible), and an
+// intent whose ingress was revoked fails instead of being sent.
+func TestRedrive_FailsExhaustedAndRevokedIntents(t *testing.T) {
+	tr := &fakeTransport{}
+	j := newFakeJournal()
+	s := NewDeliveryService(bound(), fakeIngresses{}, tr) // ingress revoked
+	s.SetJournal(j)
+	s.RedriveGrace = 0
+	s.MaxAttempts = 2
+	addr := bound()[convID].Delivery
+
+	exhausted := deliveryKey(convID, "msg-a")
+	_, _, _ = j.PrepareDelivery(context.Background(), domain.DeliveryIntent{Key: exhausted, ConversationID: convID, TxnID: "msg-a", Address: addr, Text: "x"})
+	for i := 0; i < 2; i++ {
+		_ = j.AdvanceDelivery(context.Background(), exhausted, domain.DeliveryPrepared, domain.DeliveryDispatched, "")
+		_ = j.AdvanceDelivery(context.Background(), exhausted, domain.DeliveryDispatched, domain.DeliveryPrepared, "transient")
+	}
+	revoked := deliveryKey(convID, "msg-b")
+	_, _, _ = j.PrepareDelivery(context.Background(), domain.DeliveryIntent{Key: revoked, ConversationID: convID, TxnID: "msg-b", Address: addr, Text: "y"})
+
+	s.Redrive(context.Background())
+	if st := j.get("msg-a").State; st != domain.DeliveryFailed {
+		t.Errorf("exhausted intent = %s, want failed", st)
+	}
+	if in := j.get("msg-b"); in.State != domain.DeliveryFailed || !strings.Contains(in.Err, "no longer registered") {
+		t.Errorf("revoked intent = %+v, want failed with the revocation reason", in)
+	}
+	if tr.count() != 0 {
+		t.Error("neither intent may be sent")
+	}
+}
+
+func TestDeliveryService_StartStopIsClean(t *testing.T) {
+	s := NewDeliveryService(bound(), registered(), &fakeTransport{})
+	s.SetJournal(newFakeJournal())
+	s.RedriveInterval = time.Millisecond
+	s.Start(context.Background())
+	time.Sleep(5 * time.Millisecond)
+	s.Stop()
+	s.Stop() // idempotent
 }
 
 // Without a journal delivery still works — best-effort is a valid deployment,

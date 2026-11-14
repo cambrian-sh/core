@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -46,6 +47,15 @@ const taskResultMaxChars = 20_000
 // recognizably a failure narrative rather than a produced answer.
 const taskFailurePrefix = "task failed: "
 
+// mcpTaskRetention is how long a FINISHED task stays pollable. The index is
+// memory-resident (see above), so without a bound every task ever submitted
+// stays in it for the kernel's lifetime (T-20261103-per-plan-maps-in-memory-
+// agent-stepdocs). A day is long past any polling client's interest: a caller
+// polls a task it is waiting on, and a task already lost to a restart is
+// "unknown" anyway. Running, paused and dormant tasks are never pruned —
+// BeneficiaryOf must keep answering for them.
+const mcpTaskRetention = 24 * time.Hour
+
 // mcpTaskExecute runs one submitted task to completion through the kernel's
 // execute lane. Synchronous — the lane calls it from the dispatch goroutine.
 type mcpTaskExecute func(ctx context.Context, sessionID, task string) (result string, meta map[string]string, err error)
@@ -59,6 +69,13 @@ type mcpTaskLane struct {
 
 	mu    sync.RWMutex
 	tasks map[domain.SessionID]*mcpTaskRecord
+
+	// Run ownership (AGENTS.md §3.3, ENG-1467): every dispatched run is counted
+	// in wg and cancellable through cancels; Stop cancels them and waits. stopped
+	// refuses new submissions once Stop began.
+	wg      sync.WaitGroup
+	cancels map[domain.SessionID]context.CancelFunc
+	stopped bool
 }
 
 type mcpTaskRecord struct {
@@ -84,6 +101,7 @@ func newMCPTaskLane(sessions *session.SessionManager, authz domain.Authorizer, e
 		authz:    authz,
 		execute:  execute,
 		tasks:    map[domain.SessionID]*mcpTaskRecord{},
+		cancels:  map[domain.SessionID]context.CancelFunc{},
 	}
 }
 
@@ -111,7 +129,19 @@ func (l *mcpTaskLane) Submit(ctx context.Context, task, parentID string, benefic
 		return "", fmt.Errorf("open task session: %w", err)
 	}
 	now := time.Now().UTC()
+	// See the run note below: the caller's values, not its cancellation — but the
+	// lane's own Stop can still cancel the run.
+	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		cancelRun()
+		return "", errors.New("the task lane is shutting down")
+	}
+	// Prune on the write path, so the index is bounded by the tasks finished
+	// within the retention window plus the live ones — no sweeper goroutine to
+	// own and stop (AGENTS.md §3.3).
+	l.pruneLocked(now)
 	l.tasks[ses.ID] = &mcpTaskRecord{
 		goal:        task,
 		beneficiary: beneficiary,
@@ -119,18 +149,38 @@ func (l *mcpTaskLane) Submit(ctx context.Context, task, parentID string, benefic
 		createdAt:   now,
 		updatedAt:   now,
 	}
+	l.cancels[ses.ID] = cancelRun
+	l.wg.Add(1)
 	l.mu.Unlock()
-	go l.run(ses.ID, task)
+	// ENG-1467 (owner decision 2026-11-14): Execute runs on the AUTHENTICATED MCP
+	// caller's context — its principal, surface, scope and trace values ride
+	// along (AGENTS.md §2.7) — detached with context.WithoutCancel, because the
+	// submitting request ends long before the plan does and its cancellation
+	// must not be what kills the task. The beneficiary stays the separate index
+	// field above, which routing and consent read (ADR-0142 D8). Before this the
+	// run started from context.Background() and identity was rebuilt from the
+	// session id alone.
+	go l.run(runCtx, ses.ID, task)
 	return string(ses.ID), nil
 }
 
 // run drives one task through Execute and records the terminal outcome. It is
 // the async half the operator lane fires and forgets (SendFn); here the
 // returned result is the whole point of the polling contract, so it is kept.
-func (l *mcpTaskLane) run(id domain.SessionID, task string) {
-	// Detached on purpose: the submitting request is long gone by the time the
-	// plan finishes, and its cancellation must not be what kills the task.
-	result, meta, err := l.execute(context.Background(), string(id), task)
+//
+// runCtx is the submitting request's context already detached from its
+// cancellation (Submit), so the caller's values reach Execute.
+func (l *mcpTaskLane) run(runCtx context.Context, id domain.SessionID, task string) {
+	defer l.wg.Done()
+	defer func() {
+		l.mu.Lock()
+		if c := l.cancels[id]; c != nil {
+			c()
+			delete(l.cancels, id)
+		}
+		l.mu.Unlock()
+	}()
+	result, meta, err := l.execute(runCtx, string(id), task)
 
 	state := mcpserve.TaskStateSucceeded
 	note := truncateTaskText(result)
@@ -152,6 +202,27 @@ func (l *mcpTaskLane) run(id domain.SessionID, task string) {
 		t.state, t.result, t.updatedAt = state, note, time.Now().UTC()
 	}
 	l.mu.Unlock()
+}
+
+// Stop refuses new submissions, cancels every in-flight run and waits for them
+// to return, or for ctx (the shutdown budget) to end. Idempotent.
+func (l *mcpTaskLane) Stop(ctx context.Context) {
+	l.mu.Lock()
+	l.stopped = true
+	for _, cancel := range l.cancels {
+		cancel()
+	}
+	l.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		l.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		slog.Warn("ADR-0126: MCP task lane runs still in flight at shutdown", "err", ctx.Err())
+	}
 }
 
 // Status reads one task from the index, refined by the session's live status
@@ -206,6 +277,16 @@ func (l *mcpTaskLane) BeneficiaryOf(task domain.SessionID) domain.PrincipalRef {
 		return t.beneficiary
 	}
 	return domain.PrincipalRef{}
+}
+
+// pruneLocked drops terminal task records last updated more than
+// mcpTaskRetention before now. The caller holds l.mu for writing.
+func (l *mcpTaskLane) pruneLocked(now time.Time) {
+	for id, t := range l.tasks {
+		if mcpserve.TaskTerminal(t.state) && now.Sub(t.updatedAt) > mcpTaskRetention {
+			delete(l.tasks, id)
+		}
+	}
 }
 
 // truncateTaskText caps a stored result, marking the cut.

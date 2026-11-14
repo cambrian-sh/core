@@ -50,7 +50,7 @@ func (s *Server) stepOutputForwarder(ctx context.Context, lease domain.LeaseID) 
 	if s.StepOutput == nil {
 		return nil
 	}
-	if reason := s.StepOutput.SuppressReason(lease, callerAgentHeader(ctx)); reason != "" {
+	if reason := s.StepOutput.SuppressReason(ctx, lease, callerAgentHeader(ctx)); reason != "" {
 		slog.Debug("step output: gateway deltas suppressed for this call", "lease", lease, "reason", reason)
 		return nil
 	}

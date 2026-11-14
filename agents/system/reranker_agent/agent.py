@@ -7,8 +7,8 @@ order. The Go side blends each score with the Stage-A score via
 ``FinalScore = w_bge * bge + (1 - w_bge) * stageA`` (internal/memory/blend.go).
 
 It is a privileged system organ (``domain.IsSystemAgent``): invoked DIRECTLY by
-the kernel on the recall path via the Auctioneer (no auction / gatekeeper /
-interview), the same class as the kg_extractor and the pre-plan Scout. It
+the kernel on the recall path through ``agentplane.Transport.CallAgent`` (no
+dispatch / gatekeeper), the same class as the kg_extractor. It
 subclasses ``CognitiveAgent`` only for the AgentService runtime (the SDK
 deprecated ``DeterministicAgent``, T-20261031-core-system-agents-docling-kg-extractor):
 ``run()`` is overridden and never calls ``think()``, so no generative LLM is ever

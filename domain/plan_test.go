@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -66,7 +67,7 @@ func TestStep_MaxEnergy_RoundTrip(t *testing.T) {
 }
 
 // Cycle 6 (ADR-0013): Legacy Step JSON without checkpoint fields deserialises
-// with zero values — CheckpointAfter=false, CheckpointQuery="".
+// with zero values — CheckpointAfter=false.
 func TestStep_CheckpointFields_BackwardCompatibility(t *testing.T) {
 	t.Parallel()
 	raw := `{"query":"do work","depends_on":[0]}`
@@ -77,19 +78,36 @@ func TestStep_CheckpointFields_BackwardCompatibility(t *testing.T) {
 	if s.CheckpointAfter {
 		t.Error("expected CheckpointAfter=false for legacy step, got true")
 	}
-	if s.CheckpointQuery != "" {
-		t.Errorf("expected empty CheckpointQuery for legacy step, got %q", s.CheckpointQuery)
+}
+
+// ENG-1313: a stored plan written before Step.CheckpointQuery was deleted still
+// decodes; the retired key is ignored and is not written back.
+func TestStep_RetiredCheckpointQueryIsIgnored(t *testing.T) {
+	t.Parallel()
+	raw := `{"query":"do work","checkpoint_after":true,"checkpoint_query":"is it valid?"}`
+	var s Step
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !s.CheckpointAfter || s.Query != "do work" {
+		t.Errorf("legacy step lost its live fields: %+v", s)
+	}
+	out, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), "checkpoint_query") {
+		t.Errorf("retired checkpoint_query written back: %s", out)
 	}
 }
 
-// Cycle 7 (ADR-0013): Step with both checkpoint fields set round-trips through JSON.
+// Cycle 7 (ADR-0013): Step with CheckpointAfter set round-trips through JSON.
 func TestStep_CheckpointFields_RoundTrip(t *testing.T) {
 	t.Parallel()
 	s := Step{
 		Query:           "convert CSV to JSON schema",
 		DependsOn:       []int{0},
 		CheckpointAfter: true,
-		CheckpointQuery: "Is the output valid JSON schema?",
 	}
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -101,9 +119,6 @@ func TestStep_CheckpointFields_RoundTrip(t *testing.T) {
 	}
 	if !got.CheckpointAfter {
 		t.Error("CheckpointAfter: want true, got false")
-	}
-	if got.CheckpointQuery != "Is the output valid JSON schema?" {
-		t.Errorf("CheckpointQuery: want %q, got %q", "Is the output valid JSON schema?", got.CheckpointQuery)
 	}
 }
 
@@ -124,9 +139,6 @@ func TestStep_OptionalFields_OmittedWhenZero(t *testing.T) {
 	// Cycle 8 (ADR-0013): checkpoint fields must be absent from JSON when at zero values.
 	if _, ok := raw["checkpoint_after"]; ok {
 		t.Error("checkpoint_after should be omitted when false")
-	}
-	if _, ok := raw["checkpoint_query"]; ok {
-		t.Error("checkpoint_query should be omitted when empty")
 	}
 	// ROUTE-03: required_capabilities is omitted when empty (backward compatible).
 	if _, ok := raw["required_capabilities"]; ok {

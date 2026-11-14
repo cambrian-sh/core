@@ -254,7 +254,9 @@ func TestPg_EntityOp_CandidateLaneReadsTheSubjectNotTheInbox(t *testing.T) {
 		t.Fatalf("confirm: %v", err)
 	}
 
-	res, err := plane.Query(ctx, domain.KnowledgeQuery{Kind: domain.QueryEntity, EntityID: "k2scope/lane", Limit: limit},
+	// ENG-1536: candidates are the operator plane's.
+	opCtx := domain.WithSurface(ctx, domain.SurfaceRef{Kind: domain.SurfaceOperator, ID: "console"})
+	res, err := plane.Query(opCtx, domain.KnowledgeQuery{Kind: domain.QueryEntity, EntityID: "k2scope/lane", Limit: limit},
 		&domain.TagPredicate{Bypass: true})
 	if err != nil {
 		t.Fatalf("entity op: %v", err)

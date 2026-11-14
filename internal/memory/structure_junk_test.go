@@ -231,6 +231,13 @@ func TestStructureJunk_DropsAreLoggedWithHashAndSample(t *testing.T) {
 	if strings.Contains(logs, long) {
 		t.Error("a long leaf must be logged as a truncated sample, not in full")
 	}
+	// Leaf text is document content: only the DEBUG lines may carry a sample; the
+	// WARN summary is kind/reason/len/hash (T-20261103-kernel-logs-print-raw-query-text-and-leaf).
+	for _, ln := range strings.Split(logs, "\n") {
+		if strings.Contains(ln, "level=WARN") && strings.Contains(ln, "Walmart") {
+			t.Errorf("a WARN line carries leaf content: %s", ln)
+		}
+	}
 	if !strings.Contains(logs, "…") {
 		t.Error("truncated sample must be marked with …")
 	}

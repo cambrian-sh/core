@@ -44,8 +44,8 @@ type Tier string
 
 // The launch tiers, weakest containment first.
 const (
-	// TierFirstParty is code Cambrian ships itself (tools/tau2_mcp, a premium
-	// plugin's server, a first-party agent profile).
+	// TierFirstParty is code Cambrian ships itself (a premium plugin's server,
+	// a first-party agent profile, cambrian-core's tools/code_sandbox).
 	TierFirstParty Tier = "first-party"
 	// TierVetted is curated, pinned third-party code from a known publisher:
 	// the catalog's "official" entries (the service's own vendor or the MCP

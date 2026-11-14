@@ -52,8 +52,13 @@ type droppedLeaf struct {
 	Sample string
 }
 
+// String is the leaf as the per-document WARN line describes it: kind, reason,
+// length and content hash — no sample. Leaf text is document content, and the WARN
+// line reaches orchestrator.log and the operator log ring, which no erasure or
+// retention path covers (ADR-0137; T-20261103-kernel-logs-print-raw-query-text-and-leaf).
+// The per-leaf DEBUG line carries the sample for an operator auditing drops.
 func (d droppedLeaf) String() string {
-	return fmt.Sprintf("%s/%s len=%d sha256=%s %q", d.Kind, d.Reason, d.Len, d.Hash, d.Sample)
+	return fmt.Sprintf("%s/%s len=%d sha256=%s", d.Kind, d.Reason, d.Len, d.Hash)
 }
 
 // leafHash is a short, stable content hash for correlating a logged drop with the

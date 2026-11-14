@@ -99,6 +99,19 @@ func SurfaceFromContext(ctx context.Context) SurfaceRef {
 	return s
 }
 
+// SurfaceFromContextOr returns the surface carried by ctx, or def when none was
+// stamped. For agent-plane call sites that used to hard-code their surface: the
+// stamped one is the turn's real entry point (the transport's, or the recorded
+// session/conversation surface the ADR-0085 D7 clamp re-stamps), and the
+// hard-coded value is kept only for an in-process path that carries none
+// (T-20261113-surface-clamp-is-applied-only-on-querymemory).
+func SurfaceFromContextOr(ctx context.Context, def SurfaceRef) SurfaceRef {
+	if s := SurfaceFromContext(ctx); s.Kind != "" || s.ID != "" {
+		return s
+	}
+	return def
+}
+
 // sessionIDCtxKey carries the conversation/session ID through to the read
 // chokepoint so a per-session caller term can be looked up server-side from the
 // session record (never from the forgeable Handoff.Context). ADR-0034 (D13).
@@ -113,6 +126,28 @@ func WithSessionID(ctx context.Context, sessionID SessionID) context.Context {
 func SessionIDFromContext(ctx context.Context) (SessionID, bool) {
 	v, ok := ctx.Value(sessionIDCtxKey{}).(SessionID)
 	return v, ok && v != ""
+}
+
+// resolvedLeaseCtxKey marks that the kernel RESOLVED the caller's lease and found
+// it bound to the calling agent (ADR-0139 D8) — distinct from "no lease
+// presented" and from "a lease presented that resolved to nothing" (ENG-518). Set
+// only by the network layer from its own lease registry, never from a header
+// value as such.
+type resolvedLeaseCtxKey struct{}
+
+// WithResolvedLease marks ctx as carrying a lease the kernel resolved.
+func WithResolvedLease(ctx context.Context, lease LeaseID) context.Context {
+	if lease == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, resolvedLeaseCtxKey{}, lease)
+}
+
+// ResolvedLeaseFromContext returns the resolved lease; ok is false when no lease
+// was presented or the presented one did not resolve to this caller.
+func ResolvedLeaseFromContext(ctx context.Context) (LeaseID, bool) {
+	l, ok := ctx.Value(resolvedLeaseCtxKey{}).(LeaseID)
+	return l, ok && l != ""
 }
 
 // runPrincipalCtxKey carries the principal a unit of work is done FOR — the

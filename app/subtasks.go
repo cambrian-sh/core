@@ -25,7 +25,10 @@ import (
 // and records through the classified writer) and wireComposedWorkers (subtask
 // workers run on the composed runtime). Off, in the planner lane, or without the
 // composed runtime: nothing is wired and the tool is not on any menu.
-func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server) {
+//
+// actions is the ADR-0154 durable action record (nil: subtask call results stay
+// in memory), so a subtask resumed after a restart never repeats a write.
+func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server, actions domain.ActionRecordStore) {
 	sc := cfg.Lane.Subtasks
 	if !sc.On() || server == nil || server.ToolExecutor == nil {
 		return
@@ -39,7 +42,7 @@ func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server) {
 		return
 	}
 	te := server.ToolExecutor
-	reg := domain.NewSubtasks(idempotencyTTL)
+	reg := domain.NewSubtasks(idempotencyTTL, actions)
 	te.Subtasks = reg
 	te.LeaseCeiling = domain.ChainLeaseCeilings(te.LeaseCeiling, reg)
 	server.Subtasks = reg

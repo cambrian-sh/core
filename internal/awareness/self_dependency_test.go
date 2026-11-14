@@ -18,7 +18,7 @@ func TestPlanner_RepairsOneBasedSelfDependencies(t *testing.T) {
 	 {"query":"Categorise the documents","depends_on":[1]},
 	 {"query":"Based on the categorized documents from step 3, draft the response","depends_on":[3]},
 	 {"query":"Record the response drafted in step 4","depends_on":[4]}]}`}
-	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents()}, nil)
+	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents()})
 	p.goos = "linux"
 	p.SetCalendar(goldenCalendar())
 	plan, err := p.GetExecutionPlan(context.Background(), "respond to the FOI request")

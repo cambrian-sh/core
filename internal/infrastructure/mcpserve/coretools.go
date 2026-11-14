@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -553,15 +554,28 @@ func (b *CoreBackends) listDocuments(ctx context.Context, args json.RawMessage) 
 	if err := parseArgs(args, &in); err != nil {
 		return domain.PublishedToolResult{}, err
 	}
+	scope := listingScope(ctx)
+	if scope == nil {
+		// No read is authorized: the same empty answer search_memory gives, so a
+		// refused caller learns nothing about the corpus (not even its size).
+		return domain.PublishedToolResult{
+			Structured: map[string]any{
+				"documents": []listedDocument{}, "next_cursor": "", "total_matching": 0,
+			},
+			Text: "0 of 0 document(s)",
+		}, nil
+	}
 	page, next, total, err := documents.ListDocuments(ctx, memory.DocumentFilter{
 		Limit:          clamp(in.Limit, listDefaultLimit, listMaxLimit),
 		Cursor:         in.Cursor,
 		UnlabelledOnly: in.UnlabelledOnly,
 		IDPrefix:       in.IDPrefix,
 		Tags:           in.Tags,
-		// Owner fence: the caller's own owner-scoped documents only, and only
-		// when it is a user acting as itself (domain/owner_scope.go).
-		Owners: listingOwners(ctx),
+		// The caller's whole read predicate, pushed into the listing's SQL
+		// (ENG-725): titles and labels are content, so the listing answers to the
+		// same policy as search_memory — required/forbidden/any-of/party terms and
+		// the owner fence (domain/owner_scope.go), not the owner fence alone.
+		Scope: scope,
 	})
 	if err != nil {
 		return domain.PublishedToolResult{}, fmt.Errorf("list documents: %w", err)
@@ -583,17 +597,26 @@ func (b *CoreBackends) listDocuments(ctx context.Context, args json.RawMessage) 
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
-// listingOwners is who a list_documents caller acts as for the owner fence:
-// the owners on its resolved read scope when one is on ctx, else the caller
-// itself when it is a user principal, else nobody.
-func listingOwners(ctx context.Context) []string {
+// listingScope is the read predicate a list_documents caller lists under: a
+// predicate already resolved server-side on ctx, else the decision point's
+// ReadFilter for the authenticated principal on its surface — the question every
+// principal-serving read asks (ADR-0085). The decision point puts the owner fence
+// on it (a person reads as itself; OSS AllowAllAuthorizer does the same), so the
+// earlier owners-only rule is subsumed. nil means no read is authorized.
+func listingScope(ctx context.Context) *domain.TagPredicate {
 	if s, ok := domain.ScopeFromContext(ctx); ok && s != nil {
-		return s.Owners
+		return s
 	}
-	if p := domain.PrincipalFromContext(ctx); p.Kind == domain.PrincipalUser && p.ID != "" {
-		return []string{p.ID}
+	p := domain.PrincipalFromContext(ctx)
+	if p.IsZero() {
+		return nil
 	}
-	return nil
+	pred, dec := domain.AuthorizerFromContext(ctx).ReadFilter(ctx, p, domain.SurfaceFromContext(ctx))
+	if pred == nil {
+		slog.WarnContext(ctx, "mcp list_documents: "+dec.Explain(),
+			slog.String("event", "authz_deny"), slog.String("principal", p.String()))
+	}
+	return pred
 }
 
 // parseArgs unmarshals the raw arguments; absent args mean "all defaults".

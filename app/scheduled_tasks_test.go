@@ -211,3 +211,20 @@ func (nopSchedules) Create(context.Context, domain.ScheduledTaskSpec, domain.Sch
 func (nopSchedules) List(context.Context, string) ([]domain.ScheduledTask, error) { return nil, nil }
 func (nopSchedules) SetActive(context.Context, string, string, bool) error        { return nil }
 func (nopSchedules) Delete(context.Context, string, string) error                 { return nil }
+
+// ENG-614: the conversation profile resolves from the lease's conversation, or from
+// its task session's conversation (a delegated plan), and never otherwise.
+func TestConversationProfileOf(t *testing.T) {
+	store := newConvMem()
+	_ = store.CreateConversation(context.Background(), domain.Conversation{ID: "c1", OwnerID: "", Profile: domain.ProfileCustomer})
+	of := conversationProfileOf(store, nil)
+	if got := of(context.Background(), domain.LeaseBinding{ConversationID: "c1"}); got != domain.ProfileCustomer {
+		t.Fatalf("lease conversation profile = %q, want customer", got)
+	}
+	if got := of(context.Background(), domain.LeaseBinding{}); got != "" {
+		t.Fatalf("no conversation must resolve to no profile, got %q", got)
+	}
+	if got := conversationProfileOf(nil, nil)(context.Background(), domain.LeaseBinding{ConversationID: "c1"}); got != "" {
+		t.Fatalf("no store: %q", got)
+	}
+}

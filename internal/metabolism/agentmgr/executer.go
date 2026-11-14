@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cambrian-sh/core/internal/agentwire"
 	"io"
 	"log/slog"
 	"os"
@@ -83,7 +84,7 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 		)
 	}
 
-	protoResp, errExec := m.executeHandoff(ctx, addr, domainToProtoHandoff(handoff))
+	protoResp, errExec := m.executeHandoff(ctx, addr, agentwire.ToProto(handoff))
 
 	if bootedHere {
 		defer m.ReleaseInstance(inst.ID)
@@ -93,7 +94,7 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 		return nil, errExec
 	}
 
-	resp := protoToDomainHandoff(protoResp)
+	resp := agentwire.FromProto(protoResp)
 
 	// REQ-AGENT-CTX-3: log assembled context length from agent response if available
 	if ctxStr := resp.Context["_assembled_context_len"]; ctxStr != "" {
@@ -130,93 +131,22 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 
 // CallDaemon routes a handoff to the SPECIFIC per-stream daemon instance the kernel spawned
 // for streamID (ADR-0080), rather than any instance of the agent (which CallAgent picks). The
-// manager uses this to deliver each conversation turn to that conversation's own supervised
-// session daemon. Returns an error if no daemon is registered/running for streamID.
+// chat worker pool (internal/agentpool) uses it to hand a conversation turn to a free pool
+// worker's stream — there are no per-conversation daemons any more. Returns an error if no daemon is registered/running for streamID.
 func (m *AgentManager) CallDaemon(ctx context.Context, streamID string, handoff *domain.Handoff) (*domain.Handoff, error) {
 	instanceID, ok := m.DaemonInstanceID(streamID)
 	if !ok {
-		return nil, fmt.Errorf("CallDaemon: no daemon registered for stream %q", streamID)
+		return nil, fmt.Errorf("CallDaemon: %w: no daemon registered for stream %q", domain.ErrDaemonUnavailable, streamID)
 	}
 	inst, ok := m.InstanceManager.GetInstanceByID(instanceID)
 	if !ok || inst.SocketPath == "" {
-		return nil, fmt.Errorf("CallDaemon: daemon instance %q for stream %q not live", instanceID, streamID)
+		return nil, fmt.Errorf("CallDaemon: %w: daemon instance %q for stream %q not live", domain.ErrDaemonUnavailable, instanceID, streamID)
 	}
-	protoResp, err := m.executeHandoff(ctx, "unix:"+inst.SocketPath, domainToProtoHandoff(handoff))
+	protoResp, err := m.executeHandoff(ctx, "unix:"+inst.SocketPath, agentwire.ToProto(handoff))
 	if err != nil {
 		return nil, err
 	}
-	return protoToDomainHandoff(protoResp), nil
-}
-
-// domainToProtoHandoff converts a domain Handoff to proto for gRPC calls.
-// ADR-0022 Phase 3: WorkingMemory is copied into proto working_memory so
-// cognitive agents receive prior-step ContextRefs via the Python SDK.
-func domainToProtoHandoff(d *domain.Handoff) *pb.Handoff {
-	if d == nil {
-		return nil
-	}
-	h := &pb.Handoff{
-		Id:            d.ID,
-		FromAgent:     d.FromAgent,
-		ToAgent:       d.ToAgent,
-		Confidence:    d.Confidence,
-		Uncertainties: d.Uncertainties,
-		Metadata:      d.Context,
-	}
-	if d.Payload != nil {
-		h.Payload = &pb.Object{
-			Id:       d.Payload.ID,
-			Type:     d.Payload.Type,
-			Data:     d.Payload.Data,
-			Metadata: d.Payload.Metadata,
-		}
-	}
-	for _, ref := range d.WorkingMemory {
-		h.WorkingMemory = append(h.WorkingMemory, &pb.ContextRef{
-			Cid:        string(ref.CID),
-			Type:       ref.Type,
-			Labels:     ref.Labels,
-			Activation: ref.Activation,
-			Snippet:    ref.Snippet,
-			Precision:  ref.Precision,
-		})
-	}
-	return h
-}
-
-// protoToDomainHandoff converts a proto Handoff to domain for internal use.
-// ADR-0022 Phase 3: working_memory is copied back into domain WorkingMemory.
-func protoToDomainHandoff(h *pb.Handoff) *domain.Handoff {
-	if h == nil {
-		return nil
-	}
-	d := &domain.Handoff{
-		ID:            h.Id,
-		FromAgent:     h.FromAgent,
-		ToAgent:       h.ToAgent,
-		Confidence:    h.Confidence,
-		Uncertainties: h.Uncertainties,
-		Context:       h.GetMetadata(),
-	}
-	if h.Payload != nil {
-		d.Payload = &domain.Payload{
-			ID:       h.Payload.Id,
-			Type:     h.Payload.Type,
-			Data:     h.Payload.Data,
-			Metadata: h.Payload.Metadata,
-		}
-	}
-	for _, ref := range h.WorkingMemory {
-		d.WorkingMemory = append(d.WorkingMemory, domain.ContextRef{
-			CID:        domain.CID(ref.Cid),
-			Type:       ref.Type,
-			Labels:     ref.Labels,
-			Activation: ref.Activation,
-			Snippet:    ref.Snippet,
-			Precision:  ref.Precision,
-		})
-	}
-	return d
+	return agentwire.FromProto(protoResp), nil
 }
 
 func envsEqual(a, b []string) bool {

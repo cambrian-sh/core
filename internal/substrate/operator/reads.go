@@ -25,13 +25,26 @@ func (s *Service) QueryAudit(ctx context.Context, req *pb.QueryAuditRequest) (*p
 	if limit <= 0 {
 		limit = defaultAuditQueryLimit
 	}
-	rows, err := s.audit.Query(ctx, AuditFilter{
+	filter := AuditFilter{
 		Actor:      req.GetActor(),
 		TargetType: req.GetTargetType(),
 		TargetID:   req.GetTargetId(),
 		ActionType: req.GetActionType(),
 		Limit:      limit,
-	})
+	}
+	// ADR-0142 migration step 2: one person is recorded under several actor
+	// strings (bare id, user:<id>, the pre-ADR-0142 agent:<id> alias), so a
+	// query by any one of them matches all (ENG-666). The registry SetPrincipalNames
+	// wired is the principal registry, which also answers aliases; a reader that
+	// cannot (a test fake, no registry) leaves the exact-match filter.
+	if req.GetActor() != "" {
+		if aliases, ok := s.principalNames.(domain.PrincipalAliasReader); ok && aliases != nil {
+			if forms := domain.PrincipalForms(ctx, aliases, req.GetActor()); len(forms) > 1 {
+				filter.Actors = forms
+			}
+		}
+	}
+	rows, err := s.audit.Query(ctx, filter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "query audit: %v", err)
 	}

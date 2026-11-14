@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -67,46 +68,82 @@ func TestWatcher_BuildInspirationPrompt(t *testing.T) {
 	}
 }
 
-type testMemoryAgent struct {
-	fetchContextFn func(ctx context.Context, query string) string
+// recordingRecall is a SignalRecall double: it records who each recall read as.
+type recordingRecall struct {
+	calls   []domain.PrincipalRef
+	queries []string
+	results []domain.SearchResult
 }
 
-func (m *testMemoryAgent) FetchContext(ctx context.Context, query string) string {
-	if m.fetchContextFn != nil {
-		return m.fetchContextFn(ctx, query)
-	}
-	return ""
+func (r *recordingRecall) RecallFor(_ context.Context, p domain.PrincipalRef, query, docType string) ([]domain.SearchResult, error) {
+	r.calls = append(r.calls, p)
+	r.queries = append(r.queries, query)
+	return r.results, nil
 }
 
-func TestWatcher_EnrichSignal_CallsMemoryAgent(t *testing.T) {
+// ENG-1339 (owner decision 2026-11-14): signal enrichment reads AS THE SIGNAL'S
+// PRINCIPAL (the authenticated stream principal on ctx) through QueryService.
+func TestWatcher_EnrichSignal_ReadsAsTheSignalsPrincipal(t *testing.T) {
 	t.Parallel()
-	called := false
-	mem := &testMemoryAgent{
-		fetchContextFn: func(ctx context.Context, query string) string {
-			called = true
-			return "relevant LTM context"
-		},
-	}
-	w := New(nil, mem, nil, nil, nil, WatcherConfig{})
+	rec := &recordingRecall{results: []domain.SearchResult{
+		{Document: domain.Document{ID: "m1", Text: "GPU restock takes 3 days"}, Score: 0.4, RawScore: 0.9},
+	}}
+	w := New(nil, rec, nil, nil, nil, WatcherConfig{RecallMinCosine: 0.7})
+	ctx := domain.WithPrincipal(context.Background(), domain.AgentPrincipal("inventory_daemon"))
 
-	ltmCtx := w.EnrichSignal(context.Background(), "STOCK_LOW", "GPU level:5")
+	ltmCtx := w.EnrichSignal(ctx, "STOCK_LOW", "GPU level:5")
 
-	if !called {
-		t.Error("EnrichSignal should call FetchContext on MemoryAgent")
+	if len(rec.calls) != 1 || rec.calls[0] != domain.AgentPrincipal("inventory_daemon") {
+		t.Fatalf("recall read as %v, want agent:inventory_daemon", rec.calls)
 	}
-	if ltmCtx == "" {
-		t.Error("EnrichSignal should return LTM context")
+	if rec.queries[0] != "STOCK_LOW GPU level:5" {
+		t.Errorf("query = %q", rec.queries[0])
+	}
+	if !strings.Contains(ltmCtx, "GPU restock takes 3 days") {
+		t.Errorf("context = %q, want the recalled memory", ltmCtx)
 	}
 }
 
-func TestWatcher_EnrichSignal_NilMemoryAgent(t *testing.T) {
+// No principal ⇒ no priming: nothing is read.
+func TestWatcher_EnrichSignal_NoPrincipalNoPriming(t *testing.T) {
+	t.Parallel()
+	rec := &recordingRecall{results: []domain.SearchResult{{Document: domain.Document{ID: "m1", Text: "x"}, RawScore: 0.9}}}
+	w := New(nil, rec, nil, nil, nil, WatcherConfig{})
+	if got := w.EnrichSignal(context.Background(), "STOCK_LOW", "data"); got != "" || len(rec.calls) != 0 {
+		t.Fatalf("enriched %q with %d reads and no principal", got, len(rec.calls))
+	}
+}
+
+func TestWatcher_EnrichSignal_NilRecall(t *testing.T) {
 	t.Parallel()
 	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
+	ctx := domain.WithPrincipal(context.Background(), domain.AgentPrincipal("d"))
+	if ltmCtx := w.EnrichSignal(ctx, "STOCK_LOW", "data"); ltmCtx != "" {
+		t.Error("EnrichSignal with no recall should return empty string")
+	}
+}
 
-	ltmCtx := w.EnrichSignal(context.Background(), "STOCK_LOW", "data")
-
-	if ltmCtx != "" {
-		t.Error("EnrichSignal with nil MemoryAgent should return empty string")
+// The formatting keeps poisoned memories as failures to avoid, drops dense hits
+// at or below the cosine floor, keeps rows with no cosine, and caps the list.
+func TestFormatSignalRecall(t *testing.T) {
+	t.Parallel()
+	res := []domain.SearchResult{
+		{Document: domain.Document{ID: "p", Text: "bad route", Metadata: map[string]interface{}{"is_poisoned": true, "correction": "use route B"}}},
+		{Document: domain.Document{ID: "low", Text: "weak"}, RawScore: 0.5},
+		{Document: domain.Document{ID: "a", Text: "first"}, RawScore: 0.9},
+		{Document: domain.Document{ID: "lex", Text: "lexical"}, RawScore: 0},
+		{Document: domain.Document{ID: "c", Text: "over the cap"}, RawScore: 0.95},
+	}
+	out := formatSignalRecall(res, 0.7, 2)
+	for _, want := range []string{"ERROR: bad route", "CORRECTION: use route B", "1. (Rel: 0.00) first", "2. (Rel: 0.00) lexical"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:%s", want, out)
+		}
+	}
+	for _, not := range []string{"weak", "over the cap"} {
+		if strings.Contains(out, not) {
+			t.Errorf("%q must be dropped:%s", not, out)
+		}
 	}
 }
 

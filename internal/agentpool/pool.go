@@ -26,7 +26,7 @@ import (
 
 // Dispatcher is the kernel daemon seam a pool needs, satisfied by *agentmgr.AgentManager.
 type Dispatcher interface {
-	SpawnDaemon(agentID, streamID string, params map[string]any) (instanceID string, err error)
+	SpawnDaemon(ctx context.Context, agentID, streamID string, params map[string]any) (instanceID string, err error)
 	CallDaemon(ctx context.Context, streamID string, h *domain.Handoff) (*domain.Handoff, error)
 	StopDaemon(streamID string) error
 	// DaemonInstanceID reports whether a live daemon is registered for a stream. The pool
@@ -113,7 +113,7 @@ func (p *Pool) Size() int { return p.cfg.Size }
 
 // Start spawns the workers. It is all-or-nothing: a partial pool would silently serve at
 // reduced capacity, so any spawn failure tears down what was already started.
-func (p *Pool) Start(context.Context) error {
+func (p *Pool) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.started {
@@ -121,7 +121,7 @@ func (p *Pool) Start(context.Context) error {
 	}
 	for i := 0; i < p.cfg.Size; i++ {
 		stream := fmt.Sprintf("%s-%s-%d", p.cfg.StreamPrefix, p.cfg.AgentID, i)
-		if _, err := p.disp.SpawnDaemon(p.cfg.AgentID, stream, p.cfg.Params); err != nil {
+		if _, err := p.disp.SpawnDaemon(ctx, p.cfg.AgentID, stream, p.cfg.Params); err != nil {
 			for _, s := range p.workers {
 				_ = p.disp.StopDaemon(s)
 			}
@@ -207,7 +207,9 @@ func (p *Pool) Dispatch(ctx context.Context, h *domain.Handoff) (*domain.Handoff
 		if _, live := p.disp.DaemonInstanceID(stream); !live {
 			// The worker was gone, so this turn never ran. Self-heal, then tell the
 			// caller precisely that — retry safety is theirs to judge.
-			if _, respawnErr := p.disp.SpawnDaemon(p.cfg.AgentID, stream, p.cfg.Params); respawnErr != nil {
+			// The self-heal must finish even if this turn's caller gives up: detach
+			// its cancellation, keep its values (§2.7).
+			if _, respawnErr := p.disp.SpawnDaemon(context.WithoutCancel(ctx), p.cfg.AgentID, stream, p.cfg.Params); respawnErr != nil {
 				slog.Error("agentpool: worker respawn failed", "stream", stream, "err", respawnErr)
 			} else {
 				slog.Warn("agentpool: worker was lost and has been respawned", "stream", stream)

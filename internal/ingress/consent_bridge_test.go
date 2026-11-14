@@ -365,7 +365,7 @@ func TestConsentBridge_ExpiryUnblocksTheQueue(t *testing.T) {
 	}
 	// A itself resolves through the controller (still pending there until its
 	// own window ends; submit its id to release the goroutine promptly).
-	hub.Submit(idA, domain.ConsentAnswer{By: domain.Approver{Principal: fleetOwner}})
+	hub.Submit(context.Background(), idA, domain.ConsentAnswer{By: domain.Approver{Principal: fleetOwner}})
 	awaitResult(t, resA)
 }
 

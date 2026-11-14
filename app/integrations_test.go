@@ -86,12 +86,12 @@ type integrationRig struct {
 
 func newIntegrationRig(t *testing.T, acmeURL string) *integrationRig {
 	t.Helper()
-	mcpRaw := `{"mcp": {"servers": [{"id": "filesrv", "transport": "http", "endpoint": "http://127.0.0.1:1/never", "enabled": false}]}}`
+	mcpRaw := `{"mcp": {"servers": [{"id": "filesrv", "transport": "http", "endpoint": "http://127.0.0.1:1/never", "enabled": false, "allow_private_network": true}]}}`
 	src, dir := d8Source(t, map[string]string{"mcp.json": mcpRaw})
 	catPath := filepath.Join(dir, "catalog.local.json")
 	cat := `{"schema_version":1,"entries":[{"id":"acme","name":"Acme CRM","category":"crm","version":"1.0","trust_tier":"community",
 	  "fail_closed":true,
-	  "server":{"transport":"http","endpoint":"` + acmeURL + `","auth":{"type":"bearer"},
+	  "server":{"transport":"http","endpoint":"` + acmeURL + `","allow_private_network":true,"auth":{"type":"bearer"},
 	            "tools":[{"name":"lookup","effects":["read","egress"]}]},
 	  "fields":[{"name":"ACME_TOKEN","label":"Acme token","secret":true,"required":true,"kind":"token"}],
 	  "probe_tool":{"name":"lookup","arguments":{"q":"ping"}}}]}`

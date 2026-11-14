@@ -4,6 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/grpc"
+
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -37,9 +42,19 @@ func TestAuth_OrgDirectoryPlaneRoles(t *testing.T) {
 		{op, "CreateScimConnection", codes.OK},
 	}
 	for _, c := range cases {
-		_, err := callUnary(idp, ctxWithToken(c.tok), svc+c.method)
+		_, err := callUnaryRoles(idp, ctxWithToken(c.tok), svc+c.method, operator.PremiumRolesFixture)
 		if got := status.Code(err); got != c.want {
 			t.Errorf("%s as %s: %v, want %v", c.method, c.tok[:4], got, c.want)
 		}
 	}
+}
+
+// callUnaryRoles is callUnary with the premium plugins' declared method roles
+// (the org-directory plugin declares GetMyOrgChain self-service and the SCIM /
+// reconcile reads operator-only; core names none of them).
+func callUnaryRoles(idp domain.Authenticator, ctx context.Context, method string, roles operator.MethodRoles) (called bool, err error) {
+	interceptor := operator.UnaryAuthInterceptor(idp, nil, roles)
+	_, err = interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method},
+		func(context.Context, any) (any, error) { called = true; return nil, nil })
+	return called, err
 }

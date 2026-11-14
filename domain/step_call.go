@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -50,14 +52,20 @@ func IdempotencyKey(run RunID, step int, tool string, args []byte) string {
 // arguments) gets the stored result instead of running again, and a duplicate
 // arriving while the first is in flight waits for it. Only a call that ran and
 // succeeded is stored; a refused or failed call may be retried. In memory, for
-// the TTL: a kernel restart forgets it (the plan's run does not survive a
-// restart either).
+// the TTL — and, when built with NewDurableIdempotencyCache, ALSO in the durable
+// action record (ADR-0154 stage 2, ENG-1428): every call is recorded under the
+// same key (proposed → dispatched, then accepted with its response on success,
+// or left dispatched with the error), so a retry after a kernel restart is
+// answered from the record instead of running the write again. Without a store
+// the behaviour is exactly the in-memory one (ADR-0154 D6).
 type IdempotencyCache struct {
 	mu   sync.Mutex
 	ttl  time.Duration
 	now  func() time.Time
 	done map[string]idemEntry
 	busy map[string]chan struct{}
+	// durable is the ADR-0154 action record; nil ⇒ in memory only.
+	durable ActionRecordStore
 }
 
 type idemEntry struct {
@@ -73,11 +81,26 @@ func NewIdempotencyCache(ttl time.Duration) *IdempotencyCache {
 	return &IdempotencyCache{ttl: ttl, now: time.Now, done: map[string]idemEntry{}, busy: map[string]chan struct{}{}}
 }
 
-// Begin claims key. It returns the stored response (found=true) when the call
-// already ran; otherwise the caller runs it and MUST call finish exactly once
-// with the outcome (stored only when ok). A concurrent caller of the same key
-// waits for the first (or for ctx).
+// NewDurableIdempotencyCache is NewIdempotencyCache backed by the durable action
+// record (ADR-0154). store nil ⇒ NewIdempotencyCache.
+func NewDurableIdempotencyCache(ttl time.Duration, store ActionRecordStore) *IdempotencyCache {
+	c := NewIdempotencyCache(ttl)
+	c.durable = store
+	return c
+}
+
+// Begin is BeginAction with no record metadata beyond the key.
 func (c *IdempotencyCache) Begin(ctx context.Context, key string) (stored ToolCallResponse, found bool, finish func(resp ToolCallResponse, ok bool)) {
+	return c.BeginAction(ctx, DurableAction{Key: key})
+}
+
+// BeginAction claims meta.Key. It returns the stored response (found=true) when
+// the call already ran; otherwise the caller runs it and MUST call finish
+// exactly once with the outcome (stored only when ok). A concurrent caller of
+// the same key waits for the first (or for ctx). meta's other fields (tool, run,
+// step, principal, session, argument hash) describe the durable record.
+func (c *IdempotencyCache) BeginAction(ctx context.Context, meta DurableAction) (stored ToolCallResponse, found bool, finish func(resp ToolCallResponse, ok bool)) {
+	key := meta.Key
 	for {
 		c.mu.Lock()
 		c.sweepLocked()
@@ -90,7 +113,7 @@ func (c *IdempotencyCache) Begin(ctx context.Context, key string) (stored ToolCa
 			ch := make(chan struct{})
 			c.busy[key] = ch
 			c.mu.Unlock()
-			return ToolCallResponse{}, false, func(resp ToolCallResponse, ok bool) {
+			release := func(resp ToolCallResponse, ok bool) {
 				c.mu.Lock()
 				if ok {
 					c.done[key] = idemEntry{resp: resp, at: c.now()}
@@ -98,6 +121,46 @@ func (c *IdempotencyCache) Begin(ctx context.Context, key string) (stored ToolCa
 				delete(c.busy, key)
 				c.mu.Unlock()
 				close(ch)
+			}
+			if c.durable == nil {
+				return ToolCallResponse{}, false, release
+			}
+			// Durable: a call the record shows as accepted (from before a restart)
+			// is answered from it; otherwise the call is recorded as dispatched
+			// before it runs. Record I/O fails OPEN — durability is an addition,
+			// and a database hiccup must not block the write (it is logged).
+			if rec, err := c.durable.Get(ctx, key); err == nil && rec.Result != nil &&
+				(rec.State == ActionStateAccepted || rec.State == ActionStateConfirmed) {
+				release(*rec.Result, true)
+				return *rec.Result, true, nil
+			} else if err != nil && !errors.Is(err, ErrActionRecordNotFound) {
+				slog.WarnContext(ctx, "ADR-0154: action record unreadable; the call runs without its durable record", "key", key, "err", err)
+			}
+			meta.State = ActionStateProposed
+			if _, _, err := c.durable.Record(ctx, meta); err != nil {
+				slog.WarnContext(ctx, "ADR-0154: action record not written", "key", key, "err", err)
+			} else if _, err := c.durable.Advance(ctx, key, ActionStateDispatched, ActionUpdate{}); err != nil {
+				slog.WarnContext(ctx, "ADR-0154: action record not marked dispatched", "key", key, "err", err)
+			}
+			return ToolCallResponse{}, false, func(resp ToolCallResponse, ok bool) {
+				dctx := context.WithoutCancel(ctx)
+				var err error
+				if ok {
+					r := resp
+					_, err = c.durable.Advance(dctx, key, ActionStateAccepted, ActionUpdate{Result: &r})
+				} else {
+					// Failed, refused or ambiguous: the record stays dispatched with
+					// the error, so a retry re-dispatches it (ADR-0154 D3).
+					msg := resp.Error
+					if msg == "" {
+						msg = resp.DenyReason
+					}
+					_, err = c.durable.Advance(dctx, key, ActionStateDispatched, ActionUpdate{Error: msg})
+				}
+				if err != nil {
+					slog.WarnContext(dctx, "ADR-0154: action record outcome not written", "key", key, "ok", ok, "err", err)
+				}
+				release(resp, ok)
 			}
 		}
 		c.mu.Unlock()

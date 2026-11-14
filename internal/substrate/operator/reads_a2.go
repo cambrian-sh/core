@@ -328,6 +328,7 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 			Text:        r.Document.Text,
 		}
 		setHitTime(r.Document, &op.EventTime, &op.EventTimeEnd, &op.TimeSource, &op.TimePrecision)
+		setFactAnnotations(r.Document.Metadata, op)
 		resp.Results = append(resp.Results, op)
 		if topK > 0 && len(resp.Results) >= topK {
 			break
@@ -505,6 +506,24 @@ func metaString(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+// setFactAnnotations copies the fact lane's per-hit annotations (ADR-0136,
+// memory.annotateFactHits: domain.MetaFact*) onto the operator MemoryOp (contract
+// 0104), so the console can say WHY a fact-injected hit is there
+// (T-20261103-operator-querymemory-drops-fact-match-fact). A hit the lane did not
+// touch carries none of the keys and stays unset.
+func setFactAnnotations(meta map[string]interface{}, op *pb.MemoryOp) {
+	op.FactMatches = metaStringSlice(meta, domain.MetaFactMatches)
+	switch v := meta[domain.MetaFactMatchScore].(type) {
+	case float64:
+		op.FactMatch = v
+	case float32:
+		op.FactMatch = float64(v)
+	}
+	if b, ok := meta[domain.MetaFactCurrent].(bool); ok {
+		op.FactCurrent = b
+	}
 }
 
 func metaStringSlice(m map[string]interface{}, key string) []string {

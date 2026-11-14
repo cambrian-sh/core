@@ -605,6 +605,38 @@ func TestOIDC_KeycloakRealm(t *testing.T) {
 	mustUnauth(t, v, signJWT(t, "RS256", "kc-sig-1", kA, c))
 }
 
+// ENG-714 (owner decision 2026-11-14): a Keycloak ID token — typ claim "ID",
+// aud = the client id, so it passes the audience check — is not a bearer. The
+// access token (typ "Bearer") and a token with no typ claim (other IdPs) still
+// resolve; the case of the claim does not matter.
+func TestOIDC_KeycloakIDTokenRefusedAsBearer(t *testing.T) {
+	kA, _ := rsaKeys(t)
+	iss := keycloakIdP(t, "cambrian", func() []map[string]string {
+		return []map[string]string{rsaJWK("kc-sig-1", kA, "RS256")}
+	})
+	now := time.Now()
+	v, err := NewOIDCVerifier(OIDCConfig{
+		Issuer: iss, ClientID: "cambrian-console", FirstLogin: FirstLoginAutoCreate,
+		Now: func() time.Time { return now },
+	}, NewMemRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustResolve(t, v, signJWT(t, "RS256", "kc-sig-1", kA, keycloakClaims(iss, "s1", now)))
+
+	noTyp := keycloakClaims(iss, "s1", now)
+	delete(noTyp, "typ")
+	mustResolve(t, v, signJWT(t, "RS256", "kc-sig-1", kA, noTyp))
+
+	for _, typ := range []string{"ID", "id", "Id"} {
+		idTok := keycloakClaims(iss, "s1", now)
+		idTok["typ"] = typ
+		idTok["aud"] = "cambrian-console" // an ID token's aud is the client id
+		idTok["nonce"] = "n-1"
+		mustUnauth(t, v, signJWT(t, "RS256", "kc-sig-1", kA, idTok))
+	}
+}
+
 func TestOIDC_KeycloakIssuerShapesValidate(t *testing.T) {
 	for _, iss := range []string{"https://sso.agency.example/realms/cambrian", "http://127.0.0.1:8080/realms/cambrian", "http://localhost:8080/realms/cambrian"} {
 		if _, err := NewOIDCVerifier(OIDCConfig{Issuer: iss, ClientID: "cambrian-console"}, NewMemRegistry()); err != nil {

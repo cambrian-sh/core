@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // Inbound identity headers.
@@ -157,11 +158,12 @@ func (s *Server) callerOverlayToken(ctx context.Context) string {
 // lease may be taken as a session id. Only the callers that legitimately send a REAL
 // session id get the permissive branch:
 //
-//   - the operator surface (the console);
+//   - the operator surface (the console; also the operator SendFn and plan submitter,
+//     which since ENG-1378 run Execute on the operator's detached request ctx, surface
+//     operator, with x-session-id set by app.operatorRunContext);
 //   - the MCP task lane (surface mcp), which builds x-session-id itself from the session
 //     it just opened — an MCP client never sets gRPC metadata; and
-//   - an unsurfaced in-process kernel call that is not acting as an agent (the operator
-//     SendFn and plan submitter run Execute under context.Background()).
+//   - an unsurfaced in-process kernel call that is not acting as an agent.
 //
 // Everything else — above all the agent plane, where the surface interceptor always
 // stamps SurfaceAgent — must present a lease. An agent that could name a session by its
@@ -329,9 +331,11 @@ func (s *Server) withCallerSession(ctx context.Context) context.Context {
 	ctx = s.withConversationOwner(ctx)
 	sid := s.resolveCallerSession(ctx)
 	if sid == "" {
-		return ctx
+		// A chat turn has a conversation and no session; its surface clamp still applies.
+		return s.withTurnSurface(ctx, "")
 	}
 	ctx = domain.WithSessionID(ctx, sid)
+	ctx = s.withTurnSurface(ctx, sid)
 	if s.TaskOwners != nil {
 		if owner := s.TaskOwners.BeneficiaryOf(sid); !owner.IsZero() {
 			ctx = domain.WithTaskBeneficiary(ctx, owner)
@@ -352,6 +356,38 @@ func (s *Server) withCallerSession(ctx context.Context) context.Context {
 		}
 	}
 	return ctx
+}
+
+// withTurnSurface is the ADR-0085 D7 surface clamp for one agent-plane turn: a
+// recorded surface OVERRIDES the transport-derived one — the task session's,
+// else the conversation's (authz.ResolveSurfaceForTurn), both read server-side
+// from a persisted record keyed by the kernel-minted lease, never from client
+// metadata (INV-5). A conversation opened on an outsider ingress stays an
+// outsider conversation even when a later turn arrives over an internal path;
+// widening on the way in is the escalation the clamp exists to prevent.
+//
+// ONE helper for every lane of the turn — QueryMemory, ExecuteTool/ListTools and
+// the context-node RPCs (through withCallerSession), ListSkills — so a
+// surface-linked policy binds tool calls, kernel-tool reads and skill menus
+// exactly as it binds recall. It used to be stamped on QueryMemory only
+// (T-20261113-surface-clamp-is-applied-only-on-querymemory). Resolved whenever
+// the caller has a session OR a conversation: a chat turn has the latter only.
+// Only the surface is added to the returned ctx: the session id is used for the
+// lookup, never seeded here (that is withCallerSession's decision).
+func (s *Server) withTurnSurface(ctx context.Context, sessionID domain.SessionID) context.Context {
+	convID := s.callerConversation(ctx)
+	if sessionID == "" && convID == "" {
+		return ctx
+	}
+	var sessions authz.SessionSurfaceReader
+	if s.SessionMgr != nil { // a typed-nil manager would panic inside SessionSurface
+		sessions = s.SessionMgr
+	}
+	lookup := ctx
+	if sessionID != "" {
+		lookup = domain.WithSessionID(ctx, sessionID)
+	}
+	return domain.WithSurface(ctx, authz.ResolveSurfaceForTurn(lookup, sessions, s.ConvSurfaces, convID))
 }
 
 // withPresentedLease makes the lease an RPC carries in its REQUEST BODY the lease
@@ -506,12 +542,59 @@ func (s *Server) liveCallerSession(ctx context.Context) domain.SessionID {
 // session. No lease, no conversation or no resolver ⇒ ctx unchanged (the agent's
 // own scope governs, as before).
 func (s *Server) withConversationOwner(ctx context.Context) context.Context {
+	ctx = s.markResolvedLease(ctx, callerLeaseID(ctx, nil))
 	if s.ConversationOwner == nil || domain.ConversationOwnerFromContext(ctx) != "" {
 		return ctx
 	}
 	b, known := s.resolveCallerBinding(ctx)
+	return s.stampConversationOwner(ctx, b, known)
+}
+
+// withConversationOwnerFromHandoff is withConversationOwner for Execute, whose
+// caller may present its lease INSIDE the handoff (_session_token_id) rather than
+// as a header — the SDK's delegate does (ENG-1029, owner decision 2026-11-14:
+// Execute stamps the conversation owner from the handoff lease, like header
+// leases, so the decision point narrows the agent by the owner's terms and the
+// owner fence lets the person's own rows through). The lease is still resolved
+// kernel-side and must be bound to the calling agent (resolveBindingFromHandoff
+// → resolveLeaseFor, ADR-0139 D8); a header lease still wins.
+func (s *Server) withConversationOwnerFromHandoff(ctx context.Context, meta map[string]string) context.Context {
+	ctx = s.markResolvedLease(ctx, callerLeaseID(ctx, meta))
+	if s.ConversationOwner == nil || domain.ConversationOwnerFromContext(ctx) != "" {
+		return ctx
+	}
+	b, known := s.resolveBindingFromHandoff(ctx, meta)
+	return s.stampConversationOwner(ctx, b, known)
+}
+
+// markResolvedLease stamps domain.WithResolvedLease when lease resolves to a
+// binding for the calling agent (resolveLeaseFor applies the ADR-0139 D8
+// ownership rule), so the decision point can tell "no lease presented" from
+// "lease resolved" exactly (ENG-518) rather than inferring it from the session,
+// owner and conversation it may or may not carry.
+func (s *Server) markResolvedLease(ctx context.Context, lease domain.LeaseID) context.Context {
+	if lease == "" {
+		return ctx
+	}
+	if _, already := domain.ResolvedLeaseFromContext(ctx); already {
+		return ctx
+	}
+	if _, known := s.resolveLeaseFor(ctx, lease); known {
+		return domain.WithResolvedLease(ctx, lease)
+	}
+	return ctx
+}
+
+func (s *Server) stampConversationOwner(ctx context.Context, b domain.LeaseBinding, known bool) context.Context {
 	if !known {
 		return ctx
+	}
+	// ENG-614 (ADR-0084 D7): the conversation's PROFILE rides the same lease lookup,
+	// stamped whether or not the conversation has an owner (a customer conversation
+	// from an ingress may have none). The decision point narrows a customer
+	// conversation's reads to customer-visible tags (authz.ProfileNarrowingAuthorizer).
+	if s.ConversationProfile != nil {
+		ctx = domain.WithConversationProfile(ctx, s.ConversationProfile(ctx, b))
 	}
 	if owner := s.ConversationOwner(ctx, b); owner != "" {
 		ctx = domain.WithConversationOwner(ctx, owner)

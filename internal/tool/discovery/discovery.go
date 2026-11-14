@@ -94,7 +94,7 @@ func Discover(dir string) ([]Discovered, error) {
 		var multi struct {
 			Tools []toolManifest `json:"tools"`
 		}
-		mans := []toolManifest{}
+		var mans []toolManifest
 		if jerr := json.Unmarshal(m[1], &multi); jerr == nil && len(multi.Tools) > 0 {
 			mans = multi.Tools
 		} else {

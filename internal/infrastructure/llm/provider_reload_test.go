@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"context"
 	"sync"
 	"testing"
 
@@ -38,13 +37,13 @@ func TestProvider_ReloadGeneratorsSwapsTableLive(t *testing.T) {
 		t.Errorf("Default() = %q, want claude-new", p.Default())
 	}
 	// The ladder resolves a suggestion to the NEW generator.
-	id, err := p.resolve(context.Background(), domain.LLMRequest{SuggestedModelID: "claude-new"})
+	id, err := p.resolve(domain.LLMRequest{SuggestedModelID: "claude-new"})
 	if err != nil || id != "claude-new" {
 		t.Fatalf("resolve suggested: got %q (%v)", id, err)
 	}
 	// A role pointing at a now-removed generator falls to the new default
 	// rather than erroring — the SetRole tolerance, preserved across reloads.
-	id, err = p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter})
+	id, err = p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter})
 	if err != nil || id != "claude-new" {
 		t.Fatalf("orphaned role must fall to default: got %q (%v)", id, err)
 	}
@@ -86,7 +85,7 @@ func TestProvider_ReloadIsRaceFreeUnderConcurrentResolve(t *testing.T) {
 					return
 				default:
 				}
-				id, err := p.resolve(context.Background(), domain.LLMRequest{})
+				id, err := p.resolve(domain.LLMRequest{})
 				if err == nil && !p.KnowsGenerator(id) {
 					// Racing tables is allowed to mix WHICH table answers each of
 					// the two calls — but each call individually saw a whole one,

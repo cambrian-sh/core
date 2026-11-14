@@ -75,18 +75,9 @@ func compileSchema(raw []byte) (*jsonschema.Schema, error) {
 
 // extractJSON strips what best-effort models wrap JSON in — surrounding
 // whitespace and one markdown code fence — and nothing more. It does not hunt for
-// JSON inside prose: a reply that needs that is a reply that failed.
-func extractJSON(text string) string {
-	t := strings.TrimSpace(text)
-	if strings.HasPrefix(t, "```") {
-		t = strings.TrimPrefix(t, "```")
-		if nl := strings.IndexByte(t, '\n'); nl >= 0 {
-			t = t[nl+1:] // drop the language tag line ("json")
-		}
-		t = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(t), "```"))
-	}
-	return t
-}
+// JSON inside prose: a reply that needs that is a reply that failed. The rule is
+// domain.StripCodeFence, shared with the awareness and router decoders.
+func extractJSON(text string) string { return domain.StripCodeFence(text) }
 
 // validateReply checks text against the schema and returns the normalised JSON.
 func validateReply(schema []byte, text string) (string, error) {

@@ -519,31 +519,31 @@ func (p *PgQueryPlane) refuseActorOnCrossActorPolicy(ctx context.Context, q doma
 	return nil
 }
 
-// current — ENFORCED via each resolution's backing item classification.
-// Policy defaults to latest_assertion; Actor keeps that actor's own rows only.
+// current — ENFORCED in SQL via each resolution's backing item classification
+// (sqlArgs.item → sqlfence.TextArray, the TagPredicate.Allows mirror; owner
+// fence under Bypass too). Policy defaults to latest_assertion; Actor keeps that
+// actor's own rows only.
+//
+// The entity, actor, fence and LIMIT are all in the query (ENG-833): this used
+// to load every current resolution of the kind through
+// KnowledgeStore.CurrentResolutions and filter and count in Go, so a narrow
+// question about one entity paid for the whole kind, and the scope check was an
+// inline scope.Allows copy in the adapter (AGENTS.md §2.5).
 func (p *PgQueryPlane) current(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
 	policy := q.PolicyOrDefault()
 	if err := p.refuseActorOnCrossActorPolicy(ctx, q, policy); err != nil {
 		return nil, err
 	}
-	res, err := p.knowledge.CurrentResolutions(ctx, defaultNamespace, q.ItemKind, policy)
+	var entities []string
+	if q.EntityID != "" {
+		entities = []string{q.EntityID}
+	}
+	res, err := p.currentResolutions(ctx, q.ItemKind, policy, entities, q.Actor, scope, limit)
 	if err != nil {
 		return nil, err
 	}
-	var out []domain.QueryRow
+	out := make([]domain.QueryRow, 0, len(res))
 	for _, r := range res {
-		if len(out) == limit {
-			break
-		}
-		if q.EntityID != "" && r.EntityID != q.EntityID {
-			continue
-		}
-		if q.Actor != "" && r.Actor != q.Actor {
-			continue
-		}
-		if r.Item == nil || !scope.Allows(r.Item.Classification) { // owner fence holds under Bypass
-			continue
-		}
 		out = append(out, domain.QueryRow{
 			"entity_id": r.EntityID, "actor": r.Actor, "policy": r.Policy,
 			"reason_code": r.ReasonCode, "values": itemValues(r.Item),
@@ -552,12 +552,133 @@ func (p *PgQueryPlane) current(ctx context.Context, q domain.KnowledgeQuery, sco
 	return out, nil
 }
 
+// currentResolutions reads the CURRENT resolutions of one kind under one policy
+// that scope may read, hydrated with their items, in resolution order. entities
+// (when non-empty) and actor (when non-empty) narrow in SQL; limit <= 0 means no
+// LIMIT. A resolution whose item the fence rejects — or that has no item — is
+// not returned for any filtered scope.
+func (p *PgQueryPlane) currentResolutions(ctx context.Context, kind, policy string, entities []string,
+	actor string, scope *domain.TagPredicate, limit int) ([]domain.Resolution, error) {
+	a := &sqlArgs{}
+	where := currentResolutionsWhere(a, kind, policy, entities, actor, scope)
+	sqlText := `
+		SELECT r.entity_id, r.actor, r.item_id, r.reason_code, r.system_from
+		FROM resolutions r LEFT JOIN knowledge_items ki ON ki.id = r.item_id
+		WHERE ` + where + `
+		ORDER BY r.id`
+	if limit > 0 {
+		sqlText += ` LIMIT ` + a.add(limit)
+	}
+	rows, err := p.pool.Query(ctx, sqlText, a.args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Resolution
+	var ids []string
+	for rows.Next() {
+		var r domain.Resolution
+		var itemID string
+		if err := rows.Scan(&r.EntityID, &r.Actor, &itemID, &r.ReasonCode, &r.SystemFrom); err != nil {
+			return nil, err
+		}
+		r.NamespaceID, r.Kind, r.Policy = defaultNamespace, kind, policy
+		r.Item = &domain.KnowledgeItem{ID: domain.KnowledgeItemID(itemID)}
+		out = append(out, r)
+		ids = append(ids, itemID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return out, nil
+	}
+	items, err := loadItems(ctx, p.pool, `WHERE ki.id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("current: load items: %w", err)
+	}
+	byID := make(map[domain.KnowledgeItemID]*domain.KnowledgeItem, len(items))
+	for i := range items {
+		byID[items[i].ID] = &items[i]
+	}
+	kept := out[:0]
+	for _, r := range out {
+		// An item erased between the two reads is dropped rather than answered
+		// with no values: the fence admitted the row on that item's labels.
+		if it, ok := byID[r.Item.ID]; ok {
+			r.Item = it
+			kept = append(kept, r)
+		}
+	}
+	return kept, nil
+}
+
+// currentResolutionsWhere renders the WHERE of a current-resolutions read: the
+// kind, the policy, the open (system_to IS NULL) non-negated rows, the optional
+// entity and actor narrowing, and the item fence (sqlArgs.item, alias "ki").
+// Pure, so its shape is unit-tested without a database.
+func currentResolutionsWhere(a *sqlArgs, kind, policy string, entities []string, actor string,
+	scope *domain.TagPredicate) string {
+	where := `r.namespace_id=` + a.add(defaultNamespace) + ` AND r.kind=` + a.add(kind) +
+		` AND r.policy=` + a.add(policy) + ` AND r.system_to IS NULL AND r.item_id IS NOT NULL`
+	switch len(entities) {
+	case 0:
+	case 1:
+		where += ` AND r.entity_id = ` + a.add(entities[0])
+	default:
+		where += ` AND r.entity_id = ANY(` + a.add(entities) + `)`
+	}
+	if actor != "" {
+		where += ` AND r.actor = ` + a.add(actor)
+	}
+	return where + a.item(scope, "ki")
+}
+
+// contradictionKeysSQL selects the (entity, predicate) pairs on which the
+// visible current resolutions disagree: two or more distinct values among the
+// sides scope may read. The fence applies to every side BEFORE grouping, so a
+// disagreement is never reported because of a side the caller cannot read. A
+// value is compared on its typed columns, which is equality on the value
+// itemValues renders. Pure, so its shape is unit-tested without a database.
+func contradictionKeysSQL(a *sqlArgs, kind, policy, entity, predicate, actor string,
+	scope *domain.TagPredicate, limit int) string {
+	var entities []string
+	if entity != "" {
+		entities = []string{entity}
+	}
+	where := currentResolutionsWhere(a, kind, policy, entities, "", scope)
+	sides := `
+		SELECT r.entity_id, r.actor, sv.predicate,
+			concat_ws('|', sv.value_type, sv.value_text, sv.value_number::text,
+				sv.value_date::text, sv.value_entity_id) AS val
+		FROM resolutions r
+		LEFT JOIN knowledge_items ki ON ki.id = r.item_id
+		JOIN statement_values sv ON sv.item_id = r.item_id
+		WHERE ` + where
+	if predicate != "" {
+		sides += ` AND sv.predicate = ` + a.add(predicate)
+	}
+	having := `count(DISTINCT val) >= 2`
+	if actor != "" {
+		// Only the disagreements this actor is part of; the other sides stay.
+		having += ` AND bool_or(actor = ` + a.add(actor) + `)`
+	}
+	return `WITH sides AS (` + sides + `)
+		SELECT entity_id, predicate FROM sides
+		GROUP BY entity_id, predicate
+		HAVING ` + having + `
+		ORDER BY entity_id, predicate
+		LIMIT ` + a.add(limit)
+}
+
 // contradictions surfaces entities whose CURRENT resolutions disagree across
 // actors — the disagreement returned, never resolved away (memo §8).
 //
-// ENFORCED via each side's backing item classification, BEFORE grouping: a
-// contradiction row must not leak one side's value because the other side was
-// readable.
+// ENFORCED in SQL via each side's backing item classification, BEFORE grouping:
+// a contradiction row must not leak one side's value because the other side was
+// readable. The disagreeing (entity, predicate) pairs, and the LIMIT, are
+// decided in the query (ENG-833); only the sides of those entities are loaded.
 //
 // Actor keeps only the disagreements that actor is part of (it holds one of the
 // sides); the other sides are still every actor's, because a disagreement with
@@ -568,57 +689,60 @@ func (p *PgQueryPlane) contradictions(ctx context.Context, q domain.KnowledgeQue
 	if err := p.refuseActorOnCrossActorPolicy(ctx, q, policy); err != nil {
 		return nil, err
 	}
-	res, err := p.knowledge.CurrentResolutions(ctx, defaultNamespace, q.ItemKind, policy)
+	a := &sqlArgs{}
+	keySQL := contradictionKeysSQL(a, q.ItemKind, policy, q.EntityID, q.Predicate, q.Actor, scope, limit)
+	krows, err := p.pool.Query(ctx, keySQL, a.args...)
 	if err != nil {
 		return nil, err
 	}
-	type side struct {
-		actor string
-		value any
+	type key struct{ entity, predicate string }
+	var keys []key
+	entitySet := map[string]bool{}
+	var entities []string
+	for krows.Next() {
+		var k key
+		if err := krows.Scan(&k.entity, &k.predicate); err != nil {
+			krows.Close()
+			return nil, err
+		}
+		keys = append(keys, k)
+		if !entitySet[k.entity] {
+			entitySet[k.entity] = true
+			entities = append(entities, k.entity)
+		}
 	}
-	byEntityPred := map[string]map[string][]side{}
+	krows.Close()
+	if err := krows.Err(); err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	// The sides of exactly those entities, under the same fence.
+	res, err := p.currentResolutions(ctx, q.ItemKind, policy, entities, "", scope, 0)
+	if err != nil {
+		return nil, err
+	}
+	views := map[key]map[string]any{}
 	for _, r := range res {
-		if q.EntityID != "" && r.EntityID != q.EntityID {
-			continue
-		}
-		if r.Item == nil || !scope.Allows(r.Item.Classification) { // owner fence holds under Bypass
-			continue
-		}
 		for pred, val := range itemValues(r.Item) {
-			if q.Predicate != "" && pred != q.Predicate {
-				continue
+			k := key{r.EntityID, pred}
+			if views[k] == nil {
+				views[k] = map[string]any{}
 			}
-			if byEntityPred[r.EntityID] == nil {
-				byEntityPred[r.EntityID] = map[string][]side{}
-			}
-			byEntityPred[r.EntityID][pred] = append(byEntityPred[r.EntityID][pred], side{r.Actor, val})
+			views[k][r.Actor] = val
 		}
 	}
-	var out []domain.QueryRow
-	for entity, preds := range byEntityPred {
-		for pred, sides := range preds {
-			if len(sides) < 2 {
-				continue
-			}
-			distinct := map[string]bool{}
-			views := map[string]any{}
-			for _, s := range sides {
-				distinct[fmt.Sprint(s.value)] = true
-				views[s.actor] = s.value
-			}
-			if len(distinct) < 2 {
-				continue
-			}
-			if _, involved := views[q.Actor]; q.Actor != "" && !involved {
-				continue
-			}
-			if len(out) == limit {
-				return out, nil
-			}
-			out = append(out, domain.QueryRow{
-				"entity_id": entity, "predicate": pred, "actors": views,
-			})
+	out := make([]domain.QueryRow, 0, len(keys))
+	for _, k := range keys {
+		v := views[k]
+		if len(v) < 2 {
+			// A side erased between the two reads: no longer a disagreement.
+			continue
 		}
+		out = append(out, domain.QueryRow{
+			"entity_id": k.entity, "predicate": k.predicate, "actors": v,
+		})
 	}
 	return out, nil
 }
@@ -694,7 +818,7 @@ func (p *PgQueryPlane) eventsFor(ctx context.Context, q domain.KnowledgeQuery, s
 		FROM events ev
 		WHERE ev.namespace_id=$1 AND ev.occurred_at >= $2 AND ev.occurred_at < $3
 		  AND EXISTS (SELECT 1 FROM event_roles r WHERE r.event_id = ev.id AND r.entity_id = $4)`+
-		notRetired("ev")+scopeCond+`
+		notRetired("ev")+latestRevision("ev")+scopeCond+`
 		ORDER BY ev.occurred_at, ev.id LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err

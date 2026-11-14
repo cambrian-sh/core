@@ -57,10 +57,6 @@ service Orchestrator {
   // Shared LTM semantic query — proxied through Substrate with ACL enforcement
   rpc QueryMemory(MemoryRequest) returns (MemoryResponse);
 
-  // Bi-directional TUI shell stream. Upstream: user commands (Handoff).
-  // Downstream: real-time telemetry envelope (SymbiosisEvent).
-  rpc ChatStream(stream Handoff) returns (stream SymbiosisEvent);
-
   // Proactive neural signal stream. Upstream: agent signals (Handoff with _signal_type).
   // Downstream: plan execution telemetry (SymbiosisEvent).
   rpc SignalStream(stream Handoff) returns (stream SymbiosisEvent);
@@ -342,8 +338,9 @@ message ProposeScheduledTaskRequest {
   string cron = 4;           // 5-field cron or @daily/@weekly/...; exactly one of cron / rrule
   string rrule = 5;          // RFC 5545 RRULE subset (FREQ=HOURLY|DAILY|WEEKLY|MONTHLY, BYHOUR, BYMINUTE, BYDAY, BYMONTHDAY)
   string timezone = 6;       // IANA zone the schedule is read in ("" = UTC)
-  // agent_id: the agent profile the user asked to run it. RECORDED, not yet routed: every
-  // firing runs on the chat lane's pool agent today (T-20261106-scheduled-task-agent-id-is-recorded-but-not).
+  // agent_id: DEPRECATED — leave empty. A scheduled task always runs as its owner on the
+  // chat lane; a non-empty value is refused (SCHEDULED_TASK_REJECTION_INVALID). It was
+  // recorded and never routed (owner decision 2026-11-15, ENG-753).
   string agent_id = 7;
   // delivery: "conversation" (default: the reply lands in a conversation the owner holds),
   // "notify" (also a notification event), "email" (the run is asked to email the result
@@ -456,6 +453,12 @@ message ExecuteToolResponse {
   string error = 5;
   string arg_hash = 6;
   string result_hash = 7;
+  // ADR-0139 D11: context pre_tool / post_tool hooks added for the agent. Carried
+  // BESIDE result_json, never inside it, so ledger records and replayed results
+  // stay byte-identical (owner decision 2026-11-15,
+  // T-20261105-pre-tool-and-post-tool-hook-annotations-are). Additive; an agent
+  // that ignores it loses only the notes.
+  repeated string annotations = 8;
 }
 // ADR-0039 tool-discovery messages. The principal is taken from x-agent-id
 // metadata, never from the body.
@@ -669,19 +672,19 @@ message PutContextNodeResponse {
   string cid = 1;
 }
 
-// StatusUpdate carries connection health to the TUI status bar.
+// StatusUpdate carries connection health on the SignalStream downstream.
 message StatusUpdate {
   string status = 1; // "Connected" | "Reconnecting" | "Disconnected"
   string detail = 2;
 }
 
-// ThoughtChunk streams a reasoning fragment from the Planner to the Cortex pane.
+// ThoughtChunk streams a reasoning fragment from the Planner.
 message ThoughtChunk {
   string text = 1;
-  bool   done = 2; // true on the final chunk; TUI collapses the node to a checkmark
+  bool   done = 2; // true on the final chunk
 }
 
-// AgentLog streams a structured log line from an agent to the Execution pane.
+// AgentLog streams a structured log line from an agent.
 message AgentLog {
   string timestamp = 1; // RFC3339
   string level     = 2; // DEBUG | INFO | WARN | ERROR
@@ -705,25 +708,6 @@ message InterventionRequest {
   StepType step_type  = 4;
 }
 
-// BidEntry represents a single agent's proposal in an auction.
-message BidEntry {
-  string agent_id      = 1;
-  float  confidence    = 2;
-  string rationale     = 3;
-  int32  latency_ms    = 4;
-  bool   is_tool       = 5; // true when the bid came from a TraitTool Static Bidder
-}
-
-// AuctionEvent streams structured auction results from the Auctioneer to the TUI.
-message AuctionEvent {
-  string              task_id       = 1;
-  string              task_desc     = 2;
-  string              status        = 3; // "started" | "completed" | "failed"
-  string              winner_id     = 4;
-  repeated BidEntry   bids          = 5;
-  string              error_msg     = 6;
-}
-
 // PlanStep describes a single step in the execution plan topology.
 message PlanStep {
   int32  index       = 1;
@@ -739,21 +723,26 @@ message PlanTopology {
 }
 
 // StepCacheHit is streamed when a DAG step result is served from the
-// StepCache without calling the agent (ADR-0026). TUI renders the step
-// node as greyed-out with a "↻ cached" badge.
+// StepCache without calling the agent (ADR-0026).
 message StepCacheHit {
   int32  step_index = 1;
   string key        = 2;
 }
 
-// SymbiosisEvent is the oneof envelope streamed from Substrate to TUI.
+// SymbiosisEvent is the oneof envelope the kernel streams down an agent's
+// SignalStream (plan execution telemetry).
 message SymbiosisEvent {
+  // 5 was `AuctionEvent auction_event`: auction results for the deleted TUI,
+  // never emitted after ADR-0100. Deleted 2026-11-14 with AuctionEvent,
+  // BidEntry and the unimplemented ChatStream RPC (owner decision,
+  // T-20261113-cambrian-proto-comments-describe-the-deleted). Never reuse.
+  reserved 5;
+  reserved "auction_event";
   oneof payload {
     StatusUpdate        status_update        = 1;
     ThoughtChunk        thought_chunk        = 2;
     AgentLog            agent_log            = 3;
     InterventionRequest intervention_request = 4;
-    AuctionEvent        auction_event        = 5;
     PlanTopology        plan_topology        = 6;
     StepCacheHit        step_cache_hit       = 7;
   }

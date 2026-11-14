@@ -17,27 +17,27 @@ import (
 // without a profiler (T-20261102-ingestion-logs-no-per-stage-timing-so-the-1-s).
 // Stages are recorded in the order they run; a stage that did not run is absent.
 const (
-	StageEvidence         = "evidence"              // ADR-0105 blob put + verify + evidence row + outbox
-	StageChunk            = "chunk"                 // flat chunker (its output is replaced when structure parsing yields leaves)
-	StageDocumentRevise   = "document_revise"       // ADR-0138 D3 identity claim + retirement of a changed previous version
-	StageDocumentRow      = "document_row"          // ADR-0093 source-document row, via the write chokepoint
-	StageStructureParse   = "structure_parse"       // ADR-0060 docling_agent round-trip, as the kernel sees it
-	StageStructureAgent   = "structure_agent"       // the sidecar's own parse time (reported by it); subset of structure_parse
-	StageStructureLeaves  = "structure_leaves"      // junk filter + leaves-as-chunks
-	StagePrepare          = "prepare"               // ADR-0134 chunk stamps + context prepend + ids
-	StageEmbed            = "embed"                 // EmbedBatch (or the per-chunk fallback)
-	StageChunkSave        = "chunk_save"            // SaveBatch: classify + one transaction of chunk + projection upserts
-	StageChunkSaveBegin   = "chunk_save_begin"      // pool acquire + BEGIN inside chunk_save (reported by the adapter)
-	StageChunkSaveUpsert  = "chunk_save_upsert"     // chunk row upserts inside chunk_save (reported by the adapter)
-	StageChunkSaveProject = "chunk_save_projection" // ADR-0107 projection upserts inside chunk_save (reported by the adapter)
-	StageChunkSaveCommit  = "chunk_save_commit"     // COMMIT inside chunk_save (reported by the adapter)
-	StageTripletsEnqueue  = "triplets_enqueue"      // ADR-0053 non-blocking enqueue; extraction is async
-	StageKGWait           = "kg_wait"               // sync_ingest_wait_for_kg: wait for this document's triplets (sync path only)
-	StageFactsEnqueue     = "facts_enqueue"         // ADR-0136 D4 non-blocking enqueue; extraction is async
-	StageFactsWait        = "facts_wait"            // sync_ingest_wait_for_facts: wait for this document's facts (sync path only)
-	StageStructurePersist = "structure_persist"     // ADR-0060 sections + PART_OF/NEXT edges + chunk stamps
-	StageEntity           = "entity"                // source-doc entity: content-store put + upsert
-	StagePublish          = "publish"               // operator feed event
+	StageEvidence         = "evidence"                   // ADR-0105 blob put + verify + evidence row + outbox
+	StageChunk            = "chunk"                      // flat chunker (its output is replaced when structure parsing yields leaves)
+	StageDocumentRevise   = "document_revise"            // ADR-0138 D3 identity claim + retirement of a changed previous version
+	StageDocumentRow      = "document_row"               // ADR-0093 source-document row, via the write chokepoint
+	StageStructureParse   = "structure_parse"            // ADR-0060 docling_agent round-trip, as the kernel sees it
+	StageStructureAgent   = "structure_agent"            // the sidecar's own parse time (reported by it); subset of structure_parse
+	StageStructureLeaves  = "structure_leaves"           // junk filter + leaves-as-chunks
+	StagePrepare          = "prepare"                    // ADR-0134 chunk stamps + context prepend + ids
+	StageEmbed            = "embed"                      // EmbedBatch (or the per-chunk fallback)
+	StageChunkSave        = "chunk_save"                 // SaveBatch: classify + one transaction of chunk + projection upserts
+	StageChunkSaveBegin   = domain.StageChunkSaveBegin   // reported by the adapter; defined in domain (ENG-1104)
+	StageChunkSaveUpsert  = domain.StageChunkSaveUpsert  // reported by the adapter; defined in domain (ENG-1104)
+	StageChunkSaveProject = domain.StageChunkSaveProject // reported by the adapter; defined in domain (ENG-1104)
+	StageChunkSaveCommit  = domain.StageChunkSaveCommit  // reported by the adapter; defined in domain (ENG-1104)
+	StageTripletsEnqueue  = "triplets_enqueue"           // ADR-0053 non-blocking enqueue; extraction is async
+	StageKGWait           = "kg_wait"                    // sync_ingest_wait_for_kg: wait for this document's triplets (sync path only)
+	StageFactsEnqueue     = "facts_enqueue"              // ADR-0136 D4 non-blocking enqueue; extraction is async
+	StageFactsWait        = "facts_wait"                 // sync_ingest_wait_for_facts: wait for this document's facts (sync path only)
+	StageStructurePersist = "structure_persist"          // ADR-0060 sections + PART_OF/NEXT edges + chunk stamps
+	StageEntity           = "entity"                     // source-doc entity: content-store put + upsert
+	StagePublish          = "publish"                    // operator feed event
 
 	// Counts.
 	CountEmbedCalls    = "embed_calls"    // EmbedBatch/Embed calls made by the ingest

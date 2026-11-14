@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -46,7 +47,11 @@ func (s *InMemoryAuditStore) Query(_ context.Context, f AuditFilter) ([]domain.A
 	defer s.mu.Unlock()
 	var out []domain.AuditEntry
 	for _, e := range s.entries {
-		if f.Actor != "" && e.Actor != f.Actor {
+		if len(f.Actors) > 0 {
+			if !slices.Contains(f.Actors, e.Actor) {
+				continue
+			}
+		} else if f.Actor != "" && e.Actor != f.Actor {
 			continue
 		}
 		if f.TargetType != "" && e.TargetType != f.TargetType {

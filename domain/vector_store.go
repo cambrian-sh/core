@@ -9,15 +9,16 @@ import (
 // DocType constants identify the category of a Document stored in pgvector.
 const (
 	// DocTypeMemory is RETIRED (ADR-0025). No new documents may use this type.
-	// Existing rows decay via apply_ebbinghaus_decay(). All query paths updated to DocTypeMnemonicFact.
-	DocTypeMemory             = "memory"
-	DocTypeAgentProfile       = "agent_profile"
-	DocTypeJudicialRecord     = "judicial_record"
-	DocTypeProceduralTemplate = "procedural_template"
-	DocTypeNeuralTrace        = "neural_trace"
-	DocTypeNegativeEdge       = "negative_edge"
-	DocTypeMnemonicFact       = "mnemonic_fact"   // ADR-0015: structured step output (tool response, agent result)
-	DocTypeMnemonicAction     = "mnemonic_action" // ADR-0049: a mutation/side-effecting tool call — an EVENT ("what I did"), not knowledge
+	// All query paths updated to DocTypeMnemonicFact. (Ebbinghaus decay, which once
+	// aged such rows, was deleted by owner decision 2026-11-14, ENG-74.)
+	DocTypeMemory         = "memory"
+	DocTypeAgentProfile   = "agent_profile"
+	DocTypeJudicialRecord = "judicial_record"
+	// DocTypeProceduralTemplate ("procedural_template") was removed 2026-11-14 with
+	// the ADR-0027 procedural plan memory (ENG-1301); no code writes or reads it.
+	DocTypeNegativeEdge   = "negative_edge"
+	DocTypeMnemonicFact   = "mnemonic_fact"   // ADR-0015: structured step output (tool response, agent result)
+	DocTypeMnemonicAction = "mnemonic_action" // ADR-0049: a mutation/side-effecting tool call — an EVENT ("what I did"), not knowledge
 	// DocTypeMnemonicScene ("mnemonic_scene") was removed 2026-11-05 with scenes
 	// (decisions/scenes-cancelled.md); migration 0028 deletes the stored rows.
 	DocTypeMnemonicEntity    = "mnemonic_entity"    // ADR-0049 D8: a first-class engaged THING (file/dir/api/…), keyed by canonical kind:id

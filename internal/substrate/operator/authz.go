@@ -122,7 +122,10 @@ func serviceOf(fullMethod string) string {
 // authorize is the shared gate for both interceptors. It returns the principal
 // context for OperatorConsole and premium operator-plane methods, passing
 // through the agent plane (core and declared-premium alike).
-func authorize(ctx context.Context, fullMethod string, idp domain.Authenticator, agentPlane map[string]bool) (context.Context, error) {
+//
+// roles are the premium plugins' declared method classes (MethodRoles); nil means
+// none declared, and every premium method then follows the naming rule.
+func authorize(ctx context.Context, fullMethod string, idp domain.Authenticator, agentPlane map[string]bool, roles MethodRoles) (context.Context, error) {
 	// The approval surface is declared on Orchestrator but is operator-plane
 	// (ADR-0039 D10): it takes the same bearer as the console. The list lives in
 	// authz.IsOperatorGatedAgentServiceMethod so the surface stamp and this gate
@@ -152,14 +155,15 @@ func authorize(ctx context.Context, fullMethod string, idp domain.Authenticator,
 		return ctx, status.Error(codes.Unauthenticated, "invalid or expired token")
 	}
 	principal, role := id.Principal.ID, RoleFromRoles(id.Roles)
-	// A member reaches only its own surfaces (memberMethods), fail-closed.
-	if role == RoleMember && !memberMethods[fullMethod] {
+	// A member reaches only its own surfaces (memberMethods, or a premium method its
+	// plugin declared self-service / member-read), fail-closed.
+	if role == RoleMember && !memberMayCall(fullMethod, roles) {
 		return ctx, status.Errorf(codes.PermissionDenied, "role %q may not call %s", role, fullMethod)
 	}
 	// Viewer is denied mutating commands; reads/feed are allowed for any role.
 	// Premium operator planes follow the same naming convention, fail-closed:
 	// anything not spelled like a read is a command.
-	if role == RoleViewer && isOperatorOnly(fullMethod) {
+	if role == RoleViewer && isOperatorOnly(fullMethod, roles) {
 		return ctx, status.Errorf(codes.PermissionDenied, "role %q may not call %s", role, fullMethod)
 	}
 	ctx = context.WithValue(ctx, principalCtxKey{}, principalInfo{principal: principal, role: role})
@@ -190,16 +194,14 @@ func authorize(ctx context.Context, fullMethod string, idp domain.Authenticator,
 // refuses act-for to every role but operator (CanActFor), and the accounts
 // self-service methods name no principal. Matched on the FULL method name.
 var memberMethods = map[string]bool{
-	operatorMethodPrefix + "Logout":                   true,
+	operatorMethodPrefix + "Logout": true,
+	// Contract 0102: a person asks who the kernel thinks they are.
+	operatorMethodPrefix + "WhoAmI":                   true,
 	operatorMethodPrefix + "OpenConversation":         true,
 	operatorMethodPrefix + "SendTurn":                 true,
 	operatorMethodPrefix + "CloseConversation":        true,
 	operatorMethodPrefix + "ListConversations":        true,
 	operatorMethodPrefix + "ListConversationMessages": true,
-	accountsAdminService + "StartAccountConnect":      true,
-	accountsAdminService + "DisconnectMyAccount":      true,
-	accountsAdminService + "ConfirmMyAccount":         true,
-	accountsAdminService + "ListMyAccounts":           true,
 	// ADR-0142 D11/D12: a person answers their OWN approvals, manages their own
 	// standing approvals and shares their own private material. Each handler
 	// scopes to the caller; the hub authorises every answer at answer time.
@@ -209,14 +211,20 @@ var memberMethods = map[string]bool{
 	operatorMethodPrefix + "ListStandingApprovals":  true,
 	operatorMethodPrefix + "RevokeStandingApproval": true,
 	operatorMethodPrefix + "ShareToTeam":            true,
-	// ADR-0142 stage 2: a person reads their OWN reporting chain (unit path,
-	// manager chain); the handler names no principal.
-	orgDirectoryService + "GetMyOrgChain": true,
+	// Premium planes' member surfaces (their own accounts, their own reporting
+	// chain) are DECLARED by the plugin that serves them (MethodRoles), not listed
+	// here: core names no premium method.
 }
 
-// Premium organisation-hierarchy plane (ADR-0142 stage 2, cambrian-premium
-// api/proto/org). Core only knows the names that need an exception.
-const orgDirectoryService = "/cambrian.premium.org.OrgDirectoryAdmin/"
+// memberMayCall: an OperatorConsole member method, or a premium method its plugin
+// declared self-service or member-read.
+func memberMayCall(fullMethod string, roles MethodRoles) bool {
+	if memberMethods[fullMethod] {
+		return true
+	}
+	r, ok := roles.declared(fullMethod)
+	return ok && (r == MethodSelfService || r == MethodMemberRead)
+}
 
 // isOperatorOnly reports whether an OperatorConsole method is a mutating command
 // (Operator-only). Reads (StreamEvents/Snapshot/Login and Query* reads) are open
@@ -238,20 +246,11 @@ var operatorOnlyReads = map[string]bool{
 	"ListScheduledTasks": true,
 }
 
-// Premium accounts plane (ADR-0141, cambrian-premium api/proto/accounts).
-// Matched on the FULL method so an OperatorConsole RPC of the same short name
-// can never inherit these exceptions. Core only knows the names; the handlers
-// live in premium and act on the authenticated caller (OperatorCaller).
-const accountsAdminService = "/cambrian.premium.accounts.AccountsAdmin/"
-
-// selfServiceMethods are open to every authenticated role: connecting and
-// disconnecting one's OWN account (an employee connects their own mailbox).
-// No request field names a principal.
+// selfServiceMethods are the OperatorConsole methods open to every authenticated
+// role although named like commands. No request field names a principal. The
+// premium planes' self-service methods (connect / disconnect / confirm my
+// account, read my org chain) are declared by their plugins (MethodRoles).
 var selfServiceMethods = map[string]bool{
-	accountsAdminService + "StartAccountConnect": true,
-	accountsAdminService + "DisconnectMyAccount": true,
-	// Phase 2 (owner position 4): confirming one's own pending account.
-	accountsAdminService + "ConfirmMyAccount": true,
 	// ADR-0142 D11/D12: answering one's own approvals, revoking one's own
 	// standing approvals, sharing one's own material — the hub and the share
 	// policy decide; the plane role does not.
@@ -259,36 +258,12 @@ var selfServiceMethods = map[string]bool{
 	operatorMethodPrefix + "AnswerApproval":         true,
 	operatorMethodPrefix + "RevokeStandingApproval": true,
 	operatorMethodPrefix + "ShareToTeam":            true,
-	orgDirectoryService + "GetMyOrgChain":           true,
 }
 
-// operatorOnlyFullMethods are reads that are other people's business: who has
-// connected which account. A Viewer reads only their own (ListMyAccounts).
-var operatorOnlyFullMethods = map[string]bool{
-	accountsAdminService + "ListAccounts": true,
-	// Phase 2: the organisation's accounts and OAuth client registrations
-	// (metadata only, but who holds which org credential is operator business).
-	accountsAdminService + "ListOrgAccounts":     true,
-	accountsAdminService + "ListProviderClients": true,
-	// Every consumer bound to an account (what breaks if it is revoked):
-	// operator business. ListSystems stays open to every role — its handler
-	// returns a non-operator only the catalog and the caller's own accounts.
-	accountsAdminService + "ListAccountConsumers": true,
-	// ADR-0142 stage 2: which directories may push to this kernel and the
-	// reconcile account's health are operator business.
-	orgDirectoryService + "ListScimConnections": true,
-	orgDirectoryService + "GetReconcileStatus":  true,
-	// ADR-0149 D2: the full agent-drafted ontology change, for the person
-	// deciding its ontology_change approval — an Operator's decision, so an
-	// Operator's read (T-20261113-approvers-of-an-ontology-change-see-only-a-200).
-	substrateLaneService + "GetOntologyDraft": true,
-}
-
-// Premium substrate plane (ADR-0108), matched on the FULL method like the
-// accounts plane above.
-const substrateLaneService = "/cambrian.premium.substrate.SubstrateLane/"
-
-func isOperatorOnly(fullMethod string) bool {
+// isOperatorOnly: the premium planes' operator-only READS (ListAccounts,
+// ListScimConnections, GetOntologyDraft, ...) are declared by their plugins as
+// MethodOperatorOnly and checked before the naming rule, like operatorOnlyReads.
+func isOperatorOnly(fullMethod string, roles MethodRoles) bool {
 	name := fullMethod
 	if i := strings.LastIndex(fullMethod, "/"); i >= 0 {
 		name = fullMethod[i+1:]
@@ -296,14 +271,22 @@ func isOperatorOnly(fullMethod string) bool {
 	switch name {
 	// Logout is open to every role: a Viewer must be able to end its own session,
 	// and the token it revokes is the caller's own.
-	case "Login", "Logout", "StreamEvents", "Snapshot":
+	// WhoAmI (contract 0102) is the caller reading its own identity.
+	case "Login", "Logout", "WhoAmI", "StreamEvents", "Snapshot":
 		return false
 	}
 	if selfServiceMethods[fullMethod] {
 		return false
 	}
-	if operatorOnlyFullMethods[fullMethod] {
-		return true
+	if r, ok := roles.declared(fullMethod); ok {
+		switch r {
+		case MethodSelfService:
+			return false
+		case MethodOperatorOnly:
+			return true
+		}
+		// MethodMemberRead: an ordinary read for Operators and Viewers; the
+		// naming rule below decides, as for any undeclared method.
 	}
 	// Checked BEFORE the naming convention, so a read cannot open itself to a
 	// Viewer by being named like one.
@@ -323,9 +306,10 @@ func isOperatorOnly(fullMethod string) bool {
 // UnaryAuthInterceptor gates unary OperatorConsole and premium operator-plane
 // RPCs (ADR-0047 D13; ADR-0118 D3). agentPlane names the premium services
 // DECLARED agent-facing at registration — exempt from the operator bearer.
-func UnaryAuthInterceptor(idp domain.Authenticator, agentPlane map[string]bool) grpc.UnaryServerInterceptor {
+// roles are the premium plugins' declared method classes (nil: none declared).
+func UnaryAuthInterceptor(idp domain.Authenticator, agentPlane map[string]bool, roles MethodRoles) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		ctx, err := authorize(ctx, info.FullMethod, idp, agentPlane)
+		ctx, err := authorize(ctx, info.FullMethod, idp, agentPlane, roles)
 		if err != nil {
 			return nil, err
 		}
@@ -335,9 +319,9 @@ func UnaryAuthInterceptor(idp domain.Authenticator, agentPlane map[string]bool) 
 
 // StreamAuthInterceptor gates streaming OperatorConsole and premium
 // operator-plane RPCs (e.g. StreamEvents).
-func StreamAuthInterceptor(idp domain.Authenticator, agentPlane map[string]bool) grpc.StreamServerInterceptor {
+func StreamAuthInterceptor(idp domain.Authenticator, agentPlane map[string]bool, roles MethodRoles) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		ctx, err := authorize(ss.Context(), info.FullMethod, idp, agentPlane)
+		ctx, err := authorize(ss.Context(), info.FullMethod, idp, agentPlane, roles)
 		if err != nil {
 			return err
 		}

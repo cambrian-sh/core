@@ -148,3 +148,20 @@ func TestOperatorIngestDoc_UploadNameIsTheFilename(t *testing.T) {
 		t.Errorf("paste: UploadName %q", paste.UploadName)
 	}
 }
+
+// Contract 0104 (ADR-0136 A3.5): the operator's descriptive fields reach the
+// document — an explicit title replaces the filename-derived one, source_kind is
+// descriptive only (SourceType stays kernel-derived), author_label never replaces Author.
+func TestOperatorIngestDoc_DescriptiveSourceMetadata(t *testing.T) {
+	doc := operatorIngestDoc(operator.IngestRequest{Text: "body", Filename: "report.pdf", Author: "alice",
+		Title: "Q3 board pack", SourceKind: "report", AuthorLabel: "Finance"})
+	if doc.Title != "Q3 board pack" || doc.SourceKind != "report" || doc.AuthorLabel != "Finance" || doc.Author != "alice" {
+		t.Fatalf("doc = title %q kind %q label %q author %q", doc.Title, doc.SourceKind, doc.AuthorLabel, doc.Author)
+	}
+	if doc.SourceType == "report" {
+		t.Fatal("source_kind must never become the routing SourceType")
+	}
+	if got := operatorIngestDoc(operator.IngestRequest{Text: "body", Filename: "report.pdf"}).Title; got != "report.pdf" {
+		t.Fatalf("no title keeps the filename: %q", got)
+	}
+}

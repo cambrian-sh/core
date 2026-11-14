@@ -126,7 +126,14 @@ func rawCases(t *testing.T) []profileCase {
 		{Name: "glob-bare-star", Text: with("mcp:time/*", "'*'"), ExpectedName: "tester"},
 		{Name: "glob-native", Text: with("mcp:time/*", "web_search"), ExpectedName: "tester", Skills: fixtureSkills},
 		{Name: "glob-native-wild", Text: with("mcp:time/*", "web_*"), ExpectedName: "tester", Skills: fixtureSkills},
-		{Name: "glob-other-namespace", Text: with("mcp:time/*", "local:box/read"), ExpectedName: "tester"},
+		{Name: "glob-other-namespace", Text: with("mcp:time/*", "foo:box/read"), ExpectedName: "tester"},
+		// Owner decision 2026-11-15: contributed tools (ADR-0127) may be named.
+		{Name: "glob-local-machine", Text: with("mcp:time/*", "local:box/read"), ExpectedName: "tester", Skills: fixtureSkills},
+		{Name: "glob-local-fleet", Text: with("mcp:time/*", "local:*"), ExpectedName: "tester", Skills: fixtureSkills},
+		{Name: "glob-local-any-machine", Text: with("mcp:time/*", "local:*/read_*"), ExpectedName: "tester", Skills: fixtureSkills},
+		{Name: "glob-local-partial-machine-wild", Text: with("mcp:time/*", "local:bo*/read"), ExpectedName: "tester"},
+		{Name: "glob-local-no-tool", Text: with("mcp:time/*", "local:box/"), ExpectedName: "tester"},
+		{Name: "glob-local-bare", Text: with("mcp:time/*", "local:box"), ExpectedName: "tester"},
 		{Name: "glob-uppercase-server", Text: with("mcp:time/*", "mcp:Time/now"), ExpectedName: "tester"},
 		{Name: "glob-whitespace", Text: with("mcp:time/*", "'mcp:time/ x'"), ExpectedName: "tester"},
 		{Name: "duplicate-tool", Text: with("mcp:time/*", "mcp:filesystem/read_*"), ExpectedName: "tester"},
@@ -198,6 +205,10 @@ var rawGlobs = []globCase{
 	{"*", "", false},
 	{"mcp:x/a\\b", "mcp:x/a\\b", false},
 	{"mcp:x/é*", "mcp:x/éa", false},
+	{"local:*", "local:box/read_file", false},
+	{"local:*/read_*", "local:box/read_file", false},
+	{"local:*/read_*", "local:box/write_file", false},
+	{"local:box/*", "local:boxy/read", false},
 }
 
 func buildFixture(t *testing.T) fixture {

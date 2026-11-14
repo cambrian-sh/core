@@ -41,11 +41,6 @@ const replanCacheTTL = domain.CacheTTLShort
 // its cost budget; the system block says what it means.
 const budgetExceededMarker = "<budget_exceeded/>"
 
-func init() {
-	registerPairPrompt("planner.replan", replanPrompts)
-	registerPairPrompt("planner.replan.capability_contract", replanCapPrompts)
-}
-
 // ── End ReplanHandler prompts ────────────────────────────────────────────────
 
 // CapabilityContractSource reports whether the ROUTE-03 capability_contract arm

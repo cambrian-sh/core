@@ -93,6 +93,25 @@ type SessionSpend struct {
 	EstimatedCalls int
 	// Exhausted is set the first time a call was refused at the ceiling.
 	Exhausted bool
+	// Models counts the calls per generator id that ANSWERED them (ENG-453,
+	// owner decision 2026-11-14: every result records the model that answered).
+	// Keyed by the id the Provider actually served the call on, after any
+	// fallback, so a result can show that its backbone never changed. Never
+	// shared: every snapshot this package hands out carries its own copy.
+	Models map[string]int
+}
+
+// clone returns s with its own Models map, so a snapshot handed out of the
+// meter's lock cannot race the meter's later writes.
+func (s SessionSpend) clone() SessionSpend {
+	if s.Models != nil {
+		m := make(map[string]int, len(s.Models))
+		for k, v := range s.Models {
+			m[k] = v
+		}
+		s.Models = m
+	}
+	return s
 }
 
 // TotalTokens is input + output.
@@ -109,7 +128,23 @@ func (s SessionSpend) Sub(base SessionSpend) SessionSpend {
 		CostUSD:         s.CostUSD - base.CostUSD,
 		EstimatedCalls:  s.EstimatedCalls - base.EstimatedCalls,
 		Exhausted:       s.Exhausted,
+		Models:          subModels(s.Models, base.Models),
 	}
+}
+
+// subModels is the per-generator call count of s minus base, dropping ids that
+// answered no call in between. nil when nothing remains.
+func subModels(s, base map[string]int) map[string]int {
+	var out map[string]int
+	for id, n := range s {
+		if d := n - base[id]; d > 0 {
+			if out == nil {
+				out = make(map[string]int)
+			}
+			out[id] = d
+		}
+	}
+	return out
 }
 
 // ErrSpendCeiling is the sentinel every ceiling refusal matches with errors.Is.
@@ -225,15 +260,21 @@ func (m *SpendMeter) Record(ctx context.Context, purpose, generatorID string, u 
 	if m == nil {
 		return
 	}
+	// A call label on ctx (domain.WithLLMCallLabel) re-books the call under that
+	// label, so two kinds of call on one purpose handle (fact extraction vs its
+	// assessment judge) stay apart in the tally and the ledger alike.
+	if label := domain.LLMCallLabelFrom(ctx); label != "" {
+		purpose = label
+	}
 	sid, _ := domain.SessionIDFromContext(ctx)
 	if sid == "" {
 		if tab := spendTabFrom(ctx); tab != nil {
 			tab.mu.Lock()
 			if !tab.settled {
 				cost := m.cost(generatorID, u)
-				tab.spend.add(u, cost)
+				tab.spend.add(generatorID, u, cost)
 				tab.mu.Unlock()
-				addToTally(domain.LLMUsageTallyFrom(ctx), purpose, u, cost)
+				addToTally(domain.LLMUsageTallyFrom(ctx), purpose, generatorID, u, cost)
 				return
 			}
 			sid = tab.settledTo
@@ -259,7 +300,7 @@ func (m *SpendMeter) RecordSessionTally(sid domain.SessionID, tally *domain.LLMU
 		return
 	}
 	cost := m.cost(generatorID, u)
-	addToTally(tally, purpose, u, cost)
+	addToTally(tally, purpose, generatorID, u, cost)
 	m.mu.Lock()
 	var s *SessionSpend
 	if sid == "" {
@@ -267,7 +308,7 @@ func (m *SpendMeter) RecordSessionTally(sid domain.SessionID, tally *domain.LLMU
 	} else {
 		s = &m.sessionLocked(sid).SessionSpend
 	}
-	s.add(u, cost)
+	s.add(generatorID, u, cost)
 	m.mu.Unlock()
 	bucket := string(sid)
 	if sid == "" {
@@ -279,7 +320,7 @@ func (m *SpendMeter) RecordSessionTally(sid domain.SessionID, tally *domain.LLMU
 }
 
 // addToTally books one call on a per-request tally (nil-safe).
-func addToTally(t *domain.LLMUsageTally, purpose string, u TokenUsage, cost float64) {
+func addToTally(t *domain.LLMUsageTally, purpose, generatorID string, u TokenUsage, cost float64) {
 	if t == nil {
 		return
 	}
@@ -289,6 +330,7 @@ func addToTally(t *domain.LLMUsageTally, purpose string, u TokenUsage, cost floa
 		one.EstimatedCalls = 1
 	}
 	t.Add(purpose, one)
+	t.AddGenerator(generatorID, 1)
 }
 
 // Session returns a copy of sid's running total (zero for an unknown session).
@@ -299,7 +341,7 @@ func (m *SpendMeter) Session(sid domain.SessionID) SessionSpend {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s, ok := m.sessions[sid]; ok {
-		return s.SessionSpend
+		return s.SessionSpend.clone()
 	}
 	return SessionSpend{}
 }
@@ -312,7 +354,7 @@ func (m *SpendMeter) NoSession() SessionSpend {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.noSession
+	return m.noSession.clone()
 }
 
 // ReportNoSession logs what the kernel no-session bucket accrued since the last
@@ -325,7 +367,7 @@ func (m *SpendMeter) ReportNoSession() SessionSpend {
 	}
 	m.mu.Lock()
 	d := m.noSession.Sub(m.noSessionReported)
-	m.noSessionReported = m.noSession
+	m.noSessionReported = m.noSession.clone()
 	m.mu.Unlock()
 	if d.Calls == 0 {
 		return d
@@ -365,8 +407,14 @@ func (m *SpendMeter) SettleTab(tab *SpendTab, sid domain.SessionID) {
 	m.sessionLocked(sid).merge(pending)
 }
 
-func (s *SessionSpend) add(u TokenUsage, cost float64) {
+func (s *SessionSpend) add(generatorID string, u TokenUsage, cost float64) {
 	s.Calls++
+	if generatorID != "" {
+		if s.Models == nil {
+			s.Models = make(map[string]int)
+		}
+		s.Models[generatorID]++
+	}
 	s.InputTokens += u.PromptTokens
 	s.OutputTokens += u.CompletionTokens
 	s.CacheReadTokens += u.CacheReadTokens
@@ -384,6 +432,12 @@ func (s *SessionSpend) merge(o SessionSpend) {
 	s.CostUSD += o.CostUSD
 	s.EstimatedCalls += o.EstimatedCalls
 	s.Exhausted = s.Exhausted || o.Exhausted
+	for id, n := range o.Models {
+		if s.Models == nil {
+			s.Models = make(map[string]int)
+		}
+		s.Models[id] += n
+	}
 }
 
 // ── Attribution properties carried in ctx ───────────────────────────────────
@@ -415,7 +469,7 @@ func (t *SpendTab) Spend() SessionSpend {
 	if t.settled {
 		return SessionSpend{}
 	}
-	return t.spend
+	return t.spend.clone()
 }
 
 // WithSpendTab returns a child ctx whose session-less calls are booked to a

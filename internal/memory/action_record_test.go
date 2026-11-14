@@ -73,78 +73,25 @@ func (f *fakeContentStore) Get(context.Context, domain.CID) (*domain.ContextNode
 func (f *fakeContentStore) Has(context.Context, domain.CID) (bool, error) { return false, nil }
 func (f *fakeContentStore) GC(context.Context, []domain.CID) error        { return nil }
 
-func TestPlanIDFromTaskID(t *testing.T) {
-	t.Parallel()
-	if planIDFromTaskID("step-3-abc123") != "abc123" {
-		t.Errorf("expected abc123; got %q", planIDFromTaskID("step-3-abc123"))
-	}
-	if planIDFromTaskID("garbage") != "" {
-		t.Error("non-task id → empty")
-	}
-}
-
-func actionDocs(store *collectStore) []*domain.Document {
-	var out []*domain.Document
-	for _, d := range store.docs {
-		if d.DocumentType == domain.DocTypeMnemonicAction {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
-// ADR-0049 D1: a mutation output is saved DIRECTLY as a durable `mnemonic_action`,
-// as the structured action line.
-func TestRecordToolOutput_MutationSavesActionDoc(t *testing.T) {
+// ENG-1595 (owner decision 2026-11-14): not even a MUTATION is recorded any more.
+// It used to be embedded and Manager.Save'd as a mnemonic_action row past the
+// ingestion pipeline; the owner rejected raw saves of tool outputs.
+func TestRecordToolOutput_MutationRecordsNothing(t *testing.T) {
 	t.Parallel()
 	store := &collectStore{}
-	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.70, 5, 3)
-	agent.RecordOutcomes = true
-
-	err := agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
-		ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	actions := actionDocs(store)
-	if len(actions) != 1 {
-		t.Fatalf("mutation must be saved directly as one mnemonic_action; got %+v", store.docs)
-	}
-	if !strings.HasPrefix(actions[0].Text, "write_file → ok") {
-		t.Errorf("action text must be the structured line; got %q", actions[0].Text)
-	}
-	if len(actions[0].Embedding.Vector) == 0 {
-		t.Error("action must be embedded")
-	}
-	if len(store.docs) != 1 {
-		t.Errorf("a mutation writes its action record and nothing else; saved %d docs", len(store.docs))
-	}
-}
-
-// The action record carries the tool's classification tags, so the write
-// chokepoint classifies it from principal + tool domain instead of seeing a nil
-// hint and committing the row untagged.
-func TestRecordToolOutput_ActionCarriesClassificationTags(t *testing.T) {
-	t.Parallel()
-	store := &collectStore{}
-	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.70, 5, 3)
+	emb := &recordingEmbedder{}
+	agent := NewAgent(NewMemoryManager(store, emb), 3)
 	agent.RecordOutcomes = true
 
 	err := agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
 		ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`),
-		IsMutation: true, ClassificationTags: []string{"filesystem"},
+		IsMutation: true, TaskID: "step-0-plan1", ClassificationTags: []string{"finance"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	actions := actionDocs(store)
-	if len(actions) != 1 {
-		t.Fatalf("mutation must be saved as a mnemonic_action; got %+v", store.docs)
-	}
-	tags, _ := actions[0].Metadata["tags"].([]string)
-	if len(tags) != 1 || tags[0] != "filesystem" {
-		t.Errorf("action record must carry the tool's classification tags; got %v", actions[0].Metadata["tags"])
+	if len(store.docs) != 0 || emb.lastText != "" {
+		t.Errorf("a mutation must neither embed nor save anything; saved %d docs, embedded %q", len(store.docs), emb.lastText)
 	}
 }
 
@@ -155,7 +102,7 @@ func TestRecordToolOutput_ReadRecordsNothing(t *testing.T) {
 	t.Parallel()
 	store := &collectStore{}
 	emb := &recordingEmbedder{}
-	agent := NewAgent(NewMemoryManager(store, emb), 0.70, 5, 3)
+	agent := NewAgent(NewMemoryManager(store, emb), 3)
 	agent.RecordOutcomes = true
 
 	err := agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
@@ -174,7 +121,7 @@ func TestRecordToolOutput_ReadRecordsNothing(t *testing.T) {
 func TestRecordToolOutput_ArmOffRecordsNothing(t *testing.T) {
 	t.Parallel()
 	store := &collectStore{}
-	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.70, 5, 3)
+	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 3)
 
 	_ = agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
 		ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true,

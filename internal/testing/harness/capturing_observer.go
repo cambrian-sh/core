@@ -12,7 +12,6 @@ type CapturingTelemetryObserver struct {
 	TaskCompletedEvents      []domain.TaskEvent
 	EvictedAgentIDs          []string
 	ConwipWaits              []int64
-	AuctionNoWinners         []string
 	SchemaMismatches         []struct{ AgentID, Kind string }
 	PlanCompletedEvents      []domain.PlanEvent
 	RetrievalSessions        []domain.RetrievalSession
@@ -35,12 +34,6 @@ func (o *CapturingTelemetryObserver) OnConwipWait(durationMs int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.ConwipWaits = append(o.ConwipWaits, durationMs)
-}
-
-func (o *CapturingTelemetryObserver) OnAuctionNoWinner(taskID string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.AuctionNoWinners = append(o.AuctionNoWinners, taskID)
 }
 
 func (o *CapturingTelemetryObserver) OnSchemaMismatch(agentID, kind string) {

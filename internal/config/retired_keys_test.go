@@ -51,8 +51,10 @@ func TestRetiredEpisodicKeys_StillLoad(t *testing.T) {
 	}
 }
 
-// An operator file that still declares the "episodic" policy — and even names it
-// the default — keeps loading and validating: the policy map accepts any name.
+// An operator file that still declares the "episodic" policy (and names it the
+// default) keeps loading and validating. Since 2026-11-14 the whole
+// execution.hippocampus block is retired (ENG-1301): both keys are dropped with a
+// WARN, and the block does not come back as an unknown key.
 func TestRetiredEpisodicPolicy_OperatorDeclaredStillValid(t *testing.T) {
 	dir := baseBundle(t)
 	writeCfg(t, dir, "tuning.json", `{"execution": {"hippocampus": {
@@ -63,9 +65,6 @@ func TestRetiredEpisodicPolicy_OperatorDeclaredStillValid(t *testing.T) {
 	if err := cfg.Execution.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if _, ok := cfg.Execution.Hippocampus.HippocampusPolicies["episodic"]; !ok {
-		t.Error("operator-declared episodic policy was dropped")
-	}
 }
 
 // The retired keys must be gone from the schema, not merely unused: a field that
@@ -74,6 +73,10 @@ func TestRetiredEpisodicKeys_AbsentFromSchema(t *testing.T) {
 	retired := map[string]bool{
 		"consolidation_threshold_doc_count": true,
 		"consolidation_threshold_bytes":     true,
+		// ENG-1301: the whole ADR-0027 policy block.
+		"hippocampus":                true,
+		"hippocampus_policies":       true,
+		"hippocampus_default_policy": true,
 	}
 	var walk func(ty reflect.Type, path string)
 	walk = func(ty reflect.Type, path string) {
@@ -93,9 +96,6 @@ func TestRetiredEpisodicKeys_AbsentFromSchema(t *testing.T) {
 		if _, ok := legacyExecutionKey[k]; ok {
 			t.Errorf("retired key %q still has a v1→v2 migration route", k)
 		}
-	}
-	if _, ok := DefaultConfig().Execution.Hippocampus.HippocampusPolicies["episodic"]; ok {
-		t.Error(`DefaultConfig still ships the retired "episodic" HippocampusPolicy`)
 	}
 }
 

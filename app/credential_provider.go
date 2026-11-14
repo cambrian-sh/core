@@ -98,26 +98,12 @@ type CredentialServices struct {
 	// reconnected so it presents the new credential. Must not block long.
 	SharedCredentialChanged func(serverID string)
 
-	// LegacySharedCredentials lists every consumer-named shared MCP credential
-	// slot the kernel could hold (mcp:<id>:token, mcp:<id>:env:<NAME>) for the
-	// installed servers, for the provider's one-shot boot migration into org
-	// accounts (ADR-0141 owner position 1). Values are read one name at a time
-	// through ResolveNamedSecret; this lists names, never values.
-	LegacySharedCredentials func() []LegacySharedCredential
-
 	// PrincipalIdentities answers a principal's known external identities
 	// (emails, provider subjects) for the account-must-match-identity rule
 	// (ADR-0141 owner position 4), from the premium policy plane's principal
 	// directory when it implements domain.PrincipalIdentities. known=false
 	// when no directory answers (the sign-in then needs confirmation).
 	PrincipalIdentities func(ctx context.Context, principalID string) (ids []string, known bool, err error)
-}
-
-// LegacySharedCredential is one consumer-named shared credential slot.
-type LegacySharedCredential struct {
-	ServerID   string
-	Slot       string // domain.SlotToken or domain.SlotEnvPrefix+NAME
-	SecretName string // mcp:<id>:token or mcp:<id>:env:<NAME>
 }
 
 // NewCredentialSourceFunc builds the credential provider. A nil source with a
@@ -365,16 +351,13 @@ func buildCredentialSource(f NewCredentialSourceFunc, cfg *config.Config, store 
 				conn.UserDisconnected(serverID, principalID)
 			}
 		},
-		RecordAudit:          seams.recordAudit,
-		RunMutation:          seams.runMutation,
-		Caller:               operator.CallerFromContext,
-		StoreNamedSecret:     storeNamedSecret,
-		ClearNamedSecret:     clearNamedSecret,
-		NamedSecretStatus:    namedSecretStatus,
-		NamedSecretUpdatedAt: store.SecretUpdatedAt,
-		LegacySharedCredentials: func() []LegacySharedCredential {
-			return legacySharedCredentials(rt)
-		},
+		RecordAudit:             seams.recordAudit,
+		RunMutation:             seams.runMutation,
+		Caller:                  operator.CallerFromContext,
+		StoreNamedSecret:        storeNamedSecret,
+		ClearNamedSecret:        clearNamedSecret,
+		NamedSecretStatus:       namedSecretStatus,
+		NamedSecretUpdatedAt:    store.SecretUpdatedAt,
 		PrincipalIdentities:     seams.principalIdentities,
 		SharedCredentialChanged: seams.sharedCredentialChanged,
 	}
@@ -386,7 +369,8 @@ func buildCredentialSource(f NewCredentialSourceFunc, cfg *config.Config, store 
 	conn.SetUserCredentials(src, mcp.UserPoolLimits{Max: us.Max, Idle: time.Duration(us.IdleSeconds) * time.Second})
 	// ADR-0141 phase 2/5: a provider that owns ORG credentials serves every
 	// shared server's credential too; the consumer-named store entries are no
-	// longer read (its factory migrated them). A provider without org
+	// longer read (the one-release boot migration that copied them into org
+	// accounts was removed 2026-11-15, ENG-661). A provider without org
 	// accounts leaves shared servers on the store, as in OSS.
 	if _, ok := src.(domain.OrgCredentialWriter); ok {
 		mcp.SetOrgCredentials(src)
@@ -395,22 +379,4 @@ func buildCredentialSource(f NewCredentialSourceFunc, cfg *config.Config, store 
 	seams.setSource(src)
 	slog.Info("ADR-0141: outbound credential provider installed")
 	return src, nil
-}
-
-// legacySharedCredentials enumerates the consumer-named credential slots of
-// the installed servers: a token slot for every server (one may have been
-// saved whatever the server's auth type) and one env slot per secret_env name.
-func legacySharedCredentials(rt *mcpRuntime) []LegacySharedCredential {
-	var out []LegacySharedCredential
-	for _, s := range rt.list() {
-		c, _, ok := rt.config(s.ID)
-		if !ok {
-			continue
-		}
-		out = append(out, LegacySharedCredential{ServerID: c.ID, Slot: domain.SlotToken, SecretName: mcp.TokenSecretName(c.ID)})
-		for _, n := range c.SecretEnv {
-			out = append(out, LegacySharedCredential{ServerID: c.ID, Slot: domain.SlotEnvPrefix + n, SecretName: mcp.EnvSecretName(c.ID, n)})
-		}
-	}
-	return out
 }

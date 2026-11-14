@@ -28,7 +28,7 @@ func capPlanJSON() string {
 func TestPlanner_CapabilityContract_OffIsByteIdentical(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil) // contract defaults OFF
+	p := NewPlanner(gen, &mockAgentProvider{}) // contract defaults OFF
 
 	plan, err := p.GetExecutionPlan(context.Background(), "do something")
 	if err != nil {
@@ -53,7 +53,7 @@ func TestPlanner_CapabilityContract_OffIsByteIdentical(t *testing.T) {
 func TestPlanner_CapabilityContract_OnEmitsAndParses(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: capPlanJSON()}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil)
+	p := NewPlanner(gen, &mockAgentProvider{})
 	p.SetCapabilityContract(true)
 
 	plan, err := p.GetExecutionPlan(context.Background(), "read a file")
@@ -81,10 +81,6 @@ func TestPlanner_CapabilityContract_HashesDiffer(t *testing.T) {
 	t.Parallel()
 	if plannerPromptHash == plannerPromptHashCap {
 		t.Fatal("capability-arm prompt hash must differ from the base hash (provenance)")
-	}
-	// Both must be registered so PlanEvent lookups resolve.
-	if _, ok := domain.PromptRegistry[plannerPromptHashCap]; !ok {
-		t.Error("capability-arm prompt hash not registered in PromptRegistry")
 	}
 }
 
@@ -144,7 +140,7 @@ func planWithCaps(caps ...string) string {
 func TestPlanner_DropsInventedCapabilityTag(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: planWithCaps("file_read", "file_write")}
-	p := NewPlanner(gen, &vocabProvider{caps: []string{"file_read", "general_purpose"}}, nil)
+	p := NewPlanner(gen, &vocabProvider{caps: []string{"file_read", "general_purpose"}})
 	p.SetCapabilityContract(true)
 
 	plan, err := p.GetExecutionPlan(context.Background(), "write a file")
@@ -162,7 +158,7 @@ func TestPlanner_DropsInventedCapabilityTag(t *testing.T) {
 func TestPlanner_EmptyVocabularyDoesNotStripCapabilities(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: planWithCaps("file_read")}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil) // no agents, no manifests
+	p := NewPlanner(gen, &mockAgentProvider{}) // no agents, no manifests
 	p.SetCapabilityContract(true)
 
 	plan, err := p.GetExecutionPlan(context.Background(), "read a file")
@@ -179,7 +175,7 @@ func TestPlanner_EmptyVocabularyDoesNotStripCapabilities(t *testing.T) {
 func TestPlanner_AllInventedTagsLeaveStepUnconstrained(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: planWithCaps("file_write", "telepathy")}
-	p := NewPlanner(gen, &vocabProvider{caps: []string{"file_read"}}, nil)
+	p := NewPlanner(gen, &vocabProvider{caps: []string{"file_read"}})
 	p.SetCapabilityContract(true)
 
 	plan, err := p.GetExecutionPlan(context.Background(), "do a thing")
@@ -211,7 +207,7 @@ func (s *stubWorkspace) PrimeForExecution(context.Context, *domain.ExecutionPlan
 func TestPlanner_RecordsFollowedProcedures(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
-	p := NewPlanner(gen, &mockAgentProvider{}, nil)
+	p := NewPlanner(gen, &mockAgentProvider{})
 	p.WorkspaceStage = &stubWorkspace{enrichment: domain.LTMEnrichment{
 		Procedures: []domain.Procedure{
 			{ID: "proc-a", Trigger: "ship the thing", Confidence: 0.8, SampleCount: 4},

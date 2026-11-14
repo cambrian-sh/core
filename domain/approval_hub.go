@@ -506,7 +506,15 @@ func (h *AddressedHub) raise(ctx context.Context, req ApprovalRequest, async boo
 	// (the historical "no subscriber ⇒ deny"). It is LOGGED and the reason rides
 	// on the decision: this branch used to deny with neither, so a misrouted
 	// request looked, to the agent and to the operator, like a person saying no.
-	if !async && !h.anyEligible(ctx, it) {
+	// A rule that opted in (approvals.rules[].wait_offline, ENG-653) parks the
+	// request instead: it is persisted pending and waits its window for the
+	// person to connect and answer it from their inbox.
+	unreachable := !async && !h.anyEligible(ctx, it)
+	if unreachable && route.WaitOffline {
+		h.logger.Info("approvals: no eligible approver connected; parked for its window (wait_offline)",
+			"event", "approval_waiting_offline", "approval", it.ID, "class", it.ActionClass,
+			"rules", it.RuleSummary(), "expires_at", it.ExpiresAt)
+	} else if unreachable {
 		it.State = ApprovalUnroutable
 		it.ResolvedAt = now
 		it.Detail = "no surface that can reach an eligible approver (" + it.RuleSummary() + ") is connected"
@@ -1324,8 +1332,8 @@ func (v consentView) Watch() (<-chan ConsentPrompt, func()) {
 
 // Submit answers a prompt as ans.By. An unidentified answerer, or one who is not
 // an addressee, is refused (false).
-func (v consentView) Submit(id string, ans ConsentAnswer) bool {
-	_, err := v.h.Answer(context.Background(), id, ApprovalAnswer{
+func (v consentView) Submit(ctx context.Context, id string, ans ConsentAnswer) bool {
+	_, err := v.h.Answer(ctx, id, ApprovalAnswer{
 		Approved: ans.Approved, Choice: ans.Machine, By: ans.By,
 	})
 	return err == nil

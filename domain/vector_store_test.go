@@ -14,9 +14,6 @@ func TestDocTypeConstants(t *testing.T) {
 	if DocTypeJudicialRecord != "judicial_record" {
 		t.Errorf("DocTypeJudicialRecord = %q, want %q", DocTypeJudicialRecord, "judicial_record")
 	}
-	if DocTypeProceduralTemplate != "procedural_template" {
-		t.Errorf("DocTypeProceduralTemplate = %q, want %q", DocTypeProceduralTemplate, "procedural_template")
-	}
 	if DocTypeMnemonicFact != "mnemonic_fact" {
 		t.Errorf("DocTypeMnemonicFact = %q, want %q", DocTypeMnemonicFact, "mnemonic_fact")
 	}

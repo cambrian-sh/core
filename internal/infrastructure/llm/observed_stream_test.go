@@ -121,6 +121,8 @@ func sseProvider(t *testing.T, hooks *domain.HookChain, urls ...string) *Provide
 		Default:    "a",
 		Generators: gens,
 		Health:     config.HealthConfig{FailureThreshold: 5, CooldownMs: 60000},
+		// Marked equivalent so the fallback walk is exercised (ENG-453).
+		EquivalentGenerators: [][]string{{"a", "b"}},
 	}, nil, opts...)
 	if err != nil {
 		t.Fatal(err)

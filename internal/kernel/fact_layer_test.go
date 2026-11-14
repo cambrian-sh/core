@@ -38,6 +38,8 @@ func (nopLister) ListFactBackfillCandidates(context.Context, domain.FactBackfill
 
 func TestMemoryStack_FactSubstrateIsEnforcedAndExtractorGated(t *testing.T) {
 	cfg := config.DefaultConfig()
+	// Extraction ships ON since ENG-1496; this test drives the switch itself.
+	cfg.Execution.Facts.ExtractEnabled = false
 	sub := FactSubstrate{Store: nopSubstrate{}, Reader: nopReader{}, Lister: nopLister{}, EmbedModelID: "m"}
 
 	off := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
@@ -51,7 +53,7 @@ func TestMemoryStack_FactSubstrateIsEnforcedAndExtractorGated(t *testing.T) {
 		t.Fatal("the QueryService must hold the enforcing fact reader (constructor argument)")
 	}
 	if off.FactExtractor != nil || off.FactBackfill != nil {
-		t.Fatal("extraction is default-off: no extractor, no backfill, no goroutine")
+		t.Fatal("extraction off: no extractor, no backfill, no goroutine")
 	}
 	if off.FactReset != nil {
 		t.Fatal("the kernel never holds a fact reset; only cmd/facts-reset hands one in")

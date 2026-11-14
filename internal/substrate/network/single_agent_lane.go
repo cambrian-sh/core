@@ -12,6 +12,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 // ADR-0150 D1: the single-agent lane for Execute callers (ingress pipelines,
@@ -86,6 +87,11 @@ func (s *Server) executeSingleAgent(ctx context.Context, in *pb.Handoff, rawInpu
 	// The run id: the lease's run (RunActivity liveness, the worker-delegation
 	// refusal in Execute) and the turn registry's name for this work.
 	runID := domain.RunID(newPlanID())
+	operator.AttachRunID(ctx, runID) // contract 0102 CancelRun by run_id
+	// The session's spend before the lane's run, so the result reports what THIS
+	// run cost and which generators answered it (ADR-0131 _llm_* keys; ENG-453
+	// _llm_models), the same figures a plan's result carries.
+	spendBase := s.SpendMeter.Session(sessionID)
 	userInput := strings.TrimSpace(rawInput)
 	if rest, ok := strings.CutPrefix(userInput, "/plan "); ok {
 		userInput = strings.TrimSpace(rest)
@@ -174,6 +180,11 @@ func (s *Server) executeSingleAgent(ctx context.Context, in *pb.Handoff, rawInpu
 	slog.Info("⚡ SINGLE-AGENT LANE (ADR-0150 D1)", "agent", agentID, "run", runID, "session", sessionID,
 		"acting_for", actingForID)
 	resp, err := s.Dispatcher.CallAgent(callCtx, agentID, handoff, "")
+	// Contract 0102: an operator CancelRun ended the run. The lane persists no run
+	// record, so nothing can resume it; the answer says who stopped it and why.
+	if rc, cancelled := operator.RunCancelled(ctx); cancelled {
+		return nil, status.Error(codes.Canceled, rc.Error())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("single-agent lane: agent %q: %w", agentID, err)
 	}
@@ -184,7 +195,12 @@ func (s *Server) executeSingleAgent(ctx context.Context, in *pb.Handoff, rawInpu
 		resp.FromAgent = agentID
 	}
 	singleAgentOutcome(resp, runID, sessionID)
-	return handoffToProto(resp), nil
+	out := handoffToProto(resp)
+	if out.Metadata == nil {
+		out.Metadata = map[string]string{}
+	}
+	s.stampSpend(out.Metadata, sessionID, spendBase)
+	return out, nil
 }
 
 // singleAgentOutcome maps what the lane's agent returned onto the Execute

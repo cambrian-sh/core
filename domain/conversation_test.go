@@ -2,15 +2,17 @@ package domain
 
 import "testing"
 
-// ADR-0084 D7: customer-facing conversations are tools-only. This is the property that
-// stops an external end user pulling on the tenant's shared knowledge, so it is asserted
-// directly rather than left to an agent default someone can flip.
+// ADR-0084 D7 as decided 2026-11-14 (ENG-614, option b): a customer conversation may
+// recall — the kernel narrows its reads to customer-visible tags
+// (authz.TestProfileNarrowing_CustomerReadsOnlyCustomerVisible) — and an unknown profile
+// never recalls.
 func TestConversationProfile_Recall(t *testing.T) {
 	t.Parallel()
 	cases := map[ConversationProfile]bool{
-		ProfileOperator: true,
-		ProfileEmployee: true,
-		ProfileCustomer: false,
+		ProfileOperator:              true,
+		ProfileEmployee:              true,
+		ProfileCustomer:              true,
+		ConversationProfile("bogus"): false,
 	}
 	for p, want := range cases {
 		if got := p.Recall(); got != want {

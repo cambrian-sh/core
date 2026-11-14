@@ -186,6 +186,10 @@ func twoGeneratorProvider(t *testing.T, a, b *countingServer) *Provider {
 		},
 		Roles:  map[string]string{"planner": "a"},
 		Health: config.HealthConfig{FailureThreshold: 5, CooldownMs: 60000},
+		// The fallback walk these tests exercise runs only between generators an
+		// operator marked equivalent (ENG-453); fallback_policy_test.go covers the
+		// unmarked and pinned cases.
+		EquivalentGenerators: [][]string{{"a", "b"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

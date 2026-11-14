@@ -97,7 +97,11 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 	// Resolve the agent's read predicate. A nil predicate means the decision point
 	// could not resolve the principal → empty menu (fail-closed in the plugin;
 	// never reached in OSS, where every principal resolves).
-	eff, _ := s.authorizer().ReadFilter(ctx, domain.AgentPrincipal(agentID), domain.SurfaceRef{Kind: domain.SurfaceAgent})
+	// The turn's surface (ADR-0085 D7, re-stamped by withTurnSurface): a skill
+	// menu answers to a surface-linked policy as recall and tool calls do.
+	ctx = s.withTurnSurface(ctx, s.resolveCallerSession(ctx))
+	eff, _ := s.authorizer().ReadFilter(ctx, domain.AgentPrincipal(agentID),
+		domain.SurfaceFromContextOr(ctx, domain.SurfaceRef{Kind: domain.SurfaceAgent}))
 	if eff == nil {
 		return &pb.ListSkillsResponse{}, nil
 	}

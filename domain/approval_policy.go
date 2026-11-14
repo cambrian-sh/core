@@ -126,6 +126,12 @@ type ApprovalClassRule struct {
 	Class         string
 	Approvers     []string
 	AllowStanding bool
+	// WaitOffline parks a BLOCKING request whose eligible approvers have no
+	// connected surface for its window, instead of failing it at once as
+	// unroutable; the person answers it from their inbox when they connect
+	// (owner decision 2026-11-15, ENG-653). Default false: the historical
+	// "nobody can answer ⇒ deny now" stays for every rule that does not opt in.
+	WaitOffline bool
 }
 
 // ApprovalPolicyConfig is the data the default (config) policy reads.
@@ -179,6 +185,7 @@ type ApprovalRoute struct {
 	ActionClass    string
 	Rules          []ApprovalRule
 	AllowStanding  bool
+	WaitOffline    bool
 	NeverSelf      bool
 	StandingMaxTTL time.Duration
 }
@@ -295,6 +302,7 @@ func (p *ConfigApprovalPolicy) Route(_ context.Context, item ApprovalItem) (Appr
 		ActionClass:    class,
 		Rules:          rules,
 		AllowStanding:  row.AllowStanding,
+		WaitOffline:    row.WaitOffline,
 		NeverSelf:      p.neverSelf[class],
 		StandingMaxTTL: p.maxTTL,
 	}, nil

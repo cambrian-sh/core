@@ -156,7 +156,6 @@ def test_long_generated_reply_is_answered_whole_without_delegating():
 @pytest.mark.parametrize("meta", [
     {"recall_lookup": "false"},
     {},                                          # absent: fail-closed
-    {"recall_lookup": "true", "profile": "customer"},  # customer wins
 ])
 def test_tools_only_posture_advertises_no_memory_query(meta):
     mem = _Memory([{"text": "secret shared fact", "metadata": {}}])
@@ -883,3 +882,12 @@ def test_chat_agent_v6_grounded_reply_names_the_source_of_recalled_rules():
     assert "Recalled memory is evidence too" in grounded and "ledger='led_...'" in grounded
     assert "name the document it comes from and its article or section" in grounded
     assert all(ln in grounded.splitlines() for ln in v5["rules-grounded"].body.splitlines())
+
+
+def test_customer_conversation_recalls_when_the_kernel_says_so():
+    """ENG-614: a customer conversation recalls (recall_lookup=true); the kernel narrows
+    its reads to customer-visible tags, so the worker no longer refuses on profile."""
+    mem = _Memory([{"text": "Our support hours are 9-17", "metadata": {}}])
+    stub = _Stub([_answer("ok")])
+    _agent(stub, mem).run(_task("when are you open?", recall_lookup="true", profile="customer"))
+    assert mem.queries, "a customer conversation with recall_lookup=true must recall"

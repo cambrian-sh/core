@@ -31,8 +31,16 @@ const (
 	// it. Routing is unchanged by default: with no `thought` role configured it
 	// resolves to whatever `planner` resolves to (llm.RoleFallbacks).
 	// T-20261106-thought-steps-call-the-model-under-the-planner.
-	PurposeThought   Purpose = "thought"
-	PurposeAgentStep Purpose = "agent_step"
+	PurposeThought Purpose = "thought"
+	// PurposeRetrievalPlanner is the agentic retrieval planner (the retrieval_agent's
+	// plan/decompose/decide calls on the recall path). With no `retrieval_planner`
+	// role configured it resolves to whatever `memory` resolves to
+	// (llm.RoleFallbacks), so it follows role switches; an explicit
+	// execution.retrieval.agentic_planner_model generator id still overrides
+	// (owner decision 2026-11-14, third round;
+	// T-20261102-agentic-planner-model-names-a-generator-id).
+	PurposeRetrievalPlanner Purpose = "retrieval_planner"
+	PurposeAgentStep        Purpose = "agent_step"
 )
 
 // LLMRequest is what an organ states when it needs an LLM. The organ declares

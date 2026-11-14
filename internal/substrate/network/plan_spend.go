@@ -3,7 +3,9 @@ package network
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -32,7 +34,27 @@ const (
 	MetaLLMCacheReadTokens = "_llm_cache_read_tokens"
 	MetaLLMCostUSD         = "_llm_cost_usd"
 	MetaLLMEstimatedCalls  = "_llm_estimated_calls"
+	// MetaLLMModels names the generators that ANSWERED this Execute's calls and
+	// how many each answered, "id=n,id=n" sorted by id (ENG-453, owner decision
+	// 2026-11-14: every result records the answering model). The id is the one the
+	// Provider served the call on after any fallback, so a benchmark can check its
+	// backbone never changed. Absent when no call was booked.
+	MetaLLMModels = "_llm_models"
 )
+
+// FormatLLMModels renders a per-generator call count as "id=n,id=n", sorted.
+func FormatLLMModels(models map[string]int) string {
+	ids := make([]string, 0, len(models))
+	for id := range models {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, id+"="+strconv.Itoa(models[id]))
+	}
+	return strings.Join(parts, ",")
+}
 
 // stampSpend writes this Execute's spend (session total now minus base) onto
 // the response metadata. No-op without a meter or a session.
@@ -47,6 +69,9 @@ func (s *Server) stampSpend(meta map[string]string, sessionID domain.SessionID, 
 	meta[MetaLLMCacheReadTokens] = strconv.Itoa(d.CacheReadTokens)
 	meta[MetaLLMCostUSD] = strconv.FormatFloat(d.CostUSD, 'f', 6, 64)
 	meta[MetaLLMEstimatedCalls] = strconv.Itoa(d.EstimatedCalls)
+	if len(d.Models) > 0 {
+		meta[MetaLLMModels] = FormatLLMModels(d.Models)
+	}
 }
 
 // spendCeilingFailure is the error Execute returns when a plan ends at the

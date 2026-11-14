@@ -74,7 +74,13 @@ func (s *PgAuditStore) Query(ctx context.Context, f domain.AuditFilter) ([]domai
 			conds = append(conds, fmt.Sprintf("%s = $%d", col, len(args)))
 		}
 	}
-	add("actor", f.Actor)
+	if len(f.Actors) > 0 {
+		// One person under several recorded forms (domain.PrincipalForms).
+		args = append(args, f.Actors)
+		conds = append(conds, fmt.Sprintf("actor = ANY($%d)", len(args)))
+	} else {
+		add("actor", f.Actor)
+	}
 	add("target_type", f.TargetType)
 	add("target_id", f.TargetID)
 	add("action_type", f.ActionType)

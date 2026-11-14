@@ -16,7 +16,7 @@ func TestPlanner_FanOut_PromptAdvertisesAndParses(t *testing.T) {
 		{"query":"write the file for {item}","depends_on":[0],"fan_out_over":0},
 		{"query":"summarize","depends_on":[1]}
 	],"subject":"docs"}`}
-	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
+	planner := NewPlanner(gen, &mockAgentProvider{})
 
 	plan, err := planner.GetExecutionPlan(context.Background(), "write the missing sections")
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 )
 
 // wireCalcTools serves the ADR-0145 D4 calculation tools (execution.tools.calc_tools,
-// default off; T-20261108-adr-0145-d4-kernel-calculation-tools-working) as kernel
+// default on since 2026-11-15, ENG-897; T-20261108-adr-0145-d4-kernel-calculation-tools-working) as kernel
 // tools on the ToolExecutor, beside ledger_get / ledger_find: one ExecuteTool path
 // for every agent, needing no grant. Called after wireLedger, so
 // with the run ledger on the tools read references through its ENFORCED reader and

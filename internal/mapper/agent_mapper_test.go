@@ -1,6 +1,9 @@
 package mapper
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,4 +266,28 @@ func TestArtifactRoundTrip_NilMetadata(t *testing.T) {
 		t.Errorf("Metadata: expected empty, got %v", restored.Metadata)
 	}
 	_ = rec
+}
+
+// A stored stamp that does not parse still yields the zero time (a read must not
+// fail over one bad stamp) but is no longer silent
+// (T-20261113-persisted-writes-and-builder-resolver-errors).
+func TestParseTime_MalformedStampIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	if got := parseTime(""); !got.IsZero() || buf.Len() != 0 {
+		t.Fatalf("empty stamp: got %v, log %q; want zero time, no log", got, buf.String())
+	}
+	if got := parseTime("not-a-time"); !got.IsZero() {
+		t.Fatalf("malformed stamp: got %v, want zero time", got)
+	}
+	if !strings.Contains(buf.String(), "does not parse") || !strings.Contains(buf.String(), "not-a-time") {
+		t.Fatalf("malformed stamp must be logged with its value, log: %q", buf.String())
+	}
+	want := time.Date(2026, 11, 14, 1, 2, 3, 4, time.UTC)
+	if got := parseTime(want.Format(time.RFC3339Nano)); !got.Equal(want) {
+		t.Fatalf("round trip: got %v, want %v", got, want)
+	}
 }

@@ -118,6 +118,15 @@ type Options struct {
 	// Registry.AddAgentGRPCService.
 	AgentGRPCServices map[string]func(*grpc.Server)
 
+	// OperatorMethodRoles classifies premium operator-plane methods for the
+	// operator role gate, keyed by FULL method name
+	// ("/cambrian.premium.accounts.AccountsAdmin/StartAccountConnect"). Core names
+	// no premium method: the plugin that serves a method declares its class
+	// (Registry.DeclareOperatorMethodRoles); this field is the directly-set form,
+	// merged with the plugins' declarations (a disagreement fails the boot). OSS
+	// default: nil — every premium method follows the fail-closed naming rule.
+	OperatorMethodRoles map[string]OperatorMethodRole
+
 	// SubstrateConsultant, when non-nil, is consulted by the fact-lane retrieval
 	// path AFTER final assembly (ADR-0118 D5): it answers the modelled part of a
 	// query exactly through the SCOPED substrate seam and returns citations that
@@ -366,6 +375,14 @@ type KernelServices struct {
 	// "scheduled-tasks". nil in a kernel built without a registry.
 	RegisterPrincipalSchedules func(domain.PrincipalSchedules)
 
+	// RegisterStreamRegistry contributes the contract-0074 stream liveness
+	// source (T-20261101-contract-0074-watch-liveness-is-never-wired): the premium
+	// reactive engine reports whether each watch's source stream is live,
+	// unavailable or quarantined and how many watches hold it, and ListWatches
+	// shows it. Replace-one: a second registration replaces the first. Nothing
+	// registered ⇒ every watch reports "unknown" / refcount -1, as before.
+	RegisterStreamRegistry func(domain.StreamRegistry)
+
 	// RunOwnedTurn runs ONE chat turn for a principal, in a conversation that
 	// principal owns (created if absent, refused if someone else holds it). The run
 	// principal is therefore the owner (ADR-0139 D14): their notes, per-user
@@ -536,6 +553,14 @@ type KernelServices struct {
 	// so that a producer cannot exempt itself from them. nil when no Postgres is
 	// configured.
 	Links domain.LinkStore
+
+	// IdentityScans is the read port the background identity producers scan the
+	// substrate through (owner decision 2026-11-14, ENG-1393; ADR-0106 D4): paged,
+	// namespace-confined scans of observations, entities, events and links, with
+	// ADR-0147 D6 retirements and the access predicate applied inside. A plugin
+	// reads substrate rows through THIS, never SQL against substrate tables. nil
+	// when no Postgres is configured.
+	IdentityScans domain.IdentityScanSource
 
 	// Relations is the deployment's link-verb vocabulary (five-planes step 2,
 	// D-W5-1): the built-in seeds plus whatever plugins and the config's
@@ -749,6 +774,11 @@ type ReactiveJournal interface {
 	// older than olderThan (A2.6). The caller's cutoff must be older than both the
 	// dedup window and the journal TTL, past which no duplicate can arrive.
 	PruneIdempotency(olderThan time.Time, limit int) (removed int, more bool, err error)
+	// PruneDeadLetters drops up to limit dead letters that failed before
+	// `before` (limit <= 0 ⇒ unbounded), reporting whether more remained at the
+	// cap: the dead-letter retention (ENG-472; a dead letter embeds the full
+	// signal, personal content included).
+	PruneDeadLetters(before time.Time, limit int) (removed int, more bool, err error)
 	// RetainedWindow reports the oldest and newest seq the journal still holds on
 	// the streams match accepts (nil ⇒ all) and how many records remain. Pruning
 	// shortens what a backtest can replay, so the window must be reportable rather
@@ -760,7 +790,7 @@ type ReactiveJournal interface {
 // direct dispatch (DirectDispatcher) + daemon lifecycle (DaemonLifecycle).
 type ReactiveAgentDispatcher interface {
 	CallAgent(ctx context.Context, agentID string, h *domain.Handoff) (*domain.Handoff, error)
-	SpawnDaemon(agentID, streamID string, params map[string]any) (instanceID string, err error)
+	SpawnDaemon(ctx context.Context, agentID, streamID string, params map[string]any) (instanceID string, err error)
 	StopDaemon(streamID string) error
 	// CallDaemon routes a handoff to the specific per-stream daemon instance spawned for
 	// streamID (ADR-0080), not any instance of the agent. Used by the chat manager to deliver

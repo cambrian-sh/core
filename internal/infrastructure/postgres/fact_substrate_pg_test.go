@@ -32,7 +32,25 @@ func newFactSubstrate(t *testing.T) (*PgKnowledgeStore, *PgFactItemReader, conte
 	if err != nil {
 		t.Fatalf("parse PG_TEST_DSN: %v", err)
 	}
-	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error { return pgxvector.RegisterTypes(ctx, conn) }
+	// The kernel's knowledge store runs on the adapter's pool (app.NewSubstrate(vec.Pool())),
+	// whose AfterConnect sets the pgvector GUCs — hnsw.iterative_scan = relaxed_order by
+	// default (execution.retrieval.hnsw_iterative_scan). A bare test pool without them
+	// reproduces filtered-HNSW underfill that production does not have: the global
+	// SearchFacts branch returned [] on a fresh DB whose HNSW index was built on the empty
+	// table (T-20261103-global-fact-search-returns-no-rows-through-the). Mirror the
+	// production session settings so these tests exercise the real plan.
+	settings := hnswSessionSettings(100, "relaxed_order", 0)
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if err := pgxvector.RegisterTypes(ctx, conn); err != nil {
+			return err
+		}
+		for _, stmt := range settings {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("pool: %v", err)

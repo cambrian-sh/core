@@ -116,3 +116,23 @@ func TestToolAllowlist_ExpandAndUnmatched(t *testing.T) {
 		t.Errorf("Unmatched = %v", got)
 	}
 }
+
+// ENG-632 (owner decision 2026-11-15): a profile's local: pattern lets its ceiling
+// admit contributed tools on the named machines only; the grant is separate.
+func TestProfileToolCeiling_AdmitsContributedToolsItNames(t *testing.T) {
+	c := NewProfileToolCeiling()
+	c.Set("analyst", ToolAllowlist{"mcp:filesystem/read_*", "local:*/read_*"})
+	for tool, want := range map[string]bool{
+		"local:laptop/read_file":  true,
+		"local:laptop/write_file": false,
+		"local:desk/read_notes":   true,
+		"mcp:filesystem/read_x":   true,
+	} {
+		if inside, bound := c.Allows("analyst", tool); !bound || inside != want {
+			t.Errorf("%s: inside=%v bound=%v, want inside=%v", tool, inside, bound, want)
+		}
+	}
+	if (ToolAllowlist{"local:*/read_*"}).Expand([]SystemTool{{Name: "mcp:filesystem/read_x"}}) != nil {
+		t.Error("a local: pattern must expand to no registry grant")
+	}
+}

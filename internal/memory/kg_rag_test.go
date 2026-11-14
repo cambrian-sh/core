@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // fakeChunkTripletsStore is an in-memory domain.ChunkTripletsStore for unit tests.
@@ -322,10 +323,11 @@ func TestKgExpand_RespectsMaxExpanded(t *testing.T) {
 
 // TestKGExpand_DropsForbiddenChunk is the ADR-0095 D9 regression.
 //
-// KG expansion reaches chunks BY ID (ChunksMentioningEntity -> GetByID), and neither
-// hop is enforced: chunk_triplets has no classification column, and EnforcingVectorStore
-// overrides Search only, so GetByID reads the raw adapter. The predicate must therefore be
-// applied to what comes back, or a restricted chunk is admitted with its FULL CONTENT.
+// KG expansion reaches chunks BY ID (ChunksMentioningEntity -> GetByID/ChunksByIDs), and
+// chunk_triplets has no classification column. The by-id read is enforced by
+// authz.EnforcingVectorStore with the lane's predicate stamped on ctx (AGENTS.md §2.5;
+// the lane no longer re-applies it inline), so this test runs over the REAL decorator:
+// without it a restricted chunk would be admitted with its FULL CONTENT.
 //
 // The prior mustGetDoc also returned domain.Document{ID: id} whenever GetByID failed, so
 // even a denied chunk entered the pool as a stub carrying its ID — and `{docID}-chunk-{n}`
@@ -348,7 +350,7 @@ func TestKGExpand_DropsForbiddenChunk(t *testing.T) {
 	seeds := []domain.SearchResult{
 		{Document: domain.Document{ID: "seed-1", Text: "caroline researched quantum"}, Score: 0.9},
 	}
-	vs := fakeVectorSearch{docs: map[string]domain.Document{
+	vs := authz.NewEnforcingVectorStore(mapInner{docs: map[string]domain.Document{
 		"seed-1":       seeds[0].Document,
 		"chunk-public": {ID: "chunk-public", Text: "quantum was developed at IBM"},
 		"chunk-secret": {
@@ -356,7 +358,7 @@ func TestKGExpand_DropsForbiddenChunk(t *testing.T) {
 			Text:     secret,
 			Metadata: map[string]interface{}{"tags": []string{"internal"}},
 		},
-	}}
+	}}, nil)
 
 	// A customer-surface predicate: `internal` is forbidden, everything else allowed.
 	scope := &domain.TagPredicate{ForbiddenTags: []string{"internal"}}

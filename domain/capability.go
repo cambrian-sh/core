@@ -2,7 +2,6 @@ package domain
 
 import (
 	"context"
-	"math"
 )
 
 // CapabilityRegion is a named region of the shared description-embedding space
@@ -28,22 +27,4 @@ type CapabilityRegion struct {
 // 0037-02) and the CapabilityBelief store (0037-03) that owns the regions.
 type RegionSource interface {
 	Regions(ctx context.Context) ([]CapabilityRegion, error)
-}
-
-// CosineSimilarity is the canonical pure cosine similarity over two embedding
-// vectors. Returns 0 for mismatched or zero-magnitude vectors.
-func CosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		na += float64(a[i]) * float64(a[i])
-		nb += float64(b[i]) * float64(b[i])
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }

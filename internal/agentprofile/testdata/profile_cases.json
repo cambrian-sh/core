@@ -987,7 +987,148 @@
     },
     {
       "name": "glob-other-namespace",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - foo:box/read\ntrust_tier: first-party\nmax_tool_rounds: 8\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "glob-local-machine",
       "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - local:box/read\ntrust_tier: first-party\nmax_tool_rounds: 8\n",
+      "expected_name": "tester",
+      "skills": {
+        "alpha": [
+          "mcp:filesystem/read_text_file"
+        ],
+        "beta": [
+          "mcp:shell/run"
+        ],
+        "gamma": []
+      },
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "local:box/read"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false
+      },
+      "warnings": 0
+    },
+    {
+      "name": "glob-local-fleet",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - local:*\ntrust_tier: first-party\nmax_tool_rounds: 8\n",
+      "expected_name": "tester",
+      "skills": {
+        "alpha": [
+          "mcp:filesystem/read_text_file"
+        ],
+        "beta": [
+          "mcp:shell/run"
+        ],
+        "gamma": []
+      },
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "local:*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false
+      },
+      "warnings": 0
+    },
+    {
+      "name": "glob-local-any-machine",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - local:*/read_*\ntrust_tier: first-party\nmax_tool_rounds: 8\n",
+      "expected_name": "tester",
+      "skills": {
+        "alpha": [
+          "mcp:filesystem/read_text_file"
+        ],
+        "beta": [
+          "mcp:shell/run"
+        ],
+        "gamma": []
+      },
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "local:*/read_*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false
+      },
+      "warnings": 0
+    },
+    {
+      "name": "glob-local-partial-machine-wild",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - local:bo*/read\ntrust_tier: first-party\nmax_tool_rounds: 8\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "glob-local-no-tool",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - local:box/\ntrust_tier: first-party\nmax_tool_rounds: 8\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "glob-local-bare",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - local:box\ntrust_tier: first-party\nmax_tool_rounds: 8\n",
       "expected_name": "tester",
       "skills": null,
       "valid": false,
@@ -1825,6 +1966,26 @@
       "pattern": "mcp:x/é*",
       "name": "mcp:x/éa",
       "want": true
+    },
+    {
+      "pattern": "local:*",
+      "name": "local:box/read_file",
+      "want": true
+    },
+    {
+      "pattern": "local:*/read_*",
+      "name": "local:box/read_file",
+      "want": true
+    },
+    {
+      "pattern": "local:*/read_*",
+      "name": "local:box/write_file",
+      "want": false
+    },
+    {
+      "pattern": "local:box/*",
+      "name": "local:boxy/read",
+      "want": false
     }
   ]
 }

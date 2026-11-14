@@ -148,7 +148,6 @@ func domainStepsToAuthored(steps []domain.Step) []*pb.AuthoredStepOp {
 			DependsOn:            deps,
 			MaxEnergy:            st.MaxEnergy,
 			CheckpointAfter:      st.CheckpointAfter,
-			CheckpointQuery:      st.CheckpointQuery,
 			IsThought:            st.IsThought,
 			PreferredAgent:       st.PreferredAgent,
 			AgentPin:             st.AgentPin,

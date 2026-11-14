@@ -77,7 +77,11 @@ func NewMetabolismStack(
 	profileStore memstore.ProfileStore,
 	memoryAgent domain.MemoryAgent,
 	cfg *config.Config,
-	observer domain.TelemetryObserver,
+	// Unused since 2026-11-14: its only consumer was the dispatcher's
+	// cambrian_auction_no_winner_total counter, deleted by owner decision
+	// (ENG-1335). The parameter stays until app/app.go (another owner's file)
+	// drops the argument (T-20261114-drop-the-unused-telemetry-observer-argument-of).
+	_ domain.TelemetryObserver,
 	leases verify.LeaseGateway,
 ) *MetabolismStack {
 	manager := agentmgr.NewAgentManager(reg, cfg.Metabolism.PythonExecutable, "localhost:"+cfg.Server.Port, memoryAgent)
@@ -107,13 +111,24 @@ func NewMetabolismStack(
 	envExtras = append(envExtras, workersEnv(cfg.Execution.Workers)...)
 	// execution.content: the SDK's tool-output cap, preview, resolve window and
 	// prompt budget, so agent and kernel size content by one policy.
-	envExtras = append(envExtras, contentEnv(cfg.Execution.Content)...)
+	envExtras = append(envExtras, contentEnv(cfg.Execution)...)
 	if len(envExtras) > 0 {
 		manager.SetEnvExtras(envExtras)
 	}
 	// SEC-01: cap agent memory (0 = disabled) so a runaway agent is killed at its
 	// cap instead of OOMing the kernel host.
 	manager.SetAgentMemoryLimitMB(cfg.Execution.Agents.AgentMemoryLimitMB)
+	// ADR-0139 D8 (execution.agents.sandbox): per-trust-tier agent containment.
+	// First-party unchanged; a third-party agent is refused while its controls are
+	// missing on the agent launch path, unless on_unavailable is degrade.
+	agentSandbox := cfg.Execution.Agents.Sandbox.ThirdParty
+	manager.SetAgentContainment(agentmgr.AgentContainment{
+		ThirdPartyDegrade:  !agentSandbox.Refuses(),
+		ThirdPartyMemoryMB: agentSandbox.Memory(),
+	})
+	slog.Info("ADR-0139 D8: agent containment by trust tier",
+		"third_party_on_unavailable", map[bool]string{true: "refuse", false: "degrade"}[agentSandbox.Refuses()],
+		"third_party_memory_mb", agentSandbox.Memory())
 	// T-20261102-kg-extractor-cold-start-drops-the-first-kg: how long a spawned
 	// agent may take to open its socket before its boot fails.
 	manager.SetAgentBootTimeout(time.Duration(cfg.Execution.Agents.AgentBootTimeoutMs) * time.Millisecond)
@@ -144,6 +159,16 @@ func NewMetabolismStack(
 		"exploration_active", cfg.Execution.Gatekeeper.ActiveMeritMode() != config.MeritModeThompson)
 
 	transport := agentplane.New(manager)
+	// ADR-0150 D10: execution.lane.context reaches every spawned agent on its
+	// handoff (the lane block wins over execution.content; lane_context.go).
+	transport.ContextLimits = cfg.Execution.AgentContext()
+	if !transport.ContextLimits.IsZero() {
+		slog.Info("ADR-0150 D10: execution.lane.context stamped on agent handoffs",
+			"budget_tokens", transport.ContextLimits.BudgetTokens,
+			"tool_output_compact_chars", transport.ContextLimits.ToolOutputCompactChars,
+			"protect_tail", transport.ContextLimits.ProtectTail,
+			"keep_recent_tool_results", transport.ContextLimits.KeepRecentToolResults)
+	}
 
 	vPool := verify.NewVerifierPool(reg, profileStore, cfg.Execution.Verification.VerifierPoolThreshold, cfg.Execution.Verification.VerifierRecencyWindow)
 	// Verifier admission runs the gatekeeper's L1 declaration gate (one policy), so
@@ -170,7 +195,6 @@ func NewMetabolismStack(
 		Profiles:        profileStore,
 		Boots:           manager,
 		ExecCfg:         cfg.Execution,
-		Observer:        observer,
 		ExplorationRate: cfg.Execution.Routing.ExplorationRate,
 	}
 	// ADR-0139 D8: the dispatcher binds each plan-step lease to the agent it hands it

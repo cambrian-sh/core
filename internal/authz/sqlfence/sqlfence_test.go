@@ -103,3 +103,36 @@ func TestFence_EmptyAnyOfClauseRendersFalse(t *testing.T) {
 		t.Errorf("a non-empty clause must not render FALSE: %q", sql)
 	}
 }
+
+// ObjectExtra is ObjectProperty over an extra jsonb entry's own tags/parties
+// (T-20261113-listobjects-getobject-do-not-expose-undeclared): an entry without a
+// tags array is unclassified and must be denied to a filtered reader, and the
+// entry's parties make party scoping row-aware.
+func TestFence_ObjectExtraIsPerEntryAndFailsClosed(t *testing.T) {
+	p := &domain.TagPredicate{RequiredTags: []string{"sales"}, PartyScopedTags: []string{"deal:x"}}
+	sql, args := ObjectExtra("x.value").Expr(p, 2)
+	for _, want := range []string{
+		"(CASE WHEN jsonb_typeof(x.value->'tags') = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(x.value->'tags')) END) IS NOT NULL",
+		"@> $4",
+		"x.value->'parties'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q in %s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "?") {
+		t.Errorf("a leftover placeholder: %s", sql)
+	}
+	if len(args) == 0 || !strings.HasPrefix(sql, "(") && !strings.Contains(sql, "$3") {
+		t.Errorf("args must be numbered after startIdx: %s %v", sql, args)
+	}
+	if body, a := ObjectExtra("x.value").Expr(domain.ScopeMaintenance, 0); body != "TRUE" || a != nil {
+		t.Errorf("maintenance sees every entry: %q %v", body, a)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a nil predicate must panic, as for ObjectProperty")
+		}
+	}()
+	ObjectExtra("x.value").Expr(nil, 0)
+}

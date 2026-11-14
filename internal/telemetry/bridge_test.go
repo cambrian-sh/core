@@ -31,7 +31,6 @@ func TestNoopObserver_AllMethodsNoPanic(t *testing.T) {
 	obs.OnTaskCompleted(domain.TaskEvent{})
 	obs.OnSessionEvicted("agent-1")
 	obs.OnConwipWait(100)
-	obs.OnAuctionNoWinner("task-1")
 	obs.OnSchemaMismatch("agent-1", "missing-field")
 }
 
