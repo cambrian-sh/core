@@ -150,7 +150,10 @@ func TestBoot_ProtectedDBBehind_NamesPendingAndWritesNothing(t *testing.T) {
 	}
 
 	// The explicit opt-in applies them; a later guarded boot with nothing pending boots.
-	if err := Boot(ctx, pool, splitTestDim, Policy{ProtectedDBNames: []string{db}, AllowPending: true}); err != nil {
+	// A snapshotter is supplied because the tail may hold a destructive migration
+	// (0051 is one); the snapshot rule itself is covered in destructive_test.go.
+	snap := func(context.Context, string, []string) (string, error) { return "test-snapshot", nil }
+	if err := Boot(ctx, pool, splitTestDim, Policy{ProtectedDBNames: []string{db}, AllowPending: true, Snapshot: snap}); err != nil {
 		t.Fatalf("opt-in boot: %v", err)
 	}
 	if got := appliedCount(ctx, t, pool); got != before+2 {

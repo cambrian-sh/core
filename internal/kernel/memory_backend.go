@@ -42,6 +42,14 @@ type MemoryBackend struct {
 	Lexical memory.LexicalSearcher
 	// Documents is the ADR-0093 source-document row store (wrapped, never handed over).
 	Documents domain.DocumentStore
+	// Eraser is the RAW ADR-0137 memory eraser (postgres.PgErasureStore): one transaction
+	// that deletes documents, experiences, chunks, substrate items and evidence and leaves
+	// a content-free receipt. It is not bound by NewMemoryBackend because it is built over
+	// the knowledge store and document lifecycle, not the vector adapter: app.go sets it.
+	// Optional (nil = no erasure; not reported by Missing): the maintenance commands and
+	// test fakes leave it unset. NewMemoryStack keeps it unexported (MemoryStack.eraser)
+	// with no accessor until the S3 enforcing decorator wraps it (ENG-411 stage A).
+	Eraser domain.MemoryEraser
 }
 
 // NewMemoryBackend binds every capability to the one concrete Postgres adapter. It

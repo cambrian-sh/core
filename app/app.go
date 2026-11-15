@@ -910,6 +910,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// concrete adapter, so a capability it stops implementing is a compile error here
 	// instead of a feature NewMemoryStack silently switches off.
 	memBackend := kernel.NewMemoryBackend(vec)
+	// ADR-0137 S2 (ENG-411 stage A): the raw memory eraser over the document lifecycle.
+	// NewMemoryStack holds it unexported until the S3 enforcing decorator exposes it.
+	memBackend.Eraser = postgres.NewPgErasureStore(docLifecycle)
 	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
 	// ADR-0103 D3/D7: wire the decision-provenance seam. nil observer (the OSS default)
 	// leaves the emit site a nil check. The fingerprint is computed ONCE here, not per

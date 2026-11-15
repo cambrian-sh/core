@@ -33,6 +33,15 @@ type MemoryStack struct {
 	// writeStore is tier 2, write classification (*authz.EnforcingStoreWriter, ADR-0085)
 	// over vecDB's write side. It is a VectorWriter only: it cannot read.
 	writeStore domain.VectorWriter
+	// eraser is the RAW ADR-0137 memory eraser (MemoryBackend.Eraser), composed here
+	// with the other tier-0 components and deliberately UNEXPORTED with no accessor:
+	// it enforces nothing about who may erase what, so no production code may reach it
+	// until ADR-0137 S3 (ENG-411 job B) wraps it in authz.EnforcingEraser — that
+	// constructor-injected decorator is what this stack will expose, never this field
+	// (AGENTS.md §2.3). Stage A (S1–S2) ships the storage and transaction only; the
+	// field is read by kernel tests (memory_eraser_composition_test.go). It is NOT dead
+	// code: job B consumes it. nil when the backend has no eraser.
+	eraser domain.MemoryEraser
 	// DocumentStore is the ADR-0093 write chokepoint for the source-document row
 	// (memory.EnforcingDocumentStore over the raw adapter), already held by
 	// IngestionManager. nil when the backend cannot store documents (a test fake).
@@ -339,6 +348,7 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 		vecDB:                vec,
 		readStore:            scopedRead,
 		writeStore:           writeStore,
+		eraser:               backend.Eraser,
 		DocumentStore:        documentStore,
 		ProfileStore:         profileStore,
 		Agent:                memoryAgent,

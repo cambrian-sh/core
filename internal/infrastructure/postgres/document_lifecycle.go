@@ -221,10 +221,10 @@ func (l *PgDocumentLifecycle) ReviseDocument(ctx context.Context, rev domain.Doc
 
 // retireDocumentsTx is the ADR-0138 D4 document cascade, in the caller's transaction:
 // everything derived from the documents' content, then their sections and chunks. The
-// documents rows stay (they carry the version chain). ADR-0137's forget is to compose
-// this same cascade inside its D4 transaction and delete the documents rows (plus
-// tombstones, evidence and the remaining participants) around it — it is not built yet,
-// so no caller deletes a documents row here.
+// documents rows stay (they carry the version chain). ADR-0137's forget composes this
+// same cascade inside its D4 transaction (PgErasureStore.eraseDocuments) and deletes the
+// documents rows, tombstones them and erases their evidence around it; this function
+// itself never deletes a documents row.
 //
 // Order matters only where one step reads what a later one deletes: the chunk and
 // section ids are collected first, fact items are erased while their source chunks still

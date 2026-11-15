@@ -29,6 +29,7 @@ func retentionPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 		c := context.Background()
 		_, _ = pool.Exec(c, `DELETE FROM operator_audit WHERE id LIKE 'pgret-%'`)
 		_, _ = pool.Exec(c, `DELETE FROM chunk_triplets WHERE chunk_id LIKE 'pgret-%'`)
+		_, _ = pool.Exec(c, `DELETE FROM chunks WHERE id LIKE 'pgret-%'`)
 		_, _ = pool.Exec(c, `DELETE FROM experiences WHERE id LIKE 'pgret-%'`)
 	}
 	clean()
@@ -68,6 +69,10 @@ func TestPg_PruneOperatorAuditBefore(t *testing.T) {
 func TestPg_PruneChunkTripletsAndExperiencesBefore(t *testing.T) {
 	pool, ctx := retentionPool(t)
 	old := time.Now().UTC().Add(-90 * 24 * time.Hour)
+	// The parent chunks exist: since 0051 a triplet needs a live chunk (ADR-0137 D5.1).
+	if _, err := pool.Exec(ctx, `INSERT INTO chunks (id, text) VALUES ('pgret-c1', 'x'), ('pgret-c2', 'y')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO chunk_triplets (chunk_id,h,r,t,extracted_at) VALUES
 		('pgret-c1','a','b','c',$1), ('pgret-c2','a','b','c',now())`, old); err != nil {
 		t.Fatal(err)

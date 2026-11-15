@@ -19,6 +19,10 @@ func TestNewMemoryBackend_BindsEveryCapabilityToTheAdapter(t *testing.T) {
 	}
 	v := reflect.ValueOf(b)
 	for i := 0; i < v.NumField(); i++ {
+		if v.Type().Field(i).Name == "Eraser" {
+			// Built over the knowledge store, not the adapter; app.go sets it (ADR-0137 S2).
+			continue
+		}
 		if got := v.Field(i).Interface(); got != any(a) {
 			t.Errorf("field %s = %T, want the one adapter", v.Type().Field(i).Name, got)
 		}
