@@ -45,6 +45,7 @@ import (
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
 	"github.com/cambrian-sh/core/internal/ontology"
 	"github.com/cambrian-sh/core/internal/ratelimit"
@@ -905,7 +906,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 
 	// 2. Domain stacks — sequential construction (dependency order)
-	mem := kernel.NewMemoryStack(vec, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
+	// ENG-1504: the raw adapter's capabilities as typed fields, bound once to the
+	// concrete adapter, so a capability it stops implementing is a compile error here
+	// instead of a feature NewMemoryStack silently switches off.
+	memBackend := kernel.NewMemoryBackend(vec)
+	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
 	// ADR-0103 D3/D7: wire the decision-provenance seam. nil observer (the OSS default)
 	// leaves the emit site a nil check. The fingerprint is computed ONCE here, not per
 	// query: it describes configuration that cannot change without a restart, so hashing
@@ -941,9 +946,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// so the verification worker receives it as a constructor argument and mints
 	// a lease for every verifier call (ADR-0131;
 	// T-20261101-verification-mints-no-lease-so-verifier-llm). It needs only
-	// cfg to exist; its streaming clients, observer and meter are attached
-	// further down, before any lease is used.
-	llmGateway := subnetwork.NewLLMGateway(cfg.Execution)
+	// cfg and the ADR-0131 spend meter to exist; its streaming clients and observer
+	// are attached further down, before any lease is used.
+	//
+	// ADR-0131 D1-D3: the ONE spend ledger (ceiling execution.session.max_session_tokens,
+	// 0 = metered, never refused). It is a constructor argument of the gateway (ENG-1504):
+	// the gateway cannot exist without it, so the session ceiling can no longer be
+	// skipped by a setter probe that stopped matching. ProvideServer attaches the same
+	// meter to the Provider and the server.
+	spendMeter := llm.NewSpendMeter(cfg.Execution.Session.MaxSessionTokens, llmProvider.Ledger(), slog.Default())
+	llmGateway := subnetwork.NewLLMGateway(cfg.Execution, spendMeter)
 	meta := kernel.NewMetabolismStack(reg, embedder, vec, mem.ProfileStore, mem.Agent, cfg, observer, llmGateway)
 	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, mem.VecDB, supervisionGen, cfg, observer)
 
@@ -1090,7 +1102,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// A/B test (KG²RAG on vs off) is a config flip, not a rebuild. The
 	// max-hops / max-expanded / max-entities knobs bound the expansion.
 	if cfg.Execution.Retrieval.KG2RAGEnabled {
-		mem.QueryService.EnableKG2RAG(vec,
+		mem.QueryService.EnableKG2RAG(memBackend.ChunkTriplets,
 			cfg.Execution.Retrieval.KG2RAGMaxHops,
 			cfg.Execution.Retrieval.KG2RAGMaxExpanded,
 			cfg.Execution.Retrieval.KG2RAGMaxEntities,
@@ -1253,15 +1265,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// ADR-0054 hybrid retrieval: fuse dense (vector) + sparse (lexical/full-text)
 	// via RRF so exact-token chunks the embedder misses enter the pool. Opt-in via
-	// execution.hybrid_search_enabled. *PgVectorAdapter implements LexicalSearcher.
+	// execution.hybrid_search_enabled. The lexical half is the typed MemoryBackend
+	// field (ENG-1504), not a runtime probe of the adapter.
 	if cfg.Execution.Retrieval.HybridSearchEnabled {
-		if lex, ok := any(vec).(memory.LexicalSearcher); ok {
-			mem.QueryService.EnableHybrid(lex, cfg.Execution.Retrieval.HybridRRFK)
-			mem.QueryService.SetLexicalWeight(cfg.Execution.Retrieval.HybridLexicalWeight)
-			slog.Info("ADR-0054: hybrid dense+lexical retrieval ENABLED", "rrf_k", cfg.Execution.Retrieval.HybridRRFK, "lexical_weight", cfg.Execution.Retrieval.HybridLexicalWeight)
-		} else {
-			slog.Warn("ADR-0054: hybrid_search_enabled but vector store has no LexicalSearch; vector-only")
-		}
+		mem.QueryService.EnableHybrid(memBackend.Lexical, cfg.Execution.Retrieval.HybridRRFK)
+		mem.QueryService.SetLexicalWeight(cfg.Execution.Retrieval.HybridLexicalWeight)
+		slog.Info("ADR-0054: hybrid dense+lexical retrieval ENABLED", "rrf_k", cfg.Execution.Retrieval.HybridRRFK, "lexical_weight", cfg.Execution.Retrieval.HybridLexicalWeight)
 	}
 
 	// ADR-0054 Stage B: cross-encoder rerank of the top-K Stage-A candidates via
@@ -1908,7 +1917,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if bt, ok := signalRcv.(domain.WatchBacktester); ok {
 		watchBacktester = bt
 	}
-	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+	// Phase 3/4: runs and checkpoints follow sessions into Postgres, so a run, its plan
+	// and its checkpoints live in one place under one cascade. When the Postgres session
+	// store is unavailable the bbolt registry (*kernel.AgentRepoDecorator) serves both.
+	// Both are typed here and passed to the server (ENG-1504) — they used to be found by
+	// asserting the agent registry inside ProvideServer and then overridden here.
+	var runStore domain.RunStore = reg
+	var checkpointStore executer.CheckpointStore = reg
+	if pgSessions != nil {
+		runStore, checkpointStore = pgSessions, pgSessions
+	}
+	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler, runStore, checkpointStore, spendMeter)
 	cambrianServer.Delegations = turnDelegations
 	cambrianServer.RunTracer = runTracer // ADR-0145 D10: step outputs + kernel tool calls
 	// Orchestrator/ProposeKnowledge: candidates and commit requests (knowledgeBridge above).
@@ -1981,14 +2000,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// the ingress's own policy never applies.
 	if conversations != nil && opts.IngressResolver != nil {
 		cambrianServer.ConvSurfaces = ingress.NewConversationSurfaces(conversations, opts.IngressResolver)
-	}
-
-	// Phase 4: runs and checkpoints follow sessions into Postgres. ProvideServer wires the
-	// bbolt registry by default; override here when the Postgres store is available so a
-	// run, its plan and its checkpoints all live in one place under one cascade.
-	if pgSessions != nil {
-		cambrianServer.Runs = pgSessions
-		cambrianServer.Checkpoints = pgSessions
 	}
 
 	// OBSERVABILITYREQ REQ1 / ADR-0057: AgentCallLogger is an injected hook (Options).

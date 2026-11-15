@@ -94,7 +94,7 @@ func run() error {
 	ks := postgres.NewPgKnowledgeStore(vec.Pool(), reg)
 	// No generator and no embedder: a reset makes no model call. Extraction stays off
 	// for this stack (cfg.Execution as loaded), so no extractor or queue is built.
-	mem := kernel.NewMemoryStack(vec, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, kernel.FactSubstrate{
+	mem := kernel.NewMemoryStack(kernel.NewMemoryBackend(vec), nil, nil, cfg.Execution, nil, cfg.Chunker, nil, kernel.FactSubstrate{
 		Store:    ks,
 		Reader:   postgres.NewPgFactItemReader(ks, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions),
 		Resetter: ks,

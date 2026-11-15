@@ -10,6 +10,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/testing/fakemodels"
 	"google.golang.org/grpc/metadata"
@@ -95,7 +96,7 @@ func delegationService(t *testing.T, gw *network.SubstrateLLMGateway, d *network
 }
 
 func newGateway() *network.SubstrateLLMGateway {
-	gw := network.NewLLMGateway(config.DefaultConfig().Execution)
+	gw := network.NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	gw.SetStepModels(fakemodels.New())
 	return gw
 }

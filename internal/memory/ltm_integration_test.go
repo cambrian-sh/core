@@ -91,7 +91,7 @@ func newLTMTestEnv(t *testing.T) (
 		TimeoutMs: gcfg.TimeoutMs,
 	}
 
-	mem := kernel.NewMemoryStack(vec, gen, embed, cfg.Execution, nil, cfg.Chunker, nil, kernel.FactSubstrate{})
+	mem := kernel.NewMemoryStack(kernel.NewMemoryBackend(vec), gen, embed, cfg.Execution, nil, cfg.Chunker, nil, kernel.FactSubstrate{})
 	ws = mem.WorkspaceStage
 
 	cleanup = func() {

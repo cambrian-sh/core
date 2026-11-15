@@ -39,10 +39,9 @@ func (u *usageStreamer) GenerateStream(context.Context, string) (<-chan domain.S
 
 func meteredGateway(meter *llm.SpendMeter, s domain.LLMStreamer) *SubstrateLLMGateway {
 	cfg := config.DefaultConfig().Execution
-	gw := NewLLMGateway(cfg)
+	gw := NewLLMGateway(cfg, meter)
 	useFakeModel(gw, "llm:fake", s)
 	gw.SetDefaultModelID("llm:fake")
-	gw.SetSpendMeter(meter)
 	return gw
 }
 
@@ -196,7 +195,7 @@ func TestGateway_LeaseUsageSumsCallsAndKeepsProviderUsage(t *testing.T) {
 // lease that is gone; the completion hook runs once per completed lease.
 func TestGateway_ChargeLeaseAndCompleteHook(t *testing.T) {
 	t.Parallel()
-	gw := meteredGateway(nil, &usageStreamer{text: "x"})
+	gw := meteredGateway(llm.NewSpendMeter(0, nil, nil), &usageStreamer{text: "x"})
 	var completed []domain.LeaseID
 	gw.SetCompleteHook(func(l domain.LeaseID) { completed = append(completed, l) })
 
@@ -212,5 +211,24 @@ func TestGateway_ChargeLeaseAndCompleteHook(t *testing.T) {
 	}
 	if gw.SessionCount() != 0 {
 		t.Fatal("ChargeLease on an unknown lease must not create one")
+	}
+}
+
+// ENG-1504: the spend meter is a constructor argument. NewLLMGateway(cfg) without one
+// does not compile; a nil meter is refused at construction (boot), so the ADR-0131
+// session ceiling can no longer be skipped by a setter probe that stopped matching.
+func TestNewLLMGateway_RefusesNilSpendMeter(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewLLMGateway with a nil spend meter must be refused")
+		}
+	}()
+	NewLLMGateway(config.DefaultConfig().Execution, nil)
+}
+
+func TestNewLLMGateway_HoldsTheConstructorMeter(t *testing.T) {
+	meter := llm.NewSpendMeter(100, nil, nil)
+	if got := NewLLMGateway(config.DefaultConfig().Execution, meter).SpendMeter(); got != meter {
+		t.Fatalf("gateway meter = %p, want the constructor's %p", got, meter)
 	}
 }

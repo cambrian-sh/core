@@ -37,7 +37,7 @@ func TestNewMemoryStack_ComposesTheEnforcingDocumentStore(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	raw := &docVec{}
-	mem := NewMemoryStack(raw, nil, nil, cfg.Execution, denyWrites{}, cfg.Chunker, nil, FactSubstrate{})
+	mem := NewMemoryStack(MemoryBackend{Vector: raw, Documents: raw}, nil, nil, cfg.Execution, denyWrites{}, cfg.Chunker, nil, FactSubstrate{})
 	if mem.DocumentStore == nil {
 		t.Fatal("a document-capable adapter must yield a DocumentStore")
 	}
@@ -51,7 +51,7 @@ func TestNewMemoryStack_ComposesTheEnforcingDocumentStore(t *testing.T) {
 		t.Fatalf("a denied document write reached the raw adapter: %+v", raw.saved)
 	}
 
-	if none := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}); none.DocumentStore != nil {
+	if none := NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}); none.DocumentStore != nil {
 		t.Fatalf("an adapter without SaveDocument must leave DocumentStore nil, got %T", none.DocumentStore)
 	}
 }

@@ -131,7 +131,7 @@ func run() error {
 	if assessor == "" {
 		assessor = "default"
 	}
-	mem := kernel.NewMemoryStack(vec, llmProvider.GeneratorFor(domain.PurposeMemory), embedder, cfg.Execution,
+	mem := kernel.NewMemoryStack(kernel.NewMemoryBackend(vec), llmProvider.GeneratorFor(domain.PurposeMemory), embedder, cfg.Execution,
 		nil, cfg.Chunker, llmProvider.GeneratorFor(domain.PurposeFacts), kernel.FactSubstrate{
 			Store:          ks,
 			Reader:         postgres.NewPgFactItemReader(ks, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions),

@@ -11,6 +11,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/metabolism"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/dispatch"
@@ -124,7 +125,7 @@ func TestPlanLimits_ZeroIdleDisablesAndZeroCapFallsBackToDefault(t *testing.T) {
 // as long as it is in flight; a tracked tool call does too.
 func TestGateway_RunActivityCountsInFlightCallsOnTheRunsLeases(t *testing.T) {
 	t.Parallel()
-	gw := NewLLMGateway(config.DefaultConfig().Execution)
+	gw := NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	m := gatedModel{started: make(chan struct{}), release: make(chan struct{})}
 	useFakeModel(gw, "llm:m1", m)
 	lease, err := gw.Acquire(context.Background(),
@@ -198,7 +199,7 @@ func watchdogServer(t *testing.T, steps int, plan config.PlanConfig, caller call
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{Gatekeeper: config.GatekeeperConfig{
 		GatekeeperMaxCandidates: 5, GatekeeperW1: 0.4, GatekeeperW2: 0.4, GatekeeperW3: 0.2,
 	}})
-	gw := NewLLMGateway(config.DefaultConfig().Execution)
+	gw := NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	if model != nil {
 		useFakeModel(gw, "llm:m1", model)
 		gw.SetDefaultModelID("llm:m1")

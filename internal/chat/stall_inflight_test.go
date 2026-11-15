@@ -8,6 +8,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/testing/fakemodels"
 )
@@ -73,7 +74,7 @@ func inflightService(t *testing.T, gw *network.SubstrateLLMGateway, pool Dispatc
 // liveness (T-20261105-slow-model-reliability-hardcoded-20-s). The call runs 2.5 s
 // against a 200 ms window — over two watchdog ticks (the tick floor is 1 s).
 func TestTurn_LongModelCallInFlightIsNotAStall(t *testing.T) {
-	gw := network.NewLLMGateway(config.DefaultConfig().Execution)
+	gw := network.NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	gw.SetStepModels(fakemodels.New().Set("m1", slowModel{d: 2500 * time.Millisecond}))
 	svc := inflightService(t, gw, gatewayPool{gw: gw})
 
@@ -89,7 +90,7 @@ func TestTurn_LongModelCallInFlightIsNotAStall(t *testing.T) {
 // The true-stall detection stands: no model call in flight and no progress for the
 // window still cancels the turn, with the gateway wired into the probe.
 func TestTurn_SilentTurnWithNoCallInFlightIsStillCancelled(t *testing.T) {
-	gw := network.NewLLMGateway(config.DefaultConfig().Execution)
+	gw := network.NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	gw.SetStepModels(fakemodels.New())
 	pool := &blockingPool{release: make(chan struct{})} // never calls the model
 	defer close(pool.release)

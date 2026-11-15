@@ -7,6 +7,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 // gatedModel is a unary RequestGenerator that answers only when released — one
@@ -39,7 +40,7 @@ func (gatedModel) Capabilities() domain.Capabilities { return domain.Capabilitie
 // unbound conversation reports nothing. This is the gateway's half of the chat
 // liveness probe (T-20261105-slow-model-reliability-hardcoded-20-s).
 func TestGateway_ConversationActivityCountsAnInFlightUnaryCall(t *testing.T) {
-	gw := NewLLMGateway(config.DefaultConfig().Execution)
+	gw := NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	m := gatedModel{started: make(chan struct{}), release: make(chan struct{})}
 	useFakeModel(gw, "llm:m1", m)
 	lease, err := gw.Acquire(context.Background(),
@@ -95,7 +96,7 @@ func TestGateway_ConversationActivityCountsAnInFlightUnaryCall(t *testing.T) {
 // that runs longer than the keepalive window
 // (T-20261109-chat-turn-lease-is-evicted-while-its-delegated).
 func TestGateway_KeepaliveNeverShortensTheAcquiredTTL(t *testing.T) {
-	gw := NewLLMGateway(config.DefaultConfig().Execution)
+	gw := NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	turnEnd := time.Now().Add(2 * time.Hour)
 	long := &domain.BudgetLeaseState{ExpiresAt: turnEnd}
 	gw.mu.Lock()
@@ -120,7 +121,7 @@ func TestGateway_KeepaliveNeverShortensTheAcquiredTTL(t *testing.T) {
 
 // A lease with a call in flight is not swept as leaked, whatever its TTL says.
 func TestGateway_EvictExpiredSparesALeaseWithACallInFlight(t *testing.T) {
-	gw := NewLLMGateway(config.DefaultConfig().Execution)
+	gw := NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	gw.AddSession("busy", &domain.BudgetLeaseState{ExpiresAt: time.Now().Add(-time.Minute), InFlightCalls: 1})
 	gw.AddSession("idle", &domain.BudgetLeaseState{ExpiresAt: time.Now().Add(-time.Minute)})
 	gw.EvictExpired()

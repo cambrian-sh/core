@@ -89,7 +89,7 @@ type SubstrateLLMGateway struct {
 
 	// meter is the ADR-0131 D1 spend ledger — the SAME object the Provider meters
 	// the organs with, so agent streams and organ calls add up in one place.
-	// Nil = no session ceiling and no spend record (tests, maintenance tools).
+	// Set once by NewLLMGateway and never nil (ENG-1504).
 	meter atomic.Pointer[llm.SpendMeter]
 
 	// onComplete runs after a lease is completed and removed. It is the ONE place
@@ -128,10 +128,6 @@ func (g *SubstrateLLMGateway) preferredModel(ss *domain.BudgetLeaseState) string
 	return (*fn)(ss.Binding.AgentID)
 }
 
-// SetSpendMeter attaches the ADR-0131 spend ledger. Every agent stream and tool
-// turn is then admitted against the session ceiling and booked there.
-func (g *SubstrateLLMGateway) SetSpendMeter(m *llm.SpendMeter) { g.meter.Store(m) }
-
 // SpendMeter returns the attached spend ledger, or nil.
 func (g *SubstrateLLMGateway) SpendMeter() *llm.SpendMeter { return g.meter.Load() }
 
@@ -156,12 +152,26 @@ func (g *SubstrateLLMGateway) SetDefaultModelID(modelID string) {
 
 // NewLLMGateway creates a SubstrateLLMGateway. The composition root attaches its
 // StepModels (SetStepModels) before any lease is used.
-func NewLLMGateway(cfg config.ExecutionConfig) *SubstrateLLMGateway {
-	return &SubstrateLLMGateway{
+//
+// meter is the ADR-0131 spend ledger: every agent stream and tool turn is admitted
+// against the session ceiling (execution.session.max_session_tokens) and booked
+// there. It is a REQUIRED constructor argument (ENG-1504, AGENTS.md §2.3): it used to
+// be attached afterwards through a setter the composition root reached with an
+// anonymous-interface assertion, so a gateway type that stopped matching ran every
+// agent-stream call with no ceiling, silently. A gateway without a meter is now a
+// compile error, and a nil meter is refused here (panic at boot). A deployment with
+// no ceiling still passes a meter — llm.NewSpendMeter(0, …) meters and never refuses.
+func NewLLMGateway(cfg config.ExecutionConfig, meter *llm.SpendMeter) *SubstrateLLMGateway {
+	if meter == nil {
+		panic("network.NewLLMGateway: nil spend meter (ADR-0131: the session spend ceiling must reach every agent-stream call)")
+	}
+	g := &SubstrateLLMGateway{
 		sessions:  make(map[domain.LeaseID]*domain.BudgetLeaseState),
 		semaphore: make(chan struct{}, cfg.LLM.LLMGatewayMaxConcurrency),
 		cfg:       cfg,
 	}
+	g.meter.Store(meter)
+	return g
 }
 
 // SetStepModels attaches the model source every lease call is served through — the

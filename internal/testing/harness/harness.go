@@ -75,12 +75,11 @@ func New(cfg Config) *SystemHarness {
 	streamer := NewFakeModelStreamer(gen)
 	obs := &CapturingTelemetryObserver{}
 
-	gw := subnetwork.NewLLMGateway(exec)
+	meter := llm.NewSpendMeter(exec.Session.MaxSessionTokens, nil, nil)
+	gw := subnetwork.NewLLMGateway(exec, meter)
 	gw.Observer = obs
 	gw.SetStepModels(fakemodels.New().Set(FakeModelID, streamer))
 	gw.SetDefaultModelID(FakeModelID)
-	meter := llm.NewSpendMeter(exec.Session.MaxSessionTokens, nil, nil)
-	gw.SetSpendMeter(meter)
 
 	reg := NewHarnessRegistry()
 	reg.Register(

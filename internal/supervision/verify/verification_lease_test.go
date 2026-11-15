@@ -75,10 +75,9 @@ type leaseRig struct {
 func newLeaseRig(t *testing.T, crossVerifyRate float64) *leaseRig {
 	t.Helper()
 	meter := llm.NewSpendMeter(100, nil, nil)
-	gw := network.NewLLMGateway(config.DefaultConfig().Execution)
+	gw := network.NewLLMGateway(config.DefaultConfig().Execution, meter)
 	gw.SetStepModels(fakemodels.New().Set("llm:fake", usageModel{prompt: 120, compl: 30}))
 	gw.SetDefaultModelID("llm:fake")
-	gw.SetSpendMeter(meter)
 	completed := make(chan domain.LeaseID, 8)
 	gw.SetCompleteHook(func(id domain.LeaseID) { completed <- id })
 

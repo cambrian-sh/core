@@ -4,7 +4,6 @@
 package kernel
 
 import (
-	"fmt"
 	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
@@ -36,6 +35,17 @@ func ProvideServer(
 	// passes a ReactiveEngine built via the app.Options hook. No build tags.
 	signalRcv domain.SignalReceiver,
 	watchHandler domain.WatchConfigHandler,
+	// Phase 3/4: run persistence, built explicitly by the composition root (the
+	// Postgres session store, or the bbolt registry when Postgres sessions are
+	// unavailable) and passed as typed values — they used to be discovered by
+	// asserting the AGENT REGISTRY, an assertion that once silently went false
+	// (ENG-1504).
+	runs domain.RunStore,
+	checkpoints executer.CheckpointStore,
+	// ADR-0131 D1-D3: the ONE spend ledger. The composition root built the gateway
+	// with this same meter (subnetwork.NewLLMGateway requires it); here it is
+	// attached to the Provider (organ calls) and the server.
+	meter *llm.SpendMeter,
 ) *subnetwork.Server {
 	srv := subnetwork.NewServer(
 		aw.Planner,
@@ -56,18 +66,16 @@ func ProvideServer(
 		contentStore,
 	)
 
-	// Phase 3: the run store. The registry (AgentRepoDecorator) satisfies domain.RunStore;
-	// the compile-time assertion in repository_decorator.go is what keeps this assertion
-	// from silently going false the way the checkpoint one did.
-	if cs, ok := meta.Manager.Registry.(executer.CheckpointStore); ok {
-		srv.Checkpoints = cs
-	} else {
-		slog.Warn("Phase 3: registry does not implement CheckpointStore — checkpoints will not persist")
+	// Phase 3/4: the run and checkpoint stores are constructor arguments (see above).
+	// A nil one is a composition bug that would silently disable persistence and
+	// resume, so it is reported at Error at boot rather than discovered at first use.
+	srv.Runs = runs
+	srv.Checkpoints = checkpoints
+	if runs == nil {
+		slog.Error("Phase 3: no RunStore was composed — runs will not persist and resume is unavailable")
 	}
-	if rs, ok := meta.Manager.Registry.(domain.RunStore); ok {
-		srv.Runs = rs
-	} else {
-		slog.Warn("Phase 3: registry does not implement domain.RunStore — runs will not persist and resume is unavailable")
+	if checkpoints == nil {
+		slog.Error("Phase 3: no CheckpointStore was composed — checkpoints will not persist")
 	}
 
 	// No scene writer of any kind is wired: the per-step SceneWriter plumbing was
@@ -91,23 +99,16 @@ func ProvideServer(
 	// ADR-0131 D1-D3: ONE spend ledger, shared by the two doors every LLM call
 	// passes — Provider.Acquire (every organ) and the gateway (every agent stream,
 	// including the retrieval_agent's chain). execution.session.max_session_tokens
-	// is its ceiling (0 = metered, never refused). Wired here because this is the
-	// one place that holds the Provider, the gateway and the server together; the
-	// Provider resolves the meter per call, so organ generators created earlier by
+	// is its ceiling (0 = metered, never refused). The gateway received it at
+	// construction (it cannot be built without one, ENG-1504: the anonymous
+	// SetSpendMeter probe that could silently skip the ceiling is gone); the Provider
+	// resolves the meter per call, so organ generators created earlier by
 	// GeneratorFor are covered.
-	meter := llm.NewSpendMeter(cfg.Session.MaxSessionTokens, llmProvider.Ledger(), slog.Default())
-	llmProvider.SetSpendMeter(meter)
-	if gw, ok := llmGateway.(interface{ SetSpendMeter(*llm.SpendMeter) }); ok {
-		gw.SetSpendMeter(meter)
-	} else {
-		// The session spend ceiling (ADR-0131 D1-D3, max_session_tokens) reaches
-		// agent-stream LLM calls only through this setter. A gateway type that does
-		// not match used to skip it silently, so every agent-stream call ran with no
-		// ceiling; say so loudly until the typed backend bundle makes it a compile
-		// error (T-20261113-replace-optional-interface-probing-in-the).
-		slog.Error("LLM gateway does not accept a spend meter: agent-stream LLM calls run WITHOUT the session spend ceiling",
-			"gateway", fmt.Sprintf("%T", llmGateway), "max_session_tokens", cfg.Session.MaxSessionTokens)
+	if meter == nil {
+		slog.Error("ADR-0131: ProvideServer got no spend meter: organ LLM calls run WITHOUT the session spend ceiling",
+			"max_session_tokens", cfg.Session.MaxSessionTokens)
 	}
+	llmProvider.SetSpendMeter(meter)
 	srv.SpendMeter = meter
 
 	// ADR-0031 + ADR-0042: wire the universal InputRouter on its own PurposeRouter

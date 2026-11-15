@@ -18,6 +18,7 @@ import (
 	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/identity"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/knowledgecommit"
 	"github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
@@ -47,7 +48,7 @@ func TestE2E_ProposeKnowledgeNeedsTheVerbGrantThroughTheAgentPlane(t *testing.T)
 	gw := network.NewLLMGateway(config.ExecutionConfig{
 		Session: config.SessionConfig{SessionTokenTTLMultiplier: 5},
 		LLM:     config.LLMConfig{LLMGatewayMaxConcurrency: 4},
-	})
+	}, llm.NewSpendMeter(0, nil, nil))
 	grants := domain.NewInMemoryGrantsStore()
 	prop := &countingProposer{}
 	srvImpl := &network.Server{LLMGateway: gw, Knowledge: prop, ToolExecutor: &domain.ToolExecutor{Grants: grants}}

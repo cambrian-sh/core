@@ -328,6 +328,11 @@ type kgExpandVectorSearch interface {
 // batchChunkFetcher is the optional batched-materialization capability
 // (review Q8): one chunks-only round-trip for a whole candidate set.
 // Implemented by the pgvector adapter and forwarded by the enforcing store.
+//
+// Deliberately an OPTIONAL probe (ENG-1504 kept it, unlike the composition-root
+// probes it removed): vs here is the tier-1 read store, not the raw adapter, and the
+// per-id loop below returns the same authorized rows. Its absence costs round-trips,
+// never a feature or a control, so nothing switches off silently.
 type batchChunkFetcher interface {
 	ChunksByIDs(ctx context.Context, ids []string) ([]domain.Document, error)
 }

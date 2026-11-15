@@ -84,19 +84,30 @@ type MemoryStack struct {
 // writer and reader and hands only those to the extractor and the QueryService. The
 // zero value means no fact layer (every fact switch is then inert, and the boot line
 // says so).
-func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig, authorizer domain.Authorizer, chunkerCfg config.ChunkerConfig, factGen domain.Generator, facts FactSubstrate) *MemoryStack {
+//
+// backend is the raw adapter's capabilities as typed fields (MemoryBackend; production
+// passes NewMemoryBackend(adapter)). It replaced runtime probing of a single
+// domain.VectorStore for the graph, experience, triplet and document capabilities
+// (ENG-1504): an absent capability is now a compile error in production and an Error
+// line for a hand-built partial backend, never a silent feature switch-off.
+func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig, authorizer domain.Authorizer, chunkerCfg config.ChunkerConfig, factGen domain.Generator, facts FactSubstrate) *MemoryStack {
 	// ADR-0085: every read passes the fail-closed read chokepoint and every write
 	// passes the classification chokepoint — including LLM-driven writes. There is
 	// no "trusted in-process" carve-out: process membership does not constrain a
 	// model's output. Agent reads (QueryService) carry the principal's resolved
 	// predicate; kernel-internal reads carry domain.ScopeSystem explicitly.
 	//
-	// Raw vec is retained ONLY for the GraphStore assertions (a component that needs
-	// the concrete adapter). The spreading engine used to take it too and fetched
+	// The raw backend is retained ONLY for components that need the concrete adapter
+	// (graph store, triplet store, experience parents — typed MemoryBackend fields). The spreading engine used to take it too and fetched
 	// every BFS edge target by id with no predicate — the one enrichment lane that
 	// still bypassed this chokepoint (2026-10-31 audit,
 	// T-20261031-spreading-activation-lane-fetches-graph-targets). It now takes
 	// scopedRead.
+	if backend.Vector == nil {
+		panic("kernel.NewMemoryStack: MemoryBackend.Vector is nil")
+	}
+	backend.reportMissing()
+	vec := backend.Vector
 	scopedRead := authz.NewEnforcingVectorStore(vec, slog.Default())
 	writeStore := authz.NewEnforcingStoreWriter(scopedRead, authorizer, slog.Default())
 	// The profile store writes agent profiles and JUDICIAL RECORDS — verifier
@@ -122,13 +133,13 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// gated the failure record was retired with them (internal/config retiredConfigKeys).
 	memoryAgent.RecordOutcomes = execCfg.Memory.ExperienceRecordsEnabled
 	memoryAgent.ProcedureDeprecateBelow = execCfg.Procedure.ProcedureDeprecateBelow
-	// `vec` is the raw adapter on purpose (ADR-0095 D1): the episode parent row is a
-	// kernel-owned write of a row the kernel itself stamps, not a principal-facing one.
-	// Asserted rather than required on the port: a store that cannot persist episode
-	// parents (a test fake, a future backend) leaves this nil, and the outcome record
-	// is then written with a NULL parent instead of not written at all.
-	if es, ok := vec.(domain.ExperienceStore); ok {
-		memoryAgent.ExperienceStore = es
+	// backend.Experience is the raw adapter on purpose (ADR-0095 D1): the episode parent
+	// row is a kernel-owned write of a row the kernel itself stamps, not a
+	// principal-facing one. A partial backend without it (a test fake; reported at
+	// Error above) leaves this nil, and the outcome record is then written with a NULL
+	// parent instead of not written at all.
+	if backend.Experience != nil {
+		memoryAgent.ExperienceStore = backend.Experience
 	}
 	// The ADR-0027 Hippocampus (procedural plan memory) was deleted 2026-11-14
 	// (owner decision, third round; ENG-1301): its writer had no production caller.
@@ -189,9 +200,11 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// that armed it was retired on 2026-10-31 (owner decision; an operator file that
 	// still declares it loads unchanged — see internal/config/retired_keys_test.go).
 
-	// ADR-0017: Spreading activation layer (optional — depends on GraphStore).
+	// ADR-0017: Spreading activation layer. backend.Graph is the raw adapter (the
+	// engine's graph walk reads edges only; every edge TARGET is fetched through
+	// scopedRead below — ADR-0085 D7 / ADR-0095 D9).
 	var chunkTripletsBatcher *memory.ChunkTripletsBatcher
-	if gs, ok := vec.(domain.GraphStore); ok {
+	if gs := backend.Graph; gs != nil {
 		// The ADR-0053 (T-Mem) EntityIndex and its entity-routing lane were deleted
 		// 2026-11-15 (owner decision, ENG-76): nothing ever populated the index.
 
@@ -216,7 +229,9 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// routing the removed EdgeBatcher used. Re-uses the EdgeExtraction* config knobs
 		// (the prompt is a similar size; 16-fact batches stream fine on
 		// the hosted reasoning model). nil = no enrichment (legacy).
-		if cts, ok := vec.(domain.ChunkTripletsStore); ok {
+		// backend.ChunkTriplets is the raw adapter: a kernel-authored write of
+		// LLM-free triplets keyed by chunk id (ADR-0053), not a principal-facing read.
+		if cts := backend.ChunkTriplets; cts != nil {
 			chunkTripletsBatcher = memory.NewChunkTripletsBatcher(gen, cts, chunkTripletsBatcherConfigFrom(execCfg.Ingestion))
 		}
 		// ADR-0048 D2: enrich the agent's PULL recall with the same associative
@@ -251,10 +266,10 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// attached there, so its presence depended on a post-construction call outside the
 	// composition point being reached (AGENTS.md §2.1/§2.3,
 	// T-20261113-memory-tier-stores-are-composed-outside). The raw adapter is wrapped,
-	// never handed over. A vec that is not a document store (a test fake) leaves the
-	// pre-ADR-0093 behaviour: documents are not recorded.
+	// never handed over. A partial backend without Documents (a test fake; reported at
+	// Error above) leaves the pre-ADR-0093 behaviour: documents are not recorded.
 	var documentStore domain.DocumentStore
-	if ds, ok := vec.(domain.DocumentStore); ok {
+	if ds := backend.Documents; ds != nil {
 		documentStore = memory.NewEnforcingDocumentStore(ds, authorizer, slog.Default())
 		ingestionMgr.SetDocumentStore(documentStore)
 	}

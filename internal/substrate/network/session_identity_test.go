@@ -9,6 +9,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/substrate/session"
 )
 
@@ -23,7 +24,7 @@ func newLeaseServer(t *testing.T) (*Server, *SubstrateLLMGateway) {
 		LLM: config.LLMConfig{
 			LLMGatewayMaxConcurrency: 4,
 		},
-	})
+	}, llm.NewSpendMeter(0, nil, nil))
 	return &Server{LLMGateway: gw}, gw
 }
 
@@ -163,7 +164,7 @@ func TestResolveCallerSession_CompletedLease_StopsResolving(t *testing.T) {
 // again.
 func TestLeaseIDIsNeverASession(t *testing.T) {
 	t.Parallel()
-	gw := NewLLMGateway(config.ExecutionConfig{Session: config.SessionConfig{SessionTokenTTLMultiplier: 5}, LLM: config.LLMConfig{LLMGatewayMaxConcurrency: 1}})
+	gw := NewLLMGateway(config.ExecutionConfig{Session: config.SessionConfig{SessionTokenTTLMultiplier: 5}, LLM: config.LLMConfig{LLMGatewayMaxConcurrency: 1}}, llm.NewSpendMeter(0, nil, nil))
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 
 	mgr := session.New(newMemSessionStore())

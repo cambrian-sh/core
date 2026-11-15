@@ -8,6 +8,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 func newTestGateway(concurrency int) *SubstrateLLMGateway {
@@ -19,7 +20,7 @@ func newTestGateway(concurrency int) *SubstrateLLMGateway {
 			LLMGatewayMaxConcurrency: concurrency,
 		},
 	}
-	return NewLLMGateway(cfg)
+	return NewLLMGateway(cfg, llm.NewSpendMeter(0, nil, nil))
 }
 
 // ─── CONWIP semaphore tests ───────────────────────────────────────────────────

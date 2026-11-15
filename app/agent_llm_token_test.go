@@ -7,6 +7,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 )
 
@@ -15,7 +16,7 @@ import (
 // plugin dispatches can spend under it and nobody else can. The unbound acquirer still
 // returns an agent-unbound lease (in-process / non-agent use).
 func TestAcquireKernelLLMToken_BindsTheAgent(t *testing.T) {
-	gw := subnetwork.NewLLMGateway(config.DefaultConfig().Execution)
+	gw := subnetwork.NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 
 	tok, release, err := acquireKernelLLMToken(context.Background(), gw, "chat_session_agent", 1024, time.Minute)
 	if err != nil || tok == "" {
@@ -49,7 +50,7 @@ func TestAcquireKernelLLMToken_BindsTheAgent(t *testing.T) {
 // the release closure runs after the turn, when the caller's ctx is usually already
 // cancelled; it must still complete the lease.
 func TestAcquireKernelLLMToken_ReleaseOutlivesTheCallerContext(t *testing.T) {
-	gw := subnetwork.NewLLMGateway(config.DefaultConfig().Execution)
+	gw := subnetwork.NewLLMGateway(config.DefaultConfig().Execution, llm.NewSpendMeter(0, nil, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	tok, release, err := acquireKernelLLMToken(ctx, gw, "chat_session_agent", 1024, time.Minute)
 	if err != nil || tok == "" {

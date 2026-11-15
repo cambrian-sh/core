@@ -12,6 +12,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/infrastructure/mcpserve"
 	network "github.com/cambrian-sh/core/internal/substrate/network"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
@@ -80,7 +81,7 @@ func TestMCPTaskChain_ContributedMenuFollowsTaskBeneficiary(t *testing.T) {
 	gw := network.NewLLMGateway(config.ExecutionConfig{
 		Session: config.SessionConfig{SessionTokenTTLMultiplier: 5},
 		LLM:     config.LLMConfig{LLMGatewayMaxConcurrency: 4},
-	})
+	}, llm.NewSpendMeter(0, nil, nil))
 	leaseFor := func(task string) string {
 		t.Helper()
 		lease, err := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Minute)
@@ -161,7 +162,7 @@ func TestMCPTaskChain_MachineSubmissionCarriesItsOwner(t *testing.T) {
 	gw := network.NewLLMGateway(config.ExecutionConfig{
 		Session: config.SessionConfig{SessionTokenTTLMultiplier: 5},
 		LLM:     config.LLMConfig{LLMGatewayMaxConcurrency: 4},
-	})
+	}, llm.NewSpendMeter(0, nil, nil))
 	lease, err := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Minute)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)

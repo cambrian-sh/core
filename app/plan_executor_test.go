@@ -11,6 +11,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	metabolism "github.com/cambrian-sh/core/internal/metabolism"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
@@ -59,7 +60,7 @@ func TestKernelPlanExecutor_RunsPlanThroughRealDAGExecutor(t *testing.T) {
 		PlanMaxDurationMs: 30000, StepTimeoutBaseBufferMs: 5000, StepTimeoutMultiplier: 2.0,
 	}}
 	cfg.LLM.LLMGatewayMaxConcurrency = 4
-	gw := &countingGateway{SubstrateLLMGateway: subnetwork.NewLLMGateway(cfg)}
+	gw := &countingGateway{SubstrateLLMGateway: subnetwork.NewLLMGateway(cfg, llm.NewSpendMeter(0, nil, nil))}
 	disp := &recordingDispatcher{}
 	srv := &subnetwork.Server{
 		// No Planner: the plugin already planned, and the authored-plan branch must

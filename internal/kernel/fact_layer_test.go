@@ -42,7 +42,7 @@ func TestMemoryStack_FactSubstrateIsEnforcedAndExtractorGated(t *testing.T) {
 	cfg.Execution.Facts.ExtractEnabled = false
 	sub := FactSubstrate{Store: nopSubstrate{}, Reader: nopReader{}, Lister: nopLister{}, EmbedModelID: "m"}
 
-	off := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
+	off := NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
 	if _, ok := off.FactWriter.(*authz.EnforcingKnowledgeWriter); !ok {
 		t.Fatalf("FactWriter = %T, want the enforcing writer", off.FactWriter)
 	}
@@ -60,12 +60,12 @@ func TestMemoryStack_FactSubstrateIsEnforcedAndExtractorGated(t *testing.T) {
 	}
 	withReset := sub
 	withReset.Resetter = nopResetter{}
-	if r := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, withReset); r.FactReset == nil || r.FactExtractor != nil {
+	if r := NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, withReset); r.FactReset == nil || r.FactExtractor != nil {
 		t.Fatal("a handed-in resetter reaches MemoryStack.FactReset (ADR-0136 A2-Q3), with extraction still off")
 	}
 
 	cfg.Execution.Facts.ExtractEnabled = true
-	on := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
+	on := NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
 	if on.FactExtractor == nil || on.FactBackfill == nil {
 		t.Fatal("extract_enabled must construct the extractor and (with a lister) the backfill")
 	}
@@ -75,7 +75,7 @@ func TestMemoryStack_FactSubstrateIsEnforcedAndExtractorGated(t *testing.T) {
 	on.FactExtractor.Stop()
 
 	// No substrate handed in: no writer, no reader, no extractor.
-	none := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	none := NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
 	if none.FactWriter != nil || none.FactReader != nil || none.FactExtractor != nil || none.QueryService.HasFactReader() {
 		t.Fatal("the zero FactSubstrate must leave the fact layer absent")
 	}
@@ -147,7 +147,7 @@ func TestMemoryStack_ThreadsFactExtractionSources(t *testing.T) {
 	cfg.Execution.Facts.ExtractEnabled = true
 	cfg.Execution.Memory.FactExtractionSources = []string{"source:telegram"}
 	sub := FactSubstrate{Store: nopSubstrate{}, Reader: nopReader{}, EmbedModelID: "m"}
-	ms := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
+	ms := NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
 	ctx := domain.WithPrincipal(context.Background(), domain.SourcePrincipal("slack", "ws"))
 	ms.FactExtractor.Enqueue(ctx, "d", domain.SourceMeta{}, []*domain.Document{{ID: "c", Text: "x"}}, false)
 	if st := ms.FactExtractor.Stats(); st.SourceFiltered != 1 || st.Enqueued != 0 {
