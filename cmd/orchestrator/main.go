@@ -55,6 +55,10 @@ func main() {
 		// beats every config file, so an override is why a file edit "didn't take").
 		case "config":
 			os.Exit(app.RunConfig(context.Background(), os.Args[2:]))
+		// ENG-681: deployment-owned backup, verify, rotation, restore and the
+		// weekly restore drill (internal/backup; docs/backup-and-restore.md).
+		case "backup":
+			os.Exit(app.RunBackup(context.Background(), os.Args[2:]))
 		}
 	}
 	if err := app.Run(context.Background(), app.DefaultOptions()); err != nil {

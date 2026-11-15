@@ -46,6 +46,8 @@ type migration struct {
 	version int64
 	name    string
 	sql     string
+	// destructive is true when the file carries DestructiveMarker (destructive.go).
+	destructive bool
 }
 
 // Mode is the boot-time migration policy, config key database.migrations.mode
@@ -92,6 +94,16 @@ type Policy struct {
 	// AllowPending is the explicit, per-boot opt-in that lets a guarded boot apply its
 	// pending changes (CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true).
 	AllowPending bool
+	// Snapshot takes a restorable snapshot of the connected database before a
+	// destructive migration is applied to a database that already has history
+	// (ENG-681, destructive.go) and returns where it was written. Nil means no
+	// snapshot can be taken, so such a migration is refused unless
+	// AllowDestructiveWithoutSnapshot is set.
+	Snapshot func(ctx context.Context, db string, destructive []string) (string, error)
+	// AllowDestructiveWithoutSnapshot is the explicit operator override that applies
+	// destructive migrations WITHOUT the mandatory snapshot
+	// (database.migrations.allow_destructive_without_snapshot, `migrate up --skip-snapshot`).
+	AllowDestructiveWithoutSnapshot bool
 }
 
 // protects reports whether db is on the protected list.
@@ -125,6 +137,9 @@ func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
 	}
 	protected := p.protects(db)
 	if mode != ModeRefusePending && !protected {
+		if err := guardCore(ctx, pool, dim, db, p); err != nil {
+			return err
+		}
 		return migrate(ctx, pool, dim, db)
 	}
 	reason := "database.migrations.mode is refuse_pending"
@@ -137,6 +152,11 @@ func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
 	}
 	if len(pending) == 0 {
 		return migrate(ctx, pool, dim, db) // nothing to apply: the runner only re-checks
+	}
+	if p.AllowPending {
+		if err := guardCore(ctx, pool, dim, db, p); err != nil {
+			return err
+		}
 	}
 	if !p.AllowPending {
 		return fmt.Errorf("%w: database %q has %d pending schema change(s) [%s] that this binary "+
@@ -502,7 +522,7 @@ func loadMigrations(dim int) ([]migration, error) {
 			return nil, err
 		}
 		sql := strings.ReplaceAll(string(raw), "${EMBEDDING_DIM}", strconv.Itoa(dim))
-		migs = append(migs, migration{version: version, name: name, sql: sql})
+		migs = append(migs, migration{version: version, name: name, sql: sql, destructive: coreDestructive(version, sql)})
 	}
 	sort.Slice(migs, func(i, j int) bool { return migs[i].version < migs[j].version })
 	for i := 1; i < len(migs); i++ {

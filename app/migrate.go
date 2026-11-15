@@ -16,7 +16,8 @@ import (
 //
 // It loads the same config the kernel boots with (via ResolveBaseDir → configs/config.json),
 // so the DB DSN and embedder dimension match the running kernel exactly, then drives the
-// pure-Go runner. `args` is os.Args past the "migrate" token (e.g. ["up"] or ["status"]).
+// pure-Go runner. `args` is os.Args past the "migrate" token (e.g. ["up"], ["up",
+// "--skip-snapshot"] or ["status"]).
 func RunMigrate(ctx context.Context, args []string) error {
 	return RunMigrateWith(ctx, args, Options{})
 }
@@ -37,6 +38,17 @@ func RunMigrateWith(ctx context.Context, args []string, opts Options) error {
 	if len(args) > 0 {
 		sub = args[0]
 	}
+	skipSnapshot := false
+	if len(args) > 1 {
+		for _, a := range args[1:] {
+			switch {
+			case sub == "up" && (a == "--skip-snapshot" || a == "-skip-snapshot"):
+				skipSnapshot = true
+			default:
+				return fmt.Errorf("unknown migrate %s argument %q (migrate up takes only --skip-snapshot)", sub, a)
+			}
+		}
+	}
 	base := config.ResolveBaseDir()
 	cfg, err := config.LoadConfig(filepath.Join(base, "configs", "config.json"))
 	if err != nil {
@@ -44,6 +56,13 @@ func RunMigrateWith(ctx context.Context, args []string, opts Options) error {
 	}
 	switch sub {
 	case "up":
+		// ENG-681: a destructive migration on a database with history is preceded by a
+		// snapshot under backup.dir, and refused if the snapshot fails. --skip-snapshot
+		// is the explicit one-command operator override (the same switch as
+		// CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_DESTRUCTIVE_WITHOUT_SNAPSHOT=true).
+		if skipSnapshot {
+			cfg.Database.Migrations.AllowDestructiveWithoutSnapshot = true
+		}
 		if err := postgres.RunMigrations(ctx, cfg); err != nil {
 			return err
 		}

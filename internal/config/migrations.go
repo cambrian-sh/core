@@ -19,6 +19,9 @@ import (
 // T-20261106-orchestrator-migrate-up-ignores-database): it refuses a protected database
 // with pending changes unless AllowPending is set for that one command; it ignores Mode.
 // storage.auto_migrate=false still turns the boot runner off entirely and wins over Mode.
+// Both paths also take a mandatory snapshot (the `backup` block) before applying a
+// migration marked destructive to a database with history, and refuse if it fails,
+// unless AllowDestructiveWithoutSnapshot is set (ENG-681).
 type MigrationsConfig struct {
 	// Mode: "auto" (default — apply pending migrations at boot, the historical
 	// behaviour), "refuse_pending" (boot only when nothing is pending; otherwise exit
@@ -32,6 +35,13 @@ type MigrationsConfig struct {
 	// pending changes: CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true. Do not leave it
 	// set in a file — that disables the guard permanently.
 	AllowPending bool `json:"allow_pending"`
+	// AllowDestructiveWithoutSnapshot is the explicit operator override that lets the
+	// runner apply a DESTRUCTIVE migration (internal/migrate destructive.go) to a database
+	// with history WITHOUT the mandatory pre-migration snapshot (ENG-681). Like
+	// AllowPending it is meant for one command —
+	// CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_DESTRUCTIVE_WITHOUT_SNAPSHOT=true or
+	// `migrate up --skip-snapshot` — not for a file.
+	AllowDestructiveWithoutSnapshot bool `json:"allow_destructive_without_snapshot"`
 }
 
 // MigrationModes are the accepted values of database.migrations.mode. The runner

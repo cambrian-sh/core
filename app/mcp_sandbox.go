@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"path/filepath"
 
+	"github.com/cambrian-sh/core/internal/backup"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/integrations"
 	"github.com/cambrian-sh/core/internal/sandbox"
@@ -17,7 +18,8 @@ import (
 
 // anchorSandboxPaths resolves the sandbox's relative paths against the config
 // bundle, like the other boot paths, and defaults hide_paths to the kernel's
-// config and data directories (secret.key, config.db, the bbolt store).
+// config and data directories (secret.key, config.db, the bbolt store) and the backup
+// directories.
 func anchorSandboxPaths(cfg *config.Config, configPath string) {
 	dir := filepath.Dir(configPath)
 	sb := &cfg.MCP.Sandbox
@@ -28,6 +30,15 @@ func anchorSandboxPaths(cfg *config.Config, configPath string) {
 		sb.HidePaths = []string{dir}
 		if cfg.Storage.DataDir != "" {
 			sb.HidePaths = append(sb.HidePaths, cfg.Storage.DataDir)
+		}
+		// ENG-681: database dumps and the encrypted secret.key copies are as sensitive
+		// as the store itself.
+		if cfg.Backup.Dir != "" {
+			if paths, err := backup.ResolvePaths(cfg.Backup, filepath.Dir(dir)); err == nil {
+				sb.HidePaths = append(sb.HidePaths, paths.Root, paths.KeyRoot)
+			} else {
+				slog.Warn("mcp sandbox: backup paths not hidden (invalid backup block)", "err", err)
+			}
 		}
 	}
 	cfg.MCP.CatalogFile = integrations.ResolvePath(cfg.MCP.CatalogFile, configPath)

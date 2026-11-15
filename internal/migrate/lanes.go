@@ -105,7 +105,7 @@ func loadLane(l Lane) ([]migration, error) {
 		if err != nil {
 			return nil, err
 		}
-		migs = append(migs, migration{version: version, name: name, sql: string(raw)})
+		migs = append(migs, migration{version: version, name: name, sql: string(raw), destructive: IsDestructive(string(raw))})
 	}
 	sort.Slice(migs, func(i, j int) bool { return migs[i].version < migs[j].version })
 	for i := 1; i < len(migs); i++ {
@@ -149,6 +149,13 @@ func BootLanes(ctx context.Context, pool *pgxpool.Pool, p Policy, lanes []Lane) 
 				"CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true if this is the database you meant to upgrade",
 				ErrPendingRefused, db, len(pending), strings.Join(pending, ", "), reason)
 		}
+	}
+	destructive, err := laneDestructivePending(ctx, pool, lanes)
+	if err != nil {
+		return err
+	}
+	if err := guardDestructive(ctx, db, p, destructive); err != nil {
+		return err
 	}
 	return applyLanes(ctx, pool, db, lanes)
 }

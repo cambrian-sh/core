@@ -16,6 +16,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz/sqlfence"
+	"github.com/cambrian-sh/core/internal/backup"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/migrate"
 
@@ -316,14 +317,10 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 		return nil, fmt.Errorf("database.migrations.mode: %w", err)
 	}
 	p := &PgVectorAdapter{
-		pool:        pool,
-		dim:         dims,
-		autoMigrate: cfg.Storage.AutoMigrate,
-		migrations: migrate.Policy{
-			Mode:             migMode,
-			ProtectedDBNames: cfg.Database.Migrations.ProtectedDBNames,
-			AllowPending:     cfg.Database.Migrations.AllowPending,
-		},
+		pool:            pool,
+		dim:             dims,
+		autoMigrate:     cfg.Storage.AutoMigrate,
+		migrations:      migrationPolicy(cfg, migMode),
 		projectionWrite: cfg.Execution.Retrieval.EmbeddingProjectionWrite,
 		projectionRead:  cfg.Execution.Retrieval.EmbeddingProjectionRead,
 		projModelID:     cfg.Embedder.Model,
@@ -528,6 +525,22 @@ func (p *PgVectorAdapter) BootPluginMigrations(ctx context.Context, lanes []migr
 	return migrate.BootLanes(ctx, p.pool, p.migrations, lanes)
 }
 
+// migrationPolicy is the one place the database.migrations block becomes a
+// migrate.Policy, for the boot runner and the explicit `migrate up` alike. It carries the
+// mandatory pre-destructive-migration snapshot (ENG-681): before the runner applies a
+// migration marked destructive to a database with history, backup takes a
+// database-only snapshot under backup.dir, and the runner refuses if it fails unless
+// database.migrations.allow_destructive_without_snapshot is set.
+func migrationPolicy(cfg *config.Config, mode migrate.Mode) migrate.Policy {
+	return migrate.Policy{
+		Mode:                            mode,
+		ProtectedDBNames:                cfg.Database.Migrations.ProtectedDBNames,
+		AllowPending:                    cfg.Database.Migrations.AllowPending,
+		Snapshot:                        backup.PreMigrationSnapshotter(cfg),
+		AllowDestructiveWithoutSnapshot: cfg.Database.Migrations.AllowDestructiveWithoutSnapshot,
+	}
+}
+
 // migrationPool opens a plain pool for the CLI migration paths (no vector-type
 // registration needed to run DDL).
 func migrationPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
@@ -553,14 +566,12 @@ func RunMigrations(ctx context.Context, cfg *config.Config) error {
 	// (T-20261106-orchestrator-migrate-up-ignores-database): on 2026-11-05 a run whose env
 	// overrides were misspelled fell back to configs/config.json and applied five
 	// migrations, one destructive, to the protected working database. Mode is forced to
-	// auto (an explicit `migrate up` must not be skipped by mode=off), so the only effect
-	// of the policy here is the protected-database refusal, lifted for one command by
-	// CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true.
-	return migrate.Boot(ctx, pool, dim, migrate.Policy{
-		Mode:             migrate.ModeAuto,
-		ProtectedDBNames: cfg.Database.Migrations.ProtectedDBNames,
-		AllowPending:     cfg.Database.Migrations.AllowPending,
-	})
+	// auto (an explicit `migrate up` must not be skipped by mode=off), so the policy's
+	// effects here are the protected-database refusal, lifted for one command by
+	// CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true, and the mandatory snapshot before
+	// a destructive migration (ENG-681), waived only by --skip-snapshot /
+	// CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_DESTRUCTIVE_WITHOUT_SNAPSHOT=true.
+	return migrate.Boot(ctx, pool, dim, migrationPolicy(cfg, migrate.ModeAuto))
 }
 
 // RunPluginMigrations is RunMigrations for the plugins' lanes: the explicit
@@ -575,11 +586,7 @@ func RunPluginMigrations(ctx context.Context, cfg *config.Config, lanes []migrat
 		return fmt.Errorf("migrate: connect: %w", err)
 	}
 	defer pool.Close()
-	return migrate.BootLanes(ctx, pool, migrate.Policy{
-		Mode:             migrate.ModeAuto,
-		ProtectedDBNames: cfg.Database.Migrations.ProtectedDBNames,
-		AllowPending:     cfg.Database.Migrations.AllowPending,
-	}, lanes)
+	return migrate.BootLanes(ctx, pool, migrationPolicy(cfg, migrate.ModeAuto), lanes)
 }
 
 // PluginMigrationStatus lists every plugin lane migration for `migrate status`.

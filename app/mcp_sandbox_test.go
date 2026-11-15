@@ -78,6 +78,13 @@ func TestAnchorSandboxPaths(t *testing.T) {
 	if len(cfg.MCP.Sandbox.HidePaths) != 2 {
 		t.Fatalf("hide_paths default: %v", cfg.MCP.Sandbox.HidePaths)
 	}
+	// ENG-681: with the backup block set, the dumps and the encrypted key copies are hidden too.
+	withBackup := &config.Config{Backup: config.DefaultBackupConfig()}
+	anchorSandboxPaths(withBackup, "/srv/cambrian/configs/config.json")
+	hide := strings.ReplaceAll(strings.Join(withBackup.MCP.Sandbox.HidePaths, ","), `\`, "/")
+	if !strings.Contains(hide, "/srv/cambrian/backups,") || !strings.HasSuffix(hide, "/srv/cambrian/backups-keys") {
+		t.Fatalf("backup dirs not hidden: %v", withBackup.MCP.Sandbox.HidePaths)
+	}
 }
 
 // T-20261109-configs-mcp-json-example-reference-servers: every reference server in

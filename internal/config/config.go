@@ -2603,6 +2603,10 @@ type Config struct {
 	// opt-in loopback pprof listener, a periodic memory log line). All off by
 	// default. See runtime.go.
 	Runtime RuntimeConfig `json:"runtime"`
+	// Backup is the deployment-owned backup / restore / restore-drill of the kernel's
+	// durable state and the mandatory pre-destructive-migration snapshot (backup.go,
+	// ENG-681). Read by internal/backup.
+	Backup BackupConfig `json:"backup"`
 }
 
 // MCPEndpointConfig configures the inbound Cambrian MCP endpoint (ADR-0126 D3),
@@ -3499,6 +3503,8 @@ func DefaultConfig() *Config {
 	// protected); an operator protects a database by naming it in
 	// database.migrations.protected_dbnames (ADR-0064 amendment, 2026-11-04).
 	cfg.Database.Migrations.Mode = "auto"
+	// ENG-681: backups/ next to the config bundle, rotation 7 daily / 4 weekly / 3 monthly.
+	cfg.Backup = DefaultBackupConfig()
 	// ADR-0061 A2.8: compact the bbolt file at boot when it is over 256 MiB and
 	// more than half free pages.
 	cfg.Storage.CompactMinBytes = 256 << 20
@@ -3998,6 +4004,8 @@ func (c *Config) secretErrors() []string {
 		errs = append(errs, "database.password is required (set CAMBRIAN_DATABASE__PASSWORD)")
 	}
 	errs = append(errs, c.Database.Migrations.validate()...)
+	// ENG-681: the backup block (retention, passphrase reference, drill database).
+	errs = append(errs, c.Backup.validate(c.Database.DBName, c.Database.Migrations.ProtectedDBNames)...)
 	// ADR-0042: validate the llm_provider + embedder blocks (no-op until configured).
 	errs = append(errs, c.LLMProvider.validate(c.Embedder)...)
 	// ADR-0126 D3/D4: validate the inbound MCP endpoint (no-op until enabled).
