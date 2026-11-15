@@ -390,6 +390,11 @@ type ToolExecutor struct {
 	// never repeats a write), labels an approval with the subtask, and records
 	// what the worker did (evidence, read-the-web). nil ⇒ no subtasks.
 	subtasks *Subtasks
+	// outboundIdentifiers is the outbound identifier guard (ENG-917,
+	// domain/outbound_identifiers.go; execution.tools.outbound_identifier_guard):
+	// a call that can send outside whose text arguments carry a personal
+	// identifier goes to approval, the identifiers named in the request. nil ⇒ off.
+	outboundIdentifiers *OutboundIdentifierGuard
 }
 
 // observeFailure counts a failed call (a tool error, or a final refusal) against
@@ -860,6 +865,27 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		}
 	}
 
+	// The outbound identifier guard (ENG-917, owner decision 2026-11-15). Placed
+	// deliberately: AFTER argument validation, every authorization step and the
+	// pre_tool hooks — so it reads the validated arguments exactly as they will
+	// run (a hook rewrite included) and a call the kernel refuses anyway prompts
+	// nobody — and BEFORE the approval gate, which it feeds. A call that can send
+	// outside (egress_send; plain or inferred egress counts as send) whose text
+	// arguments carry a personal identifier is narrowed to ask; the identifiers
+	// are named in the approval request and the call is never rewritten or
+	// masked. A dangerous call (undeclared tools included: read+write+egress)
+	// already asks; the guard adds the identifiers to its approval. An operator
+	// ScopeSystem call carries its own authority, as for the approval gate.
+	var outbound []OutboundIdentifier
+	if e.outboundIdentifiers != nil && !req.System {
+		outbound = e.outboundIdentifiers.Check(tool, req.ArgsJSON)
+		if len(outbound) > 0 {
+			slog.Info("ENG-917: outbound call carries personal identifiers; approval required",
+				"tool", req.ToolName, "agent", req.AgentID, "identifiers", len(outbound))
+			verdict, _ = NarrowVerdict(verdict, HookAsk)
+		}
+	}
+
 	// Approval (fail-closed): a dangerous tool, or a call a hook narrowed to ask.
 	// There is no evaluation-session exemption any more: the ADR-0037 interview
 	// that minted evaluation sessions was deleted 2026-11-05, and ADR-0139 D5
@@ -885,6 +911,9 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		approver = "operator:system"
 	} else if verdict == HookAsk {
 		if e.approval == nil {
+			if len(outbound) > 0 {
+				return denied(OutboundIdentifierDenyReason(outbound), argHash)
+			}
 			if unrequested {
 				return denied("approval required but unavailable: "+UnrequestedWriteNotice(req.ToolName), argHash)
 			}
@@ -908,6 +937,12 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 			// approval item's duplicate_notice field), so every surface shows it.
 			notice = joinNotices(UnrequestedWriteNotice(req.ToolName), notice)
 		}
+		// ENG-917: the identifiers the guard found, named for the approver on the
+		// same notice channel (every surface shows it), ahead of the duplicate
+		// and unrequested-write notices.
+		if len(outbound) > 0 {
+			notice = joinNotices(RenderOutboundIdentifierNotice(outbound), notice)
+		}
 		// ADR-0150 D5.1: an approval raised inside a subtask reaches the person
 		// labelled with the subtask; only this call (so only that subtask) waits.
 		subtaskLabel := ""
@@ -922,6 +957,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 			Object: objectOfArgs(req.ArgsJSON), Beneficiary: beneficiary, Args: req.ArgsJSON,
 			ConversationID: ConversationIDFromContext(ctx), SessionID: string(sid),
 			DuplicateNotice: notice, Subtask: subtaskLabel,
+			PersonalIdentifiers: outbound,
 		})
 		if err != nil || !dec.Approved {
 			reason := ApprovalDenyReason(dec, err)

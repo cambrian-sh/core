@@ -42,6 +42,11 @@ type ToolExecutorControls struct {
 	// app/subtasks.go.
 	LeaseCeiling LeaseToolCeiling
 	Subtasks     *Subtasks
+	// OutboundIdentifiers is the outbound identifier guard
+	// (execution.tools.outbound_identifier_guard, default on; ENG-917): a call
+	// that can send outside (egress_send) whose text arguments carry a personal
+	// identifier goes to approval with the identifiers named. nil ⇒ off.
+	OutboundIdentifiers *OutboundIdentifierGuard
 }
 
 // ErrToolExecutorControl reports a missing or doubly supplied security control.
@@ -63,7 +68,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	if features.Registry != nil || features.Grants != nil || features.authz != nil || features.approval != nil ||
 		features.ceiling != nil || features.unrestricted || features.argValidator != nil ||
 		features.idempotency != nil || features.guards != nil || features.writeTargets != nil ||
-		features.leaseCeiling != nil || features.subtasks != nil {
+		features.leaseCeiling != nil || features.subtasks != nil || features.outboundIdentifiers != nil {
 		return nil, fmt.Errorf("%w: set on features; pass it in ToolExecutorControls", ErrToolExecutorControl)
 	}
 	te := features
@@ -79,6 +84,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	te.writeTargets = controls.WriteTargets
 	te.leaseCeiling = controls.LeaseCeiling
 	te.subtasks = controls.Subtasks
+	te.outboundIdentifiers = controls.OutboundIdentifiers
 	return &te, nil
 }
 

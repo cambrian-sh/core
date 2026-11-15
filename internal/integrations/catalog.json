@@ -428,7 +428,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -436,7 +436,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -444,7 +444,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -452,7 +452,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -460,7 +460,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -468,7 +468,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -476,7 +476,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -484,7 +484,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -492,7 +492,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -500,7 +500,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -508,7 +508,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -516,7 +516,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -524,7 +524,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -532,7 +532,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -540,7 +540,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -548,7 +548,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -556,7 +556,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -564,7 +564,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -572,7 +572,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -580,7 +580,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           }
         ],
@@ -697,7 +697,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -705,7 +705,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -713,7 +713,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           }
         ],
@@ -914,7 +914,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -922,7 +922,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -930,7 +930,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -938,7 +938,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -946,7 +946,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -954,7 +954,7 @@
             "dangerous": true,
             "effects": [
               "write",
-              "egress"
+              "egress_send"
             ]
           }
         ],
@@ -2119,8 +2119,9 @@
             "dangerous": true,
             "effects": [
               "read",
+              "egress_read",
               "write",
-              "egress"
+              "egress_send"
             ],
             "staged_inputs": true
           },
@@ -2393,16 +2394,18 @@
             "name": "start_process",
             "dangerous": true,
             "effects": [
+              "egress_read",
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
             "name": "interact_with_process",
             "dangerous": true,
             "effects": [
+              "egress_read",
               "write",
-              "egress"
+              "egress_send"
             ]
           },
           {
@@ -2430,7 +2433,7 @@
             "name": "give_feedback_to_desktop_commander",
             "dangerous": true,
             "effects": [
-              "egress"
+              "egress_send"
             ]
           }
         ]
@@ -2481,8 +2484,9 @@
             "dangerous": true,
             "effects": [
               "read",
+              "egress_read",
               "write",
-              "egress"
+              "egress_send"
             ]
           }
         ]

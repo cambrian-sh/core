@@ -2376,6 +2376,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// registry) are built from config here too and handed to wireComposedWorkers
 	// and wireSubtasks below, which bind leases into them.
 	execLeases := buildExecutorLeases(cfg.Execution, actionRecords)
+	// ENG-917: the outbound identifier guard, read from
+	// execution.tools.outbound_identifier_guard (default on) and handed to the
+	// constructor like every other control.
+	outboundGuard, err := outboundIdentifierGuard(cfg.Execution.Tools.OutboundIdentifierGuard)
+	if err != nil {
+		return nil, fmt.Errorf("tool executor: %w", err)
+	}
 	toolControls := execLeases.controls(evidenceToolControls(cfg.Execution, actionRecords, domain.ToolExecutorControls{
 		Registry: toolReg,
 		Grants:   toolGrants,
@@ -2385,6 +2392,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// held under tools_unrestricted and over skill-conferred grants.
 		Ceiling:      profileToolCeiling(profiles),
 		Unrestricted: cfg.Execution.Tools.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
+		// ENG-917: egress_send calls carrying personal identifiers go to approval.
+		OutboundIdentifiers: outboundGuard,
 	}))
 	toolExecutor, err := domain.NewToolExecutor(toolControls, domain.ToolExecutor{
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)

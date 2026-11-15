@@ -415,6 +415,12 @@ func (h *AddressedHub) raise(ctx context.Context, req ApprovalRequest, async boo
 	}
 	it.ActionClass = route.ActionClass
 	it.Rules = route.Rules
+	if len(req.PersonalIdentifiers) > 0 {
+		// ENG-917: a call carrying personal identifiers outside is shown to a
+		// person every time — no standing approval covers it, and its answer
+		// cannot grant one.
+		route.AllowStanding = false
+	}
 	it.AllowStanding = route.AllowStanding
 	it.NeverSelf = route.NeverSelf
 	if it.Resource == "" {

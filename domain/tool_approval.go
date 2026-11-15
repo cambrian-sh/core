@@ -58,6 +58,13 @@ type ApprovalRequest struct {
 	// person sees it through DuplicateNotice (SubtaskApprovalNotice), so no
 	// approval surface needs a new field.
 	Subtask string
+	// PersonalIdentifiers are the personal identifiers the outbound identifier
+	// guard found in the call's text arguments (ENG-917), kernel-computed, never
+	// from a payload. The approver sees them through DuplicateNotice
+	// (RenderOutboundIdentifierNotice), so no approval surface needs a new field.
+	// A request that carries them is never pre-approved by a standing approval
+	// and cannot be answered with one: a person must see the identifiers.
+	PersonalIdentifiers []OutboundIdentifier
 }
 
 // ApprovalDecision is the hub's answer to one request.

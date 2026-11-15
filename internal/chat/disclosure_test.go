@@ -32,7 +32,7 @@ func TestGuard_WithholdingParagraphNeverStatesTheValuesItWithholds(t *testing.T)
 			t.Errorf("guarded reply still states %q:\n%s", v, out)
 		}
 	}
-	if held[idNationalID] != 2 || held[idPhone] != 2 || held.total() != 4 {
+	if held[domain.IdentifierNationalID] != 2 || held[domain.IdentifierPhone] != 2 || held.total() != 4 {
 		t.Errorf("held back %v, want 2 national IDs and 2 phone numbers", held)
 	}
 	// What the officer needs survives: references, dates, the deadline, the categories.
@@ -129,7 +129,7 @@ func TestGuard_CustomerReplyMasksStrongIdentifiersButNotWhatTheUserGave(t *testi
 	if !strings.Contains(out, "+90 212 555 12 34") {
 		t.Errorf("a contact number outside any withholding paragraph was masked for a customer:\n%s", out)
 	}
-	if held[idNationalID] != 1 || held.total() != 1 {
+	if held[domain.IdentifierNationalID] != 1 || held.total() != 1 {
 		t.Errorf("held = %v", held)
 	}
 }
@@ -151,28 +151,6 @@ func TestGuard_NoFalsePositivesInAWithholdingParagraph(t *testing.T) {
 	out, held := guardDisclosure(reply, domain.ProfileEmployee, nil, "en")
 	if out != reply || held != nil {
 		t.Fatalf("false positive:\n%s\nheld=%v", out, held)
-	}
-}
-
-func TestGuard_CardNeedsLuhnAndPhoneNeedsLength(t *testing.T) {
-	for _, tc := range []struct {
-		text string
-		kind identifierKind
-		ok   bool
-	}{
-		{"4111 1111 1111 1111", idCard, true},
-		{"4111 1111 1111 1112", "", false},
-		{"0212 555 12 34", idPhone, true},
-		{"555 12 34", "", false},
-		{"123-45-6789", idNationalID, true},
-	} {
-		ids := findIdentifiers("redact " + tc.text + " now")
-		switch {
-		case !tc.ok && len(ids) != 0:
-			t.Errorf("%q detected as %v", tc.text, ids)
-		case tc.ok && (len(ids) != 1 || ids[0].kind != tc.kind || ids[0].value != tc.text):
-			t.Errorf("%q: got %+v, want one %s", tc.text, ids, tc.kind)
-		}
 	}
 }
 

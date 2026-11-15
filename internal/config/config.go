@@ -1513,6 +1513,14 @@ type ToolsConfig struct {
 	// Operators may still set it false. No omitempty: an explicit false must
 	// survive a marshal/merge round trip over the true default.
 	ValidateArgs bool `json:"validate_args"`
+	// OutboundIdentifierGuard runs the personal-identifier detector (the one the
+	// chat disclosure guard uses, internal/identifiers) over the text arguments
+	// of every tool call that can send outside (effects include egress_send;
+	// plain egress counts as send) and sends a call with a hit to approval, the
+	// identifiers named for the approver — never rewritten or masked (owner
+	// decision 2026-11-15, T-20261108-outbound-tool-writes-have-no-deterministic).
+	// Default ON.
+	OutboundIdentifierGuard OutboundIdentifierGuardConfig `json:"outbound_identifier_guard"`
 	// IdempotentWrites gives every side-effecting tool call made by a plan step an
 	// idempotency key, hash(run, step, tool, canonical arguments) (ADR-0145 D9): a
 	// retry of the same call returns the stored result instead of running again.
@@ -1535,6 +1543,28 @@ type ToolsConfig struct {
 	// temporary read-only folder of exactly the inputs the call named, each read
 	// under the caller's access (owner decision 2026-11-10, option C).
 	StagedInputs StagedInputsConfig `json:"staged_inputs"`
+}
+
+// OutboundIdentifierGuardConfig is execution.tools.outbound_identifier_guard.
+type OutboundIdentifierGuardConfig struct {
+	// Enabled wires the guard into the tool executor (default true). No
+	// omitempty: an explicit false must survive a merge over the true default.
+	Enabled bool `json:"enabled"`
+	// Kinds narrows which identifier categories count as a hit: national_id,
+	// phone, email, iban, card. Empty ⇒ all of them (the safe direction).
+	Kinds []string `json:"kinds,omitempty"`
+}
+
+// IdentifierKinds returns Kinds as domain kinds (empty ⇒ nil, meaning all).
+func (c OutboundIdentifierGuardConfig) IdentifierKinds() []domain.IdentifierKind {
+	if len(c.Kinds) == 0 {
+		return nil
+	}
+	out := make([]domain.IdentifierKind, len(c.Kinds))
+	for i, k := range c.Kinds {
+		out[i] = domain.IdentifierKind(strings.TrimSpace(k))
+	}
+	return out
 }
 
 // StagedInputsConfig is execution.tools.staged_inputs (internal/stagedinputs).
@@ -3361,6 +3391,9 @@ func DefaultConfig() *Config {
 				// ADR-0145 D9 argument validation, on by default (owner decision
 				// 2026-11-14, third round; ENG-562).
 				ValidateArgs: true,
+				// ENG-917 outbound identifier guard, on by default (owner
+				// decision 2026-11-15).
+				OutboundIdentifierGuard: OutboundIdentifierGuardConfig{Enabled: true},
 				// ADR-0145 D4 calculation tools, on by default (owner decision
 				// 2026-11-15, ENG-897; no prior A/B/A).
 				CalcTools: true,
@@ -4071,6 +4104,11 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Tools.DuplicateNoticeWindowMinutes < 0 {
 		errs = append(errs, "duplicate_notice_window_minutes must be >= 0 (0 disables the duplicate notice)")
+	}
+	for _, k := range c.Tools.OutboundIdentifierGuard.IdentifierKinds() {
+		if !domain.ValidIdentifierKind(k) {
+			errs = append(errs, fmt.Sprintf("tools.outbound_identifier_guard.kinds: unknown kind %q (want national_id|phone|email|iban|card)", k))
+		}
 	}
 	if c.Tools.RepeatedFailureStop < 0 {
 		errs = append(errs, "repeated_failure_stop must be >= 0 (0 or 1 disables it)")
