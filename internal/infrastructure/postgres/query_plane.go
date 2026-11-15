@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/rowfence"
 	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
@@ -991,10 +992,11 @@ func (p *PgQueryPlane) evidenceRow(ctx context.Context, q domain.KnowledgeQuery,
 	if err != nil {
 		return nil, err
 	}
-	// AllowsRow: this shape reads the evidence row itself, so its parties are in
-	// hand and a party-scoped tag can be answered properly rather than denied for
-	// want of the information (ADR-0121).
-	if !scope.AllowsRow(ev.Classification, ev.Parties) {
+	// rowfence.Readable (AllowsRow): this shape reads the evidence row itself, so
+	// its parties are in hand and a party-scoped tag can be answered properly
+	// rather than denied for want of the information (ADR-0121). The decision is
+	// the authz-owned rowfence's, not a second rendering here (AGENTS §2.5).
+	if !rowfence.Readable(scope, rowfence.Classification{Tags: ev.Classification, Parties: ev.Parties}) {
 		return nil, nil
 	}
 	return []domain.QueryRow{{

@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/rowfence"
 )
 
 // ─── The node guard: one scope decision for every graph walk ─────────────────
@@ -21,8 +22,9 @@ import (
 // one-line wrappers over it.
 
 // guardNodes keeps the nodes the scope may read, resolving every node's
-// evidence in one batch (evidenceTags) and judging each with AllowsRow — the
-// same test point/history/events apply in SQL (sqlfence.Evidence is CheckRow's
+// evidence in one batch (evidenceTags) and judging each with rowfence.FilterRows
+// (TagPredicate.AllowsRow on every classification a node stands on) — the same
+// test point/history/events apply in SQL (sqlfence.Evidence is CheckRow's
 // mirror), owner fence and party scoping included (ADR-0121), never a second
 // rendering of the policy (AGENTS §2.5).
 //
@@ -44,22 +46,20 @@ func guardNodes[T any](ctx context.Context, p *PgQueryPlane, scope *domain.TagPr
 	if err != nil {
 		return nil, err
 	}
-	kept := nodes[:0:0]
-	for _, n := range nodes {
+	// The row decision itself is the authz-owned rowfence (AGENTS §2.5, ENG-1492);
+	// this walk only says what each node stands on.
+	return rowfence.FilterRows(scope, nodes, func(n T) ([]rowfence.Classification, bool) {
 		ev := evidenceOf(n)
-		ok := len(ev) > 0
+		cs := make([]rowfence.Classification, 0, len(ev))
 		for _, id := range ev {
 			t, resolvable := tags[id]
-			if !resolvable || !scope.AllowsRow(t.tags, t.parties) {
-				ok = false
-				break
+			if !resolvable {
+				return nil, false
 			}
+			cs = append(cs, rowfence.Classification{Tags: t.tags, Parties: t.parties})
 		}
-		if ok {
-			kept = append(kept, n)
-		}
-	}
-	return kept, nil
+		return cs, true
+	}), nil
 }
 
 // walkMaxPages bounds filter-before-limit paging in the walk shapes: a lane
