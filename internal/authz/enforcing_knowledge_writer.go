@@ -55,19 +55,10 @@ func NewEnforcingKnowledgeWriter(inner domain.FactSubstrateStore, a domain.Autho
 
 // PutClassifiedItem — ENFORCED (classified write). Returns the item as stored.
 func (w *EnforcingKnowledgeWriter) PutClassifiedItem(ctx context.Context, item domain.KnowledgeItem) (domain.KnowledgeItem, bool, error) {
-	principal := domain.PrincipalFromContext(ctx)
-	final, dec := w.authz.ClassifyWrite(ctx, principal, domain.ClassificationHint(item.Classification))
-	if !dec.Allowed {
-		w.logger.WarnContext(ctx, "authz: knowledge item write denied",
-			slog.String("event", "authz_write_deny"),
-			slog.String("principal", principal.String()),
-			slog.String("reason", string(dec.Reason)),
-			slog.String("kind", item.Kind))
-		return domain.KnowledgeItem{}, false, fmt.Errorf("knowledge item %s: %w", item.ID, ErrWriteDenied)
+	item, err := classifyKnowledgeItem(ctx, w.authz, w.logger, item)
+	if err != nil {
+		return domain.KnowledgeItem{}, false, err
 	}
-	// ADR-0142 D12: private to the conversation owner the work is for.
-	item.Classification = domain.StampPrivateOwner(ctx, append([]string(nil), final...))
-	item = domain.RekeyFactItem(item)
 	id, inserted, err := w.inner.PutItem(ctx, item)
 	if err != nil {
 		return domain.KnowledgeItem{}, false, err
@@ -81,6 +72,27 @@ func (w *EnforcingKnowledgeWriter) PutClassifiedItem(ctx context.Context, item d
 	}
 	item.ID = id
 	return item, inserted, nil
+}
+
+// classifyKnowledgeItem is the one knowledge-item write classification, shared by
+// EnforcingKnowledgeWriter (the kernel's fact path) and EnforcingKnowledgeStore (the
+// plugin seam): the item's classification is a HINT, the decision point's
+// ClassifyWrite answer replaces it, the private-write owner is stamped, and a
+// memory_fact's classification-derived identity is recomputed from the final tags.
+func classifyKnowledgeItem(ctx context.Context, a domain.Authorizer, logger *slog.Logger, item domain.KnowledgeItem) (domain.KnowledgeItem, error) {
+	principal := domain.PrincipalFromContext(ctx)
+	final, dec := a.ClassifyWrite(ctx, principal, domain.ClassificationHint(item.Classification))
+	if !dec.Allowed {
+		logger.WarnContext(ctx, "authz: knowledge item write denied",
+			slog.String("event", "authz_write_deny"),
+			slog.String("principal", principal.String()),
+			slog.String("reason", string(dec.Reason)),
+			slog.String("kind", item.Kind))
+		return domain.KnowledgeItem{}, fmt.Errorf("knowledge item %s: %w", item.ID, ErrWriteDenied)
+	}
+	// ADR-0142 D12: private to the conversation owner the work is for.
+	item.Classification = domain.StampPrivateOwner(ctx, append([]string(nil), final...))
+	return domain.RekeyFactItem(item), nil
 }
 
 // PutItem — ENFORCED: PutClassifiedItem, with the domain.KnowledgeStore shape.
@@ -274,12 +286,12 @@ var ErrReservedKind = errors.New("authz: kernel-reserved knowledge kind")
 
 // ReservedKindGuard is the plugin seam's knowledge store (KernelServices.Knowledge):
 // the raw store with the kernel-reserved kinds fenced off. memory_fact items are
-// principal-classified content written only through EnforcingKnowledgeWriter; the raw
-// seam stores a caller's classification verbatim and reads with no predicate
-// (T-20261103-kernelservices-knowledge-hands-plugins-the-raw), so a plugin writing,
-// reading or erasing memory_fact through it would bypass both chokepoints. Plugins read
-// memory_fact resolutions through the SCOPED query plane instead (A1-Q6). Other kinds
-// pass through unchanged — closing the general seam gap is that ticket's work.
+// principal-classified content written only through EnforcingKnowledgeWriter; the
+// seam's reads carry no predicate, so a plugin reading or erasing memory_fact through
+// it would bypass the fact read chokepoint, and a plugin writing one would forge a
+// principal's fact. Plugins read memory_fact resolutions through the SCOPED query
+// plane instead (A1-Q6). Other kinds pass through to the seam's write chokepoint,
+// EnforcingKnowledgeStore (ClassifyWrite; ENG-449).
 type ReservedKindGuard struct {
 	inner    domain.KnowledgeStore
 	reserved map[string]bool

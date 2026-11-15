@@ -89,7 +89,10 @@ func MachinePrincipal(machine string) PrincipalRef {
 }
 
 // SystemPrincipal is the kernel-internal principal for maintenance reads. It is
-// the identity counterpart of the ScopeSystem predicate.
+// the identity counterpart of the ScopeSystem predicate. It is also the writer of
+// records the kernel authors itself (agent profiles, judicial records): rendered
+// "system:kernel", the reserved, kind-qualified writer id a decision point stamps as
+// provenance:source (service_principal.go; ENG-263).
 var SystemPrincipal = PrincipalRef{ID: "kernel", Kind: PrincipalSystem}
 
 // IsZero reports whether no principal could be established. Callers must treat
@@ -539,6 +542,16 @@ func (a AllowAllAuthorizer) ReadFilter(ctx context.Context, principal PrincipalR
 }
 
 func (AllowAllAuthorizer) ClassifyWrite(_ context.Context, principal PrincipalRef, hint []string) ([]string, AccessDecision) {
+	// A SOURCE service principal's writes carry its provenance stamp in OSS too
+	// (ENG-494): the stamp is part of a fact's classification and so of its
+	// resolution key, which is what keeps two connectors' facts from superseding each
+	// other. Every other writer keeps its authored tags. The kernel's own writes are
+	// deliberately NOT stamped here: an OSS chunk an agent wrote carries no stamp, and
+	// a kernel re-derivation of it (the fact backfill runs as SystemPrincipal) must
+	// key its facts exactly like the live ingest did.
+	if principal.Kind == PrincipalSourceKind && !principal.IsZero() {
+		hint = StampProvenanceSource(hint, principal.WriterID())
+	}
 	return hint, AccessDecision{
 		Allowed:   true,
 		Principal: principal,

@@ -93,7 +93,13 @@ func (w *EnforcingStoreWriter) classify(ctx context.Context, doc *domain.Documen
 	// so it is surfaced (INV-3). The
 	// decision point emits the richer version of this warning — it is the only
 	// party that can tell a classification tag from a provenance stamp.
-	if len(final) == 0 {
+	//
+	// Not for the kernel's own records (agent profiles, judicial records): they
+	// are kernel-authored, unclassified by design, and read by the kernel, so the
+	// "author surprise" this warns about does not exist — it only fired on every
+	// profile save (ENG-263). A premium decision point stamps them
+	// provenance:source=system:kernel; in OSS they stay untagged, silently.
+	if len(final) == 0 && principal.Kind != domain.PrincipalSystem {
 		w.logger.WarnContext(ctx, "authz: write carries no classification",
 			slog.String("event", "authz_write_unclassified"),
 			slog.String("principal", principal.String()),

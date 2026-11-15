@@ -205,6 +205,18 @@ func (c *Consumer) processItem(ctx context.Context, it domain.EvidenceOutboxItem
 			"evidence_id", ev.ID, "cid", ev.ContentHash, "err", err)
 		return err
 	}
+	// ENG-494/ENG-449 (owner decision 2026-11-15): a transformer's derived writes
+	// (knowledge items through the plugin seam's ClassifyWrite chokepoint) are made
+	// as the evidence's own SOURCE service principal — source:<connector>:<id> from
+	// ev.SourceID — with the evidence classification as the hint. Without it they
+	// were writes by no one: refused by a premium decision point, and one shared
+	// actor for every connector everywhere else. A principal the caller already put
+	// on ctx is kept.
+	if domain.PrincipalFromContext(ctx).IsZero() {
+		if p := domain.EvidenceSourcePrincipal(*ev); !p.IsZero() {
+			ctx = domain.WithPrincipal(ctx, p)
+		}
+	}
 	handledBy := 0
 	for _, tr := range c.transformers {
 		handled, terr := tr.Transform(ctx, *ev, node.Data)

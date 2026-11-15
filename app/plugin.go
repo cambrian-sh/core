@@ -1102,11 +1102,15 @@ func liveCapabilities(plugins []Plugin) []string {
 
 func buildPlugins(plugins []Plugin, svc KernelServices) error {
 	base := svc.RegisterAgent
+	shared := svc
 	for _, p := range plugins {
 		b, ok := p.(Builder)
 		if !ok {
 			continue
 		}
+		// ENG-494/ENG-449: each plugin ingests and writes knowledge as its own
+		// source (source:<plugin>:…), never as a shared identity or as no one.
+		svc = scopePluginServices(p.Manifest().ID, shared)
 		// Each plugin gets its OWN registrar, bounded to its own id namespace.
 		// Enforced here rather than trusted to the plugin: the guarantee that a
 		// plugin cannot mint a principal outside itself is only worth something

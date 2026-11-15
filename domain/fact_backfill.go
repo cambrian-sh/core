@@ -15,8 +15,10 @@ import (
 
 // ProvenanceSourceTagPrefix is the classification tag the premium decision point stamps
 // on every write a principal makes (authz.StampSourceProvenance in cambrian-premium):
-// "provenance:source=<principal id>". The backfill filters by it; the kernel never
-// writes it itself.
+// "provenance:source=<writer id>" — a bare id for agents and persons, kind-qualified
+// for service principals ("system:kernel", "source:<connector>:<id>";
+// PrincipalRef.WriterID). The backfill filters by it. Core's own decision point
+// (AllowAllAuthorizer) stamps it only for SOURCE service principals (ENG-494).
 const ProvenanceSourceTagPrefix = "provenance:source="
 
 // FactBackfillFilter selects the documents a backfill visits. Every set field narrows

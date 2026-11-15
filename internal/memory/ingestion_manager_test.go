@@ -249,7 +249,7 @@ func TestIngestionPipeline_SourceDocumentEntity(t *testing.T) {
 
 	doc := makeDoc(0)
 	doc.Body = "First paragraph of body.\n\nSecond paragraph of body.\n\nThird paragraph of body."
-	if !im.Enqueue(doc) {
+	if !im.Enqueue(context.Background(), doc) {
 		t.Fatal("Enqueue returned false unexpectedly")
 	}
 
@@ -362,7 +362,7 @@ func TestIngestionPipeline_SourceDocumentEntity_SingleChunk(t *testing.T) {
 
 	doc := makeDoc(0)
 	doc.Body = "Only one paragraph here, no double newline."
-	im.Enqueue(doc)
+	im.Enqueue(context.Background(), doc)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

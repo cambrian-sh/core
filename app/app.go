@@ -1432,7 +1432,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// shape plugin-contributed reactive action executors use. Constructing it here with a nil
 	// processor and filling it in later is what keeps the bundle order-independent
 	// rather than adding a second undeclared ordering dependency.
-	memIngestor := &kernelMemoryIngestor{principal: domain.SystemPrincipal}
+	// ENG-494: the unscoped ingestor (handed to the reactive signal receiver) writes
+	// as source:reactive:<doc source>; buildPlugins gives each plugin its own,
+	// named after its manifest id.
+	memIngestor := &kernelMemoryIngestor{connector: reactiveIngestConnector}
 	// PREM-0032 start_plan: late-bound for the same reason — the server whose
 	// Execute path runs plans is constructed after this bundle; bound below.
 	// (planExec itself is declared above the Watcher, which also runs plans.)
@@ -1594,17 +1597,21 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// producing or consuming knowledge items goes through this port so no
 		// consumer ever grows SQL against substrate tables.
 		//
-		// ADR-0136 A1: the kernel-reserved memory_fact kind is fenced off this raw
+		// ADR-0136 A1: the kernel-reserved memory_fact kind is fenced off this
 		// seam (it would bypass both fact chokepoints); plugins read memory_fact
-		// resolutions through the SCOPED query plane (A1-Q6). The general gap — this
-		// seam stores a caller's classification verbatim — is
-		// T-20261103-kernelservices-knowledge-hands-plugins-the-raw.
+		// resolutions through the SCOPED query plane (A1-Q6).
+		//
+		// ENG-449 (owner decision 2026-11-15): item WRITES go through the
+		// EnforcingKnowledgeStore chokepoint — ClassifyWrite for the principal on ctx,
+		// the item's (evidence) classification as the hint. buildPlugins wraps this
+		// per plugin with knowledgeSourceFallback, so a write made with no principal
+		// runs as source:<plugin>:<namespace> rather than as no one.
 		//
 		// The designated-actor guard (inside it) refuses a plugin item that would be a
 		// designated principal's word or carry the kernel's commit marker, so for a kind
 		// resolved by designated_actor the knowledge_commit handler is the only writer
 		// of its committed value (T-20261107-knowledge-substrate-extensions-for-case).
-		Knowledge: authz.NewReservedKindGuard(authz.NewDesignatedActorGuard(knowledgeStore, onto), domain.KindMemoryFact),
+		Knowledge: NewPluginKnowledgeSeam(knowledgeStore, onto, authorizer),
 		// ADR-0108 D2: the typed event/observation boundary — exact reads over
 		// stored rows, nothing embedded.
 		// Withdrawing an entry organ (ADR-0090). Resolved at CALL time through the

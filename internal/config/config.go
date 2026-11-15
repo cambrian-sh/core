@@ -746,6 +746,18 @@ type MemoryConfig struct {
 	// result via graph traversal. Default: 3.
 	MaxNeighborExpansion int `json:"max_neighbor_expansion"`
 
+	// FactExtractionSources is the operator's cost guard on ADR-0136 fact extraction
+	// (ENG-494, owner decision 2026-11-15): which sources' ingests are sent to the
+	// fact extractor (one LLM call per window, so connector volume is the cost).
+	// Each entry names a WRITER kind — "agent", "user", "system", "daemon",
+	// "machine", "source" (every connector) — or one connector,
+	// "source:<connector>" (e.g. "source:telegram"; the writer is the source service
+	// principal source:<connector>:<id>). An ingest whose writer matches no entry
+	// stores its chunks as usual and is not extracted. Empty (the default) extracts
+	// every ingest — the behaviour before the guard. Read by memory.FactExtractor.Enqueue
+	// through kernel.NewMemoryStack; inert unless execution.facts.extract_enabled.
+	FactExtractionSources []string `json:"fact_extraction_sources,omitempty"`
+
 	// RETIRED in schema v3 (owner decision 2026-11-14, ENG-1502): min_gc_age_days,
 	// circadian_stale_doc_warn_threshold and remember_default_activation had no reader
 	// (retiredConfigKeys). The initial activation of an ingested chunk is the constant
@@ -4126,6 +4138,12 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Memory.MaxNeighborExpansion < 0 {
 		errs = append(errs, "max_neighbor_expansion must be >= 0")
 	}
+	for _, src := range c.Memory.FactExtractionSources {
+		if !validFactExtractionSource(src) {
+			errs = append(errs, fmt.Sprintf("memory.fact_extraction_sources: %q is not a writer kind "+
+				"(agent, user, system, daemon, machine, source) or source:<connector>", src))
+		}
+	}
 	switch c.Retrieval.BlendRecencyMode {
 	case "", "minmax":
 	case "decay":
@@ -4345,3 +4363,14 @@ var executionBlockNames = func() map[string]struct{} {
 	}
 	return out
 }()
+
+// validFactExtractionSource reports whether an execution.memory.fact_extraction_sources
+// entry names a writer kind or one connector ("source:<connector>").
+func validFactExtractionSource(s string) bool {
+	switch s {
+	case "agent", "user", "system", "daemon", "machine", "source":
+		return true
+	}
+	connector, ok := strings.CutPrefix(s, "source:")
+	return ok && connector != "" && !strings.ContainsAny(connector, ": 	")
+}

@@ -22,8 +22,10 @@ import (
 // core may not import premium (AGENTS.md §5.1):
 //
 //   - zero principal          → denied, reason no_principal (fail-closed)
-//   - domain.SystemPrincipal  → allowed, kernel-derived hint kept, no stamp
-//   - any other principal     → allowed, provenance:source=<id> stamped
+//   - domain.SystemPrincipal  → allowed, kernel-derived hint kept, stamped
+//     provenance:source=system:kernel unless the hint already carries a stamp
+//     (ENG-263, owner decision 2026-11-15)
+//   - any other principal     → allowed, provenance:source=<WriterID> stamped
 //
 // The premium side of this contract is pinned by premium's own
 // TestClassifyWrite_InterviewProfileWrite_* tests. It records every principal
@@ -42,13 +44,16 @@ func (a *failClosedAuthorizer) ClassifyWrite(_ context.Context, p domain.Princip
 	switch {
 	case p.Kind == domain.PrincipalSystem:
 		dec.Allowed, dec.Reason = true, domain.ReasonBypass
-		return hint, dec
+		if domain.HasProvenanceSource(hint) {
+			return hint, dec
+		}
+		return domain.StampProvenanceSource(hint, p.WriterID()), dec
 	case p.IsZero():
 		dec.Reason = domain.ReasonNoPrincipal
 		return nil, dec
 	default:
 		dec.Allowed, dec.Reason = true, domain.ReasonAllowed
-		return append(append([]string{}, hint...), "provenance:source="+p.ID), dec
+		return domain.StampProvenanceSource(hint, p.WriterID()), dec
 	}
 }
 
@@ -85,8 +90,8 @@ func TestSaveProfile_BackgroundCtx_IsAttributedToKernelUnderFailClosedAuthz(t *t
 			t.Errorf("write classified as %s, want %s", p, domain.SystemPrincipal)
 		}
 	}
-	if got := authz.DocTags(stub.savedDoc); hasSourceProvenance(got) {
-		t.Errorf("kernel-authored row carries an agent source stamp: %v", got)
+	if got := authz.DocTags(stub.savedDoc); !isKernelStamped(got) {
+		t.Errorf("kernel-authored row must carry exactly provenance:source=system:kernel: %v", got)
 	}
 }
 
@@ -107,18 +112,24 @@ func TestSaveProfile_CallerAgentPrincipal_IsReplacedByKernel(t *testing.T) {
 	if got := az.principals(); len(got) != 1 || got[0] != domain.SystemPrincipal {
 		t.Fatalf("classified as %v, want [%s]", got, domain.SystemPrincipal)
 	}
-	if got := authz.DocTags(stub.savedDoc); hasSourceProvenance(got) {
-		t.Errorf("judicial record stamped with the caller agent's provenance: %v", got)
+	if got := authz.DocTags(stub.savedDoc); !isKernelStamped(got) {
+		t.Errorf("judicial record must carry the kernel's stamp, not the caller agent's: %v", got)
 	}
 }
 
-func hasSourceProvenance(tags []string) bool {
+// isKernelStamped: the row's only provenance stamp is the kernel's reserved,
+// kind-qualified writer id (ENG-263) — never an agent's.
+func isKernelStamped(tags []string) bool {
+	n := 0
 	for _, t := range tags {
 		if strings.HasPrefix(t, "provenance:source=") {
-			return true
+			if t != "provenance:source=system:kernel" {
+				return false
+			}
+			n++
 		}
 	}
-	return false
+	return n == 1
 }
 
 // TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow runs the same save
@@ -150,7 +161,9 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 	}
 	defer vec.Close()
 	az := &failClosedAuthorizer{}
-	ps := NewProfileStore(authz.NewEnforcingStoreWriter(authz.NewEnforcingVectorStore(vec, slog.Default()), az, slog.Default()))
+	var logs syncBuffer
+	ps := NewProfileStore(authz.NewEnforcingStoreWriter(authz.NewEnforcingVectorStore(vec, slog.Default()), az,
+		slog.New(slog.NewTextHandler(&logs, nil))))
 
 	agent := "test-kernelwrite-" + time.Now().Format("150405.000000")
 	md := map[string]interface{}{"agent_id": agent, "source_hash": "h1"}
@@ -176,9 +189,13 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 		if err != nil || doc == nil {
 			t.Fatalf("GetByID(%s) = %v, %v; want the persisted row", id, doc, err)
 		}
-		if tags := authz.DocTags(doc); hasSourceProvenance(tags) {
-			t.Errorf("%s: kernel-authored row carries an agent source stamp: %v", id, tags)
+		if tags := authz.DocTags(doc); !isKernelStamped(tags) {
+			t.Errorf("%s: kernel-authored row must carry provenance:source=system:kernel: %v", id, tags)
 		}
+	}
+	// ENG-263: a kernel save no longer warns "write carries no classification".
+	if strings.Contains(logs.String(), "authz_write_unclassified") {
+		t.Errorf("kernel-authored save warned as unclassified: %s", logs.String())
 	}
 	for _, p := range az.principals() {
 		if p != domain.SystemPrincipal {
@@ -189,4 +206,22 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 	if got, err := ps.GetProfile(context.Background(), agent, "h1"); err != nil || got == nil || got.AgentID != agent {
 		t.Fatalf("GetProfile after save = %+v, %v", got, err)
 	}
+}
+
+// syncBuffer is a goroutine-safe log sink.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

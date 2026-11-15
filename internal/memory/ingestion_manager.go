@@ -73,7 +73,7 @@ const defaultSyncFactsWaitTimeout = 120 * time.Second
 const defaultSyncKGWaitTimeout = 30 * time.Second
 
 type IngestionManager struct {
-	queue    chan domain.ExternalDocument
+	queue    chan queuedDoc
 	embedder domain.Embedder
 	agent    *Agent
 	registry *Registry
@@ -292,11 +292,25 @@ func NewIngestionManagerWithRegistry(embedder domain.Embedder, agent *Agent, reg
 	if registry == nil {
 		registry = fallbackRegistry()
 	}
-	return &IngestionManager{queue: make(chan domain.ExternalDocument, cfg.QueueSize), embedder: embedder, agent: agent, registry: registry, cfg: cfg}
+	return &IngestionManager{queue: make(chan queuedDoc, cfg.QueueSize), embedder: embedder, agent: agent, registry: registry, cfg: cfg}
 }
-func (im *IngestionManager) Enqueue(doc domain.ExternalDocument) bool {
+
+// queuedDoc is one asynchronously ingested document with the principal that
+// pushed it. The batch workers run on the manager's own context, so the writer's
+// identity has to travel WITH the document: without it every batch write reached
+// the classification chokepoint as no one (ENG-494) — refused by a premium decision
+// point, and its facts actorless.
+type queuedDoc struct {
+	doc       domain.ExternalDocument
+	principal domain.PrincipalRef
+}
+
+// Enqueue queues doc for the batch lane, carrying the principal on ctx (the
+// authenticated pusher: /v1/ingest stamps it) to the worker that writes it.
+// Non-blocking: false when the queue is full.
+func (im *IngestionManager) Enqueue(ctx context.Context, doc domain.ExternalDocument) bool {
 	select {
-	case im.queue <- doc:
+	case im.queue <- queuedDoc{doc: doc, principal: domain.PrincipalFromContext(ctx)}:
 		return true
 	default:
 		slog.Warn("IngestionManager: queue full, dropping document", "source_uri", doc.SourceURI)
@@ -453,15 +467,15 @@ func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.Exte
 }
 
 func (im *IngestionManager) Start(ctx context.Context) {
-	jobs := make(chan []domain.ExternalDocument, im.cfg.Workers*2)
+	jobs := make(chan []queuedDoc, im.cfg.Workers*2)
 	go im.batchLoop(ctx, jobs)
 	for range im.cfg.Workers {
 		go im.worker(ctx, jobs)
 	}
 }
 
-func (im *IngestionManager) batchLoop(ctx context.Context, jobs chan<- []domain.ExternalDocument) {
-	var batch []domain.ExternalDocument
+func (im *IngestionManager) batchLoop(ctx context.Context, jobs chan<- []queuedDoc) {
+	var batch []queuedDoc
 	ticker := time.NewTicker(im.cfg.BatchWait)
 	defer ticker.Stop()
 	flush := func() {
@@ -496,7 +510,7 @@ func (im *IngestionManager) batchLoop(ctx context.Context, jobs chan<- []domain.
 	}
 }
 
-func (im *IngestionManager) worker(ctx context.Context, jobs <-chan []domain.ExternalDocument) {
+func (im *IngestionManager) worker(ctx context.Context, jobs <-chan []queuedDoc) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -510,9 +524,13 @@ func (im *IngestionManager) worker(ctx context.Context, jobs <-chan []domain.Ext
 	}
 }
 
-func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.ExternalDocument) {
-	for _, doc := range batch {
-		im.processBatchDoc(ctx, doc)
+func (im *IngestionManager) processBatch(ctx context.Context, batch []queuedDoc) {
+	for _, q := range batch {
+		dctx := ctx
+		if !q.principal.IsZero() {
+			dctx = domain.WithPrincipal(ctx, q.principal)
+		}
+		im.processBatchDoc(dctx, q.doc)
 	}
 }
 

@@ -137,3 +137,24 @@ func TestConsumer_RefusesToExistWithoutTransformers(t *testing.T) {
 		t.Fatal("a consumer with no consumers must be a construction error")
 	}
 }
+
+// principalTransformer records the principal a transformer runs under.
+type principalTransformer struct{ seen domain.PrincipalRef }
+
+func (p *principalTransformer) Name() string { return "principal" }
+func (p *principalTransformer) Transform(ctx context.Context, _ domain.Evidence, _ []byte) (bool, error) {
+	p.seen = domain.PrincipalFromContext(ctx)
+	return true, nil
+}
+
+// ENG-494/ENG-449: a transformer's derived writes are made as the evidence's own
+// source service principal (source:<connector>:<id> from Evidence.SourceID), never
+// as no one.
+func TestConsumer_TransformersRunAsTheEvidenceSource(t *testing.T) {
+	tr := &principalTransformer{}
+	c, _, _ := consumerFixture(t, tr)
+	c.drainOnce(context.Background())
+	if tr.seen.String() != "source:test:src" {
+		t.Fatalf("transformer principal %v, want source:test:src", tr.seen)
+	}
+}

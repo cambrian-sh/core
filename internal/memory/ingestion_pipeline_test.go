@@ -55,9 +55,9 @@ func TestIngestionManager_Enqueue_ReturnsFalseWhenFull(t *testing.T) {
 
 	doc := makeDoc(0)
 	// Fill the queue.
-	im.Enqueue(doc)
+	im.Enqueue(context.Background(), doc)
 	// Second enqueue should fail.
-	if im.Enqueue(doc) {
+	if im.Enqueue(context.Background(), doc) {
 		t.Error("expected Enqueue to return false when queue is full")
 	}
 }
@@ -81,7 +81,7 @@ func TestIngestionManager_EndToEnd_DocFlowsToChunkFacts(t *testing.T) {
 	im.Start(ctx)
 
 	doc := makeDoc(0)
-	if !im.Enqueue(doc) {
+	if !im.Enqueue(context.Background(), doc) {
 		t.Fatal("Enqueue returned false unexpectedly")
 	}
 

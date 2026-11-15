@@ -63,6 +63,7 @@ type FactExtractor struct {
 	started  atomic.Bool
 
 	enqueued        atomic.Uint64
+	sourceFiltered  atomic.Uint64 // ingests the fact_extraction_sources guard did not extract
 	dropped         atomic.Uint64
 	skipped         atomic.Uint64 // content already extracted (idempotent re-ingest)
 	extracted       atomic.Uint64 // documents run through the model
@@ -129,6 +130,10 @@ type FactExtractorConfig struct {
 	// GeneratorModel is the facts generator's model, the second half of the extractor
 	// version on every marker (A2.4: "<prompt id>/<generator model>"). "" = "default".
 	GeneratorModel string
+	// ExtractionSources is execution.memory.fact_extraction_sources: the writer kinds
+	// ("agent", "user", "system", "source", …) or connectors ("source:<connector>")
+	// whose ingests Enqueue accepts. Empty = every ingest (ENG-494 cost guard).
+	ExtractionSources []string
 }
 
 // FactExtractorStats is a snapshot of the counters.
@@ -141,6 +146,9 @@ type FactExtractorStats struct {
 	// PartialDocs counts documents cut at max_calls_per_document (facts-backfill
 	// resumes them); Refused* count facts validation refused, by reason (ENG-431).
 	PartialDocs, RefusedQuoteNotFound, RefusedBadShape, RefusedDuplicate, RefusedOverCap uint64
+	// SourceFiltered counts ingests execution.memory.fact_extraction_sources kept out
+	// of extraction (ENG-494).
+	SourceFiltered uint64
 }
 
 type factJob struct {
@@ -243,6 +251,15 @@ func (e *FactExtractor) Enqueue(ctx context.Context, documentID string, src doma
 		w.settle(true)
 		return w
 	}
+	if writer := domain.PrincipalFromContext(ctx); !factSourceEligible(e.cfg.ExtractionSources, writer) {
+		// The operator's cost guard: this source is not extracted. Not a failure —
+		// the chunks are stored and retrievable; a sync wait is settled at once.
+		e.sourceFiltered.Add(1)
+		slog.DebugContext(ctx, "FactExtractor: source not in execution.memory.fact_extraction_sources; not extracted",
+			"document_id", documentID, "writer", writer.String())
+		w.settle(true)
+		return w
+	}
 	job := factJob{
 		ctx:        context.WithoutCancel(ctx),
 		documentID: documentID,
@@ -269,6 +286,26 @@ func (e *FactExtractor) Enqueue(ctx context.Context, documentID string, src doma
 			"effect", "the chunks are stored; this document has no facts until it is re-ingested")
 	}
 	return w
+}
+
+// factSourceEligible is the execution.memory.fact_extraction_sources match: an
+// empty list admits every writer; otherwise an entry must name the writer's kind
+// ("agent", "user", "system", "source", …) or, for a source service principal, its
+// connector ("source:<connector>"). A write with no principal matches no entry.
+func factSourceEligible(sources []string, writer domain.PrincipalRef) bool {
+	if len(sources) == 0 {
+		return true
+	}
+	if writer.IsZero() {
+		return false
+	}
+	connector := writer.SourceConnector()
+	for _, s := range sources {
+		if s == string(writer.Kind) || (connector != "" && s == string(domain.PrincipalSourceKind)+":"+connector) {
+			return true
+		}
+	}
+	return false
 }
 
 // slimFactChunks copies the chunks a fact job keeps WITHOUT their embedding vectors:
@@ -356,6 +393,7 @@ func (e *FactExtractor) Stats() FactExtractorStats {
 		ParseRepaired: e.parseRepaired.Load(), Timeouts: e.timeouts.Load(),
 		PartialDocs: e.partialDocs.Load(), RefusedQuoteNotFound: e.refusedQuote.Load(),
 		RefusedBadShape: e.refusedShape.Load(), RefusedDuplicate: e.refusedDup.Load(), RefusedOverCap: e.refusedOverCap.Load(),
+		SourceFiltered: e.sourceFiltered.Load(),
 	}
 }
 

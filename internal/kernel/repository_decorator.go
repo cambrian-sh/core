@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/mapper"
@@ -170,6 +171,9 @@ func (d *AgentRepoDecorator) ReadAllAgentIDs() ([]string, error) {
 
 // SetAgent persists an AgentDefinition to the agents bucket.
 func (d *AgentRepoDecorator) SetAgent(def domain.AgentDefinition) error {
+	if err := refuseReservedAgentID(def.ID); err != nil {
+		return err
+	}
 	rec := d.mapper.ToRecord(def)
 	return d.store.WriteAgentRecord(rec)
 }
@@ -183,11 +187,25 @@ func (d *AgentRepoDecorator) SetAgent(def domain.AgentDefinition) error {
 // A nil manifest carries an empty manifest record (matching the built-in scan, which
 // always wrote one).
 func (d *AgentRepoDecorator) SetAgentWithManifest(def domain.AgentDefinition, manifest *domain.AgentManifest) error {
+	if err := refuseReservedAgentID(def.ID); err != nil {
+		return err
+	}
 	da := storage.DiscoveredAgent{Agent: d.mapper.ToRecord(def)}
 	if manifest != nil {
 		da.Manifest = d.mapper.ManifestToRecord(*manifest)
 	}
 	return d.store.UpsertDiscoveredAgent(da)
+}
+
+// refuseReservedAgentID keeps agent ids out of the service-principal namespaces
+// ("system:…", "source:…"; ENG-263/ENG-494): an agent registered as
+// "system:kernel" would carry the kernel's provenance stamp and share a source's
+// write ceiling.
+func refuseReservedAgentID(id string) error {
+	if domain.IsReservedPrincipalID(id) {
+		return fmt.Errorf("agent id %q is reserved: ids starting with \"system:\" or \"source:\" name service principals", id)
+	}
+	return nil
 }
 
 // DeleteAgent removes an agent (and its manifest) from the registry. It is the

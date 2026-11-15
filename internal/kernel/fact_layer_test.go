@@ -139,3 +139,18 @@ func TestIngestionConfigFrom_ThreadsSyncWaitForFacts(t *testing.T) {
 		t.Fatalf("default: SyncWaitForFacts=%v timeout=%v, want false and 120s", def.SyncWaitForFacts, def.SyncFactsWaitTimeout)
 	}
 }
+
+// ENG-494 (§3.4): execution.memory.fact_extraction_sources reaches the extractor —
+// an ingest by a writer outside the list is not queued.
+func TestMemoryStack_ThreadsFactExtractionSources(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Execution.Facts.ExtractEnabled = true
+	cfg.Execution.Memory.FactExtractionSources = []string{"source:telegram"}
+	sub := FactSubstrate{Store: nopSubstrate{}, Reader: nopReader{}, EmbedModelID: "m"}
+	ms := NewMemoryStack(plainVec{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, sub)
+	ctx := domain.WithPrincipal(context.Background(), domain.SourcePrincipal("slack", "ws"))
+	ms.FactExtractor.Enqueue(ctx, "d", domain.SourceMeta{}, []*domain.Document{{ID: "c", Text: "x"}}, false)
+	if st := ms.FactExtractor.Stats(); st.SourceFiltered != 1 || st.Enqueued != 0 {
+		t.Fatalf("guard not threaded: %+v", st)
+	}
+}

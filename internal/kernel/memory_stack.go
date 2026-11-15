@@ -283,6 +283,8 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		}
 		fcfg := factExtractorConfigFrom(execCfg.Facts)
 		fcfg.EmbedModelID, fcfg.AssessorModel, fcfg.GeneratorModel = facts.EmbedModelID, facts.AssessorModel, facts.GeneratorModel
+		// ENG-494 cost guard: which writers' ingests are extracted (empty = all).
+		fcfg.ExtractionSources = append([]string(nil), execCfg.Memory.FactExtractionSources...)
 		factExtractor = memory.NewFactExtractor(factGen, embed, factWriter, factItemReader, fcfg)
 		ingestionMgr.SetFactExtractor(factExtractor)
 		if facts.Lister != nil {
