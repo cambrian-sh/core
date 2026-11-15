@@ -51,10 +51,11 @@ type MemoryAnswerer interface {
 }
 
 // grantsEnumerator is the optional reverse-index source for ListTools.grants
-// (tool → which agents hold it). Satisfied by *domain.InMemoryGrantsStore (All).
-// When s.grants does not implement it, ToolOp.grants is left empty (best-effort).
+// (tool → which agents hold it). Satisfied by *domain.LayeredGrantsStore and
+// *domain.InMemoryGrantsStore (AllGrants). When s.grants does not implement it,
+// ToolOp.grants is left empty (best-effort); a store error fails ListTools.
 type grantsEnumerator interface {
-	All() map[string][]domain.ToolGrant
+	AllGrants(ctx context.Context) (map[string][]domain.ToolGrant, error)
 }
 
 const defaultReadPageSize = 50
@@ -131,11 +132,14 @@ func (s *Service) HasMemoryAnswerer() bool { return s.answerer != nil }
 
 // ListTools returns the whole tool catalog the operator governs, with per-tool
 // grant reverse-index and MCP-vs-builtin source labelling (A2.3). Paged.
-func (s *Service) ListTools(_ context.Context, req *pb.ListToolsOpRequest) (*pb.ListToolsOpResponse, error) {
+func (s *Service) ListTools(ctx context.Context, req *pb.ListToolsOpRequest) (*pb.ListToolsOpResponse, error) {
 	if s.tools == nil {
 		return &pb.ListToolsOpResponse{Page: pageOf(req.GetPage())}, nil
 	}
-	rev := s.toolGrantsIndex() // tool name → []ToolGrantOp
+	rev, err := s.toolGrantsIndex(ctx) // tool name → []ToolGrantOp
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list tool grants: %v", err)
+	}
 
 	q := strings.ToLower(strings.TrimSpace(req.GetQuery()))
 	var filtered []*pb.ToolOp
@@ -184,13 +188,17 @@ func (s *Service) ListTools(_ context.Context, req *pb.ListToolsOpRequest) (*pb.
 
 // toolGrantsIndex builds the tool→agents reverse index from the grants store,
 // when it supports enumeration. Empty otherwise (documented best-effort, A2.3).
-func (s *Service) toolGrantsIndex() map[string][]*pb.ToolGrantOp {
+func (s *Service) toolGrantsIndex(ctx context.Context) (map[string][]*pb.ToolGrantOp, error) {
 	enum, ok := s.grants.(grantsEnumerator)
 	if !ok || enum == nil {
-		return nil
+		return nil, nil
+	}
+	all, err := enum.AllGrants(ctx)
+	if err != nil {
+		return nil, err
 	}
 	out := map[string][]*pb.ToolGrantOp{}
-	for agentID, grants := range enum.All() {
+	for agentID, grants := range all {
 		for _, g := range grants {
 			out[g.Tool] = append(out[g.Tool], &pb.ToolGrantOp{
 				AgentId: agentID,
@@ -202,7 +210,7 @@ func (s *Service) toolGrantsIndex() map[string][]*pb.ToolGrantOp {
 	for _, gs := range out {
 		sort.Slice(gs, func(i, j int) bool { return gs[i].AgentId < gs[j].AgentId })
 	}
-	return out
+	return out, nil
 }
 
 // ListSkills returns the registered system skills, filtered + paged (A2.1).

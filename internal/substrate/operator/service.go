@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -42,6 +43,10 @@ type Service struct {
 	loginObs LoginObserver // nil ⇒ only the structured log line records an attempt
 	audit    AuditStore
 	grants   GrantsStore
+	// grantsMu serialises the grant read-modify-writes (SetToolGrant,
+	// SetToolPolicy) so two concurrent commands for one agent cannot lose an
+	// update between reading the set and replacing it (ENG-1116).
+	grantsMu sync.Mutex
 	controls *ExecutionControlHub
 	// logs is the kernel's in-process retention window (contract 0082). nil ⇒
 	// QueryLogs/TailLogs answer Unimplemented rather than an empty window, which

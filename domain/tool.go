@@ -77,6 +77,21 @@ type GrantsProvider interface {
 	GrantsFor(ctx context.Context, agentID string) ([]ToolGrant, error)
 }
 
+// ToolGrantStore holds the tool grants an operator wrote (OperatorConsole
+// SetToolGrant / SetToolPolicy), keyed by (agent, tool). The durable
+// implementation is postgres.PgToolGrantStore (migration 0052, ENG-1116), so an
+// operator grant survives a kernel restart; InMemoryGrantsStore implements it
+// for a deployment with no database. A read error must reach the caller: the
+// executor denies on it (fail closed).
+type ToolGrantStore interface {
+	GrantsProvider
+	// ReplaceGrants makes grants the agent's whole operator-held set (an empty
+	// set revokes everything the operator granted it). Atomic per agent.
+	ReplaceGrants(ctx context.Context, agentID string, grants []ToolGrant) error
+	// AllGrants returns every agent's operator-held set.
+	AllGrants(ctx context.Context) (map[string][]ToolGrant, error)
+}
+
 // ToolRegistry is the kernel-owned catalog of system tools.
 type ToolRegistry interface {
 	Register(t SystemTool)
@@ -193,8 +208,10 @@ func (r *InMemoryToolRegistry) All() []SystemTool {
 	return out
 }
 
-// InMemoryGrantsStore is a simple GrantsProvider; the Postgres-backed store
-// (0039-02) replaces it. Safe for concurrent use.
+// InMemoryGrantsStore is a simple GrantsProvider. It is the profile-allowlist
+// layer of LayeredGrantsStore, and the operator layer itself on a deployment
+// with no Postgres (the durable layer is postgres.PgToolGrantStore, ENG-1116).
+// Safe for concurrent use.
 type InMemoryGrantsStore struct {
 	mu     sync.RWMutex
 	grants map[string][]ToolGrant
@@ -235,4 +252,15 @@ func (s *InMemoryGrantsStore) GrantsFor(_ context.Context, agentID string) ([]To
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.grants[agentID], nil
+}
+
+// ReplaceGrants implements ToolGrantStore: Set, which cannot fail in memory.
+func (s *InMemoryGrantsStore) ReplaceGrants(_ context.Context, agentID string, grants []ToolGrant) error {
+	s.Set(agentID, grants)
+	return nil
+}
+
+// AllGrants implements ToolGrantStore: All, which cannot fail in memory.
+func (s *InMemoryGrantsStore) AllGrants(context.Context) (map[string][]ToolGrant, error) {
+	return s.All(), nil
 }

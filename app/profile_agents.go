@@ -127,9 +127,12 @@ func isProfileRuntime(a domain.AgentDefinition) bool {
 // profileGrantSync keeps profile agents' ToolGrants equal to their allowlists'
 // expansion over the live tool registry.
 //
-// An operator's own grant (SetToolGrant) on a profile agent is preserved across a
-// re-sync, but the profile ceiling still bounds it: a profile is widened by
-// editing the profile, not by a grant.
+// It writes the in-memory profile layer of the kernel's domain.LayeredGrantsStore
+// (never persisted: re-derived on every boot); an operator's own grant
+// (SetToolGrant) lives in the durable operator layer (ENG-1116) and is merged
+// over it, so a re-sync never touches it. Entries in this layer that the sync did
+// not derive are still preserved. The profile ceiling bounds every grant: a
+// profile is widened by editing the profile, not by a grant.
 type profileGrantSync struct {
 	grants *domain.InMemoryGrantsStore
 	tools  func() []domain.SystemTool

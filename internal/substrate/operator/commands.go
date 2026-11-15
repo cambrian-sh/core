@@ -14,10 +14,12 @@ import (
 )
 
 // GrantsStore is the subset of the kernel grants store the operator plane needs
-// to read+write tool grants. Satisfied by domain.InMemoryGrantsStore.
+// to read+write tool grants. Satisfied by *domain.LayeredGrantsStore (the kernel's,
+// durable in Postgres since ENG-1116) and *domain.InMemoryGrantsStore. A write can
+// fail (the durable store); a failed write is never applied nor audited as ok.
 type GrantsStore interface {
 	GrantsFor(ctx context.Context, agentID string) ([]domain.ToolGrant, error)
-	Set(agentID string, grants []domain.ToolGrant)
+	ReplaceGrants(ctx context.Context, agentID string, grants []domain.ToolGrant) error
 }
 
 // SetCommandSources wires the audit store and grants store used by mutating
@@ -62,6 +64,24 @@ func (s *Service) SetToolGrant(ctx context.Context, req *pb.SetToolGrantRequest)
 		return nil, status.Error(codes.InvalidArgument, "agent_id and tool_name are required")
 	}
 
+	if s.audit == nil {
+		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
+	}
+
+	// ENG-1116: the grants store is durable, so the write can fail. Dedupe first
+	// (a replayed command neither re-reads nor re-applies), apply, then record —
+	// the runMutationBefore order — so a failed write leaves no "ok" audit row
+	// that would make a retry of the same command_id a silent no-op.
+	s.grantsMu.Lock()
+	defer s.grantsMu.Unlock()
+	prior, err := s.audit.Query(ctx, AuditFilter{CommandID: req.GetCommandId(), Limit: 1})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "audit lookup: %v", err)
+	}
+	if len(prior) == 1 {
+		return &pb.CommandAck{CommandId: req.GetCommandId(), Deduped: true}, nil
+	}
+
 	actor, role, _ := PrincipalFromContext(ctx) // interceptor guarantees an operator principal
 
 	before, err := s.grants.GrantsFor(ctx, req.GetAgentId())
@@ -69,6 +89,9 @@ func (s *Service) SetToolGrant(ctx context.Context, req *pb.SetToolGrantRequest)
 		return nil, status.Errorf(codes.Internal, "read grants: %v", err)
 	}
 	after := applyGrant(before, req.GetToolName(), req.GetGranted())
+	if err := s.grants.ReplaceGrants(ctx, req.GetAgentId(), after); err != nil {
+		return nil, status.Errorf(codes.Internal, "write grants: %v", err)
+	}
 
 	entry := domain.AuditEntry{
 		ID:         newAuditID(),
@@ -84,15 +107,11 @@ func (s *Service) SetToolGrant(ctx context.Context, req *pb.SetToolGrantRequest)
 		Reason:     req.GetReason(),
 		Result:     "ok",
 	}
-
+	// A concurrent duplicate of this command_id (another kernel) may still dedupe
+	// here; the grant write is idempotent for the same tool and direction.
 	deduped, err := s.recordAndEmit(ctx, entry)
 	if err != nil {
 		return nil, err
-	}
-	// Apply the mutation only when the command is new — a retried command_id is a
-	// no-op (the original effect already happened).
-	if !deduped {
-		s.grants.Set(req.GetAgentId(), after)
 	}
 	return &pb.CommandAck{CommandId: req.GetCommandId(), Deduped: deduped}, nil
 }

@@ -129,28 +129,40 @@ func (s *Service) SetToolPolicy(ctx context.Context, req *pb.SetToolPolicyReques
 	if req.GetAgentId() == "" || req.GetToolName() == "" {
 		return nil, status.Error(codes.InvalidArgument, "agent_id and tool_name are required")
 	}
+	if s.audit == nil {
+		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
+	}
 	policy := fromToolPolicyOp(req.GetPolicy())
 	after := req.GetToolName() + ":" + policySummary(policy)
-	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(), "set_tool_policy", "agent", req.GetAgentId(),
-		after, func() error {
+	// ENG-1116: the grants store is durable and its write can fail, so this uses
+	// the dedupe → apply → record order: a failed write is not audited as ok.
+	// grantsMu serialises grant read-modify-writes within this kernel.
+	s.grantsMu.Lock()
+	defer s.grantsMu.Unlock()
+	return s.runMutationBefore(ctx, req.GetCommandId(), req.GetReason(), "set_tool_policy", "agent", req.GetAgentId(),
+		after, func() (string, error) {
 			current, err := s.grants.GrantsFor(ctx, req.GetAgentId())
 			if err != nil {
-				return status.Errorf(codes.Internal, "read grants: %v", err)
+				return "", status.Errorf(codes.Internal, "read grants: %v", err)
 			}
 			updated := make([]domain.ToolGrant, len(current))
+			before := ""
 			found := false
 			for i, g := range current {
 				if g.Tool == req.GetToolName() {
+					before = g.Tool + ":" + policySummary(g.Policy)
 					g.Policy = policy
 					found = true
 				}
 				updated[i] = g
 			}
 			if !found {
-				return status.Errorf(codes.InvalidArgument, "agent %q has no grant for tool %q; grant it first", req.GetAgentId(), req.GetToolName())
+				return "", status.Errorf(codes.InvalidArgument, "agent %q has no grant for tool %q; grant it first", req.GetAgentId(), req.GetToolName())
 			}
-			s.grants.Set(req.GetAgentId(), updated)
-			return nil
+			if err := s.grants.ReplaceGrants(ctx, req.GetAgentId(), updated); err != nil {
+				return "", status.Errorf(codes.Internal, "write grants: %v", err)
+			}
+			return before, nil
 		})
 }
 

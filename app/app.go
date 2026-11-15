@@ -227,8 +227,10 @@ type Kernel struct {
 	// endpoints answer 501 rather than silently accepting a boundary.
 	PolicyAdmin domain.PolicyAdmin
 
-	// ADR-0039: tool grants store (operator sets grants via the admin endpoint).
-	ToolGrants *domain.InMemoryGrantsStore
+	// ADR-0039: tool grants (operator sets grants via OperatorConsole). Operator
+	// grants are durable in Postgres (0052 tool_grants, ENG-1116), merged over the
+	// in-memory profile-allowlist layer.
+	ToolGrants *domain.LayeredGrantsStore
 
 	// ADR-0043: live MCP server connections. Constructed UNCONDITIONALLY since
 	// contract 0097: a kernel booted with zero MCP servers must still be able to
@@ -2377,7 +2379,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	mcpBudget.DefaultCap = cfg.MCP.DefaultSessionBudget // 0 ⇒ tracked but unbounded
 	mcpAuditor := domain.EgressAuditor(mcp.SlogEgressAuditor{})
 
-	toolGrants := domain.NewInMemoryGrantsStore()
+	// ENG-1116: operator grants survive a restart (Postgres 0052 tool_grants;
+	// in memory only without a database); profile allowlist grants are an
+	// in-memory layer re-derived below on every boot.
+	toolGrants, err := buildToolGrants(ctx, vec.Pool())
+	if err != nil {
+		return nil, err
+	}
 	// toolApproval is declared above the Watcher (it also gates proactive plans).
 	// ADR-0039: the dangerous-tool approval controller. By default it is the
 	// operator-gated controller (WatchApprovals/SubmitApprovalDecision). When
@@ -2550,7 +2558,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Agent stack v2: profile agents' grants are their allowlists' expansion over the
 	// registry (native + MCP tools connected above); the MCP tool sink re-syncs them
 	// when a server's tools change (below).
-	profileGrants := newProfileGrantSync(toolGrants, toolReg.All, profiles)
+	profileGrants := newProfileGrantSync(toolGrants.Profile(), toolReg.All, profiles)
 	profileGrants.Sync(ctx, true)
 	if cfg.Execution.Tools.ToolsUnrestricted {
 		slog.Warn("ADR-0039: tools_unrestricted=true — ALL agents may call ALL tools (grant system bypassed). Trusted deployments only.")
