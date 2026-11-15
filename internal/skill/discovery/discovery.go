@@ -6,6 +6,7 @@
 package discovery
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -44,6 +45,12 @@ func ParseSkillMD(content []byte) (domain.Skill, error) {
 	}
 	if strings.TrimSpace(f.Name) == "" {
 		return domain.Skill{}, fmt.Errorf("skill: frontmatter missing name")
+	}
+	// ADR-0146 D5 / ENG-1046 (owner decision 2026-11-15): owner tags are
+	// kernel-stamped; a skill's scope may not carry one. One parser serves disk
+	// discovery, agent proposals and stored approved skills, so all three refuse.
+	if err := domain.RefuseOwnerTags("skill "+strings.TrimSpace(f.Name)+": scope", f.Scope); err != nil {
+		return domain.Skill{}, err
 	}
 	return domain.Skill{
 		Name:         f.Name,
@@ -105,6 +112,12 @@ func Discover(dir string) ([]domain.Skill, error) {
 		}
 		sk, perr := ParseSkillMD(content)
 		if perr != nil {
+			if errors.Is(perr, domain.ErrOwnerTagInDescriptor) {
+				// Not a typo but a refused descriptor (ENG-1046): ERROR, so it
+				// is not mistaken for an ignorable parse warning.
+				slog.Error("skill discovery: skill refused", "dir", e.Name(), "file", path, "err", perr)
+				continue
+			}
 			slog.Warn("skill discovery: skipping", "dir", e.Name(), "err", perr)
 			continue
 		}

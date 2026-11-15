@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 )
@@ -89,6 +91,32 @@ func DropCallerOwnerTags(ctx context.Context, source string, tags []string) []st
 		slog.String("source", source),
 		slog.Any("dropped", dropped))
 	return out
+}
+
+// ErrOwnerTagInDescriptor is the refusal of an owner-namespace tag in an
+// operator-authored DESCRIPTOR tag list (owner decision 2026-11-15, ENG-1046).
+var ErrOwnerTagInDescriptor = errors.New("owner tags are kernel-stamped and cannot be set on a descriptor (ADR-0146 D5)")
+
+// RefuseOwnerTags returns an error naming the first owner-namespace tag in tags,
+// nil when there is none. field names the tag list in the message (e.g.
+// "scope_tags", "mcp.servers[crm].classification_tags").
+//
+// It guards the tag lists an OPERATOR authors for a descriptor — a skill's scope
+// tags (RegisterSkill, SKILL.md `scope`), an MCP server's or integration's
+// classification tags (MCPServerSpecOp, Install/UpdateIntegration, mcp.json,
+// the catalog). Unlike DropCallerOwnerTags (content writes: drop and keep the
+// write), a descriptor is REFUSED: a descriptor row carrying owner:X would be
+// fenced to X and, under the own-rows rule, also waive X's positive read terms
+// for it. A personal skill or tool, if ever wanted, gets an explicit owner
+// field, never a tag string (owner decision 2026-11-15, ENG-1046). The error
+// wraps ErrOwnerTagInDescriptor.
+func RefuseOwnerTags(field string, tags []string) error {
+	for _, t := range tags {
+		if IsOwnerTag(t) {
+			return fmt.Errorf("%s: tag %q is in the reserved %q namespace: %w", field, t, OwnerTagPrefix, ErrOwnerTagInDescriptor)
+		}
+	}
+	return nil
 }
 
 // OwnersOf returns the principal ids a tag set is owner-scoped to, in order.

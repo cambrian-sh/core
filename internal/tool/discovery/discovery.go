@@ -110,6 +110,12 @@ func Discover(dir string) ([]Discovered, error) {
 				slog.Warn("tool discovery: manifest entry missing name, skipping", "file", e.Name())
 				continue
 			}
+			// ADR-0146 D5 / ENG-1046: owner tags are kernel-stamped; a tool
+			// descriptor may not carry one.
+			if err := domain.RefuseOwnerTags("tool "+man.Name+": classification_tags", man.ClassificationTags); err != nil {
+				slog.Error("tool discovery: tool refused", "file", e.Name(), "err", err)
+				continue
+			}
 			tools = append(tools, Discovered{
 				File: path,
 				Tool: domain.SystemTool{

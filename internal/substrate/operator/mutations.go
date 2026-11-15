@@ -189,6 +189,11 @@ func (s *Service) SetScope(ctx context.Context, req *pb.SetScopeRequest) (*pb.Co
 
 // RegisterSkill registers a new system skill.
 func (s *Service) RegisterSkill(ctx context.Context, req *pb.RegisterSkillRequest) (*pb.CommandAck, error) {
+	// ADR-0146 D5 / ENG-1046: owner tags are kernel-stamped; a skill descriptor
+	// may not carry one.
+	if err := domain.RefuseOwnerTags("scope_tags", req.GetScopeTags()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(), "register_skill", "skill", req.GetName(),
 		req.GetName(), func() error {
 			return s.effects.RegisterSkill(ctx, req.GetName(), req.GetDescription(), req.GetInstructions(), req.GetToolGrants(), req.GetScopeTags())

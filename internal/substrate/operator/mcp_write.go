@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // MCPWriter is the write half of the MCP server surface (contract 0097).
@@ -87,6 +88,11 @@ func (s *Service) SaveMCPServer(ctx context.Context, req *pb.SaveMCPServerOpRequ
 	}
 	if g.GetEndpoint() == "" {
 		return nil, status.Error(codes.InvalidArgument, "server.endpoint is required")
+	}
+	// ADR-0146 D5 / ENG-1046: owner tags are kernel-stamped; a server's tool
+	// descriptors may not carry one.
+	if err := domain.RefuseOwnerTags("server.classification_tags", g.GetClassificationTags()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	spec := mcpSpecFromOp(g)

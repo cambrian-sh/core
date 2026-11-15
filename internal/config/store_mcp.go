@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/procenv"
 )
 
@@ -192,6 +193,23 @@ func ValidateMCPServer(s MCPServerConfig) []string {
 		}
 		if _, dup := s.EnvValues[name]; dup {
 			errs = append(errs, fmt.Sprintf("%s: %q is both a literal env value and a secret", p, name))
+		}
+	}
+	// ADR-0146 D5 / ENG-1046 (owner decision 2026-11-15): owner tags are
+	// kernel-stamped; a server's or tool's classification tags may not carry
+	// one. Refused here, so a file or a stored console entry fails the boot
+	// naming the server and a console write or catalog entry is refused.
+	if err := domain.RefuseOwnerTags(p+".classification_tags", s.ClassificationTags); err != nil {
+		errs = append(errs, err.Error())
+	}
+	for _, tc := range s.Tools {
+		if err := domain.RefuseOwnerTags(fmt.Sprintf("%s.tools[%s].classification_tags", p, tc.Name), tc.ClassificationTags); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if s.DefaultToolPolicy != nil {
+		if err := domain.RefuseOwnerTags(p+".default_tool_policy.classification_tags", s.DefaultToolPolicy.ClassificationTags); err != nil {
+			errs = append(errs, err.Error())
 		}
 	}
 	errs = append(errs, validateUserCredential(p, s)...)

@@ -116,6 +116,21 @@ func (s *Service) integrationMutation(ctx context.Context, commandID, reason, ac
 	return resp, nil
 }
 
+// refuseIntegrationOwnerTags refuses an owner-namespace tag in an integration's
+// classification tags — the request's and a custom spec's — with
+// INVALID_ARGUMENT naming the tag (ADR-0146 D5, owner decision 2026-11-15,
+// ENG-1046). config.ValidateMCPServer refuses the same at boot and on every
+// store write; this answers the console with the right code before the audit.
+func refuseIntegrationOwnerTags(tags []string, custom *pb.IntegrationCustomSpecOp) error {
+	if err := domain.RefuseOwnerTags("classification_tags", tags); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := domain.RefuseOwnerTags("custom.classification_tags", custom.GetClassificationTags()); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return nil
+}
+
 // SetIntegrationTrustTier sets an integration's ADR-0139 D8 sandbox tier from
 // the console (owner decision 2026-11-15: any tier, raise or lower, audited).
 // The audit entry records the actor and role (runMutation), the reason, the
@@ -183,6 +198,9 @@ func (s *Service) InstallIntegration(ctx context.Context, req *pb.InstallIntegra
 	if req.GetCatalogId() == "" && req.GetCustom() == nil {
 		return nil, status.Error(codes.InvalidArgument, "catalog_id or custom is required")
 	}
+	if err := refuseIntegrationOwnerTags(req.GetClassificationTags(), req.GetCustom()); err != nil {
+		return nil, err
+	}
 	src := "catalog " + req.GetCatalogId()
 	if req.GetCatalogId() == "" {
 		src = "custom " + req.GetCustom().GetTransport() + " " + req.GetCustom().GetEndpoint()
@@ -203,6 +221,9 @@ func (s *Service) UpdateIntegration(ctx context.Context, req *pb.UpdateIntegrati
 	}
 	if req.GetId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := refuseIntegrationOwnerTags(req.GetClassificationTags(), req.GetCustom()); err != nil {
+		return nil, err
 	}
 	after := "update " + req.GetId() + " settings=[" + sortedKeys(req.GetSettings()) + "]"
 	if req.GetCustom() != nil {
