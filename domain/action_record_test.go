@@ -141,7 +141,7 @@ func (h *metaHandler) Execute(_ context.Context, c ToolCall) ([]byte, error) {
 func TestExecutor_SideEffectingStepCallSendsItsActionKey(t *testing.T) {
 	h := &metaHandler{}
 	e := guardedExec(t, h)
-	e.Idempotency = nil // the key travels whether or not idempotent_writes is on
+	e.idempotency = nil // the key travels whether or not idempotent_writes is on
 	args := []byte(`{"to":["a@x"],"subject":"Reminder"}`)
 	e.Execute(stepCtx(StepGuard{}), ToolCallRequest{AgentID: "w", ToolName: "mail_draft", ArgsJSON: args})
 	e.Execute(stepCtx(StepGuard{}), ToolCallRequest{AgentID: "w", ToolName: "crm_search", ArgsJSON: []byte(`{}`)})

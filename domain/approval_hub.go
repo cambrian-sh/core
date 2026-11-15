@@ -585,6 +585,32 @@ func (h *AddressedHub) await(ctx context.Context, it ApprovalItem, window time.D
 	h.mu.Unlock()
 	defer h.dropWaiter(it.ID, ch)
 
+	// An answer can land BEFORE the waiter above was registered: raise persists
+	// the item pending and publishes it to the approvers' surfaces, and only then
+	// does Request call await — and a joining request (raise step 2) reaches here
+	// for an item that was published long ago. finish wakes only the waiters
+	// registered at resolve time, so such an answer reached nobody: the requester
+	// then blocked for its whole window and returned the decision late (an
+	// approved signal plan was dropped by its caller first; CI flake
+	// T-20261115-addressedhub-request-loses-an-answer-that-lands). The store is
+	// the truth, so re-read it now that the waiter is registered: any answer
+	// that lands from here on reaches ch through finish, and any answer that
+	// landed earlier is visible here. Registering first, then reading, closes
+	// the gap without holding a lock across the publish.
+	if cur, err := h.store.GetApproval(ctx, it.ID); err == nil && cur.State != ApprovalPending {
+		if (cur.State == ApprovalApproved || cur.State == ApprovalDenied) && !cur.Consumed {
+			// This requester takes the decision, exactly as finish marks it when a
+			// waiter was registered, so an identical later request does not reuse it.
+			if err := h.store.MarkConsumed(ctx, cur.ID); err == nil {
+				cur.Consumed = true
+			}
+		}
+		return cur, nil
+	} else if err != nil {
+		// Not fatal: wait as before; the timer path resolves from the store.
+		h.logger.Warn("approvals: could not re-read item after registering its waiter", "approval", it.ID, "err", err)
+	}
+
 	wait := window
 	if !it.ExpiresAt.IsZero() {
 		if d := it.ExpiresAt.Sub(h.now()); d < wait {

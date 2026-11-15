@@ -109,18 +109,19 @@ func (q *QueryService) applySectionConstraint(ctx context.Context, results []dom
 		pos[r.Document.ID] = i
 	}
 	const sectionBase = 1.0
+	// ENG-83: the ids not already in the pool, read in ONE GetBatch on the
+	// enforcing store (scope on ctx, ADR-0095 D9) instead of one GetByID each.
+	fetched := q.fetchMissing(ctx, results, ids)
 	promoted := make([]domain.SearchResult, 0, len(results)+len(ids))
 	used := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		var r domain.SearchResult
 		if i, ok := pos[id]; ok {
 			r = results[i]
+		} else if doc, ok := fetched[id]; ok {
+			r = domain.SearchResult{Document: doc}
 		} else {
-			doc, derr := q.vectorStore.GetByID(ctx, id)
-			if derr != nil || doc == nil {
-				continue
-			}
-			r = domain.SearchResult{Document: *doc}
+			continue // unreadable under the caller scope, or gone
 		}
 		cos := 0.0
 		if len(vec) > 0 && len(r.Document.Embedding.Vector) > 0 {

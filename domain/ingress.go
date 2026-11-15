@@ -63,6 +63,14 @@ type IngressRegistration struct {
 	// the whole Telegram Update here when only `text` reaches the item would
 	// be a schema for data that never arrives.
 	Schema []IngressSchemaField
+
+	// Progress opts this ingress's conversations into the ADR-0098 progress
+	// channel: supersedable "still working on it" snapshots during a long turn.
+	// Off by default (ADR-0098 D6): a channel that never asked for status lines
+	// does not get them. Set by the operator per ingress; the premium progress
+	// plugin's environment switch stays a deployment-wide kill switch above it
+	// (owner decision 2026-11-15, T-20261113-adr-0098-d6-promises-per-ingress-progress-opt).
+	Progress bool
 }
 
 // IngressSchemaField is one declared field of an ingress's items. Tagged for

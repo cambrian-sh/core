@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // Value identity on the kernel side (ADR-0147), against a real migrated
@@ -282,5 +283,86 @@ func TestPg_ValueIdentity_LatestBySourceKeyFindsTheNewestRevision(t *testing.T) 
 	}
 	if errors.Is(err, context.Canceled) {
 		t.Fatal("unreachable")
+	}
+}
+
+// ENG-1045: an operator asking include_retired gets the retired rows back,
+// marked with why and by what they were retired; without the flag the answer is
+// unchanged. (The operator-only rule lives in the authz seam.)
+func TestPg_ValueIdentity_IncludeRetiredReturnsMarkedRetiredRows(t *testing.T) {
+	f := newValueIdentityFixture(t)
+	const entity = "vi-l0/order-r"
+	ev := f.evidenceRow(t, "SO-R", "rev-a")
+	oldRef := viPrefix + ":SO-R:" + entity + ":ship_days@r1#rev-a"
+	newRef := viPrefix + ":SO-R:" + entity + ":ship_days@r2#rev-a"
+	f.observe(t, ev, newRef, entity, 9, domain.TimeBasisEvent)
+	f.observe(t, ev, oldRef, entity, 7, domain.TimeBasisEvent) // written last: "latest" if counted
+	evRef := viPrefix + ":SO-R@r1#rev-a"
+	if _, _, err := f.events.RecordEvent(f.ctx, domain.Event{NamespaceID: "default", Type: "vi_l0_shipped",
+		OccurredAt: f.at, EvidenceID: ev, SourceRef: evRef,
+		Roles: []domain.EventRole{{Role: "order", EntityID: entity}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.events.RetireRows(f.ctx, "default", []string{oldRef, evRef}, domain.RetireSourceDeleted, "ev-tomb-r"); err != nil {
+		t.Fatal(err)
+	}
+	from, to := f.at.Add(-time.Hour), f.at.Add(time.Hour)
+
+	// Without the flag: the retired value and event are absent, as before.
+	if got := f.query(t, domain.KnowledgeQuery{Kind: domain.QueryPoint, EntityID: entity, Predicate: "ship_days"}); len(got) != 1 || got[0]["value_number"] != 9.0 || got[0]["retired"] != nil {
+		t.Fatalf("point without the flag = %v", got)
+	}
+	if got := f.query(t, domain.KnowledgeQuery{Kind: domain.QueryEvents, EntityID: entity, From: from, To: to}); len(got) != 0 {
+		t.Fatalf("events without the flag = %v, want none (the only event is retired)", got)
+	}
+
+	// With it: point answers the latest STORED row, marked.
+	point := f.query(t, domain.KnowledgeQuery{Kind: domain.QueryPoint, EntityID: entity, Predicate: "ship_days", IncludeRetired: true})
+	if len(point) != 1 || point[0]["value_number"] != 7.0 || point[0]["retired"] != true ||
+		point[0]["retired_reason"] != domain.RetireSourceDeleted || point[0]["retired_by"] != "ev-tomb-r" || point[0]["retired_at"] == nil {
+		t.Errorf("point with include_retired = %v, want the retired 7 marked source_deleted by ev-tomb-r", point)
+	}
+	// Under the unfiltered (maintenance) scope too — the store's own
+	// PointLookup skips retired rows, so the flag must take the SQL path.
+	res, err := f.plane.Query(f.ctx, domain.KnowledgeQuery{Kind: domain.QueryPoint, EntityID: entity, Predicate: "ship_days", IncludeRetired: true},
+		&domain.TagPredicate{Bypass: true, AllOwners: true})
+	if err != nil || len(res.Rows) != 1 || res.Rows[0]["retired"] != true {
+		t.Errorf("unfiltered point with include_retired = %v", res.Rows)
+	}
+	hist := f.query(t, domain.KnowledgeQuery{Kind: domain.QueryHistory, EntityID: entity, Predicate: "ship_days", From: from, To: to, IncludeRetired: true})
+	retired := 0
+	for _, r := range hist {
+		if r["retired"] == true {
+			retired++
+		}
+	}
+	if len(hist) != 2 || retired != 1 {
+		t.Errorf("history with include_retired = %v, want both rows, one marked retired", hist)
+	}
+	evs := f.query(t, domain.KnowledgeQuery{Kind: domain.QueryEvents, EntityID: entity, From: from, To: to, IncludeRetired: true})
+	if len(evs) != 1 || evs[0]["retired"] != true {
+		t.Errorf("events with include_retired = %v, want the retired event marked", evs)
+	}
+	// A narrow scope still fences retired rows: this evidence carries no tags a
+	// team:z reader holds.
+	narrow, err := f.plane.Query(f.ctx, domain.KnowledgeQuery{Kind: domain.QueryHistory, EntityID: entity, Predicate: "ship_days", From: from, To: to, IncludeRetired: true},
+		&domain.TagPredicate{RequiredTags: []string{"team:z"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrow.Rows) != 0 {
+		t.Errorf("retired rows escaped the fence: %v", narrow.Rows)
+	}
+
+	// Through the kernel's principal seam (the path every plugin takes): the
+	// operator plane's system principal reads the retired row, an agent is
+	// refused (owner decision 2026-11-15).
+	seam := authz.QueryKnowledgeFunc(domain.AllowAllAuthorizer{}, f.plane, nil)
+	q := domain.KnowledgeQuery{Kind: domain.QueryPoint, EntityID: entity, Predicate: "ship_days", IncludeRetired: true}
+	if res, err := seam(f.ctx, domain.SystemPrincipal, q); err != nil || len(res.Rows) != 1 || res.Rows[0]["retired"] != true {
+		t.Errorf("operator plane through the seam = %v, %v", res.Rows, err)
+	}
+	if _, err := seam(f.ctx, domain.AgentPrincipal("agent-x"), q); !errors.Is(err, domain.ErrRetiredOperatorOnly) {
+		t.Errorf("an agent read retired rows through the seam: %v", err)
 	}
 }

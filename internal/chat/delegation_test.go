@@ -228,9 +228,9 @@ func approvalPlan(t *testing.T, gw *network.SubstrateLLMGateway, d *network.Turn
 	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: grace})
 	ch, stop := opRequests(hub)
 	t.Cleanup(stop)
-	srv := &network.Server{LLMGateway: gw, Delegations: d, ToolExecutor: &domain.ToolExecutor{
-		Registry: reg, Grants: grants, Approval: hub, Handler: okTool{},
-	}}
+	srv := &network.Server{LLMGateway: gw, Delegations: d, ToolExecutor: newTestToolExecutor(t, domain.ToolExecutorControls{
+		Registry: reg, Grants: grants, Approval: hub,
+	}, domain.ToolExecutor{Handler: okTool{}})}
 	pool := newDelegatingPool(gw, d, func(ctx context.Context, run *network.DelegatedRun) error {
 		step, err := gw.Acquire(ctx, domain.StepAllocation{}, 8192, time.Minute)
 		if err != nil {

@@ -63,8 +63,8 @@ func TestProfileAgent_AllowlistEnforcedKernelSide(t *testing.T) {
 		grants := domain.NewInMemoryGrantsStore()
 		profiles := []profileAgent{{ID: "assistant", Allow: domain.ToolAllowlist{"mcp:fs/read_*"}}}
 		newProfileGrantSync(grants, reg.All, profiles).Sync(ctx, true)
-		e := &domain.ToolExecutor{Registry: reg, Grants: grants, Unrestricted: unrestricted,
-			Ceiling: profileToolCeiling(profiles), MCPHandler: okHandler{}, InlineThreshold: 1 << 20}
+		e := newTestToolExecutor(t, domain.ToolExecutorControls{Registry: reg, Grants: grants, Unrestricted: unrestricted,
+			Ceiling: profileToolCeiling(profiles)}, domain.ToolExecutor{MCPHandler: okHandler{}, InlineThreshold: 1 << 20})
 		if r := e.Execute(ctx, domain.ToolCallRequest{AgentID: "assistant", ToolName: "mcp:shell/run", ArgsJSON: []byte(`{}`)}); !r.Denied {
 			t.Errorf("unrestricted=%v: tool outside the allowlist was not denied", unrestricted)
 		}

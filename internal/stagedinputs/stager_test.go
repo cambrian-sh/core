@@ -138,9 +138,9 @@ func newFixture(t *testing.T, withLedger bool) *fixture {
 		reader = authz.NewEnforcingLedger(led, nil)
 	}
 	h := &sandboxHandler{}
-	ex := &domain.ToolExecutor{Registry: reg, Handler: h, MCPHandler: h, Unrestricted: true,
-		Authz: forbidSecret{}, InlineThreshold: 1 << 20,
-		Stager: stagedinputs.New(stagedinputs.Config{Root: root}, reader)}
+	ex := newTestToolExecutor(t, domain.ToolExecutorControls{Registry: reg, Unrestricted: true, Authz: forbidSecret{}},
+		domain.ToolExecutor{Handler: h, MCPHandler: h, InlineThreshold: 1 << 20,
+			Stager: stagedinputs.New(stagedinputs.Config{Root: root}, reader)})
 	if withLedger {
 		ex.Ledger = led
 	}

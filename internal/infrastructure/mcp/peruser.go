@@ -98,24 +98,19 @@ type userPool struct {
 	now       func() time.Time
 }
 
-func newUserPool() *userPool {
-	return &userPool{inst: map[userKey]*userInstance{}, published: map[string]bool{},
-		nudge: map[string]chan struct{}{}, now: time.Now}
-}
-
-// SetUserCredentials installs the per-user credential source and pool limits.
-// nil src ⇒ per_user servers cannot be used (calls fail "not connected"):
-// the OSS default, and a premium build whose accounts plugin is off.
-func (c *Connector) SetUserCredentials(src domain.CredentialSource, limits UserPoolLimits) {
+// newUserPool builds the per-user pool over its credential source and limits
+// (CredentialSources.User / UserLimits, fixed at construction). nil src ⇒
+// per_user servers cannot be used (calls fail "not connected"): the OSS
+// default, and a premium build whose accounts plugin is off.
+func newUserPool(src domain.CredentialSource, limits UserPoolLimits) *userPool {
 	if limits.Max <= 0 {
 		limits.Max = 32
 	}
 	if limits.Idle <= 0 {
 		limits.Idle = 10 * time.Minute
 	}
-	c.users.mu.Lock()
-	c.users.src, c.users.limits = src, limits
-	c.users.mu.Unlock()
+	return &userPool{inst: map[userKey]*userInstance{}, published: map[string]bool{},
+		nudge: map[string]chan struct{}{}, now: time.Now, src: src, limits: limits}
 }
 
 func (c *Connector) userSource() domain.CredentialSource {
@@ -196,9 +191,21 @@ func (e *NotConnectedError) Error() string {
 
 // SessionForCall implements CallSessionSource.
 func (c *Connector) SessionForCall(ctx context.Context, serverID string) (*mcpsdk.ClientSession, func(bool), error) {
-	noop := func(bool) {}
 	s, known := c.configFor(serverID)
-	if !known || s.scope() == ScopeShared {
+	if !known {
+		s = ServerConfig{ID: serverID}
+	}
+	return c.sessionFor(ctx, s)
+}
+
+// sessionFor selects the session a call to server s runs on: the shared
+// session for a shared server, else the run principal's own (ADR-0140). Used
+// by SessionForCall (the armed config) and TestServer (the config under test,
+// which may not be armed yet).
+func (c *Connector) sessionFor(ctx context.Context, s ServerConfig) (*mcpsdk.ClientSession, func(bool), error) {
+	noop := func(bool) {}
+	serverID := s.ID
+	if s.scope() == ScopeShared {
 		sess, ok := c.Session(serverID)
 		if !ok {
 			return nil, nil, fmt.Errorf("mcp server %q not connected", serverID)
@@ -522,6 +529,11 @@ func (c *Connector) watchUserServer(ctx context.Context, s ServerConfig, sink To
 	c.users.mu.Lock()
 	nudge := c.users.nudge[s.ID]
 	c.users.mu.Unlock()
+	// ENG-743: the tools last discovered for this server (by anyone) go on the
+	// menu NOW, so before the first person connects (and after every restart)
+	// an agent can call one and get "connect your account" instead of finding
+	// no tool at all. A live discovery below replaces them.
+	known := c.publishKnownTools(ctx, s, sink)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -537,7 +549,7 @@ func (c *Connector) watchUserServer(ctx context.Context, s ServerConfig, sink To
 			principals := src.ConnectedPrincipals(s.ID)
 			if len(principals) == 0 {
 				c.setHealth(s.ID, gen, func(h *ServerHealth) {
-					h.State, h.ToolCount, h.LastError = HealthAwaitingUser, 0, ""
+					h.State, h.ToolCount, h.LastError = HealthAwaitingUser, known, ""
 				})
 			}
 			for _, p := range principals {
@@ -579,7 +591,7 @@ func (c *Connector) discoverAs(ctx context.Context, s ServerConfig, sink ToolSin
 	if err != nil {
 		return 0, err
 	}
-	tools, derr := discover(ctx, s, inst.sess)
+	adv, derr := listAdvertised(ctx, inst.sess)
 	c.releaseUser(inst, derr != nil)
 	if derr != nil {
 		return 0, fmt.Errorf("connected, but listing tools failed: %s", redact(derr.Error(), []string{tok.Token}))
@@ -587,6 +599,8 @@ func (c *Connector) discoverAs(ctx context.Context, s ServerConfig, sink ToolSin
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
+	tools := toolsFor(s, adv)
+	c.saveToolList(s.ID, adv)
 	if sink != nil {
 		sink.SetServerTools(ctx, s.ID, tools)
 	}

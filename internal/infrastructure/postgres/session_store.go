@@ -191,8 +191,7 @@ func (s *PgSessionStore) ListSessionsForConversation(ctx context.Context, conver
 // ── domain.RunStore ──────────────────────────────────────────────────────────
 
 // SaveRun upserts a run, including the plan it executed.
-func (s *PgSessionStore) SaveRun(run domain.Run) error {
-	ctx := context.Background()
+func (s *PgSessionStore) SaveRun(ctx context.Context, run domain.Run) error {
 	var plan []byte
 	if run.Plan != nil {
 		b, err := json.Marshal(run.Plan)
@@ -230,8 +229,8 @@ func (s *PgSessionStore) SaveRun(run domain.Run) error {
 }
 
 // GetRun returns a run, or (nil, nil) when unknown.
-func (s *PgSessionStore) GetRun(runID domain.RunID) (*domain.Run, error) {
-	row := s.pool.QueryRow(context.Background(), `
+func (s *PgSessionStore) GetRun(ctx context.Context, runID domain.RunID) (*domain.Run, error) {
+	row := s.pool.QueryRow(ctx, `
 		SELECT id, COALESCE(session_id,''), plan_id, subject, status, plan, started_at, ended_at
 		FROM runs WHERE id = $1`, string(runID))
 	run, err := scanRun(row)
@@ -245,8 +244,8 @@ func (s *PgSessionStore) GetRun(runID domain.RunID) (*domain.Run, error) {
 }
 
 // ListRunsForSession returns a session's runs, oldest first.
-func (s *PgSessionStore) ListRunsForSession(sessionID domain.SessionID) ([]domain.Run, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PgSessionStore) ListRunsForSession(ctx context.Context, sessionID domain.SessionID) ([]domain.Run, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT id, COALESCE(session_id,''), plan_id, subject, status, plan, started_at, ended_at
 		FROM runs WHERE session_id = $1 ORDER BY started_at`, string(sessionID))
 	if err != nil {
@@ -297,12 +296,12 @@ func scanRun(row scannable) (*domain.Run, error) {
 // ── domain.CheckpointStore ───────────────────────────────────────────────────
 
 // SaveCheckpoint upserts one step's context under its run.
-func (s *PgSessionStore) SaveCheckpoint(runID domain.RunID, stepIndex int, cpCtx map[string]string) error {
+func (s *PgSessionStore) SaveCheckpoint(ctx context.Context, runID domain.RunID, stepIndex int, cpCtx map[string]string) error {
 	blob, err := json.Marshal(cpCtx)
 	if err != nil {
 		return fmt.Errorf("marshal checkpoint: %w", err)
 	}
-	_, err = s.pool.Exec(context.Background(), `
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO run_checkpoints (run_id, step_index, context, created_at)
 		VALUES ($1,$2,$3,$4)
 		ON CONFLICT (run_id, step_index) DO UPDATE SET
@@ -316,9 +315,9 @@ func (s *PgSessionStore) SaveCheckpoint(runID domain.RunID, stepIndex int, cpCtx
 }
 
 // LoadCheckpoint returns one step's context, or (nil, nil) when absent.
-func (s *PgSessionStore) LoadCheckpoint(runID domain.RunID, stepIndex int) (map[string]string, error) {
+func (s *PgSessionStore) LoadCheckpoint(ctx context.Context, runID domain.RunID, stepIndex int) (map[string]string, error) {
 	var blob []byte
-	err := s.pool.QueryRow(context.Background(),
+	err := s.pool.QueryRow(ctx,
 		`SELECT context FROM run_checkpoints WHERE run_id = $1 AND step_index = $2`,
 		string(runID), stepIndex).Scan(&blob)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -336,8 +335,8 @@ func (s *PgSessionStore) LoadCheckpoint(runID domain.RunID, stepIndex int) (map[
 
 // ListCheckpoints returns a run's checkpoints in ascending step order. step_index is an
 // INTEGER column, so the ordering is numeric by construction rather than by key formatting.
-func (s *PgSessionStore) ListCheckpoints(runID domain.RunID) ([]domain.CheckpointMeta, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PgSessionStore) ListCheckpoints(ctx context.Context, runID domain.RunID) ([]domain.CheckpointMeta, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT c.run_id, COALESCE(r.session_id,''), r.plan_id, c.step_index, c.created_at
 		FROM run_checkpoints c
 		JOIN runs r ON r.id = c.run_id

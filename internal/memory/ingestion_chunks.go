@@ -559,6 +559,9 @@ func legacyExternalDocumentID(doc domain.ExternalDocument) string {
 	//     so a caller supplying a perfectly unique ThreadID still lost data as long
 	//     as it also passed a tag.
 	for _, tag := range doc.Tags {
+		// The "document-qa" skip is frozen history, not live benchmark logic: this
+		// function must reproduce pre-ADR-0138 ids byte for byte so stored rows are
+		// found and grandfathered. The live rules (isMarkerTag) no longer skip it (ENG-1195).
 		if tag == "" || tag == "document-qa" || tag == sourceDocumentMarker || strings.HasPrefix(tag, "chunker:") {
 			continue
 		}

@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // RunStatus is the lifecycle state of a single plan execution.
 type RunStatus string
@@ -54,7 +57,10 @@ func (r Run) Resumable() bool {
 // RunStore persists runs. The kernel owns it so a restart can still answer "what was this
 // session doing, and against which plan?".
 type RunStore interface {
-	SaveRun(run Run) error
-	GetRun(runID RunID) (*Run, error)
-	ListRunsForSession(sessionID SessionID) ([]Run, error)
+	// ctx first (AGENTS.md §2.7): the Postgres adapter ran these under
+	// context.Background(), so a cancelled or timed-out plan request still
+	// blocked on them (T-20261113-25-i-o-methods-on-domain-ports-take-no-context).
+	SaveRun(ctx context.Context, run Run) error
+	GetRun(ctx context.Context, runID RunID) (*Run, error)
+	ListRunsForSession(ctx context.Context, sessionID SessionID) ([]Run, error)
 }

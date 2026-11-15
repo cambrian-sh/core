@@ -212,18 +212,40 @@ type Connector struct {
 	// containment is each stdio server's effective containment from its last
 	// launch (sandbox.go); its zero value is ready to use.
 	containment containmentStore
+
+	// creds are the connector's credential sources, fixed at construction
+	// (secrets.go CredentialSources).
+	creds CredentialSources
+	// toolLists persists each per_user server's last discovered tool list
+	// (toollists.go); nil means not persisted.
+	toolLists domain.SealedRecordStore
 }
 
-// NewConnector constructs an empty connector with a single shared MCP client.
-func NewConnector() *Connector {
+// ConnectorOption configures an optional, non-credential dependency of a
+// connector at construction.
+type ConnectorOption func(*Connector)
+
+// NewConnector constructs an empty connector with a single shared MCP client,
+// resolving every credential from creds (the zero value: environment
+// variables only, no per-user accounts — the bare OSS shape).
+func NewConnector(creds CredentialSources, opts ...ConnectorOption) *Connector {
+	c := newConnector(mcpsdk.NewClient(kernelClientInfo, nil), creds)
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+func newConnector(client *mcpsdk.Client, creds CredentialSources) *Connector {
 	return &Connector{
-		client:   mcpsdk.NewClient(kernelClientInfo, nil),
+		client:   client,
 		sessions: map[string]*mcpsdk.ClientSession{},
 		watches:  map[string]context.CancelFunc{},
 		health:   map[string]*ServerHealth{},
 		gens:     map[string]uint64{},
 		configs:  map[string]ServerConfig{},
-		users:    newUserPool(),
+		users:    newUserPool(creds.User, creds.UserLimits),
+		creds:    creds,
 	}
 }
 
@@ -311,7 +333,7 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 	var secrets []string
 	switch s.Transport {
 	case "http": // Streamable HTTP (2025-03-26 spec) — single endpoint, POST + optional SSE
-		hc, tok := s.httpClient(ctx)
+		hc, tok := s.httpClient(ctx, c.creds)
 		secrets = appendSecret(secrets, tok)
 		transport = &mcpsdk.StreamableClientTransport{
 			Endpoint:   s.Endpoint,
@@ -323,11 +345,11 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 			DisableStandaloneSSE: true,
 		}
 	case "sse": // legacy HTTP+SSE (2024-11-05 spec) — e.g. self-hosted Firecrawl's /sse
-		hc, tok := s.httpClient(ctx)
+		hc, tok := s.httpClient(ctx, c.creds)
 		secrets = appendSecret(secrets, tok)
 		transport = &mcpsdk.SSEClientTransport{Endpoint: s.Endpoint, HTTPClient: hc}
 	case "stdio":
-		explicit, injected := s.explicitEnv(ctx)
+		explicit, injected := s.explicitEnv(ctx, c.creds)
 		secrets = append(secrets, injected...)
 		// ADR-0139 D8: deny-by-default environment, never the kernel's own, and
 		// the trust tier's process containment (sandbox.go).
@@ -347,7 +369,7 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 // env_values plus each secret_env name resolved through the store (with the D5
 // env-first precedence when the name is also passed through). It returns the
 // secret values separately, for redaction.
-func (s ServerConfig) explicitEnv(ctx context.Context) (map[string]string, []string) {
+func (s ServerConfig) explicitEnv(ctx context.Context, creds CredentialSources) (map[string]string, []string) {
 	if len(s.EnvValues) == 0 && len(s.SecretEnv) == 0 {
 		return nil, nil
 	}
@@ -365,7 +387,7 @@ func (s ServerConfig) explicitEnv(ctx context.Context) (map[string]string, []str
 		if passthrough[procenv.Key(name)] {
 			envVar = name
 		}
-		if v := envSecretFor(ctx, s.ID, name, envVar); v != "" {
+		if v := creds.envSecretFor(ctx, s.ID, name, envVar); v != "" {
 			out[name] = v
 			secrets = append(secrets, v)
 		}
@@ -425,10 +447,10 @@ func appendSecret(list []string, v string) []string {
 // it used a bare http.Client over http.DefaultTransport, so an operator (or a
 // model granted register_mcp) could point a server at loopback, RFC1918 or the
 // cloud metadata address.
-func (s ServerConfig) httpClient(ctx context.Context) (*http.Client, string) {
+func (s ServerConfig) httpClient(ctx context.Context, creds CredentialSources) (*http.Client, string) {
 	var tok string
 	if s.AuthType != "" && s.AuthType != "none" {
-		tok = tokenFor(ctx, s.ID, s.AuthTokenEnv)
+		tok = creds.tokenFor(ctx, s.ID, s.AuthTokenEnv)
 		return s.guardedHTTPClient(func(base http.RoundTripper) http.RoundTripper {
 			return &authRoundTripper{base: base, authType: s.AuthType, header: s.AuthHeader, token: tok}
 		}), tok
@@ -534,6 +556,7 @@ func (c *Connector) armWatch(ctx context.Context, s ServerConfig, sink ToolSink,
 // post-condition already holds.
 func (c *Connector) RemoveServer(ctx context.Context, id string, sink ToolSink) {
 	c.StopServer(ctx, id, sink)
+	c.forgetToolList(id)
 	c.mu.Lock()
 	delete(c.health, id)
 	delete(c.gens, id)
@@ -593,10 +616,11 @@ type ProbeResult struct {
 
 // Probe dials a server config once, lists its tools, and disconnects. It uses a
 // throwaway client so a live session for the same id — possibly running on the
-// OLD config the operator is about to replace — is never touched.
-func Probe(ctx context.Context, s ServerConfig) ProbeResult {
+// OLD config the operator is about to replace — is never touched. The probe
+// resolves credentials from c's sources, exactly as a real connect would.
+func (c *Connector) Probe(ctx context.Context, s ServerConfig) ProbeResult {
 	start := time.Now()
-	tmp := newProbeConnector()
+	tmp := newProbeConnector(c.creds)
 	sess, secrets, err := tmp.connect(ctx, s)
 	if err != nil {
 		return ProbeResult{Err: redact(err.Error(), secrets), LatencyMs: time.Since(start).Milliseconds()}
@@ -748,11 +772,28 @@ func (c *Connector) Close() {
 // advertised metadata is descriptive only — policy is bound by operator config
 // keyed by the identity (A1.5 / ADR-0043 D3).
 func discover(ctx context.Context, s ServerConfig, sess *mcpsdk.ClientSession) ([]domain.SystemTool, error) {
+	adv, err := listAdvertised(ctx, sess)
+	if err != nil {
+		return nil, err
+	}
+	return toolsFor(s, adv), nil
+}
+
+// advertisedTool is what a server says about one tool: the only part of a
+// discovered tool worth persisting (toollists.go). Policy is re-applied from
+// the CURRENT config every time (toolsFor), never stored.
+type advertisedTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
+}
+
+func listAdvertised(ctx context.Context, sess *mcpsdk.ClientSession) ([]advertisedTool, error) {
 	res, err := sess.ListTools(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]domain.SystemTool, 0, len(res.Tools))
+	out := make([]advertisedTool, 0, len(res.Tools))
 	for _, t := range res.Tools {
 		var schema json.RawMessage
 		if t.InputSchema != nil {
@@ -760,10 +801,20 @@ func discover(ctx context.Context, s ServerConfig, sess *mcpsdk.ClientSession) (
 				schema = b
 			}
 		}
+		out = append(out, advertisedTool{Name: t.Name, Description: t.Description, Schema: schema})
+	}
+	return out, nil
+}
+
+// toolsFor turns a server's advertised tools into namespaced, policy-applied
+// SystemTools.
+func toolsFor(s ServerConfig, adv []advertisedTool) []domain.SystemTool {
+	out := make([]domain.SystemTool, 0, len(adv))
+	for _, t := range adv {
 		st := domain.SystemTool{
 			Name:        ToolNamePrefix + s.ID + "/" + t.Name,
 			Description: t.Description,
-			Schema:      schema,
+			Schema:      t.Schema,
 		}
 		// Apply operator policy (dangerous-flag + effects + data-egress kinds + domain
 		// tags) — never the server's own advertised metadata (A1.5 / ADR-0043 D4/D9).
@@ -774,7 +825,7 @@ func discover(ctx context.Context, s ServerConfig, sess *mcpsdk.ClientSession) (
 		st.EffectsDefaulted = !policyListed(t.Name, s.Tools, s.DefaultPolicy)
 		out = append(out, st)
 	}
-	return out, nil
+	return out
 }
 
 // SlogEgressAuditor is the default EgressAuditor — it logs each remote-tool data

@@ -118,3 +118,44 @@ func TestChunkCoherence_NoSignalCases(t *testing.T) {
 		t.Fatalf("disjoint seeds must yield no signal, got %v", m)
 	}
 }
+
+// TestChunkCoherenceRaw_BitStableAcrossRuns (ENG-413): the IDF sum must not
+// depend on Go's randomised map iteration order. A seed and a candidate share
+// many entities whose IDFs (1/df with mixed df) do not add associatively in
+// float64, so summing them in map order yields last-ulp differences run to run
+// — enough to swap two Stage-A-tied candidates, against the ADR-0103 D7
+// fingerprint promise (same fingerprint + corpus ⇒ identical ranking).
+func TestChunkCoherenceRaw_BitStableAcrossRuns(t *testing.T) {
+	t.Parallel()
+	st := newFakeChunkTripletsStore()
+	ctx := context.Background()
+	// 40 shared entities; entity i is also mentioned by (i%7)+1 filler chunks,
+	// so df (hence idf = 1/df) varies between 2 and 8.
+	var seedT, candT []domain.ChunkTriplet
+	fillers := map[string][]domain.ChunkTriplet{}
+	for i := 0; i < 40; i++ {
+		e := "ent" + string(rune('A'+i%26)) + string(rune('a'+i/26))
+		seedT = append(seedT, domain.ChunkTriplet{H: e, R: "r", T: "seedonly"})
+		candT = append(candT, domain.ChunkTriplet{H: e, R: "r", T: "candonly"})
+		for f := 0; f < i%7; f++ {
+			id := "f" + string(rune('a'+f))
+			fillers[id] = append(fillers[id], domain.ChunkTriplet{H: e, R: "r", T: "x" + id})
+		}
+	}
+	_ = st.SaveChunkTriplets(ctx, "seed", seedT)
+	_ = st.SaveChunkTriplets(ctx, "cand", candT)
+	results := []domain.SearchResult{sr("seed", 0.9), sr("cand", 0)}
+	for id, tr := range fillers {
+		_ = st.SaveChunkTriplets(ctx, id, tr)
+		results = append(results, sr(id, 0))
+	}
+	first, _ := chunkCoherenceRaw(ctx, st, results, 1, legacySeedRelevance)
+	for run := 0; run < 200; run++ {
+		got, _ := chunkCoherenceRaw(ctx, st, results, 1, legacySeedRelevance)
+		for id, v := range first {
+			if got[id] != v {
+				t.Fatalf("run %d: coherence[%s] = %.20g, first run %.20g (map-order float sum)", run, id, got[id], v)
+			}
+		}
+	}
+}

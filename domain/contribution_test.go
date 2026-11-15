@@ -38,7 +38,7 @@ func contributionExec(fleet FleetSource) *ToolExecutor {
 		Handler:      &fakeHandler{result: []byte(`{"ok":true}`)},
 		LocalHandler: LocalRelayStub{},
 		Fleet:        fleet,
-		Unrestricted: true, // the grant layer is not what these tests prove; see the grant-mirror test
+		unrestricted: true, // the grant layer is not what these tests prove; see the grant-mirror test
 	}
 }
 
@@ -269,7 +269,7 @@ func TestNoShadowing_ContributedNeverDisplacesKernelTools(t *testing.T) {
 func TestContributedMenu_GrantMirrorWhenNotUnrestricted(t *testing.T) {
 	t.Parallel()
 	e := contributionExec(ownerFleet(t, true))
-	e.Unrestricted = false
+	e.unrestricted = false
 	e.Grants = grantStore("agent-1", ToolGrant{Tool: "local:a-machine/read_file", Policy: ToolResourcePolicy{AllowAll: true}})
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 

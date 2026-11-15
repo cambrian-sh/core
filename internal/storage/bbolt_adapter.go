@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -998,7 +999,7 @@ type checkpointRecord struct {
 }
 
 // SaveCheckpoint persists a context checkpoint under its RUN.
-func (b *BBoltAdapter) SaveCheckpoint(runID domain.RunID, stepIndex int, ctx map[string]string) error {
+func (b *BBoltAdapter) SaveCheckpoint(_ context.Context, runID domain.RunID, stepIndex int, ctx map[string]string) error {
 	rec := checkpointRecord{
 		RunID:     runID,
 		StepIndex: stepIndex,
@@ -1016,7 +1017,7 @@ func (b *BBoltAdapter) SaveCheckpoint(runID domain.RunID, stepIndex int, ctx map
 }
 
 // LoadCheckpoint loads one checkpoint of a run.
-func (b *BBoltAdapter) LoadCheckpoint(runID domain.RunID, stepIndex int) (map[string]string, error) {
+func (b *BBoltAdapter) LoadCheckpoint(_ context.Context, runID domain.RunID, stepIndex int) (map[string]string, error) {
 	var ctx map[string]string
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(checkpointBucket)
@@ -1039,7 +1040,7 @@ func (b *BBoltAdapter) LoadCheckpoint(runID domain.RunID, stepIndex int) (map[st
 
 // ListCheckpoints returns a run's checkpoints in ascending step order. The zero-padded key
 // makes the cursor's lexicographic order the numeric order, so no post-sort is needed.
-func (b *BBoltAdapter) ListCheckpoints(runID domain.RunID) ([]domain.CheckpointMeta, error) {
+func (b *BBoltAdapter) ListCheckpoints(_ context.Context, runID domain.RunID) ([]domain.CheckpointMeta, error) {
 	prefix := []byte(string(runID) + ":")
 	var out []domain.CheckpointMeta
 	err := b.db.View(func(tx *bbolt.Tx) error {
@@ -1081,7 +1082,7 @@ var (
 // ── domain.RunStore ──────────────────────────────────────────────────────────
 
 // SaveRun persists a run (including its plan, so a resume replays the same steps).
-func (b *BBoltAdapter) SaveRun(run domain.Run) error {
+func (b *BBoltAdapter) SaveRun(_ context.Context, run domain.Run) error {
 	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(runBucket)
 		data, err := json.Marshal(run)
@@ -1093,7 +1094,7 @@ func (b *BBoltAdapter) SaveRun(run domain.Run) error {
 }
 
 // GetRun reads a run by id; (nil, nil) when unknown.
-func (b *BBoltAdapter) GetRun(runID domain.RunID) (*domain.Run, error) {
+func (b *BBoltAdapter) GetRun(_ context.Context, runID domain.RunID) (*domain.Run, error) {
 	var run *domain.Run
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(runBucket)
@@ -1115,7 +1116,7 @@ func (b *BBoltAdapter) GetRun(runID domain.RunID) (*domain.Run, error) {
 }
 
 // ListRunsForSession returns every run of a session, oldest first.
-func (b *BBoltAdapter) ListRunsForSession(sessionID domain.SessionID) ([]domain.Run, error) {
+func (b *BBoltAdapter) ListRunsForSession(_ context.Context, sessionID domain.SessionID) ([]domain.Run, error) {
 	var out []domain.Run
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(runBucket)

@@ -24,9 +24,9 @@ func TestNewToolExecutor_RefusesMissingOrMisplacedControls(t *testing.T) {
 		}
 	}
 	for name, f := range map[string]ToolExecutor{
-		"authz on features":        {Authz: AllowAllAuthorizer{}},
-		"unrestricted on features": {Unrestricted: true},
-		"guards on features":       {Guards: &RequestGuards{}},
+		"authz on features":        {authz: AllowAllAuthorizer{}},
+		"unrestricted on features": {unrestricted: true},
+		"guards on features":       {guards: &RequestGuards{}},
 	} {
 		if _, err := NewToolExecutor(full, f); !errors.Is(err, ErrToolExecutorControl) {
 			t.Errorf("%s: err = %v, want ErrToolExecutorControl", name, err)
@@ -44,11 +44,56 @@ func TestNewToolExecutor_EnforcesFromTheFirstCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if te.InlineThreshold != 1<<20 || te.PreviewChars != 600 || te.Authz == nil {
+	if te.InlineThreshold != 1<<20 || te.PreviewChars != 600 || te.authz == nil {
 		t.Fatalf("executor lost its wiring: %+v", te)
 	}
 	res := te.Execute(context.Background(), ToolCallRequest{AgentID: "w", ToolName: "read_file", ArgsJSON: []byte(`{}`)})
 	if !res.Denied {
 		t.Fatalf("ungranted call ran: %+v", res)
+	}
+}
+
+// The ADR-0139 D12 lease ceiling and the ADR-0150 subtask registry are
+// constructor controls too (they used to be chained in after construction by
+// app/composed_workers.go and app/subtasks.go): placed on features they are
+// refused, passed as controls they bind from the first call — a composed lease
+// cannot call a tool outside its composition even under tools_unrestricted.
+func TestNewToolExecutor_LeaseControlsAreConstructorInjected(t *testing.T) {
+	reg := NewInMemoryToolRegistry()
+	reg.Register(SystemTool{Name: "read_file", Effects: []ToolEffect{EffectRead}})
+	reg.Register(SystemTool{Name: "write_file", Effects: []ToolEffect{EffectWrite}})
+	base := ToolExecutorControls{Registry: reg, Grants: NewInMemoryGrantsStore(), Authz: AllowAllAuthorizer{}}
+
+	leases := NewComposedLeases()
+	subs := NewSubtasks(0, nil)
+	for name, f := range map[string]ToolExecutor{
+		"lease ceiling on features": {leaseCeiling: leases},
+		"subtasks on features":      {subtasks: subs},
+	} {
+		if _, err := NewToolExecutor(base, f); !errors.Is(err, ErrToolExecutorControl) {
+			t.Errorf("%s: err = %v, want ErrToolExecutorControl", name, err)
+		}
+	}
+
+	c := base
+	c.Unrestricted = true
+	c.LeaseCeiling = ChainLeaseCeilings(leases, subs)
+	c.Subtasks = subs
+	te, err := NewToolExecutor(c, ToolExecutor{InlineThreshold: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if te.Subtasks() != subs {
+		t.Fatal("the executor does not enforce the subtask registry it was constructed with")
+	}
+	leases.Bind("lease-1", WorkerComposition{Runtime: "rt", Tools: []string{"read_file"}})
+	if !te.WithinLeaseCeiling("lease-1", "read_file") {
+		t.Error("tool inside the composition refused")
+	}
+	if te.WithinLeaseCeiling("lease-1", "write_file") {
+		t.Error("composed lease reached a tool outside its composition (ceiling not enforced)")
+	}
+	if !te.WithinLeaseCeiling("lease-unbound", "write_file") {
+		t.Error("an unbound lease must be unaffected by the ceiling")
 	}
 }

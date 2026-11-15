@@ -74,10 +74,12 @@ type stubCheckpoints struct {
 	resumable map[string]bool
 }
 
-func (s stubCheckpoints) CheckpointsForSession(string) ([]domain.CheckpointMeta, error) {
+func (s stubCheckpoints) CheckpointsForSession(context.Context, string) ([]domain.CheckpointMeta, error) {
 	return s.metas, s.err
 }
-func (s stubCheckpoints) ResumableAt(runID string, step int) bool { return s.resumable[runID] }
+func (s stubCheckpoints) ResumableAt(_ context.Context, runID string, step int) bool {
+	return s.resumable[runID]
+}
 
 // run_id must survive onto the wire. Two runs of one session can each hold a
 // step_index 2 meaning different points; a response that dropped run_id would

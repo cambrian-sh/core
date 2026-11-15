@@ -12,6 +12,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/llmusage"
 )
 
 // IngestRequest is the operator's document-ingest intent (ADR-0047 A2.4). Author
@@ -265,6 +266,12 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	// through ctx; the id alone cannot say it.
 	outcome := &domain.IngestOutcome{}
 	ctx = domain.WithIngestOutcome(ctx, outcome)
+	// ENG-534: report the kernel's own LLM calls for this ingest (facts lane with
+	// sync_ingest_wait_for_facts, KG with sync_ingest_wait_for_kg) in the
+	// cambrian-llm-usage trailer, as the agent plane's IngestMemory does. Opened
+	// after the dedup return: a replay does no work and sends no trailer.
+	ctx, sendLLMUsage := llmusage.WithTally(ctx)
+	defer sendLLMUsage()
 	docID, err := s.ingestor.Ingest(ctx, IngestRequest{
 		Text: req.GetText(),
 		// ADR-0146 D5: owner tags are kernel-stamped, never taken from the request.

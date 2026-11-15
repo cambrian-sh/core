@@ -118,12 +118,11 @@ func newDelegatedApprovalFixture(t *testing.T) *delegatedApprovalFixture {
 		{Tool: "mcp:mail/mail_draft", Policy: domain.ToolResourcePolicy{AllowAll: true}},
 		{Tool: "mcp:fin/pay_invoice", Policy: domain.ToolResourcePolicy{AllowAll: true}},
 	})
-	s.ToolExecutor = &domain.ToolExecutor{
+	s.ToolExecutor = newTestToolExecutor(t, domain.ToolExecutorControls{
 		Registry: reg,
 		Grants:   grants,
-		Handler:  staticToolHandler{result: []byte(`{"ok":true}`)},
 		Approval: hub,
-	}
+	}, domain.ToolExecutor{Handler: staticToolHandler{result: []byte(`{"ok":true}`)}})
 	return &delegatedApprovalFixture{srv: s, gw: gw, hub: hub, session: ses.ID, logs: logs}
 }
 

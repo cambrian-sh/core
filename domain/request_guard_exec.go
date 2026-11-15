@@ -35,7 +35,7 @@ type guardOutcome struct {
 //
 // Outside a plan step, or with no guards wired, nothing applies.
 func (e *ToolExecutor) requestGuards(ctx context.Context, req ToolCallRequest, tool SystemTool, argHash string) guardOutcome {
-	if e.Guards == nil {
+	if e.guards == nil {
 		return guardOutcome{}
 	}
 	sc, ok := StepCallFrom(ctx)
@@ -51,7 +51,7 @@ func (e *ToolExecutor) requestGuards(ctx context.Context, req ToolCallRequest, t
 	if !tool.SideEffecting() {
 		return guardOutcome{}
 	}
-	writes := e.Guards.Writes
+	writes := e.guards.Writes
 	if g.Repair && writes != nil {
 		if done := writes.StepWrites(g.Request, sc.RunID, sc.StepIndex); len(done) > 0 {
 			slog.Info("ADR-0145 D14: write refused in a repair turn; the step's write already executed",
@@ -65,7 +65,7 @@ func (e *ToolExecutor) requestGuards(ctx context.Context, req ToolCallRequest, t
 		return guardOutcome{stop: true, resp: denied(DocumentWriteRefusal(req.ToolName, g.Documents), argHash)}
 	}
 	out := guardOutcome{unrequested: g.Checklist && len(g.WriteItems) == 0}
-	target := e.Guards.Targets.Key(req.ToolName, req.ArgsJSON)
+	target := e.guards.Targets.Key(req.ToolName, req.ArgsJSON)
 	var release func(ok bool, ids []string, ledgerRef string)
 	if writes != nil && target != "" {
 		prior, taken, rel := writes.Reserve(g.Request, target, WrittenTarget{Tool: req.ToolName, Run: sc.RunID, Step: sc.StepIndex})

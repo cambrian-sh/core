@@ -140,6 +140,7 @@ const (
 	OperatorConsole_TestIntegration_FullMethodName          = "/cambrian.OperatorConsole/TestIntegration"
 	OperatorConsole_RemoveIntegration_FullMethodName        = "/cambrian.OperatorConsole/RemoveIntegration"
 	OperatorConsole_RevertIntegrationToFile_FullMethodName  = "/cambrian.OperatorConsole/RevertIntegrationToFile"
+	OperatorConsole_SetIntegrationTrustTier_FullMethodName  = "/cambrian.OperatorConsole/SetIntegrationTrustTier"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -885,6 +886,14 @@ type OperatorConsoleClient interface {
 	// (the file entry may name the same ones). Operator-only, command_id +
 	// reason, audited.
 	RevertIntegrationToFile(ctx context.Context, in *RevertIntegrationToFileOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
+	// SetIntegrationTrustTier sets an installed integration's ADR-0139 D8
+	// sandbox trust tier (first-party | vetted | third-party), raising or
+	// lowering its containment; "" clears the console's choice so the catalog /
+	// configured default applies again. Owner decision 2026-11-15: any tier, from
+	// the console, audited — the audit entry carries who, the old tier (before),
+	// the new tier (after) and the reason. Takes effect on the server's next
+	// launch (it is restarted live). Operator-only, command_id + reason.
+	SetIntegrationTrustTier(ctx context.Context, in *SetIntegrationTrustTierOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
 }
 
 type operatorConsoleClient struct {
@@ -2141,6 +2150,16 @@ func (c *operatorConsoleClient) RevertIntegrationToFile(ctx context.Context, in 
 	return out, nil
 }
 
+func (c *operatorConsoleClient) SetIntegrationTrustTier(ctx context.Context, in *SetIntegrationTrustTierOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetIntegrationTrustTier_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -2884,6 +2903,14 @@ type OperatorConsoleServer interface {
 	// (the file entry may name the same ones). Operator-only, command_id +
 	// reason, audited.
 	RevertIntegrationToFile(context.Context, *RevertIntegrationToFileOpRequest) (*IntegrationMutationOpResponse, error)
+	// SetIntegrationTrustTier sets an installed integration's ADR-0139 D8
+	// sandbox trust tier (first-party | vetted | third-party), raising or
+	// lowering its containment; "" clears the console's choice so the catalog /
+	// configured default applies again. Owner decision 2026-11-15: any tier, from
+	// the console, audited — the audit entry carries who, the old tier (before),
+	// the new tier (after) and the reason. Takes effect on the server's next
+	// launch (it is restarted live). Operator-only, command_id + reason.
+	SetIntegrationTrustTier(context.Context, *SetIntegrationTrustTierOpRequest) (*IntegrationMutationOpResponse, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -3256,6 +3283,9 @@ func (UnimplementedOperatorConsoleServer) RemoveIntegration(context.Context, *Re
 }
 func (UnimplementedOperatorConsoleServer) RevertIntegrationToFile(context.Context, *RevertIntegrationToFileOpRequest) (*IntegrationMutationOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevertIntegrationToFile not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetIntegrationTrustTier(context.Context, *SetIntegrationTrustTierOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetIntegrationTrustTier not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -5428,6 +5458,24 @@ func _OperatorConsole_RevertIntegrationToFile_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_SetIntegrationTrustTier_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetIntegrationTrustTierOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetIntegrationTrustTier(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetIntegrationTrustTier_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetIntegrationTrustTier(ctx, req.(*SetIntegrationTrustTierOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -5902,6 +5950,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevertIntegrationToFile",
 			Handler:    _OperatorConsole_RevertIntegrationToFile_Handler,
+		},
+		{
+			MethodName: "SetIntegrationTrustTier",
+			Handler:    _OperatorConsole_SetIntegrationTrustTier_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

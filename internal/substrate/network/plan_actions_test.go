@@ -25,7 +25,7 @@ func (h toolsByName) Execute(_ context.Context, c domain.ToolCall) ([]byte, erro
 
 // planActionFixture is a server whose ToolExecutor has a write tool, a read tool and
 // a write tool that fails, and a step lease of run "run-1", step 2, bound to agent-a.
-func planActionFixture(t *testing.T) (*Server, domain.LeaseID) {
+func planActionFixture(t *testing.T, controls ...func(*domain.ToolExecutorControls)) (*Server, domain.LeaseID) {
 	t.Helper()
 	s, gw := newLeaseServer(t)
 	reg := domain.NewInMemoryToolRegistry()
@@ -38,12 +38,16 @@ func planActionFixture(t *testing.T) (*Server, domain.LeaseID) {
 		{Tool: "mail_send", Policy: domain.ToolResourcePolicy{AllowAll: true}},
 		{Tool: "issues_search", Policy: domain.ToolResourcePolicy{AllowAll: true}},
 	})
-	s.ToolExecutor = &domain.ToolExecutor{Registry: reg, Grants: grants, Handler: toolsByName{
+	c := domain.ToolExecutorControls{Registry: reg, Grants: grants}
+	for _, set := range controls {
+		set(&c)
+	}
+	s.ToolExecutor = newTestToolExecutor(t, c, domain.ToolExecutor{Handler: toolsByName{
 		// The MCP content-array shape the kernel stores for an unstructured result.
 		"issues_create": {result: []byte(`[{"type":"text","text":"{\"key\":\"OPS-11\",\"issue\":{\"summary\":\"INC-1040\"},\"write_id\":\"W-7\"}"}]`)},
 		"mail_send":     {err: errors.New("smtp timeout")},
 		"issues_search": {result: []byte(`{"issues":[]}`)},
-	}}
+	}})
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Minute)
 	gw.BindLease(lease, domain.LeaseBinding{SessionID: "ses-1", RunID: "run-1", StepIndex: 2, AgentID: "agent-a"})
 	return s, lease
@@ -138,10 +142,9 @@ func TestPartialPlanPayload_ReportsCompletedWorkAndLedger(t *testing.T) {
 // (T-20261112-coverage-settles-a-write-item-on-any-done).
 func TestExecuteTool_RecordsWriteTargetsWithoutRequestGuards(t *testing.T) {
 	t.Parallel()
-	s, lease := planActionFixture(t)
 	wt := config.DefaultWriteTargets()
-	s.ToolExecutor.WriteTargets = wt.Domain()
-	if s.ToolExecutor.Guards != nil {
+	s, lease := planActionFixture(t, func(c *domain.ToolExecutorControls) { c.WriteTargets = wt.Domain() })
+	if s.ToolExecutor.Guards() != nil {
 		t.Fatal("fixture must run without request guards")
 	}
 	s.planActions.begin("run-1")

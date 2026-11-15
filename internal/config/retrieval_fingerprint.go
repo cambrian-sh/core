@@ -67,6 +67,11 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	fmt.Fprintf(&b, "anchor=%t\n", c.Retrieval.AnchorConstraintEnabled)
 	fmt.Fprintf(&b, "structure=%t\n", c.Retrieval.StructureGraphEnabled)
 	fmt.Fprintf(&b, "neighbor_window=%t\n", c.Retrieval.NeighborWindowEnabled)
+	// ENG-484: the spread window's order; written only when on (and spreading runs),
+	// so every existing fingerprint holds.
+	if c.Retrieval.RecallSpreadingEnabled && c.Retrieval.RecallSpreadingKeepAssemblyOrder {
+		fmt.Fprintf(&b, "spreading_keep_assembly_order=true\n")
+	}
 	// ENG-430: written only when on, so every flag-off fingerprint stays what it was.
 	if c.Retrieval.DocumentCompletionEnabled {
 		fmt.Fprintf(&b, "document_completion=%d/%d\n", c.Retrieval.DocumentCompletionDocuments, c.Retrieval.DocumentCompletionMaxChunks)
@@ -113,6 +118,10 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 			c.Facts.LaneTopK, c.Facts.FactMatchWeight)
 		if c.Facts.SupersessionEnabled {
 			fmt.Fprintf(&b, "facts_supersession=true\ncurrent_fact_weight=%g\n", c.Facts.CurrentFactWeight)
+		}
+		// ENG-432: written only when on, so every existing fingerprint holds.
+		if c.Facts.LaneChunkCosineMax {
+			fmt.Fprintf(&b, "facts_lane_chunk_cosine_max=true\n")
 		}
 		// ADR-0136 A4: the document-scoped lane adds fact-reached primary hits. Written
 		// only when it acts (lane on and N > 0), so every existing fingerprint holds.

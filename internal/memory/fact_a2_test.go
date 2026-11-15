@@ -214,6 +214,9 @@ func TestFactExtractor_SectionedPartialResumeAndVersion(t *testing.T) {
 	if err != nil || res.Windows != 2 || !res.Partial || gen.calls.Load() != 4 {
 		t.Fatalf("run 2 must resume at window 3: %+v err %v calls %d", res, err, gen.calls.Load())
 	}
+	if st := e.Stats(); st.PartialDocs != 2 {
+		t.Fatalf("two partial runs: Stats().PartialDocs = %d (ENG-431)", st.PartialDocs)
+	}
 	res, err = e.ExtractDocument(ctx, "doc-long", "", src, docs)
 	if err != nil || res.Windows != 1 || res.Partial || gen.calls.Load() != 5 {
 		t.Fatalf("run 3 finishes the source: %+v err %v calls %d", res, err, gen.calls.Load())

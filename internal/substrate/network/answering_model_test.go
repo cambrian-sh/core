@@ -8,6 +8,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/llmusage"
 	"github.com/cambrian-sh/core/internal/substrate/session"
 )
 
@@ -19,7 +20,7 @@ func TestFormatLLMUsage_CountsAnsweringGenerators(t *testing.T) {
 	_, tally := domain.WithLLMUsageTally(context.Background())
 	tally.Add("facts", domain.LLMUsage{Calls: 2})
 	tally.AddGenerator("haiku-local", 2)
-	f := usageFields(t, FormatLLMUsage(tally))
+	f := usageFields(t, llmusage.Format(tally))
 	if f["generator:haiku-local.calls#"] != "2" {
 		t.Fatalf("trailer = %v, want generator:haiku-local.calls#=2", f)
 	}

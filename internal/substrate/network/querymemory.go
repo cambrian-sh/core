@@ -11,6 +11,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/llmusage"
 	"github.com/cambrian-sh/core/internal/memory"
 
 	"google.golang.org/grpc/codes"
@@ -103,9 +104,9 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 
 	// The kernel's own LLM calls for this recall (the agentic retrieval chain's
 	// retrieval_agent stream, any memory organ) go back as the "cambrian-llm-usage"
-	// trailer, counted by the ADR-0131 SpendMeter (LLMUsageTrailer). Deferred, so a
+	// trailer, counted by the ADR-0131 SpendMeter (llmusage.Trailer). Deferred, so a
 	// failed recall still reports what it spent.
-	ctx, sendLLMUsage := withLLMUsageTally(ctx)
+	ctx, sendLLMUsage := llmusage.WithTally(ctx)
 	defer sendLLMUsage()
 
 	if s.MemorySearcher == nil {

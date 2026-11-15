@@ -35,9 +35,9 @@ func TestAgentVerbAllowed(t *testing.T) {
 	ceiling.Set("granted-but-capped", ToolAllowlist{"web_*"})
 	granted.Set("granted-but-capped", []ToolGrant{{Tool: v}})
 
-	restricted := &ToolExecutor{Grants: granted, Ceiling: ceiling}
-	unrestricted := &ToolExecutor{Unrestricted: true, Grants: NewInMemoryGrantsStore(), Ceiling: ceiling}
-	leased := &ToolExecutor{Grants: granted, Ceiling: ceiling, LeaseCeiling: leaseCeilingStub{"child": {"web_fetch"}}}
+	restricted := &ToolExecutor{Grants: granted, ceiling: ceiling}
+	unrestricted := &ToolExecutor{unrestricted: true, Grants: NewInMemoryGrantsStore(), ceiling: ceiling}
+	leased := &ToolExecutor{Grants: granted, ceiling: ceiling, leaseCeiling: leaseCeilingStub{"child": {"web_fetch"}}}
 
 	for _, c := range []struct {
 		name  string

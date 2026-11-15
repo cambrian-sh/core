@@ -40,7 +40,7 @@ func TestToolHooks_PreToolAskRoutesToApproval(t *testing.T) {
 		t.Fatalf("ask without approver: %+v", r)
 	}
 	ap := &fakeApproval{approve: true}
-	e.Approval = ap
+	e.approval = ap
 	r := e.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "web", ArgsJSON: []byte(`{}`)})
 	if r.Denied || !ap.asked || !h.called || r.ApproverID != "op-1" {
 		t.Fatalf("ask with approver: %+v asked=%v", r, ap.asked)
@@ -53,7 +53,7 @@ func TestToolHooks_CannotWidenADangerousAsk(t *testing.T) {
 	e := hookedExec(t, SystemTool{Name: "shell", Dangerous: true}, ToolGrant{Tool: "shell", Policy: ToolResourcePolicy{AllowAll: true}}, h,
 		funcHook{preTool("yolo", 0), answer(HookResult{Verdict: HookAllow})})
 	ap := &fakeApproval{approve: false}
-	e.Approval = ap
+	e.approval = ap
 	r := e.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "shell", ArgsJSON: []byte(`{}`)})
 	if !ap.asked || !r.Denied || h.called {
 		t.Fatalf("a hook's allow skipped the approval: %+v asked=%v", r, ap.asked)

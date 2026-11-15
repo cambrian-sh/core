@@ -314,7 +314,7 @@ func obsRow(ob *domain.Observation) domain.QueryRow {
 // T-20261107-substratelane-pointlookup-history). Only ScopeMaintenance, which
 // filters nothing, keeps the store's own PointLookup.
 func (p *PgQueryPlane) point(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate) ([]domain.QueryRow, error) {
-	if scope.Unfiltered() {
+	if scope.Unfiltered() && !q.IncludeRetired {
 		ob, err := p.events.PointLookup(ctx, defaultNamespace, q.EntityID, q.Predicate)
 		if err != nil || ob == nil {
 			return nil, err
@@ -326,7 +326,7 @@ func (p *PgQueryPlane) point(ctx context.Context, q domain.KnowledgeQuery, scope
 	args = append(args, extra...)
 	ob, err := scanObservation(p.pool.QueryRow(ctx, `
 		SELECT `+observationColumns+` FROM observations
-		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3`+scopeCond+notRetired("observations")+`
+		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3`+scopeCond+retiredCond(q, "observations")+`
 		ORDER BY occurred_at DESC, id DESC LIMIT 1`, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -334,7 +334,63 @@ func (p *PgQueryPlane) point(ctx context.Context, q domain.KnowledgeQuery, scope
 	if err != nil {
 		return nil, err
 	}
-	return []domain.QueryRow{obsRow(ob)}, nil
+	rows := []domain.QueryRow{obsRow(ob)}
+	return rows, p.markRetired(ctx, q, []string{ob.SourceRef}, rows)
+}
+
+// retiredCond is the retirement predicate of a typed-row read: notRetired, or
+// nothing when the operator asked for retired rows too (IncludeRetired,
+// ENG-1045). The scope fence is never part of it — retired rows stay fenced.
+func retiredCond(q domain.KnowledgeQuery, alias string) string {
+	if q.IncludeRetired {
+		return ""
+	}
+	return notRetired(alias)
+}
+
+// markRetired stamps the rows whose source_ref has a LIVE retirement with
+// retired:true, retired_reason, retired_by and retired_at, in one statement
+// (refs[i] is rows[i]'s source_ref). A no-op unless IncludeRetired: without the
+// flag no retired row can be in the answer.
+func (p *PgQueryPlane) markRetired(ctx context.Context, q domain.KnowledgeQuery, refs []string, rows []domain.QueryRow) error {
+	if !q.IncludeRetired || len(rows) == 0 {
+		return nil
+	}
+	type retirement struct {
+		reason, by string
+		at         time.Time
+	}
+	sqlRows, err := p.pool.Query(ctx, `
+		SELECT source_ref, reason, retired_by, retired_at FROM typed_row_retirements
+		WHERE namespace_id = $1 AND source_ref = ANY($2::text[]) AND reinstated_at IS NULL`,
+		defaultNamespace, refs)
+	if err != nil {
+		return fmt.Errorf("query: retirements: %w", err)
+	}
+	defer sqlRows.Close()
+	live := map[string]retirement{}
+	for sqlRows.Next() {
+		var ref string
+		var r retirement
+		if err := sqlRows.Scan(&ref, &r.reason, &r.by, &r.at); err != nil {
+			return err
+		}
+		live[ref] = r
+	}
+	if err := sqlRows.Err(); err != nil {
+		return err
+	}
+	for i, row := range rows {
+		r, ok := live[refs[i]]
+		if refs[i] == "" || !ok {
+			continue
+		}
+		row["retired"] = true
+		row["retired_reason"] = r.reason
+		row["retired_by"] = r.by
+		row["retired_at"] = r.at
+	}
+	return nil
 }
 
 // history — ENFORCED in SQL via each observation's evidence classification
@@ -351,21 +407,27 @@ func (p *PgQueryPlane) history(ctx context.Context, q domain.KnowledgeQuery, sco
 	sqlRows, err := p.pool.Query(ctx, `
 		SELECT `+observationColumns+` FROM observations
 		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3
-		  AND occurred_at >= $4 AND occurred_at < $5`+scopeCond+notRetired("observations")+`
+		  AND occurred_at >= $4 AND occurred_at < $5`+scopeCond+retiredCond(q, "observations")+`
 		ORDER BY occurred_at, id LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
-	defer sqlRows.Close()
 	rows := []domain.QueryRow{}
+	var refs []string
 	for sqlRows.Next() {
 		ob, err := scanObservation(sqlRows)
 		if err != nil {
+			sqlRows.Close()
 			return nil, err
 		}
 		rows = append(rows, obsRow(ob))
+		refs = append(refs, ob.SourceRef)
 	}
-	return rows, sqlRows.Err()
+	sqlRows.Close()
+	if err := sqlRows.Err(); err != nil {
+		return nil, err
+	}
+	return rows, p.markRetired(ctx, q, refs, rows)
 }
 
 func itemValues(it *domain.KnowledgeItem) map[string]any {
@@ -818,7 +880,7 @@ func (p *PgQueryPlane) eventsFor(ctx context.Context, q domain.KnowledgeQuery, s
 		FROM events ev
 		WHERE ev.namespace_id=$1 AND ev.occurred_at >= $2 AND ev.occurred_at < $3
 		  AND EXISTS (SELECT 1 FROM event_roles r WHERE r.event_id = ev.id AND r.entity_id = $4)`+
-		notRetired("ev")+latestRevision("ev")+scopeCond+`
+		retiredCond(q, "ev")+latestRevision("ev")+scopeCond+`
 		ORDER BY ev.occurred_at, ev.id LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
@@ -843,6 +905,7 @@ func (p *PgQueryPlane) eventsFor(ctx context.Context, q domain.KnowledgeQuery, s
 		return nil, err
 	}
 	var out []domain.QueryRow
+	var refs []string
 	for _, ev := range evs {
 		ev.Roles = rolesBy[string(ev.ID)]
 		roles := map[string]string{}
@@ -854,8 +917,9 @@ func (p *PgQueryPlane) eventsFor(ctx context.Context, q domain.KnowledgeQuery, s
 			"occurred_at": ev.OccurredAt, "roles": roles,
 			"evidence_id": string(ev.EvidenceID),
 		})
+		refs = append(refs, ev.SourceRef)
 	}
-	return out, nil
+	return out, p.markRetired(ctx, q, refs, out)
 }
 
 // traverse walks co-participation edges breadth-first, hop-capped and

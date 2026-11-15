@@ -133,6 +133,14 @@ func (s *DeliveryService) DeliverProgress(ctx context.Context, conversationID, t
 	if err := s.authorise(ctx, conv.Delivery); err != nil {
 		return err
 	}
+	// Per-ingress opt-in (ADR-0098 D6): an ingress whose registration does not
+	// ask for progress gets none. A quiet no-op, not an error — a refusal here
+	// would read to the progress bridge as a transport pushing back and widen its
+	// interval for nothing. With no registry (OSS) nothing is registered, so
+	// nothing opted out; the premium plugin's kill switch decides there.
+	if !s.progressEnabled(ctx, conv.Delivery) {
+		return nil
+	}
 	return s.transport.Deliver(ctx, domain.IngressDelivery{
 		ConversationID: conversationID,
 		Address:        conv.Delivery,
@@ -423,6 +431,16 @@ func (s *DeliveryService) authorise(ctx context.Context, addr domain.DeliveryAdd
 			domain.ErrIngressRevoked, addr.IngressAgentID, addr.ExternalID)
 	}
 	return nil
+}
+
+// progressEnabled reports whether the address's ingress opted into progress
+// snapshots (domain.IngressRegistration.Progress). No registry ⇒ true.
+func (s *DeliveryService) progressEnabled(ctx context.Context, addr domain.DeliveryAddress) bool {
+	if s.ingresses == nil {
+		return true
+	}
+	reg, ok := s.ingresses.ResolveIngress(ctx, domain.AgentPrincipal(addr.IngressAgentID))
+	return ok && reg.Progress
 }
 
 // classify reports a best-effort (journal-less) delivery failure. Without a

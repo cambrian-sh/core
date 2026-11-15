@@ -45,7 +45,7 @@ func knowledgeServer(t *testing.T) (*Server, *SubstrateLLMGateway, *fakeProposer
 	fp := &fakeProposer{}
 	s.Knowledge = fp
 	// The verb gate is exercised in proposal_verb_test.go; these tests run unrestricted.
-	s.ToolExecutor = &domain.ToolExecutor{Unrestricted: true, Grants: domain.NewInMemoryGrantsStore()}
+	s.ToolExecutor = newTestToolExecutor(t, domain.ToolExecutorControls{Unrestricted: true}, domain.ToolExecutor{})
 	s.RunPrincipal = func(_ context.Context, b domain.LeaseBinding) string {
 		return strings.TrimPrefix(b.ConversationID, "conv-of-")
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -110,6 +111,29 @@ func TestDaemonTransport_TransientAckIsRetryable(t *testing.T) {
 	// (ADR-0090 D8.1).
 	if !errors.Is(err, domain.ErrDeliveryTransient) {
 		t.Errorf("a reported non-permanent failure must be ErrDeliveryTransient, got %v", err)
+	}
+}
+
+// A rate-limited ingress says how long to wait (a Telegram 429's retry_after).
+// The transport carries it on the error so a self-pacing sender — the progress
+// bridge — can honour it, and the failure stays transient
+// (T-20261113-progress-back-off-never-widens-on-a-telegram, ADR-0098 D4).
+func TestDaemonTransport_RetryAfterTravelsOnTheTransientError(t *testing.T) {
+	c := &fakeCaller{resp: ack(t, map[string]any{
+		"status": "failed", "permanent": false, "error": "429 too many requests", "retry_after": 12.5,
+	})}
+	err := NewDaemonTransport(c).Deliver(context.Background(), testDelivery)
+	if !errors.Is(err, domain.ErrDeliveryTransient) {
+		t.Fatalf("a rate-limited ack must stay ErrDeliveryTransient, got %v", err)
+	}
+	d, ok := domain.DeliveryRetryAfter(err)
+	if !ok || d != 12500*time.Millisecond {
+		t.Fatalf("DeliveryRetryAfter = (%v, %v), want 12.5s", d, ok)
+	}
+	// Without retry_after there is nothing to honour.
+	c.resp = ack(t, map[string]any{"status": "failed", "error": "boom"})
+	if _, ok := domain.DeliveryRetryAfter(NewDaemonTransport(c).Deliver(context.Background(), testDelivery)); ok {
+		t.Fatal("an ack with no retry_after must not report one")
 	}
 }
 

@@ -24,7 +24,7 @@ func (a surfaceRecordingAuthz) ReadFilter(ctx context.Context, p PrincipalRef, s
 func TestCallerReadScope_AsksOnTheTurnSurface(t *testing.T) {
 	t.Parallel()
 	var got SurfaceRef
-	e := &ToolExecutor{Authz: surfaceRecordingAuthz{got: &got}}
+	e := &ToolExecutor{authz: surfaceRecordingAuthz{got: &got}}
 	tg := SurfaceRef{Kind: SurfaceChat, ID: "chat:telegram"}
 
 	if eff, _ := e.callerReadScope(WithSurface(context.Background(), tg), ToolCallRequest{AgentID: "chat_agent"}); eff == nil {

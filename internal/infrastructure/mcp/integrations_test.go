@@ -117,7 +117,7 @@ func callEnv(t *testing.T, conn *Connector, id string) string {
 // the tools and reports stopped; remove forgets the record. Every change is
 // observed (it becomes the operator feed event).
 func TestLifecycle_StartStopWithHealthAndToolSync(t *testing.T) {
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	hl := &healthLog{}
 	conn.SetHealthObserver(hl.add)
@@ -168,9 +168,7 @@ func TestLifecycle_StartStopWithHealthAndToolSync(t *testing.T) {
 // A server that cannot start reports error with the cause; the cause never
 // carries a secret injected into it.
 func TestHealth_ErrorIsReportedAndRedacted(t *testing.T) {
-	SetSecretResolver(fakeSecrets{EnvSecretName("broken", "BROKEN_API_KEY"): "sk-very-secret-value"})
-	defer SetSecretResolver(nil)
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{Secrets: fakeSecrets{EnvSecretName("broken", "BROKEN_API_KEY"): "sk-very-secret-value"}})
 	defer conn.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -199,12 +197,10 @@ func TestHealth_ErrorIsReportedAndRedacted(t *testing.T) {
 // Per-server credential sets: a stored secret reaches ONLY the server it was
 // saved for; literal settings reach the process and fill "${NAME}" args.
 func TestSecretsAndSettings_InjectedOnlyIntoTheirServer(t *testing.T) {
-	SetSecretResolver(fakeSecrets{
+	conn := NewConnector(CredentialSources{Secrets: fakeSecrets{
 		EnvSecretName("one", "SHARED_API_KEY"): "secret-for-one",
 		EnvSecretName("two", "SHARED_API_KEY"): "secret-for-two",
-	})
-	defer SetSecretResolver(nil)
-	conn := NewConnector()
+	}})
 	defer conn.Close()
 	ctx := context.Background()
 
@@ -238,9 +234,7 @@ func TestSecretsAndSettings_InjectedOnlyIntoTheirServer(t *testing.T) {
 // D5: a kernel env var the server passes through outranks the stored secret.
 func TestSecrets_PassthroughEnvWinsOverStore(t *testing.T) {
 	t.Setenv("PRECEDENCE_API_KEY", "from-env")
-	SetSecretResolver(fakeSecrets{EnvSecretName("p", "PRECEDENCE_API_KEY"): "from-store"})
-	defer SetSecretResolver(nil)
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{Secrets: fakeSecrets{EnvSecretName("p", "PRECEDENCE_API_KEY"): "from-store"}})
 	defer conn.Close()
 	s := envServer(t, "p")
 	s.SecretEnv = []string{"PRECEDENCE_API_KEY"}
@@ -254,7 +248,7 @@ func TestSecrets_PassthroughEnvWinsOverStore(t *testing.T) {
 // TestServer: ephemeral when not running (lists tools with their policy),
 // the live session when ready; the probe is refused for a dangerous tool.
 func TestTestServer_EphemeralLiveAndProbeGuard(t *testing.T) {
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

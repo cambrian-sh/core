@@ -25,7 +25,7 @@
 // change, and silently deleting labels an operator may have written by hand is
 // not a repair.
 //
-// Writes go through PgVectorAdapter.RetagDocument, never raw SQL: the document
+// Writes go through PgDocumentLifecycle.RetagDocument, never raw SQL: the document
 // row is authoritative and the per-chunk `metadata.tags` copies are a derived
 // cache (ADR-0093). Only that method moves both in one transaction, so a
 // document can never be left half-labelled. An UPDATE against `documents` alone
@@ -48,6 +48,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 )
@@ -90,7 +91,8 @@ func main() {
 	// Raw PgVectorAdapter (tier 0, AGENTS.md §2.2 "kernel-authored artifact
 	// writer"): ADR-0099 names this tool as the offline application of the
 	// identity-vs-classification rule, writing only through
-	// PgVectorAdapter.RetagDocument. It is operator-run, serves no principal, and
+	// PgDocumentLifecycle.RetagDocument (document row, chunk tag cache and the
+	// document's memory_fact items in one transaction, ENG-489). It is operator-run, serves no principal, and
 	// is not part of the kernel's object graph, so MemoryStack (§2.1) does not
 	// apply. Recorded as AGENTS.md §6 open gap 1
 	// (T-20261031-three-cmd-maintenance-tools-write-through-the).
@@ -100,6 +102,16 @@ func main() {
 		os.Exit(1)
 	}
 	defer pg.Close()
+	// The same registry declaration the kernel builds (bootstrapKernel), as
+	// cmd/facts-reset does: the retag re-derives the facts' resolution keys under
+	// core's valid_time_supersession authority.
+	reg, err := domain.NewKindRegistry([]domain.KindSpec{domain.MemoryFactKindSpec()},
+		[]domain.ResolutionAuthority{domain.ValidTimeSupersessionAuthority{}})
+	if err != nil {
+		slog.Error("kind registry failed", "err", err)
+		os.Exit(1)
+	}
+	lifecycle := postgres.NewPgDocumentLifecycle(postgres.NewPgKnowledgeStore(pg.Pool(), reg))
 
 	rows, err := loadDocuments(ctx, pg)
 	if err != nil {
@@ -142,7 +154,7 @@ func main() {
 
 	repaired, failed := 0, 0
 	for _, r := range pending {
-		if err := pg.RetagDocument(ctx, r.id, r.tags); err != nil {
+		if err := lifecycle.RetagDocument(ctx, r.id, r.tags); err != nil {
 			// Reported per document rather than aborting: a repair that stops
 			// halfway is still a correct store (each document moves atomically),
 			// and the count below has to be honest about what actually landed.

@@ -40,10 +40,8 @@ func newTurnFixture(t *testing.T, caller callerFunc) *turnFixture {
 	grants := domain.NewInMemoryGrantsStore()
 	grants.Set("worker", []domain.ToolGrant{{Tool: "execute_code", Policy: domain.ToolResourcePolicy{AllowAll: true}}})
 	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: 30 * time.Second})
-	s.ToolExecutor = &domain.ToolExecutor{
-		Registry: reg, Grants: grants, Approval: hub,
-		Handler: staticToolHandler{result: []byte(`{"ok":1}`)},
-	}
+	s.ToolExecutor = newTestToolExecutor(t, domain.ToolExecutorControls{Registry: reg, Grants: grants, Approval: hub},
+		domain.ToolExecutor{Handler: staticToolHandler{result: []byte(`{"ok":1}`)}})
 	s.Delegations = NewTurnDelegations()
 	// Bind each step lease to the agent it is dispatched to, as production does.
 	s.Dispatcher.(*dispatch.Dispatcher).Leases = gw

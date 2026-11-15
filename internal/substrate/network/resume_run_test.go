@@ -20,14 +20,14 @@ func newMemRunStore() *memRunStore {
 	return &memRunStore{runs: map[domain.RunID]domain.Run{}}
 }
 
-func (s *memRunStore) SaveRun(r domain.Run) error {
+func (s *memRunStore) SaveRun(_ context.Context, r domain.Run) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runs[r.ID] = r
 	return nil
 }
 
-func (s *memRunStore) GetRun(id domain.RunID) (*domain.Run, error) {
+func (s *memRunStore) GetRun(_ context.Context, id domain.RunID) (*domain.Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.runs[id]
@@ -37,7 +37,7 @@ func (s *memRunStore) GetRun(id domain.RunID) (*domain.Run, error) {
 	return &r, nil
 }
 
-func (s *memRunStore) ListRunsForSession(sid domain.SessionID) ([]domain.Run, error) {
+func (s *memRunStore) ListRunsForSession(_ context.Context, sid domain.SessionID) ([]domain.Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []domain.Run
@@ -59,7 +59,7 @@ func newMemCheckpoints() *memCheckpoints {
 	return &memCheckpoints{saved: map[domain.RunID]map[int]map[string]string{}}
 }
 
-func (m *memCheckpoints) SaveCheckpoint(run domain.RunID, step int, ctx map[string]string) error {
+func (m *memCheckpoints) SaveCheckpoint(_ context.Context, run domain.RunID, step int, ctx map[string]string) error {
 	if m.saved[run] == nil {
 		m.saved[run] = map[int]map[string]string{}
 	}
@@ -67,11 +67,11 @@ func (m *memCheckpoints) SaveCheckpoint(run domain.RunID, step int, ctx map[stri
 	return nil
 }
 
-func (m *memCheckpoints) LoadCheckpoint(run domain.RunID, step int) (map[string]string, error) {
+func (m *memCheckpoints) LoadCheckpoint(_ context.Context, run domain.RunID, step int) (map[string]string, error) {
 	return m.saved[run][step], nil
 }
 
-func (m *memCheckpoints) ListCheckpoints(run domain.RunID) ([]executer.CheckpointMeta, error) {
+func (m *memCheckpoints) ListCheckpoints(_ context.Context, run domain.RunID) ([]executer.CheckpointMeta, error) {
 	steps := make([]int, 0, len(m.saved[run]))
 	for s := range m.saved[run] {
 		steps = append(steps, s)
@@ -116,9 +116,9 @@ func threeStepRun(id domain.RunID, session domain.SessionID) domain.Run {
 func TestResumeRun_ContinuesFromLatestCheckpointOfItsOwnPlan(t *testing.T) {
 	t.Parallel()
 	s, runs, cps := resumeServer(t)
-	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
-	_ = cps.SaveCheckpoint("run-1", 0, map[string]string{"step_0": "done"})
-	_ = cps.SaveCheckpoint("run-1", 1, map[string]string{"step_0": "done", "step_1": "done"})
+	_ = runs.SaveRun(context.Background(), threeStepRun("run-1", "sess-1"))
+	_ = cps.SaveCheckpoint(context.Background(), "run-1", 0, map[string]string{"step_0": "done"})
+	_ = cps.SaveCheckpoint(context.Background(), "run-1", 1, map[string]string{"step_0": "done", "step_1": "done"})
 
 	got, err := s.ResumeRun(context.Background(), "run-1", "sess-1")
 	if err != nil {
@@ -139,7 +139,7 @@ func TestResumeRun_ContinuesFromLatestCheckpointOfItsOwnPlan(t *testing.T) {
 func TestResumeRun_NoCheckpointsStartsAtZero(t *testing.T) {
 	t.Parallel()
 	s, runs, _ := resumeServer(t)
-	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
+	_ = runs.SaveRun(context.Background(), threeStepRun("run-1", "sess-1"))
 
 	got, err := s.ResumeRun(context.Background(), "run-1", "sess-1")
 	if err != nil {
@@ -155,7 +155,7 @@ func TestResumeRun_NoCheckpointsStartsAtZero(t *testing.T) {
 func TestResumeRun_RejectsCrossSessionResume(t *testing.T) {
 	t.Parallel()
 	s, runs, _ := resumeServer(t)
-	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
+	_ = runs.SaveRun(context.Background(), threeStepRun("run-1", "sess-1"))
 
 	if _, err := s.ResumeRun(context.Background(), "run-1", "sess-OTHER"); err == nil {
 		t.Fatal("resuming a run from another session must fail")
@@ -176,7 +176,7 @@ func TestResumeRun_RejectsCompletedRun(t *testing.T) {
 	s, runs, _ := resumeServer(t)
 	run := threeStepRun("run-1", "sess-1")
 	run.Status = domain.RunCompleted
-	_ = runs.SaveRun(run)
+	_ = runs.SaveRun(context.Background(), run)
 
 	if _, err := s.ResumeRun(context.Background(), "run-1", "sess-1"); err == nil {
 		t.Fatal("resuming a completed run must fail")
@@ -188,7 +188,7 @@ func TestResumeRun_RejectsCompletedRun(t *testing.T) {
 func TestResumeRun_RejectsRunWithoutPlan(t *testing.T) {
 	t.Parallel()
 	s, runs, _ := resumeServer(t)
-	_ = runs.SaveRun(domain.Run{ID: "run-1", SessionID: "sess-1", Status: domain.RunRunning})
+	_ = runs.SaveRun(context.Background(), domain.Run{ID: "run-1", SessionID: "sess-1", Status: domain.RunRunning})
 
 	if _, err := s.ResumeRun(context.Background(), "run-1", "sess-1"); err == nil {
 		t.Fatal("a run with no persisted plan must not be resumable")
@@ -200,8 +200,8 @@ func TestResumeRun_RejectsRunWithoutPlan(t *testing.T) {
 func TestResumeRun_ClampsStartToPlanLength(t *testing.T) {
 	t.Parallel()
 	s, runs, cps := resumeServer(t)
-	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
-	_ = cps.SaveCheckpoint("run-1", 2, map[string]string{"done": "all"})
+	_ = runs.SaveRun(context.Background(), threeStepRun("run-1", "sess-1"))
+	_ = cps.SaveCheckpoint(context.Background(), "run-1", 2, map[string]string{"done": "all"})
 
 	got, err := s.ResumeRun(context.Background(), "run-1", "sess-1")
 	if err != nil {
@@ -209,5 +209,34 @@ func TestResumeRun_ClampsStartToPlanLength(t *testing.T) {
 	}
 	if got.StartFrom != 3 {
 		t.Errorf("StartFrom = %d, want 3 (clamped to plan length)", got.StartFrom)
+	}
+}
+
+// ctxSeeingRunStore records whether the caller's ctx reached the store.
+type ctxSeeingRunStore struct {
+	*memRunStore
+	sawKey bool
+}
+
+type resumeCtxKey struct{}
+
+func (s *ctxSeeingRunStore) GetRun(ctx context.Context, id domain.RunID) (*domain.Run, error) {
+	s.sawKey = ctx.Value(resumeCtxKey{}) == "req"
+	return s.memRunStore.GetRun(ctx, id)
+}
+
+// ResumeRun hands the request's ctx to the run store rather than dropping it
+// (T-20261113-25-i-o-methods-on-domain-ports-take-no-context, AGENTS.md §2.7).
+func TestResumeRun_PassesTheRequestContextToTheRunStore(t *testing.T) {
+	t.Parallel()
+	s, runs, _ := resumeServer(t)
+	_ = runs.SaveRun(context.Background(), threeStepRun("run-c", "sess-c"))
+	seeing := &ctxSeeingRunStore{memRunStore: runs}
+	s.Runs = seeing
+	if _, err := s.ResumeRun(context.WithValue(context.Background(), resumeCtxKey{}, "req"), "run-c", "sess-c"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if !seeing.sawKey {
+		t.Fatal("the run store did not receive the request's ctx")
 	}
 }

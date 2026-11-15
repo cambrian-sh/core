@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -222,6 +223,12 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// spreading. Flag-gated; default ON since ADR-0049 D10 (config.go defaults).
 		if execCfg.Retrieval.RecallSpreadingEnabled {
 			queryService.EnableSpreading(spEngine)
+			// ENG-484: keep the assembled (non-displacing) order through the spread re-rank.
+			queryService.SetSpreadingKeepsAssemblyOrder(execCfg.Retrieval.RecallSpreadingKeepAssemblyOrder)
+			slog.Info(fmt.Sprintf("retrieval: recall_spreading_enabled=true recall_spreading_keep_assembly_order=%t",
+				execCfg.Retrieval.RecallSpreadingKeepAssemblyOrder))
+		} else if execCfg.Retrieval.RecallSpreadingKeepAssemblyOrder {
+			slog.Warn("retrieval: recall_spreading_keep_assembly_order needs recall_spreading_enabled; it has no effect")
 		}
 		// ADR-0049 D10: Hebbian co-activation edge reinforcement on recall (flag-gated by
 		// execution.retrieval.hebbian_enabled, which DefaultConfig turns ON; the constants

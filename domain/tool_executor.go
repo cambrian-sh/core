@@ -243,13 +243,22 @@ type ToolExecutor struct {
 	// the task's own lifetime — a kernel restart drops them (the phase-4
 	// residual).
 	ParkDeadline  time.Duration
-	Approval      ApprovalController // nil ⇒ dangerous tools are denied (fail-closed)
+	approval      ApprovalController // nil ⇒ dangerous tools are denied (fail-closed)
 	EgressAuditor EgressAuditor      // ADR-0043: records remote-tool data egress; nil ⇒ no auditing
 	Retriever     ToolRetriever      // ADR-0044: relevance-ranks the granted menu; nil ⇒ full menu
-	// Authz is the access-control decision point (ADR-0085). It gates the
+	// authz is the access-control decision point (ADR-0085). It gates the
 	// data-store regime (Regime 1) and, once effects are declared, the effect
-	// classes an invocation may exercise. nil ⇒ the OSS allow-all default.
-	Authz        Authorizer
+	// classes an invocation may exercise. Required by NewToolExecutor (the OSS
+	// default is AllowAllAuthorizer{}, passed explicitly); the nil ⇒ allow-all
+	// fallback in the readers is reachable only from a struct literal inside
+	// this package's tests.
+	//
+	// The security controls (approval, authz, unrestricted, ceiling,
+	// leaseCeiling, argValidator, idempotency, guards, writeTargets, subtasks)
+	// are unexported: NewToolExecutor is the only way to set them, so none can
+	// be attached or swapped after construction (AGENTS.md §2.3,
+	// T-20261113-domain-toolexecutor-has-no-constructor-its).
+	authz        Authorizer
 	ContentStore ContentStore // nil ⇒ results returned inline
 	// InlineThreshold: a result larger than this travels as its reference plus an
 	// OffloadSummary (execution.content.inline_result_bytes). 0 ⇒ always inline.
@@ -265,11 +274,11 @@ type ToolExecutor struct {
 	// nil ⇒ tool calls are unmetered (no behaviour change).
 	Budget  *BudgetLedger
 	Pricing ToolPricingSource
-	// Unrestricted is the operator-chosen bypass (ExecutionConfig.ToolsUnrestricted):
+	// unrestricted is the operator-chosen bypass (ExecutionConfig.ToolsUnrestricted):
 	// every named agent may call every registered tool with an allow-all resource
 	// policy. Approval for dangerous tools STILL applies; an anonymous principal is
 	// still denied. Trusted/dev deployments only.
-	Unrestricted bool
+	unrestricted bool
 	// RestrictedTools (ADR-0051 D6) caps which tools a principal may use, as a HARD
 	// CEILING that overrides Unrestricted: principal id → the set of tool names it may
 	// touch. A principal absent from the map is unrestricted (normal resolution). A
@@ -280,14 +289,14 @@ type ToolExecutor struct {
 	// today. It is kept on purpose (owner, 2026-08-10) as the generic ceiling for the
 	// next unattended read-only organ; the executor knows nothing of any specific one.
 	RestrictedTools map[string]map[string]bool
-	// Ceiling is the glob-based twin of RestrictedTools: a declarative agent
+	// ceiling is the glob-based twin of RestrictedTools: a declarative agent
 	// profile's tool allowlist (agents/profiles/README.md), enforced as a HARD
 	// ceiling at every point RestrictedTools is — before the Unrestricted bypass and
 	// before the skill overlay — so a profile agent stays inside its allowlist even
 	// under tools_unrestricted and a loaded skill cannot widen it (agent stack v2,
 	// T-20261105-agent-stack-v2-worker-agent-runtime-plus). nil ⇒ no profile ceiling.
 	// A tool must be inside BOTH ceilings (withinCeiling).
-	Ceiling ToolCeiling
+	ceiling ToolCeiling
 	// Overlay holds run-scoped grants conferred by a loaded system skill (ADR-0046
 	// D6). nil ⇒ no skill-conferred grants. Consulted in grantFor after the static
 	// grants; dangerous tools still require approval regardless of how granted.
@@ -313,12 +322,12 @@ type ToolExecutor struct {
 	// approver is told of a possible duplicate (action_history.go;
 	// execution.tools.duplicate_notice_window_minutes). nil: no record, no notice.
 	History *ActionHistory
-	// LeaseCeiling is the ADR-0139 D12 per-LEASE tool ceiling: a subagent's
+	// leaseCeiling is the ADR-0139 D12 per-LEASE tool ceiling: a subagent's
 	// toolset (a subset of its parent's tools, resolved by the kernel at spawn)
 	// bound to the child's lease. Checked wherever the session token is known,
 	// after the per-agent ceilings and before the Unrestricted bypass and the
 	// skill overlay, so neither can widen a child past its toolset. nil ⇒ none.
-	LeaseCeiling LeaseToolCeiling
+	leaseCeiling LeaseToolCeiling
 	// Ledger is the ADR-0145 D1 run ledger's writer: every result of a call that
 	// ran (read or write, success or handler error) is recorded here after the
 	// post_tool hooks, so the ledger holds what the agent was actually given.
@@ -337,34 +346,34 @@ type ToolExecutor struct {
 	// each nil/false ⇒ off (the legacy behaviour). The D9 per-step effect menu was
 	// removed by ADR-0145 D14: there is no per-step tool permission.
 	//
-	// ArgValidator validates and coerces arguments against the tool's schema
+	// argValidator validates and coerces arguments against the tool's schema
 	// before authorization (execution.tools.validate_args); an invalid call
 	// returns an Error the model can correct, and never runs.
-	ArgValidator ToolArgValidator
-	// Idempotency stores side-effecting results by IdempotencyKey(run, step,
+	argValidator ToolArgValidator
+	// idempotency stores side-effecting results by IdempotencyKey(run, step,
 	// tool, args) (execution.tools.idempotent_writes): a retry gets the stored
 	// result instead of running the write again.
-	Idempotency *IdempotencyCache
+	idempotency *IdempotencyCache
 	// ReturnLedgerRef returns every recorded result's ledger id in ResultCID even
 	// when the result is small enough to travel inline (ResultJSON is kept), so a
 	// worker can cite the entry a value came from in its answer envelope (ADR-0145
 	// D6). Set with execution.plan.checklist_enabled; the SDK reads a response with
 	// both fields as an inline result plus its reference.
 	ReturnLedgerRef bool
-	// Guards are the ADR-0145 D14 request-tied guards (execution.tools.request_guards):
+	// guards are the ADR-0145 D14 request-tied guards (execution.tools.request_guards):
 	// the checklist's constraints by tool class, the per-request write-target
 	// record, the repair-turn write guard, approval with a notice for a write no
 	// open write/document item asked for, and the per-step record of refused calls.
 	// nil ⇒ none.
-	Guards *RequestGuards
-	// WriteTargets derives each side-effecting call's target from its arguments
+	guards *RequestGuards
+	// writeTargets derives each side-effecting call's target from its arguments
 	// (execution.tools.write_targets). It is the per-target effect record the plan
 	// action ledger keeps for every write (PlanAction.Target), which coverage
 	// matches a write item's target against (ADR-0145 D5.3/D14,
 	// T-20261112-coverage-settles-a-write-item-on-any-done). Independent of Guards:
 	// the record is always kept; Guards.Targets is the same rule set when the
 	// request guards are on. nil ⇒ actions carry no target.
-	WriteTargets *WriteTargets
+	writeTargets *WriteTargets
 	// Stager stages the inputs of a tool that declares StagedInputs (the code
 	// sandbox) into a per-run read-only folder, resolved under the caller's
 	// access (domain/staged_inputs.go; execution.tools.staged_inputs). nil ⇒ a
@@ -374,13 +383,13 @@ type ToolExecutor struct {
 	// error) and stops the step at execution.tools.repeated_failure_stop
 	// (step_failures.go). nil ⇒ off.
 	StepFailures *StepFailures
-	// Subtasks is the ADR-0150 registry of subtask parents and child leases
+	// subtasks is the ADR-0150 registry of subtask parents and child leases
 	// (domain/subtasks.go). On a child lease the executor enforces the lease's
 	// EFFECT ceiling itself — independent of Authz, which is AllowAllAuthorizer in
 	// OSS — keys every side-effecting call deterministically (a resumed subtask
 	// never repeats a write), labels an approval with the subtask, and records
 	// what the worker did (evidence, read-the-web). nil ⇒ no subtasks.
-	Subtasks *Subtasks
+	subtasks *Subtasks
 }
 
 // observeFailure counts a failed call (a tool error, or a final refusal) against
@@ -480,7 +489,7 @@ func (e *ToolExecutor) callerReadScope(ctx context.Context, req ToolCallRequest)
 	if req.AgentID == "" && !req.System {
 		return nil, "anonymous principal"
 	}
-	a := e.Authz
+	a := e.authz
 	if a == nil {
 		a = AllowAllAuthorizer{}
 	}
@@ -535,10 +544,10 @@ func (e *ToolExecutor) recordToLedger(ctx context.Context, req ToolCallRequest, 
 // sessionToken. A lease the ceiling does not bind (every non-child lease), an
 // empty token and a nil ceiling are all inside.
 func (e *ToolExecutor) WithinLeaseCeiling(sessionToken, tool string) bool {
-	if e == nil || e.LeaseCeiling == nil || sessionToken == "" {
+	if e == nil || e.leaseCeiling == nil || sessionToken == "" {
 		return true
 	}
-	inside, bound := e.LeaseCeiling.AllowsLease(sessionToken, tool)
+	inside, bound := e.leaseCeiling.AllowsLease(sessionToken, tool)
 	return !bound || inside
 }
 
@@ -660,10 +669,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// ADR-0145 D14.5: an identical call (tool + canonical arguments) this step had
 	// refused already is answered from the record, without running the checks, an
 	// approval or the tool again; every new refusal is recorded.
-	if e.Guards != nil && e.Guards.Refusals != nil && !req.System {
+	if e.guards != nil && e.guards.Refusals != nil && !req.System {
 		scope := RefusalScope(ctx, req.SessionTokenID)
 		origTool, origArgs := req.ToolName, append([]byte(nil), req.ArgsJSON...)
-		if prev, ok := e.Guards.Refusals.Lookup(scope, origTool, origArgs); ok {
+		if prev, ok := e.guards.Refusals.Lookup(scope, origTool, origArgs); ok {
 			slog.Info("ADR-0145 D14: repeated refused call answered from the step's refusal record",
 				"tool", origTool, "agent", req.AgentID, "reason", prev.DenyReason)
 			prev.DenyReason = strings.TrimSuffix(prev.DenyReason, RepeatedRefusalNote) + RepeatedRefusalNote
@@ -671,7 +680,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		}
 		defer func() {
 			if out.Denied && refusalIsFinal(out.ApprovalState) {
-				e.Guards.Refusals.Record(scope, origTool, origArgs, out)
+				e.guards.Refusals.Record(scope, origTool, origArgs, out)
 			}
 		}()
 	}
@@ -700,8 +709,8 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// ADR-0145 D9: arguments are validated against the tool's schema, and coerced
 	// where unambiguous (a JSON array sent as a string), before anything else sees
 	// them; an invalid call is an error the model can correct, and never runs.
-	if e.ArgValidator != nil && len(tool.Schema) > 0 {
-		fixed, verr := e.ArgValidator.ValidateArgs(req.ToolName, tool.Schema, req.ArgsJSON)
+	if e.argValidator != nil && len(tool.Schema) > 0 {
+		fixed, verr := e.argValidator.ValidateArgs(req.ToolName, tool.Schema, req.ArgsJSON)
 		if verr != nil {
 			return ToolCallResponse{Error: verr.Error(), ArgHash: argHash, ResultHash: hashString(verr.Error())}
 		}
@@ -714,9 +723,9 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// effect ceiling (default read + egress_read). Checked here, by the kernel,
 	// before any grant, approval or dispatch, whatever the authorizer would say:
 	// the ADR-0086 effect gate asks the authorizer, which allows everything in OSS.
-	subtaskLease := !req.System && e.Subtasks.IsChild(req.SessionTokenID)
+	subtaskLease := !req.System && e.subtasks.IsChild(req.SessionTokenID)
 	if subtaskLease {
-		if why := e.Subtasks.EffectRefusal(req.SessionTokenID, tool); why != "" {
+		if why := e.subtasks.EffectRefusal(req.SessionTokenID, tool); why != "" {
 			slog.Info("ADR-0150 D2: call outside the subtask effect ceiling refused",
 				"tool", req.ToolName, "agent", req.AgentID, "lease", req.SessionTokenID)
 			return denied(why, argHash)
@@ -730,10 +739,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// recorded in the durable action record when the registry has one (ENG-1428).
 	var subtaskKey string
 	if subtaskLease && tool.SideEffecting() {
-		if key, ok := e.Subtasks.CallKey(req.SessionTokenID, req.ToolName, req.ArgsJSON); ok {
+		if key, ok := e.subtasks.CallKey(req.SessionTokenID, req.ToolName, req.ArgsJSON); ok {
 			subtaskKey = key
 			sid, _ := SessionIDFromContext(ctx)
-			stored, found, finish := e.Subtasks.Idempotency().BeginAction(ctx, DurableAction{
+			stored, found, finish := e.subtasks.Idempotency().BeginAction(ctx, DurableAction{
 				Key: key, Tool: req.ToolName, Principal: RunPrincipalFromContext(ctx),
 				SessionID: sid, ArgsHash: argHash,
 			})
@@ -758,10 +767,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	}
 	// ADR-0145 D9: a side-effecting call made by a plan step has an idempotency
 	// key; a retry of the same call returns the stored result.
-	if e.Idempotency != nil && tool.SideEffecting() && !req.System && !subtaskLease {
+	if e.idempotency != nil && tool.SideEffecting() && !req.System && !subtaskLease {
 		if sc, ok := StepCallFrom(ctx); ok {
 			sid, _ := SessionIDFromContext(ctx)
-			stored, found, finish := e.Idempotency.BeginAction(ctx, DurableAction{
+			stored, found, finish := e.idempotency.BeginAction(ctx, DurableAction{
 				Key:  IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON),
 				Tool: req.ToolName, RunID: sc.RunID, StepIndex: sc.StepIndex,
 				Principal: RunPrincipalFromContext(ctx), SessionID: sid, ArgsHash: argHash,
@@ -875,7 +884,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	if tool.Dangerous && req.System && verdict == HookAllow {
 		approver = "operator:system"
 	} else if verdict == HookAsk {
-		if e.Approval == nil {
+		if e.approval == nil {
 			if unrequested {
 				return denied("approval required but unavailable: "+UnrequestedWriteNotice(req.ToolName), argHash)
 			}
@@ -903,12 +912,12 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		// labelled with the subtask; only this call (so only that subtask) waits.
 		subtaskLabel := ""
 		if subtaskLease {
-			if b, ok := e.Subtasks.Binding(req.SessionTokenID); ok {
+			if b, ok := e.subtasks.Binding(req.SessionTokenID); ok {
 				subtaskLabel = b.Label
 				notice = joinNotices(SubtaskApprovalNotice(b.Label), notice)
 			}
 		}
-		dec, err := e.Approval.Request(ctx, ApprovalRequest{
+		dec, err := e.approval.Request(ctx, ApprovalRequest{
 			AgentID: req.AgentID, ToolName: req.ToolName, ArgsPreview: preview(req.ArgsJSON, 200),
 			Object: objectOfArgs(req.ArgsJSON), Beneficiary: beneficiary, Args: req.ArgsJSON,
 			ConversationID: ConversationIDFromContext(ctx), SessionID: string(sid),
@@ -987,7 +996,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	}
 	dispatched = true
 	if subtaskLease {
-		e.Subtasks.ObserveCall(req.SessionTokenID, tool)
+		e.subtasks.ObserveCall(req.SessionTokenID, tool)
 	}
 	callMeta := stagedMeta
 	if actionKey != "" {
@@ -1038,7 +1047,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		if errJSON, merr := json.Marshal(map[string]string{"error": err.Error()}); merr == nil {
 			id := e.recordToLedger(ctx, req, tool, errJSON, stagedSources)
 			if subtaskLease {
-				e.Subtasks.AddEvidence(req.SessionTokenID, id)
+				e.subtasks.AddEvidence(req.SessionTokenID, id)
 			}
 		}
 		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver}
@@ -1106,7 +1115,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	if e.Ledger != nil {
 		id := e.recordToLedger(ctx, req, tool, result, stagedSources)
 		if subtaskLease {
-			e.Subtasks.AddEvidence(req.SessionTokenID, id)
+			e.subtasks.AddEvidence(req.SessionTokenID, id)
 		}
 		switch {
 		case id != "" && e.InlineThreshold > 0 && len(result) > e.InlineThreshold:
@@ -1275,7 +1284,7 @@ func (e *ToolExecutor) AvailableTools(ctx context.Context, agentID string) []Sys
 		return nil // anonymous principal: no menu, same as fail-closed grantFor
 	}
 	var menu []SystemTool
-	if e.Unrestricted {
+	if e.unrestricted {
 		menu = e.Registry.All()
 	} else {
 		grants, err := e.Grants.GrantsFor(ctx, agentID)
@@ -1308,8 +1317,8 @@ func (e *ToolExecutor) ceilingBinds(agentID string) bool {
 	if _, restricted := e.RestrictedTools[agentID]; restricted {
 		return true
 	}
-	if e.Ceiling != nil {
-		if _, bound := e.Ceiling.Allows(agentID, ""); bound {
+	if e.ceiling != nil {
+		if _, bound := e.ceiling.Allows(agentID, ""); bound {
 			return true
 		}
 	}
@@ -1324,8 +1333,8 @@ func (e *ToolExecutor) withinCeiling(agentID, tool string) bool {
 	if allow, restricted := e.RestrictedTools[agentID]; restricted && !allow[tool] {
 		return false
 	}
-	if e.Ceiling != nil {
-		if inside, bound := e.Ceiling.Allows(agentID, tool); bound && !inside {
+	if e.ceiling != nil {
+		if inside, bound := e.ceiling.Allows(agentID, tool); bound && !inside {
 			return false
 		}
 	}
@@ -1445,7 +1454,7 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 	}
 	// Unrestricted: any named agent gets an allow-all grant for any registered
 	// tool (operator-chosen bypass). Approval for dangerous tools still applies.
-	if e.Unrestricted {
+	if e.unrestricted {
 		return ToolGrant{Tool: tool, Policy: ToolResourcePolicy{AllowAll: true}}, true
 	}
 	grants, err := e.Grants.GrantsFor(ctx, agentID)
@@ -1493,7 +1502,7 @@ func (e *ToolExecutor) contributedTools(ctx context.Context, agentID string) []S
 		return nil
 	}
 	var grants []ToolGrant
-	if !e.Unrestricted {
+	if !e.unrestricted {
 		var err error
 		grants, err = e.Grants.GrantsFor(ctx, agentID)
 		if err != nil {
@@ -1502,7 +1511,7 @@ func (e *ToolExecutor) contributedTools(ctx context.Context, agentID string) []S
 	}
 	// covered mirrors grantFor's grant loop (CL-4: one matcher, two callers).
 	covered := func(name string) bool {
-		if e.Unrestricted {
+		if e.unrestricted {
 			return true
 		}
 		for _, g := range grants {
@@ -1912,7 +1921,7 @@ func (e *ToolExecutor) ConferSkillGrants(ctx context.Context, session, agentID s
 	if len(tools) == 0 {
 		return nil, nil
 	}
-	a := e.Authz
+	a := e.authz
 	if a == nil {
 		a = AllowAllAuthorizer{}
 	}
@@ -1973,7 +1982,7 @@ func (e *ToolExecutor) effectDecision(ctx context.Context, req ToolCallRequest, 
 			Detail: "tool declares no effect classes (unvalidated registration)",
 		}
 	}
-	a := e.Authz
+	a := e.authz
 	if a == nil {
 		a = AllowAllAuthorizer{}
 	}
@@ -2002,7 +2011,7 @@ func (e *ToolExecutor) ScopeAllows(ctx context.Context, agentID string, tool Sys
 // classes the tool declares. The decision point resolves the predicate; a nil
 // predicate (the plugin could not resolve the principal) denies.
 func (e *ToolExecutor) scopeAllows(ctx context.Context, agentID string, tool SystemTool) bool {
-	a := e.Authz
+	a := e.authz
 	if a == nil {
 		a = AllowAllAuthorizer{}
 	}

@@ -57,7 +57,7 @@ func twoOwnerFleet(t *testing.T) *InMemoryFleet {
 func fleetGrantExec(t *testing.T) *ToolExecutor {
 	t.Helper()
 	e := contributionExec(twoOwnerFleet(t))
-	e.Unrestricted = false
+	e.unrestricted = false
 	e.Grants = grantStore("fleet-agent", ToolGrant{Tool: LocalFleetGrant, Policy: ToolResourcePolicy{AllowAll: true}})
 	return e
 }

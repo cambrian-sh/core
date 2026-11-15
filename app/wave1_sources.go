@@ -27,8 +27,8 @@ import (
 // checkpointSource is the storage surface ListSessionCheckpoints needs. Both the
 // Postgres session store and the bbolt adapter satisfy it.
 type checkpointSource interface {
-	ListRunsForSession(sessionID domain.SessionID) ([]domain.Run, error)
-	ListCheckpoints(runID domain.RunID) ([]domain.CheckpointMeta, error)
+	ListRunsForSession(ctx context.Context, sessionID domain.SessionID) ([]domain.Run, error)
+	ListCheckpoints(ctx context.Context, runID domain.RunID) ([]domain.CheckpointMeta, error)
 }
 
 type checkpointLister struct{ src checkpointSource }
@@ -38,14 +38,14 @@ type checkpointLister struct{ src checkpointSource }
 // The fan-out is the whole adapter: checkpoints are stored per RUN, and an
 // operator holds a session id. Flattening the result would lose which plan each
 // step index belongs to, so every row keeps its run id and the caller groups.
-func (c checkpointLister) CheckpointsForSession(sessionID string) ([]domain.CheckpointMeta, error) {
-	runs, err := c.src.ListRunsForSession(domain.SessionID(sessionID))
+func (c checkpointLister) CheckpointsForSession(ctx context.Context, sessionID string) ([]domain.CheckpointMeta, error) {
+	runs, err := c.src.ListRunsForSession(ctx, domain.SessionID(sessionID))
 	if err != nil {
 		return nil, err
 	}
 	var out []domain.CheckpointMeta
 	for _, r := range runs {
-		metas, err := c.src.ListCheckpoints(r.ID)
+		metas, err := c.src.ListCheckpoints(ctx, r.ID)
 		if err != nil {
 			// One unreadable run must not blank the whole tab: the other runs'
 			// recovery points are still true and still useful.
@@ -63,15 +63,15 @@ func (c checkpointLister) CheckpointsForSession(sessionID string) ([]domain.Chec
 // from is worse than no checkpoint, because the operator plans a recovery that
 // will not happen — so the failure direction here must be "says no when it could
 // have said yes", never the reverse.
-func (c checkpointLister) ResumableAt(runID string, stepIndex int) bool {
+func (c checkpointLister) ResumableAt(ctx context.Context, runID string, stepIndex int) bool {
 	type loader interface {
-		LoadCheckpoint(runID domain.RunID, stepIndex int) (map[string]string, error)
+		LoadCheckpoint(ctx context.Context, runID domain.RunID, stepIndex int) (map[string]string, error)
 	}
 	l, ok := c.src.(loader)
 	if !ok {
 		return false
 	}
-	ctxMap, err := l.LoadCheckpoint(domain.RunID(runID), stepIndex)
+	ctxMap, err := l.LoadCheckpoint(ctx, domain.RunID(runID), stepIndex)
 	return err == nil && ctxMap != nil
 }
 
@@ -88,6 +88,8 @@ type mcpLister struct {
 	// secrets answers "is a token installed, and where from?" without carrying
 	// it. nil ⇒ report env-var presence only.
 	secrets *storage.BoltConfigStore
+	// org is the account provider's org-credential writer (ADR-0141), nil in OSS.
+	org domain.OrgCredentialWriter
 }
 
 // MCPConfigured is true whenever the runtime exists — since contract 0097 the
@@ -134,6 +136,12 @@ func (m mcpLister) MCPServers() []operator.MCPServerInfo {
 		if m.toolsFor != nil {
 			info.ToolCount = m.toolsFor(s.ID)
 		}
+		// ADR-0139 D8: a stdio server's effective containment, as on IntegrationOp.
+		if m.runtime != nil {
+			if rep, ok := m.runtime.containment(m.connector, s.ID); ok {
+				info.Containment = containmentOp(rep)
+			}
+		}
 		out = append(out, info)
 	}
 	return out
@@ -146,8 +154,8 @@ func (m mcpLister) tokenFacts(s mcp.ServerConfig) (configured bool, source strin
 	if s.AuthTokenEnv != "" && os.Getenv(s.AuthTokenEnv) != "" {
 		return true, "env:" + s.AuthTokenEnv
 	}
-	if ok, _ := sharedMCPCredentialStatus(m.secrets, s.ID, mcp.TokenSecretName(s.ID)); ok {
-		if orgCredentialWriter() != nil {
+	if ok, _ := sharedMCPCredentialStatus(m.org, m.secrets, s.ID, mcp.TokenSecretName(s.ID)); ok {
+		if m.org != nil {
 			return true, "account" // ADR-0141: the org account bound to the server
 		}
 		return true, "store"
@@ -224,6 +232,8 @@ type generatorRegistry struct {
 	// secrets resolves whether a credential is installed and where it comes
 	// from, WITHOUT returning it. nil ⇒ report env-var presence only.
 	secrets *storage.BoltConfigStore
+	// org is the account provider's org-credential writer (ADR-0141), nil in OSS.
+	org domain.OrgCredentialWriter
 }
 
 // liveList returns the runtime list/default when wired, else the boot config.

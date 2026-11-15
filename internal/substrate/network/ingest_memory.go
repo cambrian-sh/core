@@ -9,6 +9,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/llmusage"
 
 	"github.com/cambrian-sh/core/internal/memory"
 
@@ -140,8 +141,8 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		ictx = domain.WithStageClock(ictx, clock)
 		// The kernel's own LLM calls for this ingest (fact extraction, assessment, any
 		// organ the pipeline reaches) go back as the "cambrian-llm-usage" trailer,
-		// counted by the ADR-0131 SpendMeter (LLMUsageTrailer).
-		ictx, sendLLMUsage := withLLMUsageTally(ictx)
+		// counted by the ADR-0131 SpendMeter (llmusage.Trailer).
+		ictx, sendLLMUsage := llmusage.WithTally(ictx)
 		started := time.Now()
 		entityID, err := s.IngestionProcessor.ProcessSync(ictx, doc)
 		_ = grpc.SetTrailer(ctx, metadata.Pairs(IngestTimingTrailer, memory.FormatStageClock(clock, time.Since(started)))) // best-effort diagnostic; fails only outside a gRPC call (tests)

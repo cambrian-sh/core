@@ -41,7 +41,11 @@ type composerAgents interface {
 //
 // Called after the run ledger (wireEvidencePipeline) and
 // the skill access service are wired. Off ⇒ nothing is touched.
-func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, d *dispatch.Dispatcher, agents composerAgents) {
+//
+// leases is the composition registry the executor was CONSTRUCTED with as its
+// lease ceiling (buildExecutorLeases, AGENTS.md §2.3); this function only binds
+// compositions into it, it never attaches a ceiling to the executor.
+func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, d *dispatch.Dispatcher, agents composerAgents, leases *domain.ComposedLeases) {
 	// ADR-0145 D14 worker delegation (any worker, composed or not): the server
 	// marks a step lease whose worker waits on delegate_to_planner and the
 	// dispatcher neither times that step out nor re-dispatches it
@@ -54,15 +58,16 @@ func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, 
 	if !w.Composed {
 		return
 	}
-	if server == nil || server.ToolExecutor == nil || d == nil || agents == nil {
-		slog.Error("ADR-0145 D12: execution.workers.composed is set but the server, tool executor or dispatcher is missing; composed workers are OFF")
+	if server == nil || server.ToolExecutor == nil || d == nil || agents == nil || leases == nil {
+		slog.Error("ADR-0145 D12: execution.workers.composed is set but the server, tool executor, dispatcher or the executor's composition registry is missing; composed workers are OFF")
 		return
 	}
 	te := server.ToolExecutor
-	leases := domain.NewComposedLeases()
-	te.LeaseCeiling = domain.ChainLeaseCeilings(te.LeaseCeiling, leases)
 	if te.Overlay == nil {
-		te.Overlay = domain.NewRunGrantOverlay()
+		// app.go constructs the executor with an overlay; without one the
+		// composer would hand skill grants to nothing.
+		slog.Error("ADR-0145 D12: the tool executor has no run grant overlay; composed workers are OFF")
+		return
 	}
 	server.Compositions = leases
 	server.ComposedRuntimeID = w.RuntimeID()

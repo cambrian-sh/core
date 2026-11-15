@@ -141,9 +141,8 @@ func TestPerUser_HTTP_ACallNeverUsesAnotherPrincipalsToken(t *testing.T) {
 	creds.set("mail", "alice", "tok-alice-1111")
 	creds.set("mail", "bob", "tok-bob-2222")
 
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{User: creds, UserLimits: UserPoolLimits{Max: 8}})
 	defer conn.Close()
-	conn.SetUserCredentials(creds, UserPoolLimits{Max: 8})
 	cfg := perUserHTTP("mail", srv.url, "bearer", "")
 	cfg.AuthType, cfg.AuthTokenEnv = "bearer", "SHARED_TOKEN_ENV_UNUSED"
 	conn.rememberConfig(cfg)
@@ -189,9 +188,8 @@ func TestPerUser_HTTP_CustomHeaderInjection(t *testing.T) {
 	srv := newWhoamiServer(t, "X-Api-Key")
 	creds := newFakeUserCreds()
 	creds.set("crm", "alice", "key-alice-9999")
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{User: creds})
 	defer conn.Close()
-	conn.SetUserCredentials(creds, UserPoolLimits{})
 	conn.rememberConfig(perUserHTTP("crm", srv.url, "header", "X-Api-Key"))
 	out, err := callAs(context.Background(), &Handler{Sessions: conn}, "alice", "mcp:crm/whoami")
 	if err != nil || !strings.Contains(out, `"key-alice-9999"`) {
@@ -204,9 +202,8 @@ func TestPerUser_MissingCredentialIsACleanErrorWithNoFallback(t *testing.T) {
 	srv := newWhoamiServer(t, "Authorization")
 	creds := newFakeUserCreds()
 	creds.set("mail", "alice", "tok-alice-1111")
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{User: creds})
 	defer conn.Close()
-	conn.SetUserCredentials(creds, UserPoolLimits{})
 	conn.rememberConfig(perUserHTTP("mail", srv.url, "bearer", ""))
 	h := &Handler{Sessions: conn}
 
@@ -247,8 +244,7 @@ func TestPerUser_EitherFallbackPolicy(t *testing.T) {
 	t.Setenv("GH_SHARED_TEST_TOKEN", "tok-shared-0000")
 
 	run := func(fallback bool) (*Connector, *Handler) {
-		conn := NewConnector()
-		conn.SetUserCredentials(creds, UserPoolLimits{})
+		conn := NewConnector(CredentialSources{User: creds})
 		cfg := ServerConfig{ID: "gh", Transport: "http", Endpoint: shared.url, AllowPrivateNetwork: true,
 			AuthType: "bearer", AuthTokenEnv: "GH_SHARED_TEST_TOKEN",
 			DefaultPolicy:   &ToolPolicy{Effects: []string{"read"}},
@@ -299,18 +295,16 @@ func TestPerUser_EitherFallbackPolicy(t *testing.T) {
 // not the server's shared secret_env); lazy start, idle kill, cap, and a
 // relaunch when the token was refreshed.
 func TestPerUser_Stdio_InstanceLifecycle(t *testing.T) {
-	SetSecretResolver(fakeSecrets{"mcp:mail:env:SHARED_SECRET": "shared-secret-value"})
-	defer SetSecretResolver(nil)
 	creds := newFakeUserCreds()
 	creds.set("mail", "alice", "tok-alice-1111")
 	creds.set("mail", "bob", "tok-bob-2222")
 	creds.set("mail", "carol", "tok-carol-3333")
 
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{User: creds, UserLimits: UserPoolLimits{Max: 2, Idle: time.Minute},
+		Secrets: fakeSecrets{"mcp:mail:env:SHARED_SECRET": "shared-secret-value"}})
 	defer conn.Close()
 	now := time.Now()
 	conn.users.now = func() time.Time { return now }
-	conn.SetUserCredentials(creds, UserPoolLimits{Max: 2, Idle: time.Minute})
 	cfg := envServer(t, "mail")
 	cfg.SecretEnv = []string{"SHARED_SECRET"}
 	cfg.CredentialScope, cfg.UserInject, cfg.UserInjectName = ScopePerUser, "env", "MAIL_TOKEN"
@@ -378,9 +372,8 @@ func TestPerUser_Stdio_InstanceLifecycle(t *testing.T) {
 func TestPerUser_DiscoveryWaitsForTheFirstAccount(t *testing.T) {
 	srv := newWhoamiServer(t, "Authorization")
 	creds := newFakeUserCreds()
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{User: creds})
 	defer conn.Close()
-	conn.SetUserCredentials(creds, UserPoolLimits{})
 	sink := newRecSink()
 	cfg := perUserHTTP("mail", srv.url, "bearer", "")
 	if tools := conn.ConnectAll(context.Background(), []ServerConfig{cfg}); len(tools) != 0 {
@@ -398,5 +391,41 @@ func TestPerUser_DiscoveryWaitsForTheFirstAccount(t *testing.T) {
 	conn.RemoveServer(context.Background(), "mail", sink)
 	if sink.count("mail") != 0 {
 		t.Fatal("removing the server must withdraw the discovered tools")
+	}
+}
+
+// T-20261106-testintegration-and-the-catalog-op-do-not: a per_user server is
+// tested on the CALLER's own connection — never by dialling the shared config
+// (which has no credential for it and always failed) — and a caller who has not
+// connected the account is told so instead of getting a transport error.
+func TestTestServer_PerUserTestsTheCallersOwnConnection(t *testing.T) {
+	srv := newWhoamiServer(t, "Authorization")
+	creds := newFakeUserCreds()
+	creds.set("mail", "alice", "tok-alice-1111")
+	conn := NewConnector(CredentialSources{User: creds})
+	defer conn.Close()
+	cfg := perUserHTTP("mail", srv.url, "bearer", "")
+
+	alice := domain.WithRunPrincipal(context.Background(), "alice")
+	rep := conn.TestServer(alice, cfg, "whoami", nil)
+	if !rep.OK || !rep.UsedLive || !rep.ProbeOK || !strings.Contains(rep.ProbeOutput, "tok-alice-1111") {
+		t.Fatalf("alice's test must run on her own connection: %+v", rep)
+	}
+
+	bob := domain.WithRunPrincipal(context.Background(), "bob")
+	rep = conn.TestServer(bob, cfg, "whoami", nil)
+	if rep.OK || !strings.Contains(rep.Err, "have not connected it") {
+		t.Fatalf("bob has no account: the test must say connect it first, got %+v", rep)
+	}
+	rep = conn.TestServer(context.Background(), cfg, "", nil)
+	if rep.OK || rep.Err == "" {
+		t.Fatalf("no caller: the per_user test must not run on any credential: %+v", rep)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	for _, a := range srv.hdrs {
+		if a != "Bearer tok-alice-1111" {
+			t.Fatalf("the server saw a credential other than alice's: %q", a)
+		}
 	}
 }

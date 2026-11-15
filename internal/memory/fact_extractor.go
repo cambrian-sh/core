@@ -76,6 +76,13 @@ type FactExtractor struct {
 	parseRetries    atomic.Uint64 // re-asks after an unreadable answer (fact_llm_call.go)
 	parseRepaired   atomic.Uint64 // windows whose re-ask was read
 	timeouts        atomic.Uint64 // extraction calls that ran out of time
+	// ENG-431: what was only in the log — partially covered documents and the facts
+	// validation refused, by reason — so the operator Snapshot can show it.
+	partialDocs    atomic.Uint64
+	refusedQuote   atomic.Uint64
+	refusedShape   atomic.Uint64
+	refusedDup     atomic.Uint64
+	refusedOverCap atomic.Uint64
 }
 
 // FactExtractorConfig is execution.facts, mapped by kernel.factExtractorConfigFrom.
@@ -131,6 +138,9 @@ type FactExtractorStats struct {
 	// caused, ParseRepaired the windows a re-ask recovered, Timeouts the calls that ran
 	// out of time.
 	ParseFailures, ParseRetries, ParseRepaired, Timeouts uint64
+	// PartialDocs counts documents cut at max_calls_per_document (facts-backfill
+	// resumes them); Refused* count facts validation refused, by reason (ENG-431).
+	PartialDocs, RefusedQuoteNotFound, RefusedBadShape, RefusedDuplicate, RefusedOverCap uint64
 }
 
 type factJob struct {
@@ -344,6 +354,8 @@ func (e *FactExtractor) Stats() FactExtractorStats {
 		Stored: e.stored.Load(), ProfilesLearned: e.learned.Load(),
 		ParseFailures: e.parseFailures.Load(), ParseRetries: e.parseRetries.Load(),
 		ParseRepaired: e.parseRepaired.Load(), Timeouts: e.timeouts.Load(),
+		PartialDocs: e.partialDocs.Load(), RefusedQuoteNotFound: e.refusedQuote.Load(),
+		RefusedBadShape: e.refusedShape.Load(), RefusedDuplicate: e.refusedDup.Load(), RefusedOverCap: e.refusedOverCap.Load(),
 	}
 }
 
@@ -612,6 +624,9 @@ func (e *FactExtractor) process(j factJob) (FactDocumentResult, error) {
 	}
 	res.Facts = facts
 	e.extracted.Add(1)
+	if res.Partial {
+		e.partialDocs.Add(1)
+	}
 	e.stored.Add(uint64(res.Stats.Inserted))
 	slog.InfoContext(ctx, "FactExtractor: document extracted", "document_id", j.documentID,
 		"windows", res.Windows, "passages", len(passages), "covered", covered, "partial", res.Partial,
@@ -663,6 +678,10 @@ func (e *FactExtractor) extractWindow(j factJob, win []factPassage, w, of, maxFa
 	if err != nil {
 		return FactSaveStats{}, 0, nil, nil, err
 	}
+	e.refusedQuote.Add(uint64(pst.QuoteNotFound))
+	e.refusedShape.Add(uint64(pst.BadShape))
+	e.refusedDup.Add(uint64(pst.Duplicate))
+	e.refusedOverCap.Add(uint64(pst.OverCap))
 	if pst.Returned > pst.Kept {
 		slog.InfoContext(ctx, "FactExtractor: facts refused by validation", "document_id", j.documentID, "window", w+1,
 			"returned", pst.Returned, "kept", pst.Kept, "bad_shape", pst.BadShape,

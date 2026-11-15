@@ -1,4 +1,9 @@
-package network
+// Package llmusage renders the per-request LLM usage tally (domain.LLMUsageTally,
+// fed by the ADR-0131 SpendMeter) as the cambrian-llm-usage gRPC trailer. It is
+// shared by the agent plane (internal/substrate/network) and the operator plane
+// (internal/substrate/operator) so both memory surfaces report the same thing
+// in the same grammar (ENG-534); neither plane imports the other.
+package llmusage
 
 import (
 	"context"
@@ -12,8 +17,9 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// LLMUsageTrailer is the gRPC trailer key carrying the kernel's own LLM calls
-// made on behalf of one agent-plane memory call (IngestMemory, QueryMemory): the
+// Trailer is the gRPC trailer key carrying the kernel's own LLM calls made on
+// behalf of one memory call — agent plane IngestMemory/QueryMemory, operator plane
+// IngestMemory/QueryMemory/AnswerMemory (ENG-534): the
 // calls the ADR-0131 SpendMeter booked to the request's domain.LLMUsageTally.
 // Diagnostic, not a contract (like IngestTimingTrailer): keys may change, and
 // adding it needed no proto change.
@@ -37,21 +43,21 @@ import (
 // fact lane does; async lanes that finish later (the KG lane without
 // sync_ingest_wait_for_kg, tier-2, verification) are booked to the session but
 // not to this response.
-const LLMUsageTrailer = "cambrian-llm-usage"
+const Trailer = "cambrian-llm-usage"
 
-// withLLMUsageTally opens a per-request tally on ctx and returns the function
-// that writes it as the LLMUsageTrailer. Call the function once, after the work
+// WithTally opens a per-request tally on ctx and returns the function that
+// writes it as the Trailer. Call the function once, after the work
 // and before returning (grpc.SetTrailer is best-effort: it fails only outside a
 // gRPC call, i.e. in unit tests that call the handler directly).
-func withLLMUsageTally(ctx context.Context) (context.Context, func()) {
+func WithTally(ctx context.Context) (context.Context, func()) {
 	tctx, tally := domain.WithLLMUsageTally(ctx)
 	return tctx, func() {
-		_ = grpc.SetTrailer(ctx, metadata.Pairs(LLMUsageTrailer, FormatLLMUsage(tally))) // best-effort diagnostic, see above
+		_ = grpc.SetTrailer(ctx, metadata.Pairs(Trailer, Format(tally))) // best-effort diagnostic, see above
 	}
 }
 
-// FormatLLMUsage renders a tally in the LLMUsageTrailer format.
-func FormatLLMUsage(t *domain.LLMUsageTally) string {
+// Format renders a tally in the Trailer format.
+func Format(t *domain.LLMUsageTally) string {
 	var b strings.Builder
 	writeLLMUsage(&b, "", t.Total())
 	for _, p := range t.ByPurpose() {

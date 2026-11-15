@@ -26,11 +26,11 @@ import (
 // the session's runs — but every row carries its run id, because a step index
 // only means anything relative to the plan of the run it was taken against.
 type CheckpointLister interface {
-	CheckpointsForSession(sessionID string) ([]domain.CheckpointMeta, error)
+	CheckpointsForSession(ctx context.Context, sessionID string) ([]domain.CheckpointMeta, error)
 	// ResumableAt reports whether a resume from this checkpoint is still valid.
 	// Separated from the listing because it is a question about the CURRENT plan,
 	// not a property recorded when the checkpoint was written.
-	ResumableAt(runID string, stepIndex int) bool
+	ResumableAt(ctx context.Context, runID string, stepIndex int) bool
 }
 
 // MCPServerLister enumerates the configured external MCP servers (ADR-0043) with
@@ -66,6 +66,9 @@ type MCPServerInfo struct {
 	TokenConfigured    bool
 	TokenSource        string
 	ClassificationTags []string
+	// Containment is a stdio server's ADR-0139 D8 effective containment; nil for
+	// http/sse servers (T-20261106-integrationop-has-no-structured-containment).
+	Containment *pb.IntegrationContainmentOp
 }
 
 // EmbeddingReporter reports the embedding model, its dimensions and the stored
@@ -108,14 +111,14 @@ func (s *Service) SetWave1Reads(
 }
 
 // ListSessionCheckpoints returns a session's checkpoints, grouped by run.
-func (s *Service) ListSessionCheckpoints(_ context.Context, req *pb.ListSessionCheckpointsOpRequest) (*pb.ListSessionCheckpointsOpResponse, error) {
+func (s *Service) ListSessionCheckpoints(ctx context.Context, req *pb.ListSessionCheckpointsOpRequest) (*pb.ListSessionCheckpointsOpResponse, error) {
 	if s.checkpoints == nil {
 		return nil, status.Error(codes.Unimplemented, "no checkpoint store is wired on this kernel")
 	}
 	if req.GetSessionId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
-	metas, err := s.checkpoints.CheckpointsForSession(req.GetSessionId())
+	metas, err := s.checkpoints.CheckpointsForSession(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list checkpoints: %v", err)
 	}
@@ -140,7 +143,7 @@ func (s *Service) ListSessionCheckpoints(_ context.Context, req *pb.ListSessionC
 			PlanId:          m.PlanID,
 			StepIndex:       int32(m.StepIndex),
 			WrittenAtUnixMs: m.Timestamp.UnixMilli(),
-			Resumable:       s.checkpoints.ResumableAt(string(m.RunID), m.StepIndex),
+			Resumable:       s.checkpoints.ResumableAt(ctx, string(m.RunID), m.StepIndex),
 		})
 	}
 	return &pb.ListSessionCheckpointsOpResponse{Checkpoints: out}, nil
@@ -169,6 +172,7 @@ func (s *Service) ListMCPServers(_ context.Context, _ *pb.ListMCPServersOpReques
 			TokenConfigured:    m.TokenConfigured,
 			TokenSource:        m.TokenSource,
 			ClassificationTags: m.ClassificationTags,
+			Containment:        m.Containment,
 		})
 	}
 	return &pb.ListMCPServersOpResponse{

@@ -398,7 +398,12 @@ func TestPg_OwnerFence_DocumentListingRetagAndUpsert(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE chunks SET document_id = $1 WHERE id = $2`, ofPrefix+"a", ofPrefix+"a-c1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.RetagDocument(ctx, ofPrefix+"a", []string{"public", "owner:bob"}); err != nil {
+	reg, err := domain.NewKindRegistry([]domain.KindSpec{domain.MemoryFactKindSpec()},
+		[]domain.ResolutionAuthority{domain.ValidTimeSupersessionAuthority{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewPgDocumentLifecycle(NewPgKnowledgeStore(p.Pool(), reg)).RetagDocument(ctx, ofPrefix+"a", []string{"public", "owner:bob"}); err != nil {
 		t.Fatal(err)
 	}
 	tags, _, err := p.DocumentTags(ctx, ofPrefix+"a")

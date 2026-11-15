@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/storage"
 )
 
@@ -20,7 +19,7 @@ import (
 //     (domain.OrgCredentialWriter). SetMCPServerToken, SetIntegrationSecret
 //     and InstallIntegration's secrets rotate the account bound to the server
 //     slot (creating and binding one when none is), and the consumer-named
-//     store entries are neither written nor read (mcp.SetOrgCredentials).
+//     store entries are neither written nor read (mcp.CredentialSources.Org).
 //
 // The operator RPCs and their outcomes are unchanged, so no console change is
 // needed for either deployment shape.
@@ -28,14 +27,6 @@ import (
 // sharedCredActor attributes provider-side audit entries written through the
 // legacy RPCs; the operator RPC itself is audited with the caller.
 const sharedCredActor = "operator-console"
-
-// orgCredentialWriter is the installed provider's org-credential writer, or nil.
-func orgCredentialWriter() domain.OrgCredentialWriter {
-	if w, ok := mcp.OrgCredentials().(domain.OrgCredentialWriter); ok {
-		return w
-	}
-	return nil
-}
 
 // mcpSlotOf derives the credential slot from a consumer-named secret
 // (mcp:<id>:token → "token", mcp:<id>:env:<NAME> → "env:<NAME>").
@@ -50,8 +41,11 @@ func mcpOrgRequest(serverID, secretName string) domain.CredentialRequest {
 // writeSharedMCPCredential stores one shared credential of one server. ctx is
 // the operator RPC's (AGENTS.md §2.7): the provider write inherits its
 // deadline, cancellation, principal and trace.
-func writeSharedMCPCredential(ctx context.Context, store *storage.BoltConfigStore, serverID, secretName, value string) error {
-	if w := orgCredentialWriter(); w != nil {
+//
+// org is the installed provider's org-credential writer (credentialSeams.orgWriter),
+// nil in OSS — the same provider the MCP connector was constructed with.
+func writeSharedMCPCredential(ctx context.Context, org domain.OrgCredentialWriter, store *storage.BoltConfigStore, serverID, secretName, value string) error {
+	if w := org; w != nil {
 		return w.SetOrgCredential(ctx, mcpOrgRequest(serverID, secretName), value, sharedCredActor)
 	}
 	return store.SetSecret(secretName, value)
@@ -59,8 +53,8 @@ func writeSharedMCPCredential(ctx context.Context, store *storage.BoltConfigStor
 
 // clearSharedMCPCredential removes one shared credential of one server (with
 // accounts: unbinds the slot; the account is kept for its other consumers).
-func clearSharedMCPCredential(ctx context.Context, store *storage.BoltConfigStore, serverID, secretName string) error {
-	if w := orgCredentialWriter(); w != nil {
+func clearSharedMCPCredential(ctx context.Context, org domain.OrgCredentialWriter, store *storage.BoltConfigStore, serverID, secretName string) error {
+	if w := org; w != nil {
 		if _, err := w.ClearOrgCredential(ctx, mcpOrgRequest(serverID, secretName), sharedCredActor); err != nil {
 			return err
 		}
@@ -77,8 +71,8 @@ func clearSharedMCPCredential(ctx context.Context, store *storage.BoltConfigStor
 
 // sharedMCPCredentialStatus reports whether a shared credential is stored, and
 // when it was last written. Never the value.
-func sharedMCPCredentialStatus(store *storage.BoltConfigStore, serverID, secretName string) (bool, time.Time) {
-	if w := orgCredentialWriter(); w != nil {
+func sharedMCPCredentialStatus(org domain.OrgCredentialWriter, store *storage.BoltConfigStore, serverID, secretName string) (bool, time.Time) {
+	if w := org; w != nil {
 		ok, _, at := w.OrgCredentialStatus(mcpOrgRequest(serverID, secretName))
 		return ok, at
 	}

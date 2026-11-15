@@ -87,18 +87,21 @@ func TestCredentialSource_EndToEndThroughTheSeam(t *testing.T) {
 			Scopes: []string{"repo"}, Inject: "bearer"}}
 	rt := &mcpRuntime{}
 	rt.upsertConfig(entry, mcpSourceStore)
-	conn := mcp.NewConnector()
-	defer conn.Close()
-
 	fake := &fakeAccounts{tokens: map[string]string{"gh/alice": "token-of-alice-777"}}
 	factory := func(svc CredentialServices) (domain.CredentialSource, error) {
 		fake.svc = svc
 		return fake, nil
 	}
-	src, err := buildCredentialSource(factory, &config.Config{}, store, rt, conn, &credentialSeams{})
+	// As bootstrapKernel does: the source is built first and the connector is
+	// constructed with it (the provider reaches the connector lazily).
+	var conn *mcp.Connector
+	src, err := buildCredentialSource(factory, &config.Config{}, store,
+		func() *mcpRuntime { return rt }, func() *mcp.Connector { return conn }, &credentialSeams{})
 	if err != nil || src == nil {
 		t.Fatalf("build: %v %v", src, err)
 	}
+	conn = mcp.NewConnector(mcpCredentialSources(&config.Config{}, store, src))
+	defer conn.Close()
 	// The services the provider gets.
 	m, ok := fake.svc.ServerCredentialModel("gh")
 	if !ok || m.Scope != domain.CredentialScopePerUser || m.Provider != "github" || m.DisplayName != "GitHub" {
@@ -151,11 +154,13 @@ func TestCredentialSource_EndToEndThroughTheSeam(t *testing.T) {
 // OSS default: no factory ⇒ nothing installed, and a factory without the
 // config store is refused (per-user servers then fail closed).
 func TestCredentialSource_OffAndMisconfigured(t *testing.T) {
-	if src, err := buildCredentialSource(nil, &config.Config{}, nil, &mcpRuntime{}, mcp.NewConnector(), &credentialSeams{}); src != nil || err != nil {
+	rt := func() *mcpRuntime { return &mcpRuntime{} }
+	conn := func() *mcp.Connector { return nil }
+	if src, err := buildCredentialSource(nil, &config.Config{}, nil, rt, conn, &credentialSeams{}); src != nil || err != nil {
 		t.Fatalf("no factory must be (nil, nil): %v %v", src, err)
 	}
 	f := func(CredentialServices) (domain.CredentialSource, error) { return &fakeAccounts{}, nil }
-	if _, err := buildCredentialSource(f, &config.Config{}, nil, &mcpRuntime{}, mcp.NewConnector(), &credentialSeams{}); err == nil {
+	if _, err := buildCredentialSource(f, &config.Config{}, nil, rt, conn, &credentialSeams{}); err == nil {
 		t.Fatal("a provider without the config store must fail")
 	}
 	r := &Registry{}

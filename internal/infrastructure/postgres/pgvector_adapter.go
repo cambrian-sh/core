@@ -357,6 +357,16 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 	if err := p.ensureSchema(ctx); err != nil {
 		return nil, err
 	}
+	// ENG-277 / ADR-0107 D2: a projection-read store searches chunk_embeddings, which
+	// needs the configured model's partial HNSW index; only cmd/embed-backfill used
+	// to create it, so a fresh store ran every dense read as an exact scan. Ensured
+	// under the same auto_migrate gate as the schema. A failure degrades (exact
+	// scan still answers correctly) and is logged, not fatal.
+	if p.projectionRead && p.autoMigrate {
+		if ierr := EnsureProjectionIndex(ctx, p.pool, p.projModelID, p.dim); ierr != nil {
+			slog.Warn("ADR-0107: could not ensure the projection HNSW index; dense reads run without it", "err", ierr)
+		}
+	}
 
 	return p, nil
 }
@@ -694,12 +704,21 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) (*goqu.InsertDa
 
 // upsertSQL renders doc's upsert, surfacing both the metadata encoding error and
 // the builder's own ToSQL error instead of executing empty SQL.
+//
+// Prepared(true) (ENG-335): every VALUE travels as a bind parameter ($n) — the
+// vector in pgvector's binary form, the metadata as jsonb — instead of being
+// interpolated as a ~20 KB literal per row. The statement text is then the same
+// for every row of one shape, so pgx caches one prepared statement, and the wire
+// carries the 1024 floats as 4 KB of binary, not ~11 KB of text. The SQL fragments
+// written with goqu.L (EXCLUDED.*, the keepStatedTime CASE, the version bump)
+// carry no values and render unchanged; the document_id / experience_id subselect
+// binds its id like any other value.
 func (p *PgVectorAdapter) upsertSQL(doc *domain.Document) (string, []any, error) {
 	ds, err := p.getUpsertBuilder(doc)
 	if err != nil {
 		return "", nil, err
 	}
-	return ds.ToSQL()
+	return ds.Prepared(true).ToSQL()
 }
 
 // eventStampValues maps a stated stamp onto its five columns (NULL for an unset part).
@@ -812,22 +831,34 @@ func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document
 	defer tx.Rollback(ctx)
 	clock.Since(domain.StageChunkSaveBegin, t)
 
-	var upsert, projection time.Duration
+	// ENG-335: every upsert (and its ADR-0107 projection upsert, immediately after
+	// it, as before) is queued on ONE pgx.Batch and sent in a single round trip
+	// inside the transaction, instead of one round trip per statement. The
+	// upsert/projection split of the timing line can no longer be measured per
+	// statement, so the whole batch is reported as chunk_save_upsert and
+	// chunk_save_projection stays 0.
+	t = time.Now()
+	var batch pgx.Batch
 	for i, doc := range docs {
-		sql, args := stmts[i].sql, stmts[i].args
-		t = time.Now()
-		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		batch.Queue(stmts[i].sql, stmts[i].args...)
+		if p.projectionWrite && len(doc.Embedding.Vector) > 0 && tableFor(doc.DocumentType) == TableChunks {
+			batch.Queue(projectionUpsertSQL,
+				doc.ID, p.projModelID, len(doc.Embedding.Vector), pgvector.NewVector(doc.Embedding.Vector))
+		}
+	}
+	if batch.Len() > 0 {
+		br := tx.SendBatch(ctx, &batch)
+		for i := 0; i < batch.Len(); i++ {
+			if _, err := br.Exec(); err != nil {
+				_ = br.Close() // the batch already failed; its close error adds nothing
+				return mapError("ExecBatch", err)
+			}
+		}
+		if err := br.Close(); err != nil {
 			return mapError("ExecBatch", err)
 		}
-		upsert += time.Since(t)
-		t = time.Now()
-		if err := p.projectEmbedding(ctx, tx, doc); err != nil {
-			return mapError("ExecBatchProjection", err)
-		}
-		projection += time.Since(t)
 	}
-	clock.Add(domain.StageChunkSaveUpsert, upsert)
-	clock.Add(domain.StageChunkSaveProject, projection)
+	clock.Add(domain.StageChunkSaveUpsert, time.Since(t))
 	t = time.Now()
 	err = tx.Commit(ctx)
 	clock.Since(domain.StageChunkSaveCommit, t)

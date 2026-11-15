@@ -54,7 +54,7 @@ func TestAvailableToolsRanked(t *testing.T) {
 	exec := &ToolExecutor{
 		Registry:     reg,
 		Grants:       NewInMemoryGrantsStore(),
-		Unrestricted: true, // all 3 tools authorized
+		unrestricted: true, // all 3 tools authorized
 		Retriever:    KeywordToolRetriever{Registry: reg},
 	}
 	ctx := context.Background()

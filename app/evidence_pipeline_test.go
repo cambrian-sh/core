@@ -42,10 +42,10 @@ func TestGuardsOffIdempotentWritesStillAnswerRetries(t *testing.T) {
 	}
 	srv := &subnetwork.Server{ToolExecutor: te}
 	wireEvidencePipeline(cfg, srv, nil, nil)
-	if te.Guards != nil {
+	if te.Guards() != nil {
 		t.Fatal("request guards wired although the flag is off")
 	}
-	if te.Idempotency == nil {
+	if te.Idempotency() == nil {
 		t.Fatal("idempotent_writes not wired")
 	}
 	ctx := domain.WithStepCall(context.Background(), domain.StepCall{RunID: "run-1", StepIndex: 3})

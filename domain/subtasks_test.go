@@ -72,8 +72,8 @@ func subtaskExec(t *testing.T, h ToolHandler) (*ToolExecutor, *Subtasks) {
 	sub := NewSubtasks(0, nil)
 	// OSS default: no authorizer at all (AllowAllAuthorizer) and the unrestricted
 	// bypass — nothing but the subtask ceiling can stop a call.
-	return &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, Unrestricted: true,
-		Authz: AllowAllAuthorizer{}, Subtasks: sub, LeaseCeiling: sub}, sub
+	return &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, unrestricted: true,
+		authz: AllowAllAuthorizer{}, subtasks: sub, leaseCeiling: sub}, sub
 }
 
 func bindChild(sub *Subtasks, lease LeaseID, id string, effects []ToolEffect, tools ...string) {
@@ -130,7 +130,7 @@ func TestSubtaskApprovalLabelledAndResumeNeverRepeatsAWrite(t *testing.T) {
 	h := &countingHandler{result: []byte(`{"id":"CRM-9"}`)}
 	e, sub := subtaskExec(t, h)
 	ap := &labelApproval{}
-	e.Approval = ap
+	e.approval = ap
 	widened := []ToolEffect{EffectRead, EffectWrite} // an operator-widened ceiling
 	bindChild(sub, "child-a", "sub-same", widened, "crm_update")
 	call := ToolCallRequest{AgentID: "composed_worker", ToolName: "crm_update", ArgsJSON: []byte(`{"id":"CRM-9","stage":"won"}`), SessionTokenID: "child-a"}

@@ -205,6 +205,9 @@ func (c *credentialSeams) resolveCredential(ctx context.Context, req domain.Cred
 // orgWriter is KernelServices.OrgCredentials: the provider's org-credential
 // writer, or nil when none is installed.
 func (c *credentialSeams) orgWriter() domain.OrgCredentialWriter {
+	if c == nil {
+		return nil
+	}
 	c.mu.RLock()
 	src := c.src
 	c.mu.RUnlock()
@@ -290,21 +293,29 @@ func serverCredentialModel(c config.MCPServerConfig) domain.ServerCredentialMode
 	return m
 }
 
-// buildCredentialSource runs the registered factory and installs the source
-// on the connector. (nil, nil) when no factory is registered or it built
-// nothing. An error leaves the connector without a source: per-user servers
-// then fail closed, shared ones are unaffected.
+// buildCredentialSource runs the registered factory. (nil, nil) when no
+// factory is registered or it built nothing. An error leaves the connector
+// without a source: per-user servers then fail closed, shared ones are
+// unaffected.
+//
+// It runs in bootstrapKernel BEFORE the MCP connector is constructed, because
+// the source is one of the connector's constructor arguments (mcpCredentialSources;
+// T-20261113-mcp-credential-source-and-secret-resolver-are): installed later it
+// missed the boot ConnectAll. rt and conn are therefore reached lazily — the
+// provider's services call them only after boot (a model lookup, an account
+// connected), when both exist; until then they answer "unknown".
 func buildCredentialSource(f NewCredentialSourceFunc, cfg *config.Config, store *storage.BoltConfigStore,
-	rt *mcpRuntime, conn *mcp.Connector, seams *credentialSeams) (domain.CredentialSource, error) {
+	rtOf func() *mcpRuntime, connOf func() *mcp.Connector, seams *credentialSeams) (domain.CredentialSource, error) {
 	if f == nil {
 		return nil, nil
 	}
 	if store == nil {
 		return nil, fmt.Errorf("the credential provider needs the ADR-0101 config store (accounts are sealed in it)")
 	}
-	if rt == nil || conn == nil {
+	if rtOf == nil || connOf == nil {
 		return nil, fmt.Errorf("the credential provider needs the MCP connector")
 	}
+	rt := lazyRuntime{rtOf}
 	records, err := store.SealedRecords(CredentialRecordsNamespace)
 	if err != nil {
 		return nil, err
@@ -345,6 +356,10 @@ func buildCredentialSource(f NewCredentialSourceFunc, cfg *config.Config, store 
 		Records:            records,
 		ResolveNamedSecret: resolveNamedSecret,
 		CredentialChanged: func(serverID, principalID string, connected bool) {
+			conn := connOf()
+			if conn == nil {
+				return // boot: no session exists to retire or nudge yet
+			}
 			if connected {
 				conn.UserConnected(serverID, principalID)
 			} else {
@@ -365,18 +380,72 @@ func buildCredentialSource(f NewCredentialSourceFunc, cfg *config.Config, store 
 	if err != nil || src == nil {
 		return nil, err
 	}
-	us := cfg.MCP.UserSessions
-	conn.SetUserCredentials(src, mcp.UserPoolLimits{Max: us.Max, Idle: time.Duration(us.IdleSeconds) * time.Second})
-	// ADR-0141 phase 2/5: a provider that owns ORG credentials serves every
-	// shared server's credential too; the consumer-named store entries are no
-	// longer read (the one-release boot migration that copied them into org
-	// accounts was removed 2026-11-15, ENG-661). A provider without org
-	// accounts leaves shared servers on the store, as in OSS.
-	if _, ok := src.(domain.OrgCredentialWriter); ok {
-		mcp.SetOrgCredentials(src)
-		slog.Info("ADR-0141: shared MCP credentials are served by org accounts")
-	}
 	seams.setSource(src)
 	slog.Info("ADR-0141: outbound credential provider installed")
 	return src, nil
+}
+
+// lazyRuntime reaches the MCP runtime through a getter, answering "nothing
+// configured" until it exists (see buildCredentialSource).
+type lazyRuntime struct{ get func() *mcpRuntime }
+
+func (l lazyRuntime) config(id string) (config.MCPServerConfig, string, bool) {
+	if rt := l.get(); rt != nil {
+		return rt.config(id)
+	}
+	return config.MCPServerConfig{}, "", false
+}
+
+func (l lazyRuntime) list() []mcp.ServerConfig {
+	if rt := l.get(); rt != nil {
+		return rt.list()
+	}
+	return nil
+}
+
+// mcpCredentialSources is what the MCP connector is constructed with
+// (T-20261113-mcp-credential-source-and-secret-resolver-are): the ADR-0101
+// store (nil-guarded: a nil *BoltConfigStore in the interface would be the
+// typed-nil trap), the provider as the per-user source with the configured
+// pool limits, and — when it owns ORG credentials (ADR-0141 phase 2/5) — as
+// the source of every shared server's credential too; the consumer-named
+// store entries are then not read. A provider without org accounts leaves
+// shared servers on the store, as in OSS.
+func mcpCredentialSources(cfg *config.Config, store *storage.BoltConfigStore, src domain.CredentialSource) mcp.CredentialSources {
+	var cs mcp.CredentialSources
+	if store != nil {
+		cs.Secrets = store
+	}
+	if src == nil {
+		return cs
+	}
+	us := cfg.MCP.UserSessions
+	cs.User = src
+	cs.UserLimits = mcp.UserPoolLimits{Max: us.Max, Idle: time.Duration(us.IdleSeconds) * time.Second}
+	if _, ok := src.(domain.OrgCredentialWriter); ok {
+		cs.Org = src
+		slog.Info("ADR-0141: shared MCP credentials are served by org accounts")
+	}
+	return cs
+}
+
+// MCPToolListsNamespace is the sealed-record namespace of the per_user MCP
+// servers' last discovered tool lists (ENG-743): non-secret, but kept in the
+// same embedded store as the rest of the connector's durable state.
+const MCPToolListsNamespace = "mcp_tools"
+
+// mcpConnectorOptions are the connector's non-credential dependencies: the
+// persisted per_user tool lists when the ADR-0101 store is open (none in a
+// test or a kernel without the store; the server then shows no tools until
+// its first discovery, as before).
+func mcpConnectorOptions(store *storage.BoltConfigStore) []mcp.ConnectorOption {
+	if store == nil {
+		return nil
+	}
+	recs, err := store.SealedRecords(MCPToolListsNamespace)
+	if err != nil {
+		slog.Warn("ADR-0140: per-user MCP tool lists are not persisted", "err", err)
+		return nil
+	}
+	return []mcp.ConnectorOption{mcp.WithToolLists(recs)}
 }

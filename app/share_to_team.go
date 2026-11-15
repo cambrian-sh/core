@@ -6,14 +6,28 @@ import (
 	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
-// documentRetagger is the slice of the raw vector adapter the publish needs.
+// documentRetagger is what the publish needs: tag and parent reads, and the retag
+// (document row, chunks and memory_fact items in one transaction, ENG-489).
 type documentRetagger interface {
 	DocumentTags(ctx context.Context, documentID string) ([]string, bool, error)
 	ParentDocumentOf(ctx context.Context, chunkID string) (string, bool, error)
 	RetagDocument(ctx context.Context, documentID string, tags []string) error
+}
+
+// retagThroughLifecycle reads document tags and parents from the raw adapter and
+// retags through the ADR-0138 document lifecycle, which moves the document's
+// memory_fact items in the same transaction as its row and chunks (ENG-489).
+type retagThroughLifecycle struct {
+	*postgres.PgVectorAdapter
+	lifecycle *postgres.PgDocumentLifecycle
+}
+
+func (r retagThroughLifecycle) RetagDocument(ctx context.Context, documentID string, tags []string) error {
+	return r.lifecycle.RetagDocument(ctx, documentID, tags)
 }
 
 // memorySharer is the ADR-0142 D12 publish: a person's private document is
@@ -21,7 +35,8 @@ type documentRetagger interface {
 //
 // It holds the RAW adapter (VecDB) — AGENTS.md §2.2: a kernel-authored retag
 // after an explicit, authorised action, the same lane TagMemory uses
-// (RetagDocument moves the document row and every chunk in one transaction).
+// (RetagDocument moves the document row, every chunk and the document's facts in one
+// transaction, PgDocumentLifecycle.RetagDocument).
 // The authorisation is here, not in the store: the caller must OWN the
 // document (it carries owner:<caller>), the target tags must survive the
 // decision point's ClassifyWrite for the caller unchanged (a person shares only

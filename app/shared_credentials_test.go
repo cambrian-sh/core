@@ -70,40 +70,42 @@ func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	mcp.SetSecretResolver(store)
-	t.Cleanup(func() { mcp.SetSecretResolver(nil); mcp.SetOrgCredentials(nil) })
-
-	// OSS first: the store, as before.
-	if err := writeSharedMCPCredential(context.Background(), store, "gh", mcp.TokenSecretName("gh"), "store-token"); err != nil {
+	// OSS first (no provider ⇒ no org writer): the store, as before.
+	if err := writeSharedMCPCredential(context.Background(), nil, store, "gh", mcp.TokenSecretName("gh"), "store-token"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := sharedMCPCredentialStatus(store, "gh", mcp.TokenSecretName("gh")); !ok {
+	if ok, _ := sharedMCPCredentialStatus(nil, store, "gh", mcp.TokenSecretName("gh")); !ok {
 		t.Fatal("OSS: the store holds it")
 	}
 
 	rt := &mcpRuntime{}
 	rt.upsertConfig(config.MCPServerConfig{ID: "gh", Transport: "http", Endpoint: "http://127.0.0.1:1",
 		SecretEnv: []string{"GH_PAT"}}, mcpSourceStore)
-	conn := mcp.NewConnector()
-	defer conn.Close()
 	fake := &fakeOrgAccounts{slots: map[string]string{}}
 	// An account already bound to the slot (what an operator binds today).
 	_ = fake.SetOrgCredential(context.Background(),
 		domain.CredentialRequest{ServerID: "gh", Purpose: domain.CredentialPurposeMCP, Slot: domain.SlotToken}, "store-token", "")
 	factory := func(svc CredentialServices) (domain.CredentialSource, error) { return fake, nil }
 	attachNamedSecretStoreForTest(t, store)
-	if _, err := buildCredentialSource(factory, &config.Config{}, store, rt, conn, &credentialSeams{}); err != nil {
+	seams := &credentialSeams{}
+	src, err := buildCredentialSource(factory, &config.Config{}, store,
+		func() *mcpRuntime { return rt }, func() *mcp.Connector { return nil }, seams)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if mcp.OrgCredentials() == nil {
-		t.Fatal("an org-owning provider must be installed for shared servers")
+	if cs := mcpCredentialSources(&config.Config{}, store, src); cs.Org == nil || cs.Secrets == nil {
+		t.Fatalf("an org-owning provider must serve shared servers on the connector: %+v", cs)
+	}
+	org := seams.orgWriter()
+	if org == nil {
+		t.Fatal("the writers must reach the same provider's org accounts")
 	}
 	if fake.slots["gh/token"] != "store-token" {
 		t.Fatalf("bound account: %v", fake.slots)
 	}
 
 	// A legacy write now rotates the account; the store entry is not touched.
-	if err := writeSharedMCPCredential(context.Background(), store, "gh", mcp.TokenSecretName("gh"), "account-token"); err != nil {
+	if err := writeSharedMCPCredential(context.Background(), org, store, "gh", mcp.TokenSecretName("gh"), "account-token"); err != nil {
 		t.Fatal(err)
 	}
 	if fake.slots["gh/token"] != "account-token" {
@@ -113,14 +115,14 @@ func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 		t.Fatalf("the legacy copy is left for rollback, got %q", v)
 	}
 	// The env slot writer.
-	if err := writeSharedMCPCredential(context.Background(), store, "gh", mcp.EnvSecretName("gh", "GH_PAT"), "pat"); err != nil {
+	if err := writeSharedMCPCredential(context.Background(), org, store, "gh", mcp.EnvSecretName("gh", "GH_PAT"), "pat"); err != nil {
 		t.Fatal(err)
 	}
 	if fake.slots["gh/env:GH_PAT"] != "pat" {
 		t.Fatalf("env slot: %v", fake.slots)
 	}
 	// Clear unbinds AND drops the legacy copy.
-	if err := clearSharedMCPCredential(context.Background(), store, "gh", mcp.TokenSecretName("gh")); err != nil {
+	if err := clearSharedMCPCredential(context.Background(), org, store, "gh", mcp.TokenSecretName("gh")); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := fake.slots["gh/token"]; ok {
@@ -166,13 +168,11 @@ func (f *ctxRecordingOrgAccounts) ClearOrgCredential(ctx context.Context, r doma
 // context.Background(), so the provider sees its deadline and values.
 func TestSharedCredentials_WritesCarryTheCallerContext(t *testing.T) {
 	fake := &ctxRecordingOrgAccounts{fakeOrgAccounts: fakeOrgAccounts{slots: map[string]string{}}}
-	mcp.SetOrgCredentials(fake)
-	t.Cleanup(func() { mcp.SetOrgCredentials(nil) })
 	ctx := context.WithValue(context.Background(), sharedCredCtxKey{}, "rpc")
-	if err := writeSharedMCPCredential(ctx, nil, "gh", mcp.TokenSecretName("gh"), "tok"); err != nil {
+	if err := writeSharedMCPCredential(ctx, fake, nil, "gh", mcp.TokenSecretName("gh"), "tok"); err != nil {
 		t.Fatal(err)
 	}
-	if err := clearSharedMCPCredential(ctx, nil, "gh", mcp.TokenSecretName("gh")); err != nil {
+	if err := clearSharedMCPCredential(ctx, fake, nil, "gh", mcp.TokenSecretName("gh")); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.seen) != 2 || fake.seen[0] != "rpc" || fake.seen[1] != "rpc" {

@@ -24,18 +24,25 @@ type composedFixture struct {
 
 func newComposedFixture(t *testing.T) *composedFixture {
 	t.Helper()
+	return newComposedFixtureWith(t, true)
+}
+
+// newComposedFixtureWith is newComposedFixture with tools_unrestricted set to
+// unrestricted (a constructor control of the executor).
+func newComposedFixtureWith(t *testing.T, unrestricted bool) *composedFixture {
+	t.Helper()
 	s, gw := newLeaseServer(t)
 	reg := domain.NewInMemoryToolRegistry()
 	for _, n := range []string{"read_file", "write_file", "web_fetch"} {
 		reg.Register(domain.SystemTool{Name: n})
 	}
 	leases := domain.NewComposedLeases()
-	s.ToolExecutor = &domain.ToolExecutor{
-		Registry: reg, Grants: domain.NewInMemoryGrantsStore(), Handler: okTool{},
-		Overlay:      domain.NewRunGrantOverlay(),
-		Unrestricted: true, // the ceiling must hold over the widest bypass
+	s.ToolExecutor = newTestToolExecutor(t, domain.ToolExecutorControls{
+		Registry: reg,
+		// by default the ceiling must hold over the widest bypass
+		Unrestricted: unrestricted,
 		LeaseCeiling: domain.ChainLeaseCeilings(nil, leases),
-	}
+	}, domain.ToolExecutor{Handler: okTool{}, Overlay: domain.NewRunGrantOverlay()})
 	s.Compositions = leases
 	s.ComposedRuntimeID = composedRuntime
 	skills := domain.NewInMemorySkillRegistry()
@@ -98,8 +105,7 @@ func TestComposedRuntime_WithoutAComposedLease_GetsNothing(t *testing.T) {
 
 func TestComposedStep_MenuIsTheComposition(t *testing.T) {
 	for _, unrestricted := range []bool{true, false} {
-		f := newComposedFixture(t)
-		f.s.ToolExecutor.Unrestricted = unrestricted
+		f := newComposedFixtureWith(t, unrestricted)
 		resp, err := f.s.ListTools(agentPlaneCtx(composedRuntime, "x-agent-id", composedRuntime, "x-lease-id", string(f.lease)),
 			&pb.ListToolsRequest{})
 		if err != nil {

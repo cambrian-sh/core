@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -151,10 +152,10 @@ func TestPgSessionStore_RunPersistsPlan(t *testing.T) {
 		ID: "r1", SessionID: "s1", Status: domain.RunRunning, StartedAt: time.Now().UTC(),
 		Plan: &domain.ExecutionPlan{Subject: "x", Steps: []domain.Step{{Query: "a"}, {Query: "b", DependsOn: []int{0}}}},
 	}
-	if err := store.SaveRun(run); err != nil {
+	if err := store.SaveRun(context.Background(), run); err != nil {
 		t.Fatalf("save run: %v", err)
 	}
-	got, err := store.GetRun("r1")
+	got, err := store.GetRun(context.Background(), "r1")
 	if err != nil || got == nil {
 		t.Fatalf("get run: %v (nil=%t)", err, got == nil)
 	}
@@ -170,14 +171,14 @@ func TestPgSessionStore_RunPersistsPlan(t *testing.T) {
 func TestPgSessionStore_CheckpointsOrderNumerically(t *testing.T) {
 	store, _, ctx := newSessionStore(t)
 	_ = store.SaveSession(ctx, mkSession("s1", domain.SessionActive))
-	_ = store.SaveRun(domain.Run{ID: "r1", SessionID: "s1", Status: domain.RunRunning, StartedAt: time.Now().UTC()})
+	_ = store.SaveRun(context.Background(), domain.Run{ID: "r1", SessionID: "s1", Status: domain.RunRunning, StartedAt: time.Now().UTC()})
 
 	for _, step := range []int{2, 10, 0, 9, 1} {
-		if err := store.SaveCheckpoint("r1", step, map[string]string{"s": "x"}); err != nil {
+		if err := store.SaveCheckpoint(context.Background(), "r1", step, map[string]string{"s": "x"}); err != nil {
 			t.Fatalf("save step %d: %v", step, err)
 		}
 	}
-	metas, err := store.ListCheckpoints("r1")
+	metas, err := store.ListCheckpoints(context.Background(), "r1")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -195,20 +196,20 @@ func TestPgSessionStore_CheckpointsOrderNumerically(t *testing.T) {
 func TestPgSessionStore_CheckpointRoundTrip(t *testing.T) {
 	store, _, ctx := newSessionStore(t)
 	_ = store.SaveSession(ctx, mkSession("s1", domain.SessionActive))
-	_ = store.SaveRun(domain.Run{ID: "r1", SessionID: "s1", Status: domain.RunRunning, StartedAt: time.Now().UTC()})
+	_ = store.SaveRun(context.Background(), domain.Run{ID: "r1", SessionID: "s1", Status: domain.RunRunning, StartedAt: time.Now().UTC()})
 
 	want := map[string]string{"step_0": "done", "note": "keep"}
-	if err := store.SaveCheckpoint("r1", 0, want); err != nil {
+	if err := store.SaveCheckpoint(context.Background(), "r1", 0, want); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	got, err := store.LoadCheckpoint("r1", 0)
+	got, err := store.LoadCheckpoint(context.Background(), "r1", 0)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if got["step_0"] != "done" || got["note"] != "keep" {
 		t.Errorf("round-trip mismatch: %v", got)
 	}
-	missing, err := store.LoadCheckpoint("r1", 99)
+	missing, err := store.LoadCheckpoint(context.Background(), "r1", 99)
 	if err != nil || missing != nil {
 		t.Errorf("absent checkpoint should be (nil,nil), got %v %v", missing, err)
 	}
@@ -224,10 +225,10 @@ func TestPgSessionStore_PurgeCascadesToRunsAndCheckpoints(t *testing.T) {
 	if err := store.SaveSession(ctx, old); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := store.SaveRun(domain.Run{ID: "r-old", SessionID: "old", Status: domain.RunCompleted, StartedAt: time.Now().UTC()}); err != nil {
+	if err := store.SaveRun(context.Background(), domain.Run{ID: "r-old", SessionID: "old", Status: domain.RunCompleted, StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("save run: %v", err)
 	}
-	if err := store.SaveCheckpoint("r-old", 0, map[string]string{"k": "v"}); err != nil {
+	if err := store.SaveCheckpoint(context.Background(), "r-old", 0, map[string]string{"k": "v"}); err != nil {
 		t.Fatalf("save cp: %v", err)
 	}
 
@@ -352,5 +353,38 @@ func TestPgSessionStore_UnlinkedSessionsAreNotListed(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("an empty conversation id must match nothing, got %d", len(got))
+	}
+}
+
+// The request's ctx reaches the query: a cancelled caller gets context.Canceled
+// instead of a query run under context.Background()
+// (T-20261113-25-i-o-methods-on-domain-ports-take-no-context, AGENTS.md §2.7).
+func TestPgSessionStore_RunAndCheckpointQueriesHonourTheCallersContext(t *testing.T) {
+	store, _, ctx := newSessionStore(t)
+	if err := store.SaveSession(ctx, mkSession("s1", domain.SessionActive)); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := store.SaveRun(ctx, domain.Run{ID: "rc", SessionID: "s1", Status: domain.RunRunning, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.GetRun(cancelled, "rc"); !errors.Is(err, context.Canceled) {
+		t.Errorf("GetRun under a cancelled ctx = %v, want context.Canceled", err)
+	}
+	if _, err := store.ListRunsForSession(cancelled, "s1"); !errors.Is(err, context.Canceled) {
+		t.Errorf("ListRunsForSession under a cancelled ctx = %v, want context.Canceled", err)
+	}
+	if err := store.SaveRun(cancelled, domain.Run{ID: "rc2", SessionID: "s1"}); !errors.Is(err, context.Canceled) {
+		t.Errorf("SaveRun under a cancelled ctx = %v, want context.Canceled", err)
+	}
+	if err := store.SaveCheckpoint(cancelled, "rc", 0, map[string]string{"k": "v"}); !errors.Is(err, context.Canceled) {
+		t.Errorf("SaveCheckpoint under a cancelled ctx = %v, want context.Canceled", err)
+	}
+	if _, err := store.ListCheckpoints(cancelled, "rc"); !errors.Is(err, context.Canceled) {
+		t.Errorf("ListCheckpoints under a cancelled ctx = %v, want context.Canceled", err)
+	}
+	if _, err := store.LoadCheckpoint(cancelled, "rc", 0); !errors.Is(err, context.Canceled) {
+		t.Errorf("LoadCheckpoint under a cancelled ctx = %v, want context.Canceled", err)
 	}
 }

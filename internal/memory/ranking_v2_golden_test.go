@@ -121,9 +121,11 @@ func cloneResults(in []domain.SearchResult) []domain.SearchResult {
 
 // rankFixture runs the deterministic part of searchByType over the fixture: RRF
 // fusion, the Stage-A blend, and lane assembly, and renders the outcome with full
-// float precision less the last few bits: chunkCoherence sums over a Go map, so the
-// last ulp of a pre-existing score varies run to run (T-20261103-chunkcoherence-float-sum-depends-on-go-map);
-// 12 significant digits is far below any ranking-relevant difference.
+// float precision less the last few bits. chunkCoherence used to sum over a Go map,
+// so the last ulp varied run to run; it now sums in sorted entity order and is
+// bit-stable (ENG-413, TestChunkCoherenceRaw_BitStableAcrossRuns). The goldens stay
+// at 12 significant digits because they were recorded with the old summation
+// order; 12 digits is far below any ranking-relevant difference.
 func rankFixture(t *testing.T, q *QueryService, ctx context.Context, fx rankingFixture, topK int) string {
 	t.Helper()
 	fused := rrfFuse(cloneResults(fx.dense), cloneResults(fx.lexical), 60, 100, 1)

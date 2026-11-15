@@ -252,26 +252,28 @@ func (d *AgentRepoDecorator) ListSessions(_ context.Context, status domain.Sessi
 // out on the nil store before it could apply a stale step index. The bug was real in code
 // and unreachable in practice — which is exactly why it survived so long unnoticed.
 
-func (d *AgentRepoDecorator) SaveCheckpoint(runID domain.RunID, stepIndex int, ctx map[string]string) error {
-	return d.store.SaveCheckpoint(runID, stepIndex, ctx)
+func (d *AgentRepoDecorator) SaveCheckpoint(ctx context.Context, runID domain.RunID, stepIndex int, cpCtx map[string]string) error {
+	return d.store.SaveCheckpoint(ctx, runID, stepIndex, cpCtx)
 }
 
-func (d *AgentRepoDecorator) LoadCheckpoint(runID domain.RunID, stepIndex int) (map[string]string, error) {
-	return d.store.LoadCheckpoint(runID, stepIndex)
+func (d *AgentRepoDecorator) LoadCheckpoint(ctx context.Context, runID domain.RunID, stepIndex int) (map[string]string, error) {
+	return d.store.LoadCheckpoint(ctx, runID, stepIndex)
 }
 
-func (d *AgentRepoDecorator) ListCheckpoints(runID domain.RunID) ([]domain.CheckpointMeta, error) {
-	return d.store.ListCheckpoints(runID)
+func (d *AgentRepoDecorator) ListCheckpoints(ctx context.Context, runID domain.RunID) ([]domain.CheckpointMeta, error) {
+	return d.store.ListCheckpoints(ctx, runID)
 }
 
-func (d *AgentRepoDecorator) SaveRun(run domain.Run) error { return d.store.SaveRun(run) }
-
-func (d *AgentRepoDecorator) GetRun(runID domain.RunID) (*domain.Run, error) {
-	return d.store.GetRun(runID)
+func (d *AgentRepoDecorator) SaveRun(ctx context.Context, run domain.Run) error {
+	return d.store.SaveRun(ctx, run)
 }
 
-func (d *AgentRepoDecorator) ListRunsForSession(sessionID domain.SessionID) ([]domain.Run, error) {
-	return d.store.ListRunsForSession(sessionID)
+func (d *AgentRepoDecorator) GetRun(ctx context.Context, runID domain.RunID) (*domain.Run, error) {
+	return d.store.GetRun(ctx, runID)
+}
+
+func (d *AgentRepoDecorator) ListRunsForSession(ctx context.Context, sessionID domain.SessionID) ([]domain.Run, error) {
+	return d.store.ListRunsForSession(ctx, sessionID)
 }
 
 // ── domain.PlanEventWriter ───────────────────────────────────────────────────

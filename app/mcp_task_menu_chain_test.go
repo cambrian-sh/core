@@ -44,11 +44,9 @@ func TestMCPTaskChain_ContributedMenuFollowsTaskBeneficiary(t *testing.T) {
 	}
 	fleet.SetLive("laptop", true)
 
-	executor := &domain.ToolExecutor{
-		Registry:     domain.NewInMemoryToolRegistry(),
+	executor := newTestToolExecutor(t, domain.ToolExecutorControls{
 		Unrestricted: true, // grants are not this gate's subject; CL-0 covers them
-		Fleet:        fleet,
-	}
+	}, domain.ToolExecutor{Fleet: fleet})
 
 	lane := newMCPTaskLane(session.New(newMemSessions()), nil,
 		func(context.Context, string, string) (string, map[string]string, error) {
@@ -141,9 +139,7 @@ func TestMCPTaskChain_MachineSubmissionCarriesItsOwner(t *testing.T) {
 		t.Fatalf("register worker: %v", err)
 	}
 	fleet.SetLive("laptop", true)
-	executor := &domain.ToolExecutor{
-		Registry: domain.NewInMemoryToolRegistry(), Unrestricted: true, Fleet: fleet,
-	}
+	executor := newTestToolExecutor(t, domain.ToolExecutorControls{Unrestricted: true}, domain.ToolExecutor{Fleet: fleet})
 	lane := newMCPTaskLane(session.New(newMemSessions()), nil,
 		func(context.Context, string, string) (string, map[string]string, error) { return "", nil, nil })
 

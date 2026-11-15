@@ -818,6 +818,14 @@ service OperatorConsole {
   // (the file entry may name the same ones). Operator-only, command_id +
   // reason, audited.
   rpc RevertIntegrationToFile(RevertIntegrationToFileOpRequest) returns (IntegrationMutationOpResponse);
+  // SetIntegrationTrustTier sets an installed integration's ADR-0139 D8
+  // sandbox trust tier (first-party | vetted | third-party), raising or
+  // lowering its containment; "" clears the console's choice so the catalog /
+  // configured default applies again. Owner decision 2026-11-15: any tier, from
+  // the console, audited — the audit entry carries who, the old tier (before),
+  // the new tier (after) and the reason. Takes effect on the server's next
+  // launch (it is restarted live). Operator-only, command_id + reason.
+  rpc SetIntegrationTrustTier(SetIntegrationTrustTierOpRequest) returns (IntegrationMutationOpResponse);
 
   // Per-user accounts (connect my account, list, disconnect, revoke) are NOT
   // on this service: they are the premium AccountsAdmin plane (ADR-0141,
@@ -1231,6 +1239,33 @@ message SnapshotResponse {
   // failed entitlement or has unmet dependencies still appears here — silence
   // about a plugin the operator paid for is the failure mode this closes.
   repeated PluginInfoOp plugins = 7;
+  // fact_extractor is the ADR-0136 fact extractor's counters since kernel start
+  // (ENG-431): without it an operator could not tell that facts are missing —
+  // queue-full drops, failed documents, validation refusals and partial coverage
+  // were written only to the kernel log. Absent when extraction is not composed
+  // (execution.facts.extract_enabled off or no knowledge substrate). Additive;
+  // announced by the "facts-stats" capability. Per-source partial coverage is
+  // GetFactCoverage (contract 0103).
+  FactExtractorStatsOp fact_extractor = 8;
+}
+
+// FactExtractorStatsOp is memory.FactExtractorStats on the wire. Counters only grow
+// while the kernel runs; a console shows them as-is or as deltas between snapshots.
+message FactExtractorStatsOp {
+  uint64 enqueued = 1;                  // documents handed to the extractor
+  uint64 dropped_queue_full = 2;        // documents whose facts were DROPPED: the queue was full
+  uint64 skipped = 3;                   // already extracted (idempotent re-ingest)
+  uint64 extracted = 4;                 // documents run through the model
+  uint64 failed_documents = 5;          // documents whose extraction failed
+  uint64 partial_documents = 6;         // documents cut at max_calls_per_document (facts-backfill resumes them)
+  uint64 stored = 7;                    // fact items written
+  uint64 llm_calls = 8;                 // extraction + assessment calls
+  uint64 timeouts = 9;                  // calls that ran out of time
+  uint64 parse_failures = 10;           // unreadable extraction answers
+  uint64 refused_quote_not_found = 11;  // facts refused: the quote is not in the passage
+  uint64 refused_bad_shape = 12;        // facts refused: malformed
+  uint64 refused_duplicate = 13;        // facts refused: duplicate within the source
+  uint64 refused_over_cap = 14;         // facts refused: over the per-source fact cap
 }
 
 // PluginInfoOp is one declared plugin as the kernel sees it (ADR-0082 D9 status,
@@ -2750,6 +2785,9 @@ message MCPServerOp {
   // classification_tags apply to every tool this server advertises (ADR-0085
   // D2) — without them, dynamically discovered tools arrive untaggable.
   repeated string classification_tags = 14;
+  // containment: the ADR-0139 D8 effective containment of a stdio server;
+  // unset for http/sse servers.
+  IntegrationContainmentOp containment = 15;
 }
 
 message ListMCPServersOpResponse {
@@ -4323,6 +4361,14 @@ message IntegrationCatalogEntryOp {
   // multi_instance: the entry may be installed more than once under different
   // ids (e.g. two Postgres databases).
   bool multi_instance = 25;
+  // The entry's ADR-0140 credential model, so the console can say "each person
+  // connects their own account" BEFORE install (PerUserIntegrationOp covers
+  // installed servers only): credential_scope is "shared" | "per_user" |
+  // "either"; provider and scopes name the account each person connects
+  // (empty for shared). (T-20261106-testintegration-and-the-catalog-op-do-not)
+  string credential_scope = 26;
+  string provider = 27;
+  repeated string scopes = 28;
 }
 
 // IntegrationFieldOp is one value an integration needs.
@@ -4388,6 +4434,29 @@ message IntegrationOp {
   repeated string classification_tags = 23;
   string trust_tier = 24;
   repeated string passthrough_env = 25; // kernel env var names passed through (config `env`)
+  // containment is the ADR-0139 D8 effective process containment of a stdio
+  // server (its last launch, else what it would get); unset for http/sse
+  // servers, which the kernel does not launch. policy_summary still carries
+  // the same facts as text for older consoles
+  // (T-20261106-integrationop-has-no-structured-containment).
+  IntegrationContainmentOp containment = 26;
+}
+
+// IntegrationContainmentOp is one stdio MCP server's effective containment
+// (internal/sandbox.Report): the trust tier and where it came from, the runner,
+// the mechanisms that enforced it, the controls enforced and missing, honest
+// caveats, and whether the tier refused to start it.
+message IntegrationContainmentOp {
+  string tier = 1;                 // official | vetted | third-party
+  string tier_source = 2;          // where the tier came from (catalog, config, default)
+  string runner = 3;               // native | docker | …
+  repeated string mechanisms = 4;  // job_object, low_integrity, bwrap, docker, …
+  repeated string enforced = 5;    // controls enforced: env, workdir, network, …
+  repeated string missing = 6;     // "control: reason" for wanted controls not enforced
+  repeated string notes = 7;       // caveats that are not missing controls
+  bool refused = 8;                // the tier refused to start without a missing control
+  bool disabled = 9;               // mcp.sandbox.enabled=false: env allowlist only
+  string summary = 10;             // the one-line rendering (same text policy_summary appends)
 }
 
 // IntegrationSecretStateOp says whether one secret is set, never its value.
@@ -4500,6 +4569,14 @@ message RevertIntegrationToFileOpRequest {
   string command_id = 1;
   string reason = 2;
   string id = 3;
+}
+
+message SetIntegrationTrustTierOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+  // trust_tier: first-party | vetted | third-party, or "" to clear.
+  string trust_tier = 4;
 }
 
 message TestIntegrationOpRequest {

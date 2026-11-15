@@ -247,18 +247,19 @@ func (q *QueryService) applyAnchorConstraint(ctx context.Context, results []doma
 	}
 
 	const anchorBase = 1.0
+	// ENG-83: the ids not already in the pool, read in ONE GetBatch on the
+	// enforcing store (scope on ctx, ADR-0095 D9) instead of one GetByID each.
+	fetched := q.fetchMissing(ctx, results, anchored)
 	promoted := make([]domain.SearchResult, 0, len(results)+len(anchored))
 	used := map[string]bool{}
 	for _, id := range anchored {
 		var r domain.SearchResult
 		if i, ok := pos[id]; ok {
 			r = results[i]
+		} else if doc, ok := fetched[id]; ok {
+			r = domain.SearchResult{Document: doc}
 		} else {
-			doc, err := q.vectorStore.GetByID(ctx, id)
-			if err != nil || doc == nil {
-				continue
-			}
-			r = domain.SearchResult{Document: *doc}
+			continue // unreadable under the caller scope, or gone
 		}
 		// Lift above the floor; add query cosine as a tiebreak among anchored
 		// chunks. cosine in [0,1] for a materialized embedding, else 0.
@@ -277,6 +278,39 @@ func (q *QueryService) applyAnchorConstraint(ctx context.Context, results []doma
 		promoted = append(promoted, r)
 	}
 	return promoted
+}
+
+// fetchMissing reads the ids not already present in results with one GetBatch on
+// the QueryService's (enforcing) read store and returns them by id. Shared by the
+// anchor and section promotion lanes (ENG-83). A failed read logs and returns
+// nothing: those lanes then promote only rows already in the pool (fail open), as
+// the per-id reads they replace skipped an id on error.
+func (q *QueryService) fetchMissing(ctx context.Context, results []domain.SearchResult, ids []string) map[string]domain.Document {
+	present := make(map[string]bool, len(results))
+	for _, r := range results {
+		present[r.Document.ID] = true
+	}
+	var missing []string
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if !present[id] && !seen[id] {
+			seen[id] = true
+			missing = append(missing, id)
+		}
+	}
+	out := make(map[string]domain.Document, len(missing))
+	if len(missing) == 0 {
+		return out
+	}
+	docs, err := q.vectorStore.GetBatch(ctx, missing)
+	if err != nil {
+		slog.WarnContext(ctx, "promotion lane: batch read failed; promoting pool rows only", "err", err, "ids", len(missing))
+		return out
+	}
+	for _, d := range docs {
+		out[d.ID] = d
+	}
+	return out
 }
 
 // EnableAnchorConstraint turns on document-local anchor promotion (companion to

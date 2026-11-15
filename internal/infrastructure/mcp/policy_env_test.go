@@ -93,7 +93,7 @@ func effectSet(es []domain.ToolEffect) map[domain.ToolEffect]bool {
 func TestDiscover_UnlistedToolFailsClosed(t *testing.T) {
 	t.Parallel()
 	url := httpServerWith(t, "run_command")
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	tools := conn.ConnectAll(context.Background(), []ServerConfig{{ID: "shell", Transport: "http", Endpoint: url, AllowPrivateNetwork: true}})
 
@@ -122,7 +122,7 @@ func TestDiscover_UnlistedToolFailsClosed(t *testing.T) {
 func TestDiscover_ExplicitReadOnlyPolicy(t *testing.T) {
 	t.Parallel()
 	url := httpServerWith(t, "think", "write_note")
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	tools := conn.ConnectAll(context.Background(), []ServerConfig{{
 		ID: "seq", Transport: "http", Endpoint: url, AllowPrivateNetwork: true,
@@ -151,7 +151,7 @@ func TestDiscover_ExplicitReadOnlyPolicy(t *testing.T) {
 func TestDiscover_ListedToolWithoutEffectsIsInferred(t *testing.T) {
 	t.Parallel()
 	url := httpServerWith(t, "read_file")
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	tools := conn.ConnectAll(context.Background(), []ServerConfig{{
 		ID: "fs", Transport: "http", Endpoint: url, AllowPrivateNetwork: true,
@@ -183,7 +183,7 @@ func TestStdio_EnvironmentIsAllowlisted(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	tools := conn.ConnectAll(ctx, []ServerConfig{{
 		ID: "envsrv", Transport: "stdio", Endpoint: exe, Args: []string{envServerFlag},

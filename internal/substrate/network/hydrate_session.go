@@ -49,11 +49,11 @@ type ResumedRun struct {
 //
 // Errors are returned rather than silently degrading to a fresh execution: a caller that
 // asked to resume must not quietly get a brand-new run instead.
-func (s *Server) ResumeRun(_ context.Context, runID domain.RunID, session domain.SessionID) (*ResumedRun, error) {
+func (s *Server) ResumeRun(ctx context.Context, runID domain.RunID, session domain.SessionID) (*ResumedRun, error) {
 	if s.Runs == nil {
 		return nil, fmt.Errorf("resume: no run store configured")
 	}
-	run, err := s.Runs.GetRun(runID)
+	run, err := s.Runs.GetRun(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("resume: load run %q: %w", runID, err)
 	}
@@ -78,7 +78,7 @@ func (s *Server) ResumeRun(_ context.Context, runID domain.RunID, session domain
 		slog.Warn("ResumeRun: no checkpoint store; restarting the run from step 0", "run", runID)
 		return out, nil
 	}
-	metas, err := store.ListCheckpoints(runID)
+	metas, err := store.ListCheckpoints(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("resume: list checkpoints: %w", err)
 	}
@@ -88,7 +88,7 @@ func (s *Server) ResumeRun(_ context.Context, runID domain.RunID, session domain
 	// Ascending step order is guaranteed by the zero-padded key, so the last entry really
 	// is the furthest this run got.
 	latest := metas[len(metas)-1]
-	cp, err := store.LoadCheckpoint(runID, latest.StepIndex)
+	cp, err := store.LoadCheckpoint(ctx, runID, latest.StepIndex)
 	if err != nil {
 		return nil, fmt.Errorf("resume: load checkpoint: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -126,6 +127,10 @@ func interpret(resp *domain.Handoff) error {
 		Status    string `json:"status"`
 		Permanent bool   `json:"permanent"`
 		Error     string `json:"error"`
+		// RetryAfter is how many seconds the far side asked us to wait (a
+		// Telegram 429's parameters.retry_after), carried so a sender that
+		// paces itself — the progress bridge — can honour it (ADR-0098 D4).
+		RetryAfter float64 `json:"retry_after"`
 	}
 	if err := json.Unmarshal([]byte(content), &ack); err != nil {
 		// A daemon that answered something unparseable has still probably sent the
@@ -143,7 +148,14 @@ func interpret(resp *domain.Handoff) error {
 	if ack.Permanent {
 		return domain.PermanentDelivery(errors.New(reason))
 	}
-	return domain.TransientDelivery(errors.New("ingress reported " + reason))
+	err := domain.TransientDelivery(errors.New("ingress reported " + reason))
+	if ack.RetryAfter > 0 {
+		return &domain.DeliveryRetryAfterError{
+			After: time.Duration(ack.RetryAfter * float64(time.Second)),
+			Err:   err,
+		}
+	}
+	return err
 }
 
 var _ domain.IngressTransport = (*DaemonTransport)(nil)

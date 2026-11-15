@@ -34,6 +34,14 @@ type ToolExecutorControls struct {
 	Idempotency  *IdempotencyCache
 	Guards       *RequestGuards
 	WriteTargets *WriteTargets
+	// LeaseCeiling is the ADR-0139 D12 per-lease tool ceiling (the composed
+	// leases and the subtask registry, chained by the caller); nil ⇒ none.
+	// Subtasks is the ADR-0150 subtask registry (effect refusal and
+	// deterministic write keys for child leases); nil ⇒ no subtasks. Both used
+	// to be attached after construction by app/composed_workers.go and
+	// app/subtasks.go.
+	LeaseCeiling LeaseToolCeiling
+	Subtasks     *Subtasks
 }
 
 // ErrToolExecutorControl reports a missing or doubly supplied security control.
@@ -52,21 +60,60 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	case controls.Authz == nil:
 		return nil, fmt.Errorf("%w: Authz is required (pass AllowAllAuthorizer{} for the OSS default explicitly)", ErrToolExecutorControl)
 	}
-	if features.Registry != nil || features.Grants != nil || features.Authz != nil || features.Approval != nil ||
-		features.Ceiling != nil || features.Unrestricted || features.ArgValidator != nil ||
-		features.Idempotency != nil || features.Guards != nil || features.WriteTargets != nil {
+	if features.Registry != nil || features.Grants != nil || features.authz != nil || features.approval != nil ||
+		features.ceiling != nil || features.unrestricted || features.argValidator != nil ||
+		features.idempotency != nil || features.guards != nil || features.writeTargets != nil ||
+		features.leaseCeiling != nil || features.subtasks != nil {
 		return nil, fmt.Errorf("%w: set on features; pass it in ToolExecutorControls", ErrToolExecutorControl)
 	}
 	te := features
 	te.Registry = controls.Registry
 	te.Grants = controls.Grants
-	te.Authz = controls.Authz
-	te.Approval = controls.Approval
-	te.Ceiling = controls.Ceiling
-	te.Unrestricted = controls.Unrestricted
-	te.ArgValidator = controls.ArgValidator
-	te.Idempotency = controls.Idempotency
-	te.Guards = controls.Guards
-	te.WriteTargets = controls.WriteTargets
+	te.authz = controls.Authz
+	te.approval = controls.Approval
+	te.ceiling = controls.Ceiling
+	te.unrestricted = controls.Unrestricted
+	te.argValidator = controls.ArgValidator
+	te.idempotency = controls.Idempotency
+	te.guards = controls.Guards
+	te.writeTargets = controls.WriteTargets
+	te.leaseCeiling = controls.LeaseCeiling
+	te.subtasks = controls.Subtasks
 	return &te, nil
+}
+
+// The controls are unexported fields set only by NewToolExecutor (AGENTS.md
+// §2.3): code outside domain/ can read the ones it consumes through these
+// accessors, never replace them after construction.
+
+// Guards returns the ADR-0145 D14 request guards (nil ⇒ off).
+func (e *ToolExecutor) Guards() *RequestGuards {
+	if e == nil {
+		return nil
+	}
+	return e.guards
+}
+
+// WriteTargets returns the per-target write keying (nil ⇒ off).
+func (e *ToolExecutor) WriteTargets() *WriteTargets {
+	if e == nil {
+		return nil
+	}
+	return e.writeTargets
+}
+
+// Idempotency returns the ADR-0145 D9 plan-step idempotency cache (nil ⇒ off).
+func (e *ToolExecutor) Idempotency() *IdempotencyCache {
+	if e == nil {
+		return nil
+	}
+	return e.idempotency
+}
+
+// Subtasks returns the ADR-0150 subtask registry the executor enforces (nil ⇒ none).
+func (e *ToolExecutor) Subtasks() *Subtasks {
+	if e == nil {
+		return nil
+	}
+	return e.subtasks
 }

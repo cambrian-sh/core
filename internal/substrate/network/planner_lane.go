@@ -225,7 +225,7 @@ func (s *Server) executePlanned(ctx context.Context, in *pb.Handoff, r plannerLa
 		if resumed != nil {
 			run.StartedAt = resumed.Run.StartedAt
 		}
-		if serr := s.Runs.SaveRun(run); serr != nil {
+		if serr := s.Runs.SaveRun(ctx, run); serr != nil {
 			slog.Warn("run persist failed; this execution will not be resumable", "run", executionID, "err", serr)
 		}
 	}
@@ -610,7 +610,9 @@ func (s *Server) executePlanned(ctx context.Context, in *pb.Handoff, r plannerLa
 	// cancelled (not resumable) and answered as Canceled naming who and why;
 	// nothing the steps already dispatched is rolled back.
 	if rc, cancelled := operator.RunCancelled(ctx); cancelled {
-		s.markRunCancelled(executionID, rc)
+		// The request ctx is cancelled by now; recording the cancellation must
+		// still land (WithoutCancel keeps its values, §2.7).
+		s.markRunCancelled(context.WithoutCancel(ctx), executionID, rc)
 		return nil, status.Error(codes.Canceled, rc.Error())
 	}
 	// The plan ceiling's verdict, when it is what ended the plan: the idle or the

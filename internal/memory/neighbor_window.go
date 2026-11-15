@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -71,17 +72,40 @@ func (q *QueryService) applyNeighborWindow(ctx context.Context, results []domain
 	// they must never displace a ranked answer out of the returned window.
 	out := make([]domain.SearchResult, 0, len(results)*2)
 	out = append(out, results...)
+	// ENG-83: every neighbour id in ONE GetBatch on the enforcing store (scope on
+	// ctx, ADR-0095 D9), then appended in the same anchor-then-neighbour order the
+	// per-id reads produced.
+	type want struct {
+		id    string
+		score float64
+	}
+	var wants []want
+	var ids []string
 	for _, r := range results {
 		for _, nid := range neighborIDs(r.Document.Metadata) {
 			if nid == "" || seen[nid] {
 				continue
 			}
-			doc, err := q.vectorStore.GetByID(ctx, nid)
-			if err != nil || doc == nil {
-				continue
-			}
 			seen[nid] = true
-			out = append(out, domain.SearchResult{Document: *doc, Score: r.Score * 0.999})
+			wants = append(wants, want{nid, r.Score * 0.999})
+			ids = append(ids, nid)
+		}
+	}
+	if len(ids) == 0 {
+		return out
+	}
+	docs, err := q.vectorStore.GetBatch(ctx, ids)
+	if err != nil {
+		slog.WarnContext(ctx, "neighbor window: batch read failed; no neighbours added", "err", err, "ids", len(ids))
+		return out
+	}
+	byID := make(map[string]domain.Document, len(docs))
+	for _, d := range docs {
+		byID[d.ID] = d
+	}
+	for _, w := range wants {
+		if d, ok := byID[w.id]; ok {
+			out = append(out, domain.SearchResult{Document: d, Score: w.score})
 		}
 	}
 	return out

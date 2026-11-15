@@ -61,6 +61,26 @@ type RankingV2 struct {
 	Supersession bool
 	// CurrentFactWeight is the Stage-A weight of current_fact.
 	CurrentFactWeight float64
+	// FactChunkCosineMax (ENG-432, execution.facts.lane_chunk_cosine_max) makes the
+	// Stage-A cosine signal of a fact-reached chunk max(own cosine, matched fact
+	// cosine) — see stageACosine. Needs FactLane; off => Stage A is unchanged.
+	FactChunkCosineMax bool
+}
+
+// stageACosine is the cosine signal Stage A uses for a chunk: its own cosine, or —
+// with FactChunkCosineMax — the higher of that and the cosine of the fact the lane
+// matched it through (ENG-432). A fact's cosine is how well the query matches the
+// statement the chunk holds; a chunk whose evidence is a short tail of unrelated
+// text otherwise ranks on the unrelated text. Rows the lane did not reach (match 0)
+// are unchanged, so the lever cannot lift anything but fact-reached chunks.
+func (rv RankingV2) stageACosine(cos float64, facts factLaneHits, id string) float64 {
+	if !rv.FactChunkCosineMax {
+		return cos
+	}
+	if m := facts.match(id); m > cos {
+		return m
+	}
+	return cos
 }
 
 // DefaultLexicalSaturationK puts the half-credit point of s/(s+k) at the scale of a
@@ -266,6 +286,8 @@ func (q *QueryService) calibratedFeatures(ctx context.Context, results []domain.
 		if len(queryVec) > 0 && len(d.Embedding.Vector) > 0 {
 			cos = cosineSimilarity(queryVec, d.Embedding.Vector)
 		}
+		// ENG-432: max(own, matched fact) cosine when lane_chunk_cosine_max; identity when off.
+		cos = rv.stageACosine(cos, facts, d.ID)
 		var fit float64
 		if haveIntent {
 			start, end := domain.StoredSpan(d)

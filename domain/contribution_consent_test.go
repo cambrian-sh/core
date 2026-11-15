@@ -561,6 +561,11 @@ func TestLadder_EndsWithoutAnswerRefusesWithDecision(t *testing.T) {
 
 	t.Run("unanswered ask", func(t *testing.T) {
 		h := hubForTest()
+		// Both machines must stay live for the whole subtest: if one's liveness
+		// window lapses under load, rung 2 (exactly one capable live machine)
+		// dispatches to the other without asking, and the test times out on a
+		// step nobody answers instead of exercising the unanswered ask (ENG-381).
+		h.LivenessWindow = time.Minute
 		ctrl := newConsentHub(40 * time.Millisecond)
 		e, decisions := consentExec(h, ctrl)
 		_, stop := answerPrompts(ctrl, ConsentPromptNotice, nil) // subscribed, silent

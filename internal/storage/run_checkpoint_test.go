@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,12 +28,12 @@ func TestListCheckpoints_OrdersNumericallyNotLexicographically(t *testing.T) {
 
 	// Save out of order, and across the 9→10 boundary that breaks string sorting.
 	for _, step := range []int{2, 10, 0, 9, 1} {
-		if err := a.SaveCheckpoint(run, step, map[string]string{"at": "x"}); err != nil {
+		if err := a.SaveCheckpoint(context.Background(), run, step, map[string]string{"at": "x"}); err != nil {
 			t.Fatalf("save step %d: %v", step, err)
 		}
 	}
 
-	metas, err := a.ListCheckpoints(run)
+	metas, err := a.ListCheckpoints(context.Background(), run)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -60,14 +61,14 @@ func TestListCheckpoints_OrdersNumericallyNotLexicographically(t *testing.T) {
 // key listed every plan in the whole session.
 func TestListCheckpoints_ScopedToRun(t *testing.T) {
 	a := newRunTestAdapter(t)
-	if err := a.SaveCheckpoint("run-A", 5, map[string]string{"k": "a"}); err != nil {
+	if err := a.SaveCheckpoint(context.Background(), "run-A", 5, map[string]string{"k": "a"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := a.SaveCheckpoint("run-B", 1, map[string]string{"k": "b"}); err != nil {
+	if err := a.SaveCheckpoint(context.Background(), "run-B", 1, map[string]string{"k": "b"}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	metas, err := a.ListCheckpoints("run-B")
+	metas, err := a.ListCheckpoints(context.Background(), "run-B")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -79,10 +80,10 @@ func TestListCheckpoints_ScopedToRun(t *testing.T) {
 func TestSaveLoadCheckpoint_RoundTrips(t *testing.T) {
 	a := newRunTestAdapter(t)
 	want := map[string]string{"step_0": "done", "note": "keep"}
-	if err := a.SaveCheckpoint("run-1", 3, want); err != nil {
+	if err := a.SaveCheckpoint(context.Background(), "run-1", 3, want); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	got, err := a.LoadCheckpoint("run-1", 3)
+	got, err := a.LoadCheckpoint(context.Background(), "run-1", 3)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestSaveLoadCheckpoint_RoundTrips(t *testing.T) {
 
 func TestLoadCheckpoint_UnknownIsEmptyNotError(t *testing.T) {
 	a := newRunTestAdapter(t)
-	got, err := a.LoadCheckpoint("nope", 0)
+	got, err := a.LoadCheckpoint(context.Background(), "nope", 0)
 	if err != nil {
 		t.Fatalf("unknown checkpoint should not error: %v", err)
 	}
@@ -117,11 +118,11 @@ func TestSaveRun_PersistsThePlan(t *testing.T) {
 			Steps:   []domain.Step{{Query: "a"}, {Query: "b", DependsOn: []int{0}}},
 		},
 	}
-	if err := a.SaveRun(run); err != nil {
+	if err := a.SaveRun(context.Background(), run); err != nil {
 		t.Fatalf("save run: %v", err)
 	}
 
-	got, err := a.GetRun("run-1")
+	got, err := a.GetRun(context.Background(), "run-1")
 	if err != nil || got == nil {
 		t.Fatalf("get run: %v (nil=%t)", err, got == nil)
 	}
@@ -138,7 +139,7 @@ func TestSaveRun_PersistsThePlan(t *testing.T) {
 
 func TestGetRun_UnknownIsNilNotError(t *testing.T) {
 	a := newRunTestAdapter(t)
-	got, err := a.GetRun("nope")
+	got, err := a.GetRun(context.Background(), "nope")
 	if err != nil {
 		t.Fatalf("unknown run should not error: %v", err)
 	}
@@ -155,12 +156,12 @@ func TestListRunsForSession_FiltersAndOrders(t *testing.T) {
 		{ID: "r1", SessionID: "s1", StartedAt: base},
 		{ID: "rX", SessionID: "s2", StartedAt: base.Add(time.Minute)},
 	} {
-		if err := a.SaveRun(r); err != nil {
+		if err := a.SaveRun(context.Background(), r); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
 
-	got, err := a.ListRunsForSession("s1")
+	got, err := a.ListRunsForSession(context.Background(), "s1")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

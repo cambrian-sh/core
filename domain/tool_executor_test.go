@@ -164,7 +164,7 @@ func TestToolExecutor_AvailableToolsMatchesAuthority(t *testing.T) {
 
 	// Unrestricted bypass: a named agent sees every registered tool.
 	eu := newExec(reg, grantStore("a"), h)
-	eu.Unrestricted = true
+	eu.unrestricted = true
 	if got := eu.AvailableTools(context.Background(), "a"); len(got) != 2 {
 		t.Errorf("unrestricted named agent should see all 2 tools, got %v", toolNames(got))
 	}
@@ -260,7 +260,7 @@ func TestToolExecutor_DangerousApproval(t *testing.T) {
 	// approved
 	hOK := &fakeHandler{result: []byte(`"ran"`)}
 	eOK := newExec(reg, grantStore("a", grant), hOK)
-	eOK.Approval = &fakeApproval{approve: true}
+	eOK.approval = &fakeApproval{approve: true}
 	if r := eOK.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "execute_command"}); r.Denied {
 		t.Errorf("approved dangerous tool denied: %s", r.DenyReason)
 	}
@@ -271,7 +271,7 @@ func TestToolExecutor_DangerousApproval(t *testing.T) {
 	// denied
 	hNo := &fakeHandler{result: []byte(`"ran"`)}
 	eNo := newExec(reg, grantStore("a", grant), hNo)
-	eNo.Approval = &fakeApproval{approve: false}
+	eNo.approval = &fakeApproval{approve: false}
 	if r := eNo.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "execute_command"}); !r.Denied {
 		t.Error("operator-denied dangerous tool must be denied")
 	}
@@ -321,7 +321,7 @@ func TestToolExecutor_UnrestrictedMode(t *testing.T) {
 	h := &fakeHandler{result: []byte(`"ok"`)}
 
 	// No grants store entries at all, but unrestricted is on.
-	e := &ToolExecutor{Registry: reg, Grants: NewInMemoryGrantsStore(), Handler: h, Unrestricted: true, InlineThreshold: 1 << 20}
+	e := &ToolExecutor{Registry: reg, Grants: NewInMemoryGrantsStore(), Handler: h, unrestricted: true, InlineThreshold: 1 << 20}
 
 	// An un-granted agent can call the tool, and any path is allowed.
 	args, _ := json.Marshal(map[string]string{"path": root + "/../anywhere.txt"})
@@ -345,7 +345,7 @@ func TestAlwaysApproveController(t *testing.T) {
 	reg.Register(SystemTool{Name: "execute_command", Dangerous: true})
 	h := &fakeHandler{result: []byte(`"ran"`)}
 	e := newExec(reg, grantStore("a", ToolGrant{Tool: "execute_command"}), h)
-	e.Approval = AlwaysApproveController{}
+	e.approval = AlwaysApproveController{}
 	r := e.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "execute_command"})
 	if r.Denied {
 		t.Fatalf("auto-approve must run dangerous tool, denied: %s", r.DenyReason)

@@ -29,8 +29,8 @@ func guardedExec(t *testing.T, h ToolHandler) *ToolExecutor {
 	reg.Register(SystemTool{Name: "crm_search", Effects: []ToolEffect{EffectRead}})
 	reg.Register(SystemTool{Name: "mail_draft", Effects: []ToolEffect{EffectWrite}})
 	reg.Register(SystemTool{Name: "mail_send", Effects: []ToolEffect{EffectEgress}})
-	return &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, Unrestricted: true,
-		Idempotency: NewIdempotencyCache(0)}
+	return &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, unrestricted: true,
+		idempotency: NewIdempotencyCache(0)}
 }
 
 func stepCtx(g StepGuard) context.Context {
@@ -122,7 +122,7 @@ func TestArgValidator_InvalidNeverRunsCoercedRunsFixed(t *testing.T) {
 	h := &fakeHandler{result: []byte(`{}`)}
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "mail_draft", Effects: []ToolEffect{EffectWrite}, Schema: []byte(`{"type":"object"}`)})
-	e := &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, Unrestricted: true, ArgValidator: rejectArgs{}}
+	e := &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, unrestricted: true, argValidator: rejectArgs{}}
 	got := e.Execute(context.Background(), ToolCallRequest{AgentID: "w", ToolName: "mail_draft", ArgsJSON: []byte(`{"to":"bad"}`)})
 	if got.Error == "" || got.Denied || h.called {
 		t.Fatalf("invalid args: %+v (ran %v)", got, h.called)

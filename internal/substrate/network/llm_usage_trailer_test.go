@@ -12,6 +12,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/llmusage"
 )
 
 // trailerStream captures what a handler sets with grpc.SetTrailer, so a unit test
@@ -37,7 +38,7 @@ func (s *trailerStream) get(key string) []string {
 	return s.trailer.Get(key)
 }
 
-// usageFields parses the LLMUsageTrailer grammar into a map.
+// usageFields parses the llmusage.Trailer grammar into a map.
 func usageFields(t *testing.T, v string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -94,9 +95,9 @@ func TestQueryMemory_TrailerCountsRetrievalAgentCalls(t *testing.T) {
 	if _, err := srv.QueryMemory(ctx, &pb.MemoryRequest{Query: "who and when?"}); err != nil {
 		t.Fatalf("QueryMemory: %v", err)
 	}
-	vals := st.get(LLMUsageTrailer)
+	vals := st.get(llmusage.Trailer)
 	if len(vals) != 1 {
-		t.Fatalf("trailer %s = %v, want one value", LLMUsageTrailer, vals)
+		t.Fatalf("trailer %s = %v, want one value", llmusage.Trailer, vals)
 	}
 	f := usageFields(t, vals[0])
 	want := map[string]string{
@@ -120,7 +121,7 @@ func TestQueryMemory_TrailerReportsObservedZero(t *testing.T) {
 	if _, err := srv.QueryMemory(ctx, &pb.MemoryRequest{Query: "q"}); err != nil {
 		t.Fatalf("QueryMemory: %v", err)
 	}
-	vals := st.get(LLMUsageTrailer)
+	vals := st.get(llmusage.Trailer)
 	if len(vals) != 1 || !strings.HasPrefix(vals[0], "calls#=0,") {
 		t.Fatalf("trailer = %v, want an observed zero", vals)
 	}
@@ -152,7 +153,7 @@ func TestIngestMemory_TrailerCountsFactCalls(t *testing.T) {
 	if _, err := srv.IngestMemory(ctx, &pb.IngestMemoryRequest{Text: "hello", SessionId: "s1"}); err != nil {
 		t.Fatalf("IngestMemory: %v", err)
 	}
-	vals := st.get(LLMUsageTrailer)
+	vals := st.get(llmusage.Trailer)
 	if len(vals) != 1 {
 		t.Fatalf("trailer = %v, want one value", vals)
 	}
@@ -162,15 +163,5 @@ func TestIngestMemory_TrailerCountsFactCalls(t *testing.T) {
 	}
 	if len(st.get(IngestTimingTrailer)) != 1 {
 		t.Fatal("the ingest-timing trailer must still be sent")
-	}
-}
-
-func TestFormatLLMUsage_SanitizesPurpose(t *testing.T) {
-	t.Parallel()
-	_, tally := domain.WithLLMUsageTally(context.Background())
-	tally.Add("a,b=c.d", domain.LLMUsage{Calls: 1, CostUSD: 0.25})
-	got := FormatLLMUsage(tally)
-	if !strings.Contains(got, ",a_b_c_d.calls#=1,") || !strings.HasSuffix(got, "a_b_c_d.cost_usd=0.25") {
-		t.Fatalf("FormatLLMUsage = %q", got)
 	}
 }

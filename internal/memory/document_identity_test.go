@@ -323,3 +323,28 @@ func TestProcessSync_OneResolvedIDForEveryStep(t *testing.T) {
 		}
 	}
 }
+
+// ENG-1195: the document-qa benchmark's tag is no longer special in the live identity
+// rules (no benchmark logic in OSS). The suite still names its documents with
+// source_document <id>, which wins first, so its ids are unchanged.
+func TestDocumentID_TheDocumentQATagIsAnOrdinaryTag(t *testing.T) {
+	t.Parallel()
+	if isMarkerTag("document-qa") {
+		t.Fatal(`"document-qa" must not be a marker tag`)
+	}
+	if got := strings.Join(uploadScope([]string{"document-qa", sourceDocumentMarker, "chunker:late", "a"}), ","); got != "a,document-qa" {
+		t.Fatalf("upload scope = %q, want the tag kept as classification", got)
+	}
+	named := domain.ExternalDocument{Body: "b", Tags: []string{"document-qa", sourceDocumentMarker, "tidebound-archive"}}
+	if got := documentIdentityOf(named).ID; got != "tidebound-archive" {
+		t.Fatalf("the suite's source_document id must still win, got %q", got)
+	}
+	bare := domain.ExternalDocument{Body: "b", Author: "w", Tags: []string{"document-qa", "g"}}
+	if got := documentIdentityOf(bare).ID; !strings.HasPrefix(got, "document-qa:") {
+		t.Fatalf("a bare document-qa tag now groups like any tag, got %q", got)
+	}
+	// The legacy derivation stays byte for byte (grandfathering, ADR-0138 D2).
+	if got := legacyExternalDocumentID(domain.ExternalDocument{Body: "b", Tags: []string{"document-qa", "g"}}); !strings.HasPrefix(got, "g:") {
+		t.Fatalf("legacy id must keep skipping the tag, got %q", got)
+	}
+}

@@ -26,6 +26,13 @@ func QueryKnowledgeFunc(authorizer domain.Authorizer, plane domain.QueryPlane, l
 		authorizer = domain.AllowAllAuthorizer{}
 	}
 	return func(ctx context.Context, principal domain.PrincipalRef, q domain.KnowledgeQuery) (domain.QueryResult, error) {
+		// Retired rows are for audit and repair review on the operator plane,
+		// which reads as the system principal; no agent, user or daemon answer
+		// may draw on them (owner decision 2026-11-15, ENG-1045). Refused before
+		// scope resolution, so the refusal says nothing about what exists.
+		if q.IncludeRetired && principal.Kind != domain.PrincipalSystem {
+			return domain.QueryResult{}, domain.ErrRetiredOperatorOnly
+		}
 		pred, err := readScope(ctx, authorizer, principal, log, "knowledge query")
 		if err != nil {
 			return domain.QueryResult{}, err

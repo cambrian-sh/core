@@ -102,11 +102,8 @@ func newIntegrationRig(t *testing.T, acmeURL string) *integrationRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mcp.SetSecretResolver(src.store)
-	t.Cleanup(func() { mcp.SetSecretResolver(nil) })
-
 	ctx, cancel := context.WithCancel(context.Background())
-	conn := mcp.NewConnector()
+	conn := mcp.NewConnector(mcp.CredentialSources{Secrets: src.store})
 	t.Cleanup(func() { cancel(); conn.Close() })
 	reg := domain.NewInMemoryToolRegistry()
 	sink := newMCPToolSink(reg, &domain.ToolIndexer{Store: &sinkFakeStore{}, Embedder: sinkFakeEmb{}})

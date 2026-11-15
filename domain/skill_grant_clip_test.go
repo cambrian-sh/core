@@ -29,7 +29,7 @@ func clipExecutor(a Authorizer) *ToolExecutor {
 		Registry: reg,
 		Grants:   NewInMemoryGrantsStore(),
 		Overlay:  NewRunGrantOverlay(),
-		Authz:    a,
+		authz:    a,
 		Handler:  handlerFunc(func(context.Context, ToolCall) ([]byte, error) { return []byte(`{"ok":true}`), nil }),
 	}
 }

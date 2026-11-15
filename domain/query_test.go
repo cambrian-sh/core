@@ -97,3 +97,29 @@ func TestValidate_BeliefSelectorsAreRefusedWhereTheyCannotApply(t *testing.T) {
 		t.Errorf("PolicyOrDefault() = %q", got)
 	}
 }
+
+// ENG-1045: include_retired is expressible only on the shapes that read
+// retirable typed rows.
+func TestValidate_IncludeRetiredOnlyOnRetirableShapes(t *testing.T) {
+	from, to := time.Unix(0, 0), time.Unix(100, 0)
+	ok := []KnowledgeQuery{
+		{Kind: QueryPoint, EntityID: "e/1", Predicate: "p", IncludeRetired: true},
+		{Kind: QueryHistory, EntityID: "e/1", Predicate: "p", From: from, To: to, IncludeRetired: true},
+		{Kind: QueryEvents, EntityID: "e/1", From: from, To: to, IncludeRetired: true},
+	}
+	for _, q := range ok {
+		if err := q.Validate(); err != nil {
+			t.Errorf("%s with include_retired refused: %v", q.Kind, err)
+		}
+	}
+	bad := []KnowledgeQuery{
+		{Kind: QueryAsOf, ItemKind: "k", AsOf: to, IncludeRetired: true},
+		{Kind: QueryAggregate, EntityID: "e/1", Predicate: "p", Aggregate: "count", IncludeRetired: true},
+		{Kind: QueryCurrent, ItemKind: "k", IncludeRetired: true},
+	}
+	for _, q := range bad {
+		if err := q.Validate(); !errors.Is(err, ErrCannotExpress) {
+			t.Errorf("%s with include_retired: err = %v, want a refusal", q.Kind, err)
+		}
+	}
+}

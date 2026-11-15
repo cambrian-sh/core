@@ -119,6 +119,38 @@ func (s *Service) SetCommandEffects(e CommandEffects) { s.effects = e }
 
 // runMutation is the shared command body: validate, audit (idempotent), and
 // apply the effect once. before/after capture the request intent.
+// runMutationBefore is runMutation for a change whose prior value only the
+// apply step can read (it must run after the command_id dedupe): apply returns
+// the BEFORE value, which is recorded on the audit entry as an amendment of the
+// same command.
+func (s *Service) runMutationBefore(ctx context.Context, commandID, reason, action, targetType, targetID, after string,
+	apply func() (before string, err error)) (*pb.CommandAck, error) {
+	if commandID == "" || reason == "" {
+		return nil, status.Error(codes.InvalidArgument, "command_id and reason are required")
+	}
+	actor, role, _ := PrincipalFromContext(ctx)
+	// Dedupe first: a replayed command neither re-applies nor re-reads.
+	prior, err := s.audit.Query(ctx, AuditFilter{CommandID: commandID, Limit: 1})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "audit lookup: %v", err)
+	}
+	if len(prior) == 1 {
+		return &pb.CommandAck{CommandId: commandID, Deduped: true}, nil
+	}
+	before, aerr := apply()
+	if aerr != nil {
+		return nil, aerr
+	}
+	if _, err := s.recordAndEmit(ctx, domain.AuditEntry{
+		ID: newAuditID(), CommandID: commandID, At: time.Now().UTC(),
+		Actor: actor, Role: string(role), ActionType: action,
+		TargetType: targetType, TargetID: targetID, Before: before, After: after, Reason: reason, Result: "ok",
+	}); err != nil {
+		return nil, err
+	}
+	return &pb.CommandAck{CommandId: commandID}, nil
+}
+
 func (s *Service) runMutation(ctx context.Context, commandID, reason, action, targetType, targetID, after string, apply func() error) (*pb.CommandAck, error) {
 	if commandID == "" || reason == "" {
 		return nil, status.Error(codes.InvalidArgument, "command_id and reason are required")

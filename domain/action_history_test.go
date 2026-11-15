@@ -216,7 +216,7 @@ func dupExec(appr ApprovalController, h *fakeHandler) *ToolExecutor {
 	reg.Register(SystemTool{Name: "post_note", Effects: []ToolEffect{EffectWrite}})
 	reg.Register(SystemTool{Name: "search", Effects: []ToolEffect{EffectRead, EffectEgress}})
 	e := newExec(reg, grantStore("a", ToolGrant{Tool: "create_issue"}, ToolGrant{Tool: "post_note"}, ToolGrant{Tool: "search"}), h)
-	e.Approval = appr
+	e.approval = appr
 	e.History = NewActionHistory(24*time.Hour, nil)
 	return e
 }
@@ -273,7 +273,7 @@ func TestExecute_RepeatedRecordWriteInOnePlanIsFlagged(t *testing.T) {
 	const tool = "mcp:hdc-per-005/cases_respond_request"
 	reg.Register(SystemTool{Name: tool, Dangerous: true, Effects: []ToolEffect{EffectWrite}})
 	e := newExec(reg, grantStore("assistant", ToolGrant{Tool: tool}), h)
-	e.Approval = appr
+	e.approval = appr
 	e.History = NewActionHistory(24*time.Hour, nil)
 
 	step := func(session, bases string) ToolCallResponse {
@@ -359,7 +359,7 @@ func TestExecute_RetryAfterFailedWriteIsNotFlagged(t *testing.T) {
 	const tool = "mcp:vantis-emp-001/calendar_create_event"
 	reg.Register(SystemTool{Name: tool, Dangerous: true, Effects: []ToolEffect{EffectWrite}})
 	e := newExec(reg, grantStore("composed_worker", ToolGrant{Tool: tool}), h)
-	e.Approval = appr
+	e.approval = appr
 	e.History = NewActionHistory(24*time.Hour, nil)
 	ctx := WithConversationID(context.Background(), "conv-p07")
 	call := func(attendees string) ToolCallResponse {

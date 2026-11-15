@@ -189,6 +189,56 @@ func TestHub_ExpiredAndWithdrawnPublishResolution(t *testing.T) {
 	}
 }
 
+// answerOnPendingStore answers an item the moment raise persists it pending —
+// i.e. inside the gap between raise (persist + publish) and await registering
+// its waiter. It deterministically reproduces the lost-answer race of
+// T-20261115-addressedhub-request-loses-an-answer-that-lands (an immediately
+// answering surface beating the requester to await).
+type answerOnPendingStore struct {
+	ApprovalStore
+	once   sync.Once
+	answer func(id string)
+}
+
+func (s *answerOnPendingStore) PutApproval(ctx context.Context, it ApprovalItem) error {
+	if err := s.ApprovalStore.PutApproval(ctx, it); err != nil {
+		return err
+	}
+	if it.State == ApprovalPending {
+		s.once.Do(func() { s.answer(it.ID) })
+	}
+	return nil
+}
+
+// An answer that lands before the requester's waiter is registered is not
+// lost: Request returns it at once (not after its window) and takes it, so an
+// identical later request does not reuse the decision.
+func TestHub_AnswerBeforeAwaitRegistersIsNotLost(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	store := &answerOnPendingStore{ApprovalStore: NewMemoryApprovalStore()}
+	h := NewAddressedHub(AddressedHubConfig{Store: store, DefaultTimeout: 10 * time.Second})
+	store.answer = func(id string) {
+		if _, err := h.Answer(context.Background(), id, ApprovalAnswer{Approved: true, By: OperatorApprover("op-1")}); err != nil {
+			t.Errorf("answer in the gap refused: %v", err)
+		}
+	}
+	_, cancel := h.Watch(opWatch("op-1"))
+	defer cancel()
+
+	start := time.Now()
+	d, err := h.Request(context.Background(), ApprovalRequest{AgentID: "a1", ToolName: "execute_command", ArgsPreview: "ls"})
+	if err != nil || !d.Approved || !d.Decided || d.ApproverID != "op-1" {
+		t.Fatalf("decision = %+v err=%v, want the operator's approval", d, err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("Request took %v: the early answer was only found after the window", took)
+	}
+	stored, err := store.GetApproval(context.Background(), d.ApprovalID)
+	if err != nil || !stored.Consumed {
+		t.Fatalf("stored item = %+v err=%v, want the decision marked consumed", stored, err)
+	}
+}
+
 // Only addressees answer: a self-ruled consent prompt refuses an operator and a
 // stranger, and accepts the beneficiary.
 func TestHub_OnlyAddresseesCanAnswer(t *testing.T) {

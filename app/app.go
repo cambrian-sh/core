@@ -240,12 +240,11 @@ type Kernel struct {
 	// (contract 0097). The operator list read and the write path share it, so a
 	// console re-read after a save shows the server it just added.
 	MCPRuntime *mcpRuntime
-	// credentialFactory builds the outbound-credential provider (ADR-0141;
-	// nil in OSS). Run in startKernelServices: it needs the config store,
-	// attached after bootstrap. credentialSeams late-binds the operator plane
-	// (audit, plugin mutations) the provider uses, built after it.
-	credentialFactory NewCredentialSourceFunc
-	credentialSeams   *credentialSeams
+	// credentialSeams late-binds the operator plane (audit, plugin mutations)
+	// the outbound-credential provider (ADR-0141; built in bootstrapKernel
+	// before the MCP connector) uses, built after it; it also answers the
+	// provider's org-credential writer (orgWriter).
+	credentialSeams *credentialSeams
 	// MCPEndpoint is the INBOUND MCP endpoint's HTTP server (ADR-0126 D3), or nil
 	// when server.mcp.enabled is false. Carried here only so Shutdown can drain
 	// it — it is started during bootstrap, before the errgroup the other HTTP
@@ -585,7 +584,7 @@ func Run(ctx context.Context, opts Options) error {
 	defer setListenerPolicy(nil)
 
 	// REDEMPTION: Observability First. Start Kernel immediately.
-	k, err := bootstrapKernel(rootCtx, cfg, lis, opts)
+	k, err := bootstrapKernel(rootCtx, cfg, lis, opts, cfgStore)
 	if err != nil {
 		_ = lis.Close()
 		return fmt.Errorf("bootstrap: %w", err)
@@ -611,9 +610,9 @@ func Run(ctx context.Context, opts Options) error {
 	if cfgStore != nil {
 		llm.SetSecretResolver(cfgStore)
 		// Contract 0097: MCP connectors resolve their tokens the same way (env
-		// first, store second), so a token saved from the console is presented
-		// on the very next (re)connect.
-		mcp.SetSecretResolver(cfgStore)
+		// first, store second); the connector is constructed with the store in
+		// bootstrapKernel (mcpCredentialSources), so the boot connect already
+		// presents a token saved from the console.
 		// The ADR-0112 named-secret seam is attached ABOVE, before bootstrap —
 		// see the comment there.
 	}
@@ -632,7 +631,10 @@ func Run(ctx context.Context, opts Options) error {
 	return g.Wait()
 }
 
-func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, opts Options) (*Kernel, error) {
+// cfgStore is the ADR-0101 config store opened by Run (nil when it could not be
+// opened, and in tests): the MCP connector and the outbound-credential provider
+// are constructed over it here, before the boot connect.
+func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, opts Options, cfgStore *storage.BoltConfigStore) (*Kernel, error) {
 	// ADR-0074: fold the compile-time plugin set into the effective Options (signal
 	// receiver, extra gRPC services, trace wrappers) + the lifecycle set consumed at
 	// boot/shutdown. No-op when Options.Plugins is empty (OSS default).
@@ -883,6 +885,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	substrate := NewSubstrate(vec.Pool(), onto, onto)
 	knowledgeStore := substrate.Knowledge
 	factReader := postgres.NewPgFactItemReader(knowledgeStore, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions)
+	// ADR-0138 document lifecycle over the knowledge store's pool. It also owns the
+	// document retag (ENG-489): the document row, its chunks' tag cache and its
+	// memory_fact items move together in one transaction, so TagMemory and the
+	// share-to-team publish below retag through it, never through the raw adapter.
+	docLifecycle := postgres.NewPgDocumentLifecycle(knowledgeStore)
 	factsSubstrate := kernel.FactSubstrate{
 		Store:         knowledgeStore,
 		Reader:        factReader,
@@ -894,7 +901,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		GeneratorModel: kernel.FactsGeneratorModel(cfg.LLMProvider, llmProvider.Roles()),
 		// ADR-0138: document identity checks and the version chain, over the same pool;
 		// its retirement erases fact items through this knowledge store in one transaction.
-		Documents: postgres.NewPgDocumentLifecycle(knowledgeStore),
+		Documents: docLifecycle,
 	}
 
 	// 2. Domain stacks — sequential construction (dependency order)
@@ -1158,6 +1165,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		FactMatchWeight:         fc.FactMatchWeight,
 		Supersession:            fc.SupersessionEnabled,
 		CurrentFactWeight:       fc.CurrentFactWeight,
+		// ENG-432: fact-reached chunks rank on max(own, matched fact) cosine. Off by
+		// default (owner 2026-11-15) until its A/B/A.
+		FactChunkCosineMax: fc.LaneChunkCosineMax,
 	})
 	slog.Info(fmt.Sprintf("ranking v2: stage_a_calibrated=%t temporal_intent_enabled=%t",
 		rv2.StageACalibrated, rv2.TemporalIntentEnabled),
@@ -1189,8 +1199,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if factsLane {
 		factsScopedDocs = fc.LaneScopedDocuments
 	}
-	slog.Info(fmt.Sprintf("fact layer: extract_enabled=%t lane_enabled=%t supersession_enabled=%t assessments_enabled=%t store=%s lane_scoped_documents=%d lane_scoped_top_k=%d",
-		factsExtract, factsLane, fc.SupersessionEnabled, factsAssess, factsStore, factsScopedDocs, fc.LaneScopedTopK),
+	// ENG-490: the extractor version and A2 budgets are appended (fact_boot_line.go).
+	factsVersion := ""
+	if factsExtract {
+		factsVersion = mem.FactExtractor.ExtractorVersion()
+	}
+	slog.Info(factLayerBootLine(factLayerBoot{
+		Extract: factsExtract, Lane: factsLane, Supersession: fc.SupersessionEnabled, Assessments: factsAssess,
+		Store: factsStore, ScopedDocuments: factsScopedDocs, ScopedTopK: fc.LaneScopedTopK,
+		ExtractorVersion: factsVersion, MaxCallsPerDocument: fc.MaxCallsPerDocument,
+		MaxFactsPerSource: fc.MaxFactsPerSource, MaxPromptChars: fc.MaxPromptChars,
+	}),
 		"single_attributes", fc.SingleAttributes,
 		"multi_attributes", fc.MultiAttributes,
 		"cardinality_min_votes", fc.CardinalityMinVotes,
@@ -1199,6 +1218,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		"lane_top_k", fc.LaneTopK,
 		"fact_match_weight", fc.FactMatchWeight,
 		"current_fact_weight", fc.CurrentFactWeight,
+		"lane_chunk_cosine_max", fc.LaneChunkCosineMax && factsLane,
 		"fuzzy_candidates", fc.FuzzyCandidates,
 		"sync_ingest_wait_for_facts", cfg.Execution.Ingestion.SyncIngestWaitForFacts,
 		"generator_role", string(domain.PurposeFacts))
@@ -1208,6 +1228,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if fc.LaneScopedDocuments > 0 && !factsLane {
 		slog.Warn("fact layer: lane_scoped_documents needs lane_enabled (and a knowledge substrate); the scoped lane is off",
 			"lane_scoped_documents", fc.LaneScopedDocuments)
+	}
+	if fc.LaneChunkCosineMax && !factsLane {
+		slog.Warn("fact layer: lane_chunk_cosine_max needs lane_enabled (and a knowledge substrate); it has no effect")
 	}
 	if fc.AssessmentsEnabled && !factsAssess {
 		slog.Warn("fact layer: assessments_enabled needs extract_enabled and supersession_enabled; no assessment call is made")
@@ -2213,7 +2236,28 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// connector, handler, budget, auditor — because a kernel booted with zero
 	// servers must be able to hot-attach its first one from the console, and
 	// none of these cost anything while idle.
-	mcpConnector := mcp.NewConnector()
+	//
+	// ADR-0141 / T-20261113-mcp-credential-source-and-secret-resolver-are: the
+	// connector's credential sources (the ADR-0101 store, the premium account
+	// provider for per-user and org credentials) are constructor arguments, so
+	// they are built FIRST — the provider factory runs here, before the boot
+	// ConnectAll below, which used to run before either was installed. The
+	// provider reaches the connector and the runtime lazily (they are built
+	// below). A provider failure disables per-user accounts loudly rather than
+	// failing the boot: per_user tools then fail closed with "not connected",
+	// never with another credential.
+	var (
+		mcpConnector *mcp.Connector
+		mcpRT        *mcpRuntime
+	)
+	credSource, credErr := buildCredentialSource(opts.NewCredentialSource, cfg, cfgStore,
+		func() *mcpRuntime { return mcpRT }, func() *mcp.Connector { return mcpConnector }, credSeams)
+	if credErr != nil {
+		slog.Error("ADR-0141: per-user accounts NOT enabled", "err", credErr)
+	} else if credSource != nil {
+		slog.Info("ADR-0141: outbound credential provider installed")
+	}
+	mcpConnector = mcp.NewConnector(mcpCredentialSources(cfg, cfgStore, credSource), mcpConnectorOptions(cfgStore)...)
 	// Integrations: every health change of every server goes onto the operator
 	// feed (OperatorEvent.integration_health). Publish is non-blocking.
 	mcpConnector.SetHealthObserver(func(h mcp.ServerHealth) {
@@ -2266,7 +2310,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// The runtime list holds EVERY configured server, enabled or not, so the
 	// console can list (and re-enable) a disabled one; only enabled servers are
 	// dialled and watched (T-20261105-mcp-servers-have-no-enabled-flag-every).
-	mcpRT := &mcpRuntime{servers: append([]mcp.ServerConfig(nil), servers[:len(composed.mcpServers)]...), sandbox: sbPolicy}
+	mcpRT = &mcpRuntime{servers: append([]mcp.ServerConfig(nil), servers[:len(composed.mcpServers)]...), sandbox: sbPolicy}
 	for _, s := range composed.mcpServers {
 		mcpRT.setSource(s.ID, mcpSourcePlugin)
 	}
@@ -2320,7 +2364,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// in OSS, set explicitly above); approval, the profile ceiling, the
 	// tools_unrestricted bypass and the ADR-0145 D9/D14 controls are read from
 	// config here, in the one place the executor is built.
-	toolControls := evidenceToolControls(cfg.Execution, actionRecords, domain.ToolExecutorControls{
+	//
+	// The per-lease controls (ADR-0145 D12 compositions, ADR-0150 subtask
+	// registry) are built from config here too and handed to wireComposedWorkers
+	// and wireSubtasks below, which bind leases into them.
+	execLeases := buildExecutorLeases(cfg.Execution, actionRecords)
+	toolControls := execLeases.controls(evidenceToolControls(cfg.Execution, actionRecords, domain.ToolExecutorControls{
 		Registry: toolReg,
 		Grants:   toolGrants,
 		Authz:    authorizer, // ADR-0085: data-store regime + (Phase 2) effect classes
@@ -2329,7 +2378,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// held under tools_unrestricted and over skill-conferred grants.
 		Ceiling:      profileToolCeiling(profiles),
 		Unrestricted: cfg.Execution.Tools.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
-	})
+	}))
 	toolExecutor, err := domain.NewToolExecutor(toolControls, domain.ToolExecutor{
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)
 		// ADR-0127: contributed local:<machine>/<tool> steps resolve through
@@ -2609,10 +2658,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0145 D12: plan steps on workers the kernel composes (execution.workers.composed,
 	// default off), after the ledger, the effect vocabulary and skill access are wired.
 	wireStepRecovery(cfg.Execution, cambrianServer, meta.Dispatcher)
-	wireComposedWorkers(cfg.Execution, cambrianServer, meta.Dispatcher, reg)
+	wireComposedWorkers(cfg.Execution, cambrianServer, meta.Dispatcher, reg, execLeases.composed)
 	// ADR-0150 D2: run_subtasks for the single-agent lane's agent (after the ledger
 	// and the composed runtime it runs subtask workers on).
-	wireSubtasks(cfg.Execution, cambrianServer, actionRecords)
+	wireSubtasks(cfg.Execution, cambrianServer, execLeases.subtasks)
 	skillLifecycle, skillCurator := wireSkillLifecycle(ctx, cfg.Execution.Skills, vec.Pool(), skillReg, skillIndexer, discoveredSkills, proposerGrants)
 	if skillLifecycle != nil {
 		cambrianServer.SkillLifecycle = skillLifecycle // typed-nil guard: only a built service
@@ -2662,7 +2711,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			if current, found, derr := vec.DocumentTags(ctx, docID); derr != nil {
 				return fmt.Errorf("tag_memory: %w", derr)
 			} else if found {
-				return vec.RetagDocument(ctx, docID, applyTag(current, tag, add))
+				return docLifecycle.RetagDocument(ctx, docID, applyTag(current, tag, add))
 			}
 
 			// Retrieval returns CHUNKS, so an operator labelling a search result holds a
@@ -2677,7 +2726,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 				if terr != nil {
 					return fmt.Errorf("tag_memory: %w", terr)
 				}
-				return vec.RetagDocument(ctx, parent, applyTag(current, tag, add))
+				return docLifecycle.RetagDocument(ctx, parent, applyTag(current, tag, add))
 			}
 
 			// Not a document and not part of one — an agent-written memory or a tool
@@ -2772,7 +2821,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0142 D12: the explicit publish. VecDB (the raw adapter) for the retag —
 	// a kernel-authored write after the owner, policy and approval checks in
 	// memorySharer.plan and operator.ShareToTeam, the TagMemory lane.
-	sharer := &memorySharer{docs: vec, authz: authorizer}
+	sharer := &memorySharer{docs: retagThroughLifecycle{vec, docLifecycle}, authz: authorizer}
 	toolApproval.HandleKind(domain.ApprovalKindPublish, publishHandler(sharer))
 
 	return &Kernel{
@@ -2836,7 +2885,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		MCPSink:             mcpSink,
 		MCPServers:          mcpServers,
 		MCPRuntime:          mcpRT,
-		credentialFactory:   opts.NewCredentialSource, // ADR-0141 (nil in OSS)
 		credentialSeams:     credSeams,
 		MCPEndpoint:         mcpEndpoint,
 		mcpTasks:            mcpTaskLane,
@@ -2898,16 +2946,6 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// ADR-0145 D1: the run ledger's retention sweeper (execution.ledger.enabled).
 	if k.LedgerSweeper != nil {
 		k.LedgerSweeper.Start(ctx)
-	}
-
-	// ADR-0141: the outbound-credential provider (premium accounts), built and
-	// installed on the connector BEFORE plugin lifecycles start (its sign-in
-	// listener is a lifecycle) and before Watch (a per_user server's first
-	// discovery must see it). A failure disables per-user accounts loudly
-	// rather than failing the boot: per_user tools then fail closed with "not
-	// connected", never with another credential.
-	if _, err := buildCredentialSource(k.credentialFactory, k.Config, k.ConfigStore, k.MCPRuntime, k.MCPConnector, k.credentialSeams); err != nil {
-		slog.Error("ADR-0141: per-user accounts NOT enabled", "err", err)
 	}
 
 	// ADR-0074: start plugin lifecycles (e.g. the reactive engine's worker pools +
@@ -3269,6 +3307,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				connector: k.MCPConnector,
 				toolsFor:  k.mcpToolCounter(),
 				secrets:   k.ConfigStore,
+				org:       k.credentialSeams.orgWriter(),
 			}
 		}
 		embedSrc = embeddingReporter{cfg: k.Config.Embedder, counter: k.VectorCounter}
@@ -3369,6 +3408,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			if k.ConfigStore != nil {
 				writer := configWriteSource{
 					store:      k.ConfigStore,
+					org:        k.credentialSeams.orgWriter(),
 					configPath: k.ConfigPath,
 					prov:       k.ConfigProvenance,
 					hotApply:   hotApplyFor(k.OperatorEffects),
@@ -3472,7 +3512,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 						k.credentialSeams.setBounce(writer.bounceMCPServer)
 					}
 					writer.probeMCPServer = func(ctx context.Context, s config.MCPServerConfig) operator.MCPTestResult {
-						r := mcp.Probe(ctx, mcpServerFromConfig(s, k.MCPRuntime.sandbox))
+						r := k.MCPConnector.Probe(ctx, mcpServerFromConfig(s, k.MCPRuntime.sandbox))
 						return operator.MCPTestResult{
 							OK: r.OK, LatencyMs: r.LatencyMs, ToolNames: r.ToolNames, Error: r.Err,
 						}
@@ -3769,6 +3809,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Memory != nil && k.Memory.FactInspector != nil {
 			operatorSvc.SetFactInspector(k.Memory.FactInspector)
 			operatorCaps = append(operatorCaps, "facts-inspect")
+		}
+		// ENG-431 (additive, capability only, no contract bump): the fact extractor's
+		// counters on the Snapshot, so drops, failures, refusals and partial coverage
+		// are visible outside the kernel log. Advertised only when extraction runs.
+		if k.Memory != nil && k.Memory.FactExtractor != nil {
+			operatorSvc.SetFactStats(k.Memory.FactExtractor)
+			operatorCaps = append(operatorCaps, "facts-stats")
 		}
 		operatorCaps = append(operatorCaps, "session-lifecycle")
 		// step-output-stream (ADR-0139 amendment 2026-11-06, additive within 0101):

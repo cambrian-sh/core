@@ -210,7 +210,7 @@ func TestToolExecutor_EgressDeniedByEffectPolicy(t *testing.T) {
 	e := &ToolExecutor{
 		Registry: reg, Grants: grants,
 		Handler: handlerFunc(func(context.Context, ToolCall) ([]byte, error) { return []byte(`{"ok":true}`), nil }),
-		Authz:   denyEffects{deny: EffectEgress},
+		authz:   denyEffects{deny: EffectEgress},
 	}
 
 	resp := e.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "fetch_url"})
@@ -255,7 +255,7 @@ func TestToolExecutor_OperatorSystemExecutionSkipsTheEffectGate(t *testing.T) {
 	e := &ToolExecutor{
 		Registry: reg, Grants: NewInMemoryGrantsStore(),
 		Handler: handlerFunc(func(context.Context, ToolCall) ([]byte, error) { return []byte(`{"ok":true}`), nil }),
-		Authz:   denyEffects{deny: EffectEgress},
+		authz:   denyEffects{deny: EffectEgress},
 	}
 	resp := e.Execute(context.Background(), ToolCallRequest{ToolName: "fetch_url", System: true})
 	if resp.Denied {

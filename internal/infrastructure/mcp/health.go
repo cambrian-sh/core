@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -112,16 +113,8 @@ func redact(s string, secrets []string) string {
 	return s
 }
 
-func newProbeConnector() *Connector {
-	return &Connector{
-		client:   mcpsdk.NewClient(&mcpsdk.Implementation{Name: "cambrian-probe", Version: "1.0.0"}, nil),
-		sessions: map[string]*mcpsdk.ClientSession{},
-		watches:  map[string]context.CancelFunc{},
-		health:   map[string]*ServerHealth{},
-		gens:     map[string]uint64{},
-		configs:  map[string]ServerConfig{},
-		users:    newUserPool(),
-	}
+func newProbeConnector(creds CredentialSources) *Connector {
+	return newConnector(mcpsdk.NewClient(&mcpsdk.Implementation{Name: "cambrian-probe", Version: "1.0.0"}, nil), creds)
 }
 
 // ToolReport is one advertised tool with the policy the kernel would enforce.
@@ -166,6 +159,29 @@ func (c *Connector) TestServer(ctx context.Context, s ServerConfig, probeTool st
 	var rep TestReport
 	var secrets []string
 
+	// ADR-0140 (T-20261106-testintegration-and-the-catalog-op-do-not): a
+	// per_user (or either) server is tested the way a call by the caller would
+	// run — on the caller's OWN connection (the run principal, stamped by the
+	// operator plane) — never by dialling the shared config, which has no
+	// credential for a per_user server and so always failed the test. Not
+	// connected yet is reported honestly ("connect your account first"). An
+	// either server without the caller's account falls back to testing the
+	// shared config, as before.
+	if s.scope() != ScopeShared {
+		psess, release, err := c.sessionFor(ctx, s)
+		var nc *NotConnectedError
+		switch {
+		case err == nil:
+			defer release(false)
+			rep.UsedLive = true
+			return c.listAndProbe(ctx, s, psess, nil, probeTool, probeArgs, start, rep)
+		case s.scope() == ScopePerUser || !errors.As(err, &nc):
+			rep.Err = err.Error()
+			rep.LatencyMs = time.Since(start).Milliseconds()
+			return rep
+		}
+	}
+
 	sess, live := c.Session(s.ID)
 	if live {
 		if h, ok := c.Health(s.ID); !ok || h.State != HealthReady {
@@ -176,12 +192,12 @@ func (c *Connector) TestServer(ctx context.Context, s ServerConfig, probeTool st
 		rep.UsedLive = true
 		// The live session's secrets are not at hand; resolve them the same way
 		// a connect would, purely for redaction.
-		_, secrets = s.explicitEnv(ctx)
+		_, secrets = s.explicitEnv(ctx, c.creds)
 		if s.AuthType != "" && s.AuthType != "none" {
-			secrets = appendSecret(secrets, tokenFor(ctx, s.ID, s.AuthTokenEnv))
+			secrets = appendSecret(secrets, c.creds.tokenFor(ctx, s.ID, s.AuthTokenEnv))
 		}
 	} else {
-		tmp := newProbeConnector()
+		tmp := newProbeConnector(c.creds)
 		var err error
 		sess, secrets, err = tmp.connect(ctx, s)
 		if err != nil {
@@ -191,7 +207,13 @@ func (c *Connector) TestServer(ctx context.Context, s ServerConfig, probeTool st
 		}
 		defer func() { _ = sess.Close() }()
 	}
+	return c.listAndProbe(ctx, s, sess, secrets, probeTool, probeArgs, start, rep)
+}
 
+// listAndProbe lists sess's tools with their resolved policies and, when the
+// probe tool is harmless, calls it once; secrets are redacted from any error.
+func (c *Connector) listAndProbe(ctx context.Context, s ServerConfig, sess *mcpsdk.ClientSession, secrets []string,
+	probeTool string, probeArgs map[string]any, start time.Time, rep TestReport) TestReport {
 	res, err := sess.ListTools(ctx, nil)
 	if err != nil {
 		rep.Err = "connected, but listing tools failed: " + redact(err.Error(), secrets)

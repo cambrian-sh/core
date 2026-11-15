@@ -10,6 +10,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // Read-only inspection of the ADR-0136 fact layer (contract 0103; owner decision
@@ -145,4 +146,24 @@ func rfc3339Ptr(t *time.Time) string {
 		return ""
 	}
 	return rfc3339(*t)
+}
+
+// FactStatsSource is the fact extractor's counters (memory.FactExtractor).
+type FactStatsSource interface {
+	Stats() memory.FactExtractorStats
+}
+
+// SetFactStats installs the fact extractor whose counters the Snapshot reports as
+// fact_extractor (ENG-431; capability "facts-stats"). nil leaves the field absent.
+func (s *Service) SetFactStats(src FactStatsSource) { s.factStats = src }
+
+// factExtractorStatsOp is memory.FactExtractorStats on the wire.
+func factExtractorStatsOp(st memory.FactExtractorStats) *pb.FactExtractorStatsOp {
+	return &pb.FactExtractorStatsOp{
+		Enqueued: st.Enqueued, DroppedQueueFull: st.Dropped, Skipped: st.Skipped, Extracted: st.Extracted,
+		FailedDocuments: st.FailedDocs, PartialDocuments: st.PartialDocs, Stored: st.Stored, LlmCalls: st.LLMCalls,
+		Timeouts: st.Timeouts, ParseFailures: st.ParseFailures,
+		RefusedQuoteNotFound: st.RefusedQuoteNotFound, RefusedBadShape: st.RefusedBadShape,
+		RefusedDuplicate: st.RefusedDuplicate, RefusedOverCap: st.RefusedOverCap,
+	}
 }

@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // CheckpointMeta describes a persisted execution checkpoint.
 type CheckpointMeta struct {
@@ -22,8 +25,9 @@ type CheckpointMeta struct {
 // ordered step "10" before step "2". "The latest checkpoint" was therefore neither the
 // newest plan's nor the highest step's.
 type CheckpointStore interface {
-	SaveCheckpoint(runID RunID, stepIndex int, ctx map[string]string) error
-	LoadCheckpoint(runID RunID, stepIndex int) (map[string]string, error)
+	// ctx first (AGENTS.md §2.7); cpCtx is the checkpointed master context.
+	SaveCheckpoint(ctx context.Context, runID RunID, stepIndex int, cpCtx map[string]string) error
+	LoadCheckpoint(ctx context.Context, runID RunID, stepIndex int) (map[string]string, error)
 	// ListCheckpoints returns the run's checkpoints in ascending step order.
-	ListCheckpoints(runID RunID) ([]CheckpointMeta, error)
+	ListCheckpoints(ctx context.Context, runID RunID) ([]CheckpointMeta, error)
 }

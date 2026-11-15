@@ -38,7 +38,7 @@ func TestConnector_ConfigDrivenConnectDiscoverAuth(t *testing.T) {
 	defer ts.Close()
 
 	t.Setenv("MCP_TEST_TOKEN", "secret-xyz")
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 
 	tools := conn.ConnectAll(ctx, []ServerConfig{{
@@ -102,7 +102,7 @@ func TestConnector_SSETransport(t *testing.T) {
 	ts := httptest.NewServer(mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return server }, nil))
 	defer ts.Close()
 
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	tools := conn.ConnectAll(ctx, []ServerConfig{{ID: "srv", Transport: "sse", Endpoint: ts.URL, AllowPrivateNetwork: true}})
 
@@ -139,7 +139,7 @@ func TestConnector_AppliesToolPolicyToDiscoveredTools(t *testing.T) {
 	ts := httptest.NewServer(mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, nil))
 	defer ts.Close()
 
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	tools := conn.ConnectAll(ctx, []ServerConfig{{
 		ID: "srv", Transport: "http", Endpoint: ts.URL, AllowPrivateNetwork: true,
@@ -168,7 +168,7 @@ func TestConnector_AppliesToolPolicyToDiscoveredTools(t *testing.T) {
 func TestConnector_UnreachableServerSkippedGracefully(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 
 	tools := conn.ConnectAll(ctx, []ServerConfig{
@@ -208,7 +208,7 @@ func TestConnector_ConnectAllIsConcurrentAndOrdered(t *testing.T) {
 	defer b.Close()
 	defer c.Close()
 
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	start := time.Now()
 	tools := conn.ConnectAll(ctx, []ServerConfig{

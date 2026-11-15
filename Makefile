@@ -10,7 +10,6 @@
         separability \
         lint lint-new deadcode \
         proto-sync proto-sync-check \
-        corpus export \
         per-pr nightly release-gate
 
 # ─── Default ─────────────────────────────────────────────────────────────────
@@ -38,10 +37,6 @@ help:
 	@echo "    make leak-integration  Full-kernel goroutine leak test            ~30s"
 	@echo "    make fuzz              Fuzzing, 10 minutes                        10m"
 	@echo "    make fuzz-release      Fuzzing, 1 hour (release gate)             1h"
-	@echo ""
-	@echo "  DATA"
-	@echo "    make corpus            Generate 1000-record synthetic corpus       <1s"
-	@echo "    make export            Export real bbolt events to JSONL           ~2s"
 	@echo ""
 	@echo "  IMAGES (Docker required)"
 	@echo "    make sandbox-image     Code sandbox image (pandas/numpy/matplotlib/openpyxl, offline)  ~2m"
@@ -278,16 +273,9 @@ fuzz-release:
 
 # ─── Data Generation ──────────────────────────────────────────────────────────
 
-corpus:
-	go run ./tools/mockgen-cli/main.go \
-		-scenario baseline -n 1000 -seed 42 -output synthetic_corpus.jsonl
-	@echo "Corpus written to synthetic_corpus.jsonl"
-
-export:
-	go run ./tools/export-events/main.go \
-		--db data/cambrian.db \
-		--output events.jsonl
-	@echo "Events exported to events.jsonl"
+# The PREM-0019 data-generation targets (`corpus`, `export`) were removed 2026-11-15 (owner
+# decision, ENG-1415): they ran tools/mockgen-cli and tools/export-events, which were never
+# written, and internal/testing/mockgen had no other caller; it was deleted.
 
 # ─── Pipelines ───────────────────────────────────────────────────────────────
 

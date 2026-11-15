@@ -26,9 +26,11 @@ import (
 // workers run on the composed runtime). Off, in the planner lane, or without the
 // composed runtime: nothing is wired and the tool is not on any menu.
 //
-// actions is the ADR-0154 durable action record (nil: subtask call results stay
-// in memory), so a subtask resumed after a restart never repeats a write.
-func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server, actions domain.ActionRecordStore) {
+// reg is the subtask registry the executor was CONSTRUCTED with (its lease
+// ceiling and Subtasks control, buildExecutorLeases, AGENTS.md §2.3), over the
+// ADR-0154 durable action record so a subtask resumed after a restart never
+// repeats a write; nil when the config does not serve run_subtasks.
+func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server, reg *domain.Subtasks) {
 	sc := cfg.Lane.Subtasks
 	if !sc.On() || server == nil || server.ToolExecutor == nil {
 		return
@@ -41,10 +43,11 @@ func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server, actions
 		slog.Error("ADR-0150: execution.lane.subtasks.enabled but subtask workers need the composed runtime (execution.workers.composed is off); run_subtasks is OFF")
 		return
 	}
+	if reg == nil || server.ToolExecutor.Subtasks() != reg {
+		slog.Error("ADR-0150: the tool executor was not constructed with this subtask registry; run_subtasks is OFF")
+		return
+	}
 	te := server.ToolExecutor
-	reg := domain.NewSubtasks(idempotencyTTL, actions)
-	te.Subtasks = reg
-	te.LeaseCeiling = domain.ChainLeaseCeilings(te.LeaseCeiling, reg)
 	server.Subtasks = reg
 	tool := &subtasks.Tool{
 		Cfg: subtasks.Config{

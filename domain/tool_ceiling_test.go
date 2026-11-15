@@ -51,8 +51,8 @@ func profileExecutor(unrestricted bool) (*ToolExecutor, *fakeHandler) {
 	h := &fakeHandler{result: []byte(`{"ok":true}`)}
 	e := newExec(reg, grants, nil)
 	e.MCPHandler = h
-	e.Unrestricted = unrestricted
-	e.Ceiling = ceiling
+	e.unrestricted = unrestricted
+	e.ceiling = ceiling
 	e.Overlay = NewRunGrantOverlay()
 	return e, h
 }

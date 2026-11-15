@@ -32,8 +32,8 @@ func unroutableFixture(t *testing.T, state domain.ApprovalState, max int) (*Serv
 	grants := domain.NewInMemoryGrantsStore()
 	grants.Set("agent-a", []domain.ToolGrant{{Tool: "mail_send", Policy: domain.ToolResourcePolicy{AllowAll: true}}})
 	appr := &stateApprovals{state: state}
-	s.ToolExecutor = &domain.ToolExecutor{Registry: reg, Grants: grants, Approval: appr,
-		Handler: toolsByName{"mail_send": {result: []byte(`{"message_id":"M-1"}`)}}}
+	s.ToolExecutor = newTestToolExecutor(t, domain.ToolExecutorControls{Registry: reg, Grants: grants, Approval: appr},
+		domain.ToolExecutor{Handler: toolsByName{"mail_send": {result: []byte(`{"message_id":"M-1"}`)}}})
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Minute)
 	gw.BindLease(lease, domain.LeaseBinding{SessionID: "ses-1", RunID: "run-1", StepIndex: 0, AgentID: "agent-a"})
 	s.planActions.begin("run-1")

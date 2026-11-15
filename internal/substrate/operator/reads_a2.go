@@ -13,6 +13,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/llmusage"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/skill/lifecycle"
 )
@@ -285,6 +286,11 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 		return nil, err
 	}
 	ctx = domain.WithEventTimeQuery(ctx, tq)
+	// ENG-534: report the kernel's own LLM calls for this request in the
+	// cambrian-llm-usage trailer, as the agent plane does (llmusage.Trailer).
+	// Deferred, so every return path — errors included — reports what was spent.
+	ctx, sendLLMUsage := llmusage.WithTally(ctx)
+	defer sendLLMUsage()
 	results, err := s.memory.SearchSystem(ctx, req.GetQuery())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "query memory: %v", err)
@@ -338,8 +344,10 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 }
 
 // AnswerMemory (ADR-0081) runs the agentic answer lane and returns a grounded,
-// [n]-cited answer plus the evidence each marker resolves to. Evidence marker n is
-// 1-based over the (filtered) evidence order, matching the synthesizer's labels.
+// [n]-cited answer plus the evidence each marker resolves to. source / session /
+// min_importance and the top_k pool cap narrow the evidence BEFORE synthesis
+// (memory.WithAnswerEvidence, ENG-223), so citation marker n is evidence[n-1] —
+// exactly the synthesizer's [n] label — and the answer never cites a filtered row.
 func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest) (*pb.AnswerMemoryResponse, error) {
 	if s.answerer == nil {
 		return nil, status.Error(codes.Unimplemented, "operator answer lane not configured (memory-answer)")
@@ -351,6 +359,11 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 		return nil, err
 	}
 	ctx = domain.WithEventTimeQuery(ctx, tq)
+	// ENG-534: report the kernel's own LLM calls for this request in the
+	// cambrian-llm-usage trailer, as the agent plane does (llmusage.Trailer).
+	// Deferred, so every return path — errors included — reports what was spent.
+	ctx, sendLLMUsage := llmusage.WithTally(ctx)
+	defer sendLLMUsage()
 	// The synthesis LLM call reads its timeout from the remaining ctx deadline. An
 	// operator answer runs retrieval + one grounded synthesis, so give it a
 	// generous, well-defined budget: an unbounded inbound ctx would otherwise leave
@@ -363,6 +376,7 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 		ctx, cancel = context.WithTimeout(ctx, answerBudget)
 		defer cancel()
 	}
+	ctx = memory.WithAnswerEvidence(ctx, memory.AnswerEvidence{Keep: answerPoolFilter(req), Max: int(req.GetTopK())})
 	st, answer, evidence, err := s.answerer.AnswerSystem(ctx, req.GetQuery())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "answer memory: %v", err)
@@ -378,38 +392,42 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 			Resource:  domain.ResourceRef{Kind: domain.KindMemory},
 		}))
 	}
-	topK := int(req.GetTopK())
-	marker := int32(0)
-	for _, r := range evidence {
-		imp := docImportance(r.Document)
-		if req.GetMinImportance() > 0 && imp < req.GetMinImportance() {
-			continue
-		}
-		src := metaString(r.Document.Metadata, "source")
-		if f := req.GetSource(); f != "" && src != f {
-			continue
-		}
-		if f := req.GetSession(); f != "" && metaString(r.Document.Metadata, "session_id") != f {
-			continue
-		}
-		marker++
+	// The pool was filtered and capped before synthesis, so every returned row is
+	// a citation and its 1-based position is the synthesizer's [n] label.
+	for i, r := range evidence {
 		c := &pb.MemoryCitation{
-			Marker:      marker,
+			Marker:      int32(i + 1),
 			DocId:       r.Document.ID,
 			Text:        r.Document.Text,
 			SectionPath: r.Document.SectionPath,
-			Source:      src,
+			Source:      metaString(r.Document.Metadata, "source"),
 			Score:       r.Score,
-			Importance:  imp,
+			Importance:  docImportance(r.Document),
 			Tags:        metaStringSlice(r.Document.Metadata, "tags"),
 		}
 		setHitTime(r.Document, &c.EventTime, &c.EventTimeEnd, &c.TimeSource, &c.TimePrecision)
 		resp.Citations = append(resp.Citations, c)
-		if topK > 0 && int(marker) >= topK {
-			break
-		}
 	}
 	return resp, nil
+}
+
+// answerPoolFilter is AnswerMemory's source / session / min_importance filter
+// over the evidence pool (nil when the request sets none). The session test is
+// domain.DocSessionID, the same one QueryMemory uses.
+func answerPoolFilter(req *pb.AnswerMemoryRequest) func(domain.SearchResult) bool {
+	minImp, src, sess := req.GetMinImportance(), req.GetSource(), req.GetSession()
+	if minImp <= 0 && src == "" && sess == "" {
+		return nil
+	}
+	return func(r domain.SearchResult) bool {
+		if minImp > 0 && docImportance(r.Document) < minImp {
+			return false
+		}
+		if src != "" && metaString(r.Document.Metadata, "source") != src {
+			return false
+		}
+		return sess == "" || domain.DocSessionID(r.Document.Metadata) == sess
+	}
 }
 
 // ── mapping / pagination helpers ──────────────────────────────────────────────

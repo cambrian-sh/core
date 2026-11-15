@@ -18,8 +18,8 @@ func TestSubtaskWrite_SurvivesARestartThroughTheActionRecord(t *testing.T) {
 	boot := func(h ToolHandler) (*ToolExecutor, *Subtasks) {
 		e, _ := subtaskExec(t, h)
 		sub := NewSubtasks(0, store)
-		e.Subtasks, e.LeaseCeiling = sub, sub
-		e.Approval = &labelApproval{}
+		e.subtasks, e.leaseCeiling = sub, sub
+		e.approval = &labelApproval{}
 		return e, sub
 	}
 

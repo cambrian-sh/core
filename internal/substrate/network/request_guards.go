@@ -17,7 +17,7 @@ import (
 
 // requestGuardsOn reports whether the D14 guards run.
 func (s *Server) requestGuardsOn() bool {
-	return s.ExecCfg.Tools.RequestGuards && s.ToolExecutor != nil && s.ToolExecutor.Guards != nil
+	return s.ExecCfg.Tools.RequestGuards && s.ToolExecutor != nil && s.ToolExecutor.Guards() != nil
 }
 
 // requestScope is the scope of the per-target write record: the ordering
@@ -78,7 +78,7 @@ func (s *Server) writtenTargets(ctx context.Context, executionID domain.RunID) [
 	if !s.requestGuardsOn() {
 		return nil
 	}
-	return s.ToolExecutor.Guards.Writes.Targets(requestScope(ctx, executionID))
+	return s.ToolExecutor.Guards().Writes.Targets(requestScope(ctx, executionID))
 }
 
 // renderWrittenTargets is the planner-facing list of written targets.

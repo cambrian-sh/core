@@ -393,7 +393,7 @@ const (
 	ViolationToKind       = "to_kind"       // a confirmed link's to endpoint is the wrong kind
 	ViolationCardinality  = "cardinality"   // overlapping confirmed links of a single-valued verb
 	ViolationRequiredLink = "required_link" // an entity lacks a required confirmed link
-	ViolationType         = "type"          // a current value about an object does not have its property's declared type
+	ViolationType         = "type"          // a current value about an object, or a current reserved-kind observation, does not have its declared type
 )
 
 // OntologyViolation is one existing row that the CURRENT declarations would

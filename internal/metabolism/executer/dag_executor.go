@@ -1530,7 +1530,9 @@ coordinate:
 
 		// Checkpoint: record snapshot after successful merge.
 		if d.CheckpointStore != nil {
-			if err := d.CheckpointStore.SaveCheckpoint(d.CurrentRunID, r.index, cloneMap(masterContext)); err != nil {
+			// WithoutCancel: the step DID complete, so its recovery point must be
+			// recorded even if the run is being cancelled right now (§2.7).
+			if err := d.CheckpointStore.SaveCheckpoint(context.WithoutCancel(ctx), d.CurrentRunID, r.index, cloneMap(masterContext)); err != nil {
 				slog.Warn("checkpoint write failed", "run", d.CurrentRunID, "step", r.index, "err", err)
 			}
 		}

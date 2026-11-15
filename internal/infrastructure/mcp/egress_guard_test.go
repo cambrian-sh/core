@@ -23,13 +23,13 @@ func TestHTTPClient_GuardedEgressNeedsTheOptIn(t *testing.T) {
 	t.Setenv("MCP_EGRESS_TEST_TOKEN", "tok-1")
 
 	s := ServerConfig{ID: "loop", Transport: "http", Endpoint: srv.URL, AuthType: "bearer", AuthTokenEnv: "MCP_EGRESS_TEST_TOKEN"}
-	hc, _ := s.httpClient(context.Background())
+	hc, _ := s.httpClient(context.Background(), CredentialSources{})
 	if _, err := hc.Get(srv.URL); !errors.Is(err, egress.ErrBlockedAddr) {
 		t.Fatalf("loopback MCP server reached without the opt-in: err = %v", err)
 	}
 
 	s.AllowPrivateNetwork = true
-	hc, tok := s.httpClient(context.Background())
+	hc, tok := s.httpClient(context.Background(), CredentialSources{})
 	resp, err := hc.Get(srv.URL)
 	if err != nil {
 		t.Fatalf("opted-in loopback server: %v", err)

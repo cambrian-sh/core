@@ -167,7 +167,7 @@ func (s *Server) recordPlanAction(ctx context.Context, lease domain.LeaseID, req
 	if s.ToolExecutor != nil {
 		// The per-target effect record, kept whether or not the request guards are
 		// on: coverage settles a write item only by a done write to its target.
-		a.Target = s.ToolExecutor.WriteTargets.Key(req.ToolName, req.ArgsJSON)
+		a.Target = s.ToolExecutor.WriteTargets().Key(req.ToolName, req.ArgsJSON)
 	}
 	if b.Guard != nil {
 		// ADR-0145 D14.6: the classes the step's own write items need; coverage does

@@ -13,7 +13,7 @@ import (
 // ADR-0145 D14: the facts a step's guards need are computed at dispatch from the
 // kernel's own state (T-20261109-adr-0145-d14-fix-batch-remove-per-step).
 func TestStepGuard_FromTheChecklistAndCoverage(t *testing.T) {
-	s := &Server{ToolExecutor: &domain.ToolExecutor{Guards: &domain.RequestGuards{}}}
+	s := &Server{ToolExecutor: newTestToolExecutor(t, domain.ToolExecutorControls{Guards: &domain.RequestGuards{}}, domain.ToolExecutor{})}
 	s.ExecCfg.Tools.RequestGuards = true
 	cl := domain.RequirementChecklist{Items: []domain.RequirementItem{
 		{ID: "R1", Type: domain.RequirementAnswer},
@@ -73,7 +73,7 @@ func TestPlanRunIDStripsStagesAndGenerations(t *testing.T) {
 // R1 carries the write class (and egress, from does: [send]), so the constraint
 // does not refuse the send it asks for; a step not answering R1 is still held to it.
 func TestStepGuard_ConstraintDoesNotBlockTheRequestsOwnWrite(t *testing.T) {
-	s := &Server{ToolExecutor: &domain.ToolExecutor{Guards: &domain.RequestGuards{}}}
+	s := &Server{ToolExecutor: newTestToolExecutor(t, domain.ToolExecutorControls{Guards: &domain.RequestGuards{}}, domain.ToolExecutor{})}
 	s.ExecCfg.Tools.RequestGuards = true
 	cl := domain.RequirementChecklist{Items: []domain.RequirementItem{
 		{ID: "R1", Type: domain.RequirementWrite, Text: "Send the drafts", Quote: "Send them now", Does: []string{"send"}},

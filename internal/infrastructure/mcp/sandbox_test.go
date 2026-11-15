@@ -20,7 +20,7 @@ func testSandboxSpec(t *testing.T, id string) sandbox.Spec {
 // TestStdio_ContainmentIsReported: a launched stdio server's effective
 // containment is readable from the connector (the console's status source).
 func TestStdio_ContainmentIsReported(t *testing.T) {
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	tools := conn.ConnectAll(context.Background(), []ServerConfig{envServer(t, "contained")})
 	if len(tools) == 0 {
@@ -46,7 +46,7 @@ func TestStdio_ContainmentIsReported(t *testing.T) {
 // (no native egress control on Windows; Linux without bubblewrap) it is
 // refused, the refusal is reported, and no tools register.
 func TestStdio_UnresolvedSpecFailsClosed(t *testing.T) {
-	conn := NewConnector()
+	conn := NewConnector(CredentialSources{})
 	defer conn.Close()
 	s := envServer(t, "unresolved")
 	s.Sandbox = sandbox.Spec{}

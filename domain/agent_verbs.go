@@ -31,16 +31,16 @@ func (e *ToolExecutor) AgentVerbAllowed(ctx context.Context, agentID, verb, sess
 	if e == nil || agentID == "" || verb == "" {
 		return false
 	}
-	if e.Unrestricted || e.Grants != nil {
+	if e.unrestricted || e.Grants != nil {
 		if _, ok := e.grantFor(ctx, agentID, verb, sessionToken); ok {
 			return true
 		}
 	}
 	// A profile `tools:` entry naming the verb (see above). The ceilings still
 	// hold: inside every ceiling that binds the agent and the lease's.
-	if e.Ceiling == nil {
+	if e.ceiling == nil {
 		return false
 	}
-	inside, bound := e.Ceiling.Allows(agentID, verb)
+	inside, bound := e.ceiling.Allows(agentID, verb)
 	return bound && inside && e.withinCeiling(agentID, verb) && e.WithinLeaseCeiling(sessionToken, verb)
 }

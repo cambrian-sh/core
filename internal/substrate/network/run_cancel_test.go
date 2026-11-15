@@ -97,17 +97,17 @@ func TestMarkRunCancelled_MakesTheRunNotResumable(t *testing.T) {
 	t.Parallel()
 	runs := newMemRunStore()
 	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "a"}}}
-	if err := runs.SaveRun(domain.Run{ID: "r1", SessionID: "s1", Status: domain.RunRunning, Plan: plan}); err != nil {
+	if err := runs.SaveRun(context.Background(), domain.Run{ID: "r1", SessionID: "s1", Status: domain.RunRunning, Plan: plan}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{Runs: runs}
-	s.markRunCancelled("r1", &operator.RunCancelledError{Actor: "alice", Reason: "stop"})
-	got, _ := runs.GetRun("r1")
+	s.markRunCancelled(context.Background(), "r1", &operator.RunCancelledError{Actor: "alice", Reason: "stop"})
+	got, _ := runs.GetRun(context.Background(), "r1")
 	if got.Status != domain.RunCancelled || got.Resumable() || got.EndedAt.IsZero() {
 		t.Fatalf("run = %+v", got)
 	}
 	if _, err := s.ResumeRun(context.Background(), "r1", "s1"); err == nil {
 		t.Fatal("a cancelled run was resumed")
 	}
-	s.markRunCancelled("ghost", &operator.RunCancelledError{}) // unknown: logged, no panic
+	s.markRunCancelled(context.Background(), "ghost", &operator.RunCancelledError{}) // unknown: logged, no panic
 }

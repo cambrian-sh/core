@@ -3,6 +3,7 @@ package ontology
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"sort"
@@ -490,5 +491,105 @@ func TestPg_CardinalityOneUnderConcurrency(t *testing.T) {
 	}
 	if ok != 1 {
 		t.Fatalf("%d writers won, want exactly 1", ok)
+	}
+}
+
+// ENG-1115: observations under the reserved "observation" kind written before
+// a declaration tightened are reported on their CURRENT value (the latest
+// non-retired one the reader can see), never on history, and never for an
+// entity whose stem is a declared kind's.
+func TestPg_ReservedKindObservationsAreReportedOnTheirCurrentValue(t *testing.T) {
+	pool, ctx := pgPool(t)
+	const ns = "onto-test-observations"
+	cleanNamespace(t, pool, ns)
+	cleanObs := func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM typed_row_retirements WHERE namespace_id = $1`, ns)
+		_, _ = pool.Exec(bg, `DELETE FROM observations WHERE namespace_id = $1`, ns)
+	}
+	cleanObs()
+	t.Cleanup(cleanObs)
+	o, err := Load(ctx, pool, seedDoc(), authorities())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := postgres.NewPgEventStore(pool, o)
+	evidence := func(id string, tags []string) domain.EvidenceID {
+		if _, err := pool.Exec(ctx, `INSERT INTO evidence (id, namespace_id, source_id, source_key, content_hash, classification)
+			VALUES ($1,$2,'test',$1,'sha256:test',$3)`, id, ns, tags); err != nil {
+			t.Fatal(err)
+		}
+		return domain.EvidenceID(id)
+	}
+	evA, evB := evidence("onto-obs-a", []string{"team:a"}), evidence("onto-obs-b", []string{"team:b"})
+	t0 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	n := 0
+	put := func(entity, predicate string, v domain.StatementValue, at time.Time, ev domain.EvidenceID) string {
+		t.Helper()
+		n++
+		ref := fmt.Sprintf("obs-%d", n)
+		if _, err := events.RecordObservation(ctx, domain.Observation{NamespaceID: ns, EntityID: entity, Predicate: predicate,
+			Value: v, OccurredAt: at, EvidenceID: ev, SourceRef: ref}); err != nil {
+			t.Fatalf("observation %s.%s: %v", entity, predicate, err)
+		}
+		return ref
+	}
+	num := func(f float64) domain.StatementValue { return domain.StatementValue{Type: "number", Number: f} }
+	text := func(s string) domain.StatementValue { return domain.StatementValue{Type: "text", Text: s} }
+
+	// Written while nothing declared temp_c or state (an undeclared predicate passes).
+	put("sensor/1", "temp_c", num(95), t0, evA)                // history ...
+	put("sensor/1", "temp_c", num(20), t0.Add(time.Hour), evA) // ... current is in bounds
+	put("sensor/2", "temp_c", num(90), t0, evA)                // current, out of bounds
+	put("sensor/3", "state", text("off"), t0, evB)             // current, outside the enum (team:b)
+	retired := put("sensor/5", "temp_c", num(99), t0, evA)     // retired: not current
+	put("sensor/6", "temp_c", text("hot"), t0, evA)            // current, wrong type
+	put("plain-id", "temp_c", num(70), t0, evA)                // no stem: still the reserved kind
+	if _, err := events.RetireRows(ctx, ns, []string{retired}, domain.RetireSuperseded, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := o.Apply(ctx, ns, domain.OntologyDoc{Kinds: []domain.KindSpec{{Kind: domain.ObservationKind,
+		Predicates: map[string]domain.ValueSpec{
+			"temp_c": {Type: "number", Max: fp(60)},
+			"state":  {Type: "text", Enum: []string{"ok", "warn"}},
+		}}}}, "user:op", false)
+	if err != nil || !res.Applied {
+		t.Fatalf("declare the reserved kind: %+v %v", res, err)
+	}
+	// New bad writes are refused (unchanged behaviour) ...
+	if _, err := events.RecordObservation(ctx, domain.Observation{NamespaceID: ns, EntityID: "sensor/7", Predicate: "temp_c",
+		Value: num(61), OccurredAt: t0, SourceRef: "obs-new"}); err == nil {
+		t.Fatal("a new out-of-bounds observation was accepted")
+	}
+	// ... and the old current ones are reported.
+	vs, truncated, err := o.Violations(ctx, &domain.TagPredicate{Bypass: true}, ns, 0)
+	if err != nil || truncated {
+		t.Fatalf("violations: %v (truncated %v)", err, truncated)
+	}
+	if got := rulesFor(vs, domain.ViolationRange); !reflect.DeepEqual(got, []string{"plain-id", "sensor/2"}) {
+		t.Errorf("range violations = %v, want [plain-id sensor/2] (sensor/1's bad value is history, sensor/5's retired)", got)
+	}
+	if got := rulesFor(vs, domain.ViolationEnum); !reflect.DeepEqual(got, []string{"sensor/3"}) {
+		t.Errorf("enum violations = %v, want [sensor/3]", got)
+	}
+	if got := rulesFor(vs, domain.ViolationType); !reflect.DeepEqual(got, []string{"sensor/6"}) {
+		t.Errorf("type violations = %v, want [sensor/6]", got)
+	}
+	for _, v := range vs {
+		if v.Rule == domain.ViolationRequired {
+			t.Errorf("the reserved kind has no required rule: %+v", v)
+		}
+		if v.Ref == "sensor/2" && !strings.Contains(v.Detail, "90") {
+			t.Errorf("detail should name the current value: %+v", v)
+		}
+	}
+	// Fenced by evidence: a team:b reader is told only about team:b's row.
+	narrow, _, err := o.Violations(ctx, &domain.TagPredicate{RequiredTags: []string{"team:b"}}, ns, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrow) != 1 || narrow[0].Ref != "sensor/3" {
+		t.Errorf("team:b report = %+v, want only sensor/3", narrow)
 	}
 }

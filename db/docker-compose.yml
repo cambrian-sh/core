@@ -12,11 +12,13 @@ services:
       - cambrian_data:/var/lib/postgresql/data
     restart: always
 
-  # ADR-0054 D2: always-up PageRank recompute worker. Decoupled from the
-  # (intermittent) kernel — it keeps chunk_pagerank fresh on its own ticker, and
-  # the kernel only READS the table. restart:always means it recomputes whenever
-  # the device/Docker is up, regardless of the kernel's lifecycle.
+  # ADR-0054 D2: PageRank recompute worker — OFF BY DEFAULT (owner decision
+  # 2026-11-15, ENG-1333): the shipped Stage-A pagerank weight is 0, so nothing
+  # ranks on chunk_pagerank unless a config sets blend_weight_pagerank or the
+  # calibrated Stage A. Opt in with `docker compose --profile pagerank up`. It
+  # keeps chunk_pagerank fresh on its own ticker; the kernel only READS the table.
   pagerank-recompute:
+    profiles: ["pagerank"]
     build:
       context: ..
       dockerfile: cmd/pagerank-recompute/Dockerfile
@@ -24,7 +26,8 @@ services:
     depends_on:
       - cambrian-db
     ports:
-      # On-demand trigger endpoint (POST /recompute) the kernel calls.
+      # On-demand trigger endpoint (POST /recompute) for an operator; the kernel
+      # does not call it.
       - "8088:8088"
     environment:
       PAGERANK_HTTP_ADDR: ":8088"

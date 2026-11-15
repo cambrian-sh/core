@@ -132,6 +132,36 @@ type KnowledgeQuery struct {
 	// role in BOTH events is listed (ADR-0148 §3.4). Roles are deployment data;
 	// the kernel names none.
 	CorrelationRoles []string
+
+	// IncludeRetired asks point, history or events to return RETIRED typed rows
+	// too (ADR-0147 D6, ADR-0112 §11 "what did we once believe"; ENG-1045):
+	// rows a superseded mapping revision or a source deletion took out of every
+	// count. Each such row is marked retired:true with retired_reason,
+	// retired_by and retired_at; the rest of the answer reads as without the
+	// flag. Still fenced by the caller's scope like every other row.
+	//
+	// OPERATOR PLANE ONLY (owner decision 2026-11-15): retired rows are for
+	// audit and repair review, and an agent's answer must never draw on a value
+	// the source deleted or a mapping superseded. The kernel's query seam
+	// refuses the flag for every principal but the system principal the operator
+	// plane reads as (authz.QueryKnowledgeFunc); Validate refuses it on every
+	// other shape.
+	IncludeRetired bool
+}
+
+// ErrRetiredOperatorOnly refuses IncludeRetired for a principal that is not the
+// operator plane's (owner decision 2026-11-15, ENG-1045). It wraps
+// ErrQueryDenied so every caller maps it the way it maps any read denial.
+var ErrRetiredOperatorOnly = fmt.Errorf("%w: retired rows are readable on the operator plane only", ErrQueryDenied)
+
+// SupportsIncludeRetired reports whether a kind reads typed rows that can be
+// retired (observations and events) and so honours IncludeRetired.
+func (q KnowledgeQuery) SupportsIncludeRetired() bool {
+	switch q.Kind {
+	case QueryPoint, QueryHistory, QueryEvents:
+		return true
+	}
+	return false
 }
 
 // The related-rows parameters of `why` (ADR-0148, accepted by the owner
@@ -363,6 +393,10 @@ func (q KnowledgeQuery) Validate() error {
 	if q.Actor == ResolutionActorAll {
 		return cannot("actor %q names the cross-actor resolution rows, not an actor — "+
 			"leave actor empty and set the kind's policy to read them", ResolutionActorAll)
+	}
+	if q.IncludeRetired && !q.SupportsIncludeRetired() {
+		return cannot("include_retired is expressible only for point, history and events, "+
+			"which read retirable typed rows — not for kind %q", q.Kind)
 	}
 	if q.Kind != QueryWhy && (q.IncludeCorrelation || q.CorrelationWindow != 0 || len(q.CorrelationRoles) > 0) {
 		return cannot("include_correlation, correlation_window and correlation_roles are expressible "+

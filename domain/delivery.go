@@ -134,6 +134,32 @@ func TransientDelivery(err error) error {
 	return fmt.Errorf("%w: %v", ErrDeliveryTransient, err)
 }
 
+// DeliveryRetryAfterError is a delivery failure whose far side said how long to
+// wait before sending again — a Telegram 429 with parameters.retry_after, an HTTP
+// Retry-After. The ingress daemon reports it in its ack (`retry_after`, seconds);
+// the progress bridge widens its interval to at least After (ADR-0098 D4,
+// T-20261113-progress-back-off-never-widens-on-a-telegram). It wraps the
+// underlying error, so errors.Is(err, ErrDeliveryTransient) still holds.
+type DeliveryRetryAfterError struct {
+	After time.Duration
+	Err   error
+}
+
+func (e *DeliveryRetryAfterError) Error() string {
+	return fmt.Sprintf("%v (retry after %s)", e.Err, e.After)
+}
+
+func (e *DeliveryRetryAfterError) Unwrap() error { return e.Err }
+
+// DeliveryRetryAfter reports the wait a delivery failure asked for, if any.
+func DeliveryRetryAfter(err error) (time.Duration, bool) {
+	var r *DeliveryRetryAfterError
+	if errors.As(err, &r) && r.After > 0 {
+		return r.After, true
+	}
+	return 0, false
+}
+
 // DeliveryIntentState is a delivery intent's position (ADR-0090 D8.1). The states
 // and their meaning are the pipeline effect-intent protocol's (ADR-0114 D19),
 // restated here because core never imports premium.

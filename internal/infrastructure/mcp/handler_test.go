@@ -280,8 +280,8 @@ func TestMCPHandler_ToolErrorIsAFailedCall(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 	reg := domain.NewInMemoryToolRegistry()
 	reg.Register(domain.SystemTool{Name: "mcp:stub/draft", Effects: []domain.ToolEffect{domain.EffectWrite}})
-	exec := &domain.ToolExecutor{Registry: reg, MCPHandler: &Handler{Sessions: staticSource{"stub": sess}},
-		InlineThreshold: 1 << 20, Unrestricted: true}
+	exec := newTestToolExecutor(t, domain.ToolExecutorControls{Registry: reg, Unrestricted: true},
+		domain.ToolExecutor{MCPHandler: &Handler{Sessions: staticSource{"stub": sess}}, InlineThreshold: 1 << 20})
 	resp := exec.Execute(ctx, domain.ToolCallRequest{AgentID: "a", ToolName: "mcp:stub/draft", ArgsJSON: []byte(`{"value":"x"}`)})
 	if resp.Error == "" || !strings.Contains(resp.Error, "mailbox is read-only") || len(resp.ResultJSON) != 0 {
 		t.Fatalf("tool error reported as a result: %+v", resp)

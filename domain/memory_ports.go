@@ -134,6 +134,6 @@ type ChunkEntities struct {
 const (
 	StageChunkSaveBegin   = "chunk_save_begin"      // pool acquire + BEGIN inside chunk_save
 	StageChunkSaveUpsert  = "chunk_save_upsert"     // chunk row upserts inside chunk_save
-	StageChunkSaveProject = "chunk_save_projection" // ADR-0107 projection upserts inside chunk_save
+	StageChunkSaveProject = "chunk_save_projection" // ADR-0107 projection upserts inside chunk_save; 0 since ENG-335 (one pgx.Batch, reported as chunk_save_upsert)
 	StageChunkSaveCommit  = "chunk_save_commit"     // COMMIT inside chunk_save
 )

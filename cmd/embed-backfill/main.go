@@ -25,9 +25,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"regexp"
 	"time"
 
+	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
 )
@@ -38,8 +38,6 @@ func main() {
 		os.Exit(1)
 	}
 }
-
-var indexSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 func run() error {
 	fs := flag.NewFlagSet("embed-backfill", flag.ExitOnError)
@@ -113,16 +111,11 @@ func run() error {
 
 	var indexDur time.Duration
 	if !*skipIndex {
-		// The index name embeds the model so each model's index is its own
-		// object; the cast + WHERE must match the read path's SQL VERBATIM
-		// (ADR-0107 D2) or the planner never uses it.
-		name := "chunk_embeddings_" + indexSlug.ReplaceAllString(*model, "_") + "_hnsw"
+		// The per-model partial HNSW index (ADR-0107 D2). One definition, shared with
+		// the kernel's boot-time ensure (ENG-277): postgres.EnsureProjectionIndex.
 		istart := time.Now()
-		if _, err := pool.Exec(ctx, fmt.Sprintf(
-			`CREATE INDEX IF NOT EXISTS %s ON chunk_embeddings
-			 USING hnsw ((embedding::vector(%d)) vector_cosine_ops)
-			 WHERE model_id = '%s'`, name, *dims, *model)); err != nil {
-			return fmt.Errorf("create index %s: %w", name, err)
+		if err := postgres.EnsureProjectionIndex(ctx, pool, *model, *dims); err != nil {
+			return err
 		}
 		indexDur = time.Since(istart)
 	}

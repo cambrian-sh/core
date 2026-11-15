@@ -15,8 +15,6 @@
 #   bench-compare     Micro benchmarks + benchstat diff vs baseline
 #   fuzz              Fuzzing, 10 minutes
 #   fuzz-release      Fuzzing, 1 hour
-#   corpus            Generate synthetic corpus (1000 records, baseline scenario)
-#   export            Export bbolt events to JSONL
 #   per-pr            Full per-PR pipeline (unit + separability + integration + chaos + bench-micro)
 #   nightly           Nightly pipeline (bench-macro + fuzz + leak)
 #   release-gate      Full release gate (Docker + 1h fuzz, ~30 min)
@@ -29,7 +27,6 @@ param(
         "leak", "leak-integration",
         "bench-micro", "bench-macro", "bench-compare",
         "fuzz", "fuzz-release",
-        "corpus", "export",
         "per-pr", "nightly", "release-gate"
     )]
     [string]$Group
@@ -144,22 +141,8 @@ function Step-FuzzRelease {
     }
 }
 
-function Step-Corpus {
-    Run-Step "Generate synthetic corpus (1000 records, baseline scenario)" {
-        go run ./tools/mockgen-cli/main.go `
-            -scenario baseline -n 1000 -seed 42 -output synthetic_corpus.jsonl
-    }
-    Write-Host "Corpus written to: synthetic_corpus.jsonl"
-}
-
-function Step-Export {
-    Run-Step "Export bbolt events to JSONL" {
-        go run ./tools/export-events/main.go `
-            --db data/cambrian.db `
-            --output events.jsonl
-    }
-    Write-Host "Events exported to: events.jsonl"
-}
+# Step-Corpus / Step-Export (tools/mockgen-cli, tools/export-events) were removed 2026-11-15:
+# neither tool was ever written (ENG-1415, PREM-0019 observation).
 
 # ─── Pipeline compositions ────────────────────────────────────────────────────
 
@@ -218,8 +201,6 @@ switch ($Group) {
     "bench-compare"      { Step-BenchCompare }
     "fuzz"               { Step-Fuzz }
     "fuzz-release"       { Step-FuzzRelease }
-    "corpus"             { Step-Corpus }
-    "export"             { Step-Export }
     "per-pr"             { Pipeline-PerPR }
     "nightly"            { Pipeline-Nightly }
     "release-gate"       { Pipeline-ReleaseGate }

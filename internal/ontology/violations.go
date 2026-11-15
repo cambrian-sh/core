@@ -35,7 +35,14 @@ const (
 //     kind's prefix) whose type is not the property's declared type: the latest
 //     such non-retired observation per entity and predicate, and current-winner
 //     items carrying one. They stay in history and are not projected into the
-//     object table (ADR-0149 D3).
+//     object table (ADR-0149 D3);
+//   - observations under the reserved "observation" kind (entities whose id
+//     stem names no declared kind, ADR-0110 D2; ENG-1115): the CURRENT value
+//     per (entity, predicate) — the latest non-retired observation the caller
+//     can read, the value PointLookup answers — of a declared predicate whose
+//     type differs, whose text is outside the enum, or whose number is outside
+//     min/max. Required does not apply: the reserved kind has no population of
+//     entities that must carry a predicate.
 //
 // Every read is fenced by scope through the one fence renderer (internal/authz/
 // sqlfence): items by their own classification, links by their own evidence (the
@@ -60,6 +67,15 @@ func (o *Ontology) Violations(ctx context.Context, scope *domain.TagPredicate, n
 
 	kinds := append([]domain.KindSpec(nil), snap.Doc.Kinds...)
 	sort.Slice(kinds, func(i, j int) bool { return kinds[i].Kind < kinds[j].Kind })
+	// The id stems of every declared kind: an observation about one of these
+	// validates under that kind, every other under the reserved kind — the
+	// split RecordObservation makes (KindRegistry.ObjectKind).
+	var prefixes []string
+	for _, k := range kinds {
+		if prefix := k.ObjectPrefix(); prefix != "" {
+			prefixes = append(prefixes, prefix)
+		}
+	}
 	for _, k := range kinds {
 		preds := make([]string, 0, len(k.Predicates))
 		for p := range k.Predicates {
@@ -69,6 +85,10 @@ func (o *Ontology) Violations(ctx context.Context, scope *domain.TagPredicate, n
 		for _, p := range preds {
 			v := k.Predicates[p]
 			subject := "kind " + k.Kind + "." + p
+			if k.Kind == domain.ObservationKind {
+				r.observationRules(subject, prefixes, p, v)
+				continue
+			}
 			if prefix := k.ObjectPrefix(); prefix != "" {
 				r.typeMismatch(subject, prefix, p, v.Type)
 			}
@@ -221,6 +241,46 @@ func (r *report) requiredLink(subject, verb, fromKind string) {
 		  AND NOT EXISTS (SELECT 1 FROM links l
 		                  WHERE `+confirmed+` AND l.from_ref = $4 || en.id`+fl+`)`, args,
 		func(string) string { return fmt.Sprintf("holds no confirmed %q link", verb) })
+}
+
+// observationRules reports the reserved kind's declared predicate p against the
+// current observation of every entity outside the declared kinds' stems.
+func (r *report) observationRules(subject string, prefixes []string, p string, v domain.ValueSpec) {
+	if v.Type != "" {
+		r.observations(domain.ViolationType, subject, prefixes, p, `cur.value_type <> $4`, `cur.value_type`,
+			func(found string) string { return fmt.Sprintf("a current %s value, declared %s", found, v.Type) }, v.Type)
+	}
+	if len(v.Enum) > 0 {
+		r.observations(domain.ViolationEnum, subject, prefixes, p,
+			`cur.value_text IS NOT NULL AND NOT (cur.value_text = ANY($4::text[]))`, `cur.value_text`,
+			func(found string) string { return fmt.Sprintf("the current value %q is outside %v", found, v.Enum) }, v.Enum)
+	}
+	if v.Type == "number" && (v.Min != nil || v.Max != nil) {
+		r.observations(domain.ViolationRange, subject, prefixes, p,
+			`((cur.value_number < $4::float8) OR (cur.value_number > $5::float8))`, `cur.value_number::text`,
+			func(found string) string { return "the current value " + found + " is outside the declared bounds" }, v.Min, v.Max)
+	}
+}
+
+// observations runs one rule over the current observation per entity of
+// predicate under the reserved kind ($1 namespace, $2 predicate, $3 declared
+// stems, $4… extra). "Current" is the latest non-retired observation the
+// caller may read (fenced by its evidence, like typeMismatch): a hidden later
+// value does not exist for this reader, so the visible one is what it is told
+// about. An entity id whose stem is a declared kind's is excluded — it is
+// validated, and reported, under that kind.
+func (r *report) observations(rule, subject string, prefixes []string, predicate, cond, other string, detail func(string) string, extra ...any) {
+	args := append([]any{r.ns, predicate, prefixes}, extra...)
+	fence, fargs := sqlfence.EvidenceExists(r.scope, "o.evidence_id", len(args))
+	args = append(args, fargs...)
+	r.query(rule, subject, `
+		SELECT cur.entity_id, `+other+` FROM (
+			SELECT DISTINCT ON (o.entity_id) o.entity_id, o.value_type, o.value_text, o.value_number
+			FROM observations o
+			WHERE o.namespace_id = $1 AND o.predicate = $2
+			  AND NOT (o.entity_id ~ '^[^/]+/.' AND split_part(o.entity_id, '/', 1) = ANY($3::text[]))`+fence+objects.NotRetired("o")+`
+			ORDER BY o.entity_id, o.occurred_at DESC, o.id DESC) cur
+		WHERE `+cond, args, detail)
 }
 
 // typeMismatch reports values about objects of prefix whose predicate is

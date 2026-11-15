@@ -57,9 +57,15 @@ func normaliseUploadName(name string) string {
 }
 
 // isMarkerTag reports the tags that carry no classification: the source_document
-// marker, the document-qa harness marker and chunker hints. Rule 1b skips the same set.
+// marker and chunker hints. Rule 1b skips the same set.
+//
+// It used to skip "document-qa" too, the tag of one benchmark suite — benchmark logic in
+// the OSS kernel (decisions/no-benchmark-in-oss.md; ENG-1195). That suite always names its
+// document with `source_document <id>` (rule 1a, which wins before this is consulted), so
+// the tag is now an ordinary classification tag like any other. legacyExternalDocumentID
+// keeps the old skip byte for byte: it reproduces pre-ADR-0138 ids for grandfathering.
 func isMarkerTag(tag string) bool {
-	return tag == "" || tag == "document-qa" || tag == sourceDocumentMarker || strings.HasPrefix(tag, "chunker:")
+	return tag == "" || tag == sourceDocumentMarker || strings.HasPrefix(tag, "chunker:")
 }
 
 // uploadScope is the B1.2 classification scope of an upload: its request tags minus

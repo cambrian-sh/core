@@ -38,6 +38,9 @@ type IntegrationManager interface {
 	// file declares, so the file entry applies again, and restarts it live.
 	RevertToFile(ctx context.Context, id string) (ConfigWriteOutcome, *pb.IntegrationOp, error)
 	Test(ctx context.Context, id string, callProbe bool) (*pb.IntegrationTestResultOp, error)
+	// SetTrustTier sets (or, with "", clears) an integration's sandbox trust
+	// tier and returns the tier in effect BEFORE the change, for the audit.
+	SetTrustTier(ctx context.Context, id, tier string) (ConfigWriteOutcome, *pb.IntegrationOp, string, error)
 }
 
 // SetIntegrationManager wires the integrations surface. nil ⇒ Unimplemented and
@@ -107,6 +110,48 @@ func (s *Service) integrationMutation(ctx context.Context, commandID, reason, ac
 		return nil, err
 	}
 	resp := &pb.IntegrationMutationOpResponse{CommandId: ack.GetCommandId(), Deduped: ack.GetDeduped(), Integration: after2}
+	if !ack.GetDeduped() {
+		resp.Outcome = outcomesToOp([]ConfigWriteOutcome{outcome})[0]
+	}
+	return resp, nil
+}
+
+// SetIntegrationTrustTier sets an integration's ADR-0139 D8 sandbox tier from
+// the console (owner decision 2026-11-15: any tier, raise or lower, audited).
+// The audit entry records the actor and role (runMutation), the reason, the
+// tier before and the tier after
+// (T-20261115-console-custom-mcp-server-install-cannot-set).
+func (s *Service) SetIntegrationTrustTier(ctx context.Context, req *pb.SetIntegrationTrustTierOpRequest) (*pb.IntegrationMutationOpResponse, error) {
+	if err := s.needIntegrations(); err != nil {
+		return nil, err
+	}
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	after := req.GetTrustTier()
+	if after == "" {
+		after = "(cleared: catalog/default tier)"
+	}
+	var (
+		outcome ConfigWriteOutcome
+		op      *pb.IntegrationOp
+	)
+	// The tier before the change is read inside the mutation, after the
+	// command_id dedupe, and written onto the audit entry with the outcome.
+	ack, err := s.runMutationBefore(ctx, req.GetCommandId(), req.GetReason(), "set_integration_trust_tier", "integration",
+		req.GetId(), "trust_tier "+after, func() (string, error) {
+			var before string
+			var aerr error
+			outcome, op, before, aerr = s.integrations.SetTrustTier(ctx, req.GetId(), req.GetTrustTier())
+			if before == "" {
+				before = "(catalog/default tier)"
+			}
+			return "trust_tier " + before, aerr
+		})
+	if err != nil {
+		return nil, err
+	}
+	resp := &pb.IntegrationMutationOpResponse{CommandId: ack.GetCommandId(), Deduped: ack.GetDeduped(), Integration: op}
 	if !ack.GetDeduped() {
 		resp.Outcome = outcomesToOp([]ConfigWriteOutcome{outcome})[0]
 	}
@@ -255,6 +300,13 @@ func (s *Service) TestIntegration(ctx context.Context, req *pb.TestIntegrationOp
 	}
 	if req.GetId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	// ADR-0140 D4, as in ExecuteToolOp: an operator testing an integration
+	// tests it FOR themselves, so a per_user integration is tested on the
+	// caller's own connected account
+	// (T-20261106-testintegration-and-the-catalog-op-do-not).
+	if me, _, ok := PrincipalFromContext(ctx); ok && me != "" {
+		ctx = domain.WithRunPrincipal(ctx, me)
 	}
 	return s.integrations.Test(ctx, req.GetId(), req.GetCallProbe())
 }

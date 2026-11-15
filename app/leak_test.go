@@ -38,7 +38,7 @@ func TestKernel_NoGoroutineLeak(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	k, err := bootstrapKernel(ctx, cfg, lis, Options{})
+	k, err := bootstrapKernel(ctx, cfg, lis, Options{}, nil)
 	if err != nil {
 		t.Fatalf("bootstrapKernel: %v", err)
 	}

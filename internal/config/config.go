@@ -805,6 +805,13 @@ type RetrievalConfig struct {
 	// cost. Requires a GraphStore-backed vector store. Also arms the ADR-0053 (T-Mem associative hop) entity
 	// routing (see internal/kernel/memory_stack.go for its empty-index caveat).
 	RecallSpreadingEnabled bool `json:"recall_spreading_enabled"`
+	// RecallSpreadingKeepAssemblyOrder (ENG-484) keeps the non-displacing order the
+	// window was assembled in (primary before injected, in-lane first) when spreading
+	// re-ranks it: seeds keep their order and only the rows spreading reached are
+	// placed by activation energy, after them. Off, the whole window is re-sorted by
+	// energy, so an injected row that out-scores a primary hit can take one of the
+	// caller's top_k slots. Default OFF until its A/B/A (owner decision 2026-11-15).
+	RecallSpreadingKeepAssemblyOrder bool `json:"recall_spreading_keep_assembly_order,omitempty"`
 
 	// RecallSimilarityFloor is the minimum cosine similarity a recalled
 	// mnemonic_fact must clear to be returned to the agent (ADR-0048 #1). Below
@@ -2348,6 +2355,14 @@ type FactsConfig struct {
 	// CurrentFactWeight is the Stage-A weight of current_fact, joined only for a
 	// current/latest query with supersession on. Default 0.1.
 	CurrentFactWeight float64 `json:"current_fact_weight"`
+	// LaneChunkCosineMax (ENG-432) scores a fact-reached chunk's Stage-A cosine
+	// signal as max(its own cosine, its matched fact's cosine). A chunk that holds
+	// the evidence in a short tail (9a707b82: ~90% unrelated advice) has a low
+	// cosine of its own, so Stage A ranks it below the reader cut although the lane
+	// found it through a strongly matching fact. RawScore (the relevance floor's
+	// input) stays the chunk's own cosine. Needs lane_enabled (a WARN at boot
+	// otherwise). Default OFF until its A/B/A (owner decision 2026-11-15).
+	LaneChunkCosineMax bool `json:"lane_chunk_cosine_max,omitempty"`
 	// SingleAttributes declares predicates that hold one value at a time and therefore
 	// supersede ("home_city", "employer"). Matched after normalisation (lower case, words
 	// joined by '_'). ADR-0136 A1.4: seeded at boot as DECLARED predicate profiles
@@ -3240,7 +3255,9 @@ func DefaultConfig() *Config {
 				// variant (decay curves incl.) beat 0. It was 0.1 for one day
 				// (2026-11-02); memory.DefaultBlendWeights' 0.05 is only the all-zero
 				// fallback. The ranking redesign is
-				// T-20261102-research-and-redesign-stage-a-ranking-improve.
+				// T-20261102-research-and-redesign-stage-a-ranking-improve. All shipped
+				// weights and their history: cambrian-knowledge/decisions/
+				// stage-a-blend-default-weights.md (ENG-1207).
 				BlendWeightRecency:        0,
 				BlendRecencyMode:          "minmax",
 				BlendRecencyHalfLifeHours: 2160, // 90 days; read in decay mode and by the calibrated Stage A

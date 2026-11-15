@@ -150,6 +150,8 @@ type Service struct {
 	// facts is the read-only fact inspection (contract 0103, facts.go); nil ⇒
 	// ListFacts / GetFactChain / GetFactCoverage answer Unimplemented.
 	facts domain.FactInspector
+	// factStats is the fact extractor whose counters the Snapshot reports (ENG-431); nil = absent.
+	factStats FactStatsSource
 
 	kernelVersion   string
 	contractVersion string
@@ -392,6 +394,9 @@ func (s *Service) Snapshot(ctx context.Context, _ *pb.SnapshotRequest) (*pb.Snap
 				})
 			}
 		}
+	}
+	if s.factStats != nil {
+		resp.FactExtractor = factExtractorStatsOp(s.factStats.Stats())
 	}
 	return resp, nil
 }

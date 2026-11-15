@@ -24,6 +24,10 @@ import (
 // against the ADR-0101 store.
 type configWriteSource struct {
 	store *storage.BoltConfigStore
+	// org is the account provider's org-credential writer (ADR-0141), nil in
+	// OSS: when set, shared MCP credentials are written to org accounts, not
+	// the store (shared_credentials.go).
+	org domain.OrgCredentialWriter
 	// configPath is the primary config file (configs/config.json). It locates the
 	// file layers for ADR-0101 D8: a write to a key a writable file already sets is
 	// stored AND mirrored into that file (ENG-1417). "" disables the mirror (every
@@ -1105,7 +1109,7 @@ func (c configWriteSource) SetMCPServerToken(ctx context.Context, id, token stri
 // outranks the store (D5), "" when none does.
 func (c configWriteSource) setMCPSecret(ctx context.Context, id, secretName, envVar, value string) operator.ConfigWriteOutcome {
 	res := operator.ConfigWriteOutcome{Key: secretName}
-	if err := writeSharedMCPCredential(ctx, c.store, id, secretName, value); err != nil {
+	if err := writeSharedMCPCredential(ctx, c.org, c.store, id, secretName, value); err != nil {
 		res.Effect = operator.EffectRejected
 		res.Error = "could not write to the credential store: " + err.Error()
 		return res
@@ -1130,7 +1134,7 @@ func (c configWriteSource) ClearMCPServerToken(ctx context.Context, id string) e
 	if c.store == nil {
 		return fmt.Errorf("no credential store is available")
 	}
-	if err := clearSharedMCPCredential(ctx, c.store, id, mcp.TokenSecretName(id)); err != nil {
+	if err := clearSharedMCPCredential(ctx, c.org, c.store, id, mcp.TokenSecretName(id)); err != nil {
 		return err
 	}
 	if c.bounceMCPServer != nil {

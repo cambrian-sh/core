@@ -44,3 +44,32 @@ func TestUpsertSQL_EncodableMetadataRenders(t *testing.T) {
 		t.Fatalf("upsertSQL: sql=%q args=%d err=%v", sql, len(args), err)
 	}
 }
+
+// ENG-335: the upsert binds its values instead of interpolating them, so the
+// vector and the metadata travel as parameters and two rows of one shape share
+// one statement text (one cached prepared statement).
+func TestUpsertSQL_BindsValuesAndSharesStatementText(t *testing.T) {
+	p := &PgVectorAdapter{dim: 4}
+	mk := func(id string, v float32) *domain.Document {
+		return &domain.Document{ID: id, Text: "text " + id, DocumentType: domain.DocTypeMnemonicFact,
+			Metadata:  map[string]any{"tags": []string{"team:a"}, "document_id": "doc-" + id},
+			Embedding: domain.Embedding{Vector: []float32{v, 0.25, 0.5, 0.75}}}
+	}
+	sqlA, argsA, err := p.upsertSQL(mk("a", 0.125))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlB, _, err := p.upsertSQL(mk("b", 0.375))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sqlA != sqlB {
+		t.Fatalf("two rows of one shape must share one statement text:\n%s\n%s", sqlA, sqlB)
+	}
+	if !strings.Contains(sqlA, "$1") || strings.Contains(sqlA, "0.125") || strings.Contains(sqlA, "text a") || strings.Contains(sqlA, "team:a") {
+		t.Fatalf("values must be bound, not interpolated: %s", sqlA)
+	}
+	if len(argsA) < 5 {
+		t.Fatalf("expected the values as args, got %d", len(argsA))
+	}
+}

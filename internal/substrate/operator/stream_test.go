@@ -149,11 +149,22 @@ func TestService_TokenChunksAreLiveOnly(t *testing.T) {
 	stream := &fakeStream{ctx: ctx, recv: make(chan *pb.OperatorEvent, 8)}
 	go func() { _ = svc.StreamEvents(&pb.SubscribeRequest{LastSeq: 0}, stream) }()
 
-	// Give the stream a moment to subscribe to the ephemeral lane.
-	time.Sleep(50 * time.Millisecond)
-	feed.EmitEphemeral(domain.TokenChunkEvent{SessionID: "s1", StepIndex: 2, Text: "hel"})
-
-	e := recvOne(t, stream.recv)
+	// Re-emit until the stream has subscribed to the ephemeral lane and delivered
+	// one chunk. A fixed sleep before a single emit flaked on a loaded machine
+	// (ENG-381): an emit before the subscription is dropped by design. Repeating
+	// it is harmless here — token chunks are never retained and take no seq,
+	// which is exactly what the assertions below check.
+	var e *pb.OperatorEvent
+	deadline := time.After(10 * time.Second)
+	for e == nil {
+		feed.EmitEphemeral(domain.TokenChunkEvent{SessionID: "s1", StepIndex: 2, Text: "hel"})
+		select {
+		case e = <-stream.recv:
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("timed out waiting for the live token chunk")
+		}
+	}
 	if e.GetToken() == nil || e.GetToken().GetText() != "hel" || e.GetSeq() != 0 {
 		t.Fatalf("expected live token chunk at seq 0, got %+v", e)
 	}

@@ -59,6 +59,9 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 
 	// Phase 1: build initial activation map from seeds.
 	energies := make(map[string]domain.GraphNodeExpansion)
+	// order records first-insertion order so the result is deterministic: ranging
+	// over the energies map returned ties in random order run to run (ENG-1683).
+	order := make([]string, 0, len(seeds))
 	seedIDs := make([]string, 0, len(seeds))
 	// Track IDs that contributed edges: if none had edges, log graph miss.
 	edgeCoverage := 0
@@ -66,6 +69,9 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 
 	for _, seed := range seeds {
 		seedIDs = append(seedIDs, seed.Document.ID)
+		if _, dup := energies[seed.Document.ID]; !dup {
+			order = append(order, seed.Document.ID)
+		}
 		energies[seed.Document.ID] = domain.GraphNodeExpansion{
 			Document:         seed.Document,
 			ActivationEnergy: seed.Score, // initial cosine score as base energy
@@ -99,6 +105,11 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 
 		var nextQueue []string
 
+		// ENG-83: fetch every target this level can reach in ONE enforced GetBatch
+		// (scope rides ctx, ADR-0095 D9) instead of one GetByID per edge. Only targets
+		// whose transferred energy clears the floor are fetched, as before.
+		docs := s.fetchTargets(ctx, edges, energies, dequeued)
+
 		for _, edge := range edges {
 			// Look up the source node's accumulated energy.
 			src, ok := energies[edge.SourceID]
@@ -123,9 +134,10 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 				continue
 			}
 
-			// Fetch target document to get activation_strength.
-			doc, err := s.VectorStore.GetByID(ctx, edge.TargetID)
-			if err != nil || doc == nil {
+			// The target document (prefetched) gives activation_strength; unreadable or
+			// gone => no expansion, as the per-edge read did.
+			doc, ok := docs[edge.TargetID]
+			if !ok {
 				continue
 			}
 
@@ -159,8 +171,11 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 				}
 			}
 
+			if _, seen := energies[edge.TargetID]; !seen {
+				order = append(order, edge.TargetID)
+			}
 			energies[edge.TargetID] = domain.GraphNodeExpansion{
-				Document:         *doc,
+				Document:         doc,
 				ActivationEnergy: energy,
 				Depth:            level + 1,
 			}
@@ -187,11 +202,49 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 	}
 
 	// Collect all expansions.
-	var result []domain.GraphNodeExpansion
-	for _, e := range energies {
-		result = append(result, e)
+	result := make([]domain.GraphNodeExpansion, 0, len(order))
+	for _, id := range order {
+		result = append(result, energies[id])
 	}
 	return result
+}
+
+// fetchTargets reads, in one GetBatch on the (enforcing) vector store, every edge
+// target of this BFS level that the per-edge loop could expand: not already
+// dequeued, reachable from a source with energy, and with transferred energy at or
+// above the floor (ENG-83). A failed batch read logs and expands nothing this level
+// - the per-edge reads it replaces skipped a target on error too (fail open).
+func (s *SpreadingEngine) fetchTargets(ctx context.Context, edges []domain.DocumentEdge, energies map[string]domain.GraphNodeExpansion, dequeued map[string]bool) map[string]domain.Document {
+	var ids []string
+	want := map[string]bool{}
+	for _, edge := range edges {
+		src, ok := energies[edge.SourceID]
+		if !ok || dequeued[edge.TargetID] || want[edge.TargetID] {
+			continue
+		}
+		weight := float64(edge.Weight)
+		if edge.EdgeType == domain.EdgeCoActivated {
+			weight = s.coActivatedWeight(edge)
+		}
+		if src.ActivationEnergy*weight < s.EnergyFloor {
+			continue
+		}
+		want[edge.TargetID] = true
+		ids = append(ids, edge.TargetID)
+	}
+	out := make(map[string]domain.Document, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	docs, err := s.VectorStore.GetBatch(ctx, ids)
+	if err != nil {
+		slog.Warn("SpreadingEngine: target batch read failed; no expansion this level", "err", err, "targets", len(ids))
+		return out
+	}
+	for _, d := range docs {
+		out[d.ID] = d
+	}
+	return out
 }
 
 // coActivatedWeight returns a co_activated edge's STORED weight decayed by its age

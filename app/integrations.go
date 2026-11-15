@@ -18,6 +18,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/integrations"
 	"github.com/cambrian-sh/core/internal/procenv"
+	"github.com/cambrian-sh/core/internal/sandbox"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
@@ -117,6 +118,11 @@ func (m *integrationManager) integrationOp(id string, stored map[string]config.S
 		}
 		op.UpdateAvailable = cfg.CatalogVersion != "" && cfg.CatalogVersion != entry.Version
 	}
+	// A tier set on the server itself (config or console, SetTrustTier) is the
+	// one its launches use; it outranks the catalog's.
+	if hasCfg && cfg.TrustTier != "" {
+		op.TrustTier = cfg.TrustTier
+	}
 
 	// Policy (what the kernel enforces for this server's tools).
 	for _, name := range sortedPolicyNames(sc.Tools) {
@@ -129,11 +135,12 @@ func (m *integrationManager) integrationOp(id string, stored map[string]config.S
 	}
 	op.PolicySummary = policySummary(len(sc.Tools), sc.DefaultPolicy)
 	// ADR-0139 D8: the effective trust-tier containment (the last launch, or
-	// what the server would get) rides on the summary string until
-	// IntegrationOp has a structured field
+	// what the server would get), structured for the console; the summary
+	// string keeps the same text for older consoles
 	// (T-20261106-integrationop-has-no-structured-containment).
 	if rep, ok := m.runtime.containment(m.connector, id); ok {
 		op.PolicySummary += "; " + rep.Summary()
+		op.Containment = containmentOp(rep)
 	}
 
 	// Secrets and missing required fields.
@@ -199,9 +206,9 @@ func (m *integrationManager) secretState(id string, cfg config.MCPServerConfig, 
 		st.Set, st.Source = true, "env:"+envVar
 		return st
 	}
-	if ok, at := sharedMCPCredentialStatus(m.writer.store, id, storeName); ok {
+	if ok, at := sharedMCPCredentialStatus(m.writer.org, m.writer.store, id, storeName); ok {
 		st.Set, st.Source = true, "store"
-		if orgCredentialWriter() != nil {
+		if m.writer.org != nil {
 			st.Source = "account" // ADR-0141: an org account bound to this slot
 		}
 		if !at.IsZero() {
@@ -348,7 +355,7 @@ func (m *integrationManager) Install(ctx context.Context, req *pb.InstallIntegra
 			continue
 		}
 		storeName, _ := m.secretLocation(id, entry, secretByName[name])
-		if err := writeSharedMCPCredential(ctx, m.writer.store, id, storeName, v); err != nil {
+		if err := writeSharedMCPCredential(ctx, m.writer.org, m.writer.store, id, storeName, v); err != nil {
 			return rejected(key, "could not write to the credential store: "+err.Error()), nil, nil
 		}
 	}
@@ -399,6 +406,36 @@ func (m *integrationManager) Update(_ context.Context, req *pb.UpdateIntegration
 	return out, m.after(out, id), nil
 }
 
+// SetTrustTier sets (tier != "") or clears (tier == "") the server's own
+// ADR-0139 D8 trust tier — any tier, raise or lower (owner decision
+// 2026-11-15) — and saves it like every console edit (the server restarts on
+// it). It returns the tier the server carried before, for the audit.
+func (m *integrationManager) SetTrustTier(_ context.Context, id, tier string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, string, error) {
+	key := config.MCPServerOverrideKey(id)
+	cur, ok := m.effective(id)
+	if !ok {
+		return m.notEditable(id, key), nil, "", nil
+	}
+	// The tier the server's launches use now: its own, else what the sandbox
+	// resolves (catalog tier or the configured default), else the catalog's.
+	before := cur.TrustTier
+	if before == "" {
+		if op := m.one(id); op != nil {
+			before = op.GetContainment().GetTier()
+			if before == "" {
+				before = op.GetTrustTier()
+			}
+		}
+	}
+	if errs := config.ValidateMCPServerSandbox("trust_tier", tier, nil); len(errs) > 0 {
+		return rejected(key, strings.Join(errs, "; ")), nil, before, nil
+	}
+	next := cur
+	next.TrustTier = tier
+	out := m.writer.saveMCPEntry(next)
+	return out, m.after(out, id), before, nil
+}
+
 func (m *integrationManager) SetSecret(ctx context.Context, id, name, value string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
 	cur, ok := m.effective(id)
 	if !ok {
@@ -424,7 +461,7 @@ func (m *integrationManager) ClearSecret(ctx context.Context, id, name string) (
 	}
 	storeName, _ := m.secretLocation(id, cur, f)
 	res := operator.ConfigWriteOutcome{Key: storeName}
-	if err := clearSharedMCPCredential(ctx, m.writer.store, id, storeName); err != nil {
+	if err := clearSharedMCPCredential(ctx, m.writer.org, m.writer.store, id, storeName); err != nil {
 		return rejected(storeName, "could not write to the credential store: "+err.Error()), nil, nil
 	}
 	res.Set = true
@@ -478,7 +515,7 @@ func (m *integrationManager) Remove(ctx context.Context, id string, keepSecrets 
 		return out, nil
 	}
 	for _, n := range secretNames {
-		if err := clearSharedMCPCredential(ctx, m.writer.store, id, n); err != nil {
+		if err := clearSharedMCPCredential(ctx, m.writer.org, m.writer.store, id, n); err != nil {
 			out.Error = "removed, but a stored secret could not be cleared: " + err.Error()
 		}
 	}
@@ -756,9 +793,31 @@ func catalogEntryToOp(e integrations.Entry) *pb.IntegrationCatalogEntryOp {
 	if e.Probe != nil {
 		op.ProbeTool = e.Probe.Name
 	}
+	// ADR-0140: the entry's credential model, before install.
+	op.CredentialScope = e.Server.CredentialScope()
+	if uc := e.Server.UserCredential; uc != nil {
+		op.Provider = uc.Provider
+		op.Scopes = append([]string(nil), uc.Scopes...)
+	}
 	return op
 }
 
 func hostOS() string { return runtimeGOOS }
 
 var runtimeGOOS = goruntime.GOOS
+
+// containmentOp renders one launch's sandbox.Report on the operator plane
+// (IntegrationContainmentOp) — every fact the summary string carries, as fields.
+func containmentOp(r sandbox.Report) *pb.IntegrationContainmentOp {
+	op := &pb.IntegrationContainmentOp{
+		Tier: string(r.Tier), TierSource: r.TierSource, Runner: r.Runner,
+		Mechanisms: append([]string(nil), r.Mechanisms...),
+		Missing:    append([]string(nil), r.Missing...),
+		Notes:      append([]string(nil), r.Notes...),
+		Refused:    r.Refused, Disabled: r.Disabled, Summary: r.Summary(),
+	}
+	for _, c := range r.Enforced {
+		op.Enforced = append(op.Enforced, string(c))
+	}
+	return op
+}

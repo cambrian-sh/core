@@ -493,3 +493,39 @@ func TestDeliver_ManyMessagesOneConversation(t *testing.T) {
 		t.Errorf("order was not preserved: %+v", tr.sent)
 	}
 }
+
+// ADR-0098 D6 (owner decision 2026-11-15): progress reaches only an ingress whose
+// registration opted in; one that did not gets nothing and no error (an error
+// would make the progress bridge back off for nothing). A real reply is
+// unaffected by the flag.
+func TestDeliverProgress_OnlyToAnIngressThatOptedIn(t *testing.T) {
+	tr := &fakeTransport{}
+	off := registered()
+	s := NewDeliveryService(bound(), off, tr)
+	if err := s.DeliverProgress(context.Background(), convID, "still working", false); err != nil {
+		t.Fatalf("DeliverProgress to an ingress without progress: %v, want a quiet no-op", err)
+	}
+	if tr.count() != 0 {
+		t.Fatalf("progress was sent to an ingress that did not opt in")
+	}
+	if err := s.Deliver(context.Background(), convID, "the answer", "msg-1"); err != nil || tr.count() != 1 {
+		t.Fatalf("a reply must not depend on the progress flag: err=%v sent=%d", err, tr.count())
+	}
+
+	on := registered()
+	reg := on["telegram_ingress"]
+	reg.Progress = true
+	on["telegram_ingress"] = reg
+	tr2 := &fakeTransport{}
+	if err := NewDeliveryService(bound(), on, tr2).DeliverProgress(context.Background(), convID, "still working", false); err != nil {
+		t.Fatalf("DeliverProgress: %v", err)
+	}
+	if tr2.count() != 1 || tr2.sent[0].Kind != domain.DeliveryKindProgress {
+		t.Fatalf("an opted-in ingress must receive the snapshot, got %+v", tr2.sent)
+	}
+
+	// A revoked ingress is still refused, flag or not.
+	if err := NewDeliveryService(bound(), fakeIngresses{}, &fakeTransport{}).DeliverProgress(context.Background(), convID, "x", false); !errors.Is(err, domain.ErrIngressRevoked) {
+		t.Fatalf("revoked ingress: %v, want ErrIngressRevoked", err)
+	}
+}

@@ -43,8 +43,8 @@ func d14Exec(h ToolHandler, ap ApprovalController) *ToolExecutor {
 	reg.Register(SystemTool{Name: "mail_send", Dangerous: true, Effects: []ToolEffect{EffectWrite, EffectEgress}})
 	reg.Register(SystemTool{Name: "cases_respond_request", Effects: []ToolEffect{EffectWrite}})
 	reg.Register(SystemTool{Name: "web_fetch", Effects: []ToolEffect{EffectRead, EffectEgress}})
-	return &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, Unrestricted: true, Approval: ap,
-		Guards: &RequestGuards{
+	return &ToolExecutor{Registry: reg, Handler: h, InlineThreshold: 1 << 20, unrestricted: true, approval: ap,
+		guards: &RequestGuards{
 			Targets: &WriteTargets{
 				Rules:       []WriteTargetRule{{Tools: []string{"*mail*"}, Keys: []string{"to"}}},
 				DefaultKeys: []string{"ref", "case_id"},
@@ -108,7 +108,7 @@ func TestD14_StageTwoCannotRedraftTargetsStageOneWrote(t *testing.T) {
 	if got := e.Execute(guardStep("run-a-s2", 1, StepGuard{Checklist: true, WriteItems: []string{"R3"}}), draft("carrow@hollins.example", "INV-3.")); got.Denied {
 		t.Fatalf("a target only refused earlier is still writable: %+v", got)
 	}
-	if ts := e.Guards.Writes.Targets("turn:conv-1/msg-1"); len(ts) != 3 {
+	if ts := e.guards.Writes.Targets("turn:conv-1/msg-1"); len(ts) != 3 {
 		t.Fatalf("written targets = %+v", ts)
 	}
 }

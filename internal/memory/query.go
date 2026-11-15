@@ -40,6 +40,7 @@ type QueryService struct {
 	vectorStore      domain.VectorStore
 	authz            domain.Authorizer         // ADR-0085: decision point; nil ⇒ OSS allow-all
 	spreader         Spreader                  // ADR-0048 D2: nil = no associative expansion (flag-gated at wiring)
+	spreadKeepsOrder bool                      // ENG-484: seeds keep the assembled order; expansions after them (default off)
 	floor            float64                   // ADR-0048 #1: min cosine to return a recalled fact; 0 = disabled
 	graphWriter      domain.GraphStore         // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
 	heb              hebbianParams             // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
@@ -464,6 +465,16 @@ func (q *QueryService) SetRelevanceFloor(f float64) { q.floor = f }
 // agent's one upfront seed_recall is associatively rich. Flag-gated at the call
 // site (main.go) — nil spreader leaves recall as a flat top-k.
 func (q *QueryService) EnableSpreading(s Spreader) { q.spreader = s }
+
+// SetSpreadingKeepsAssemblyOrder (ENG-484, execution.retrieval.
+// recall_spreading_keep_assembly_order) makes spreadAndRank keep the order
+// assembleLanes built — primary before injected (ADR-0053 non-displacing),
+// in-lane first (ADR-0049 A2.4) — for every seed row, and place only the rows
+// spreading REACHED after them, by activation energy. Off (the shipped default
+// until its A/B/A), the whole window is re-sorted by energy, which lets an injected
+// row that out-scores a primary hit take a caller-visible slot when the caller
+// trims the window below recall_top_k.
+func (q *QueryService) SetSpreadingKeepsAssemblyOrder(on bool) { q.spreadKeepsOrder = on }
 
 // NewQueryService creates a QueryService.
 //
@@ -1239,6 +1250,8 @@ func (q *QueryService) applyStageABlend(ctx context.Context, results []domain.Se
 		if len(queryVec) > 0 && len(d.Embedding.Vector) > 0 {
 			cos = cosineSimilarity(queryVec, d.Embedding.Vector)
 		}
+		// ENG-432: max(own, matched fact) cosine when lane_chunk_cosine_max; identity when off.
+		cos = q.rankingV2.stageACosine(cos, facts, d.ID)
 		rec := normRecency(d.ID) // conversation timestamp: min-max over candidates, or the A1 decay
 		if _, dated := evtUnix[d.ID]; recencyDir < 0 && dated {
 			rec = 1 - rec // ADR-0136 D3 "earliest": older is better
@@ -1407,12 +1420,21 @@ func chunkCoherenceRaw(ctx context.Context, store domain.ChunkTripletsStore, res
 	raw := make(map[string]float64, len(chunkEnts))
 	var maxRaw float64
 	for id, set := range chunkEnts {
+		// Sum in sorted entity order, never map order: float addition is not
+		// associative, so a map-order sum differs in the last ulp run to run and
+		// can swap two Stage-A-tied candidates — against the ADR-0103 D7 promise
+		// (same fingerprint + corpus ⇒ identical ranking). ENG-413.
+		ents := make([]string, 0, len(set))
+		for e := range set {
+			ents = append(ents, e)
+		}
+		sort.Strings(ents)
 		var s float64
 		for _, sd := range seeds {
 			if sd.id == id {
 				continue // a chunk does not anchor on itself
 			}
-			for e := range set {
+			for _, e := range ents {
 				if _, ok := sd.ents[e]; ok {
 					s += idf(e)
 				}
@@ -1728,6 +1750,9 @@ func (q *QueryService) answer(ctx context.Context, query, callerID string) (stat
 			}
 			evidence = append(evidence, r)
 		}
+		// ENG-223: the caller's pool filters apply before the abstention check and
+		// the synthesis, so the answer is built only from evidence the caller kept.
+		evidence = narrowAnswerEvidence(ctx, evidence)
 		if agStatus == "abstention" || len(evidence) == 0 {
 			return "abstention", "not found in memory", evidence, nil
 		}
@@ -1737,6 +1762,7 @@ func (q *QueryService) answer(ctx context.Context, query, callerID string) (stat
 		if err != nil {
 			return "", "", nil, err
 		}
+		evidence = narrowAnswerEvidence(ctx, evidence) // ENG-223, as above
 	}
 
 	const maxAnswerChunks = 16
@@ -2322,9 +2348,10 @@ func (q *QueryService) reinforceCoActivation(ctx context.Context, results []doma
 }
 
 // spreadAndRank expands seeds over the memory graph, drops the current session's
-// own step records (D1) and duplicates, then re-ranks using the T-Mem
-// two-trigger formula (cosine × (α + (1-α) × effective) + β × reachability)
-// and caps to recallTopK. ADR-0048 D2 + ADR-0053 (T-Mem associative hop).
+// own step records (D1) and duplicates, orders the window by activation energy
+// (a seed's energy is its score; a reached row's is what spread to it) and caps to
+// recallTopK. ADR-0048 D2. With spreadKeepsOrder (ENG-484) the seeds keep their
+// assembled order and only the reached rows are ordered by energy, after them.
 func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchResult, sid domain.SessionID) []domain.SearchResult {
 	expansions := q.spreader.Spread(ctx, seeds)
 	seen := make(map[string]bool, len(expansions))
@@ -2336,11 +2363,42 @@ func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchR
 		seen[e.Document.ID] = true
 		out = append(out, domain.SearchResult{Document: e.Document, Score: e.ActivationEnergy})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	if q.spreadKeepsOrder {
+		out = seedsFirst(seeds, out)
+	} else {
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	}
 	if k := q.effRecallTopK(); len(out) > k {
 		out = out[:k]
 	}
 	return out
+}
+
+// seedsFirst returns the spread window with every SEED row in the order the seeds
+// arrived (assembleLanes' order) followed by the rows spreading reached, highest
+// activation energy first (ENG-484). Seeds keep the window's row (with its energy as
+// Score), so the only change from the energy sort is the order.
+func seedsFirst(seeds, spread []domain.SearchResult) []domain.SearchResult {
+	byID := make(map[string]domain.SearchResult, len(spread))
+	for _, r := range spread {
+		byID[r.Document.ID] = r
+	}
+	isSeed := make(map[string]bool, len(seeds))
+	out := make([]domain.SearchResult, 0, len(spread))
+	for _, s := range seeds {
+		if r, ok := byID[s.Document.ID]; ok && !isSeed[s.Document.ID] {
+			isSeed[s.Document.ID] = true
+			out = append(out, r)
+		}
+	}
+	reached := make([]domain.SearchResult, 0, len(spread)-len(out))
+	for _, r := range spread {
+		if !isSeed[r.Document.ID] {
+			reached = append(reached, r)
+		}
+	}
+	sort.SliceStable(reached, func(i, j int) bool { return reached[i].Score > reached[j].Score })
+	return append(out, reached...)
 }
 
 const (

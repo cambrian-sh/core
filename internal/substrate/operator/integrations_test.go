@@ -15,6 +15,8 @@ import (
 type stubIntegrations struct {
 	calls     int
 	gotSecret string
+	// testedFor is the run principal the last Test call carried.
+	testedFor string
 }
 
 func (s *stubIntegrations) Catalog() []*pb.IntegrationCatalogEntryOp {
@@ -54,8 +56,31 @@ func (s *stubIntegrations) RevertToFile(_ context.Context, id string) (ConfigWri
 	s.calls++
 	return ConfigWriteOutcome{Key: "mcp.server_overrides." + id, Set: true, Effect: EffectLive}, &pb.IntegrationOp{Id: id, Source: "file"}, nil
 }
-func (s *stubIntegrations) Test(context.Context, string, bool) (*pb.IntegrationTestResultOp, error) {
+func (s *stubIntegrations) SetTrustTier(_ context.Context, id, tier string) (ConfigWriteOutcome, *pb.IntegrationOp, string, error) {
+	s.calls++
+	return ConfigWriteOutcome{Key: "mcp.server_overrides." + id, Set: true, Effect: EffectLive}, &pb.IntegrationOp{Id: id, TrustTier: tier}, "vetted", nil
+}
+
+func (s *stubIntegrations) Test(ctx context.Context, _ string, _ bool) (*pb.IntegrationTestResultOp, error) {
+	s.testedFor = domain.RunPrincipalFromContext(ctx)
 	return &pb.IntegrationTestResultOp{Ok: true}, nil
+}
+
+// ADR-0140 D4 (T-20261106-testintegration-and-the-catalog-op-do-not): an
+// operator tests an integration FOR themselves, so the manager is called with
+// the caller as the run principal — a per_user server then tests the caller's
+// own connected account.
+func TestTestIntegration_RunsForTheCaller(t *testing.T) {
+	s := newWriteService(nil, nil)
+	m := &stubIntegrations{}
+	s.SetIntegrationManager(m)
+	ctx := ContextWithPrincipal(context.Background(), "alice", RoleOperator)
+	if _, err := s.TestIntegration(ctx, &pb.TestIntegrationOpRequest{Id: "gh"}); err != nil {
+		t.Fatal(err)
+	}
+	if m.testedFor != "alice" {
+		t.Fatalf("Test ran for %q, want the calling operator", m.testedFor)
+	}
 }
 
 func TestIntegrations_UnwiredIsUnimplemented(t *testing.T) {
@@ -191,5 +216,40 @@ func TestIntegrations_RevertToFileIsAuditedAndDeduped(t *testing.T) {
 	if len(rows) != 1 || rows[0].TargetType != "integration" || rows[0].TargetID != "fetch" ||
 		!strings.Contains(rows[0].After, "reverted") {
 		t.Fatalf("audit rows: %+v", rows)
+	}
+}
+
+// Owner decision 2026-11-15 (T-20261115-console-custom-mcp-server-install-cannot-set):
+// an operator may set any sandbox tier from the console, and every change is
+// audited with who, the old tier, the new tier and the reason; a replay of the
+// same command neither re-applies nor re-audits.
+func TestSetIntegrationTrustTier_AuditsWhoBeforeAfterAndReason(t *testing.T) {
+	s := newWriteService(nil, nil)
+	m := &stubIntegrations{}
+	s.SetIntegrationManager(m)
+	ctx := ContextWithPrincipal(context.Background(), "alice", RoleOperator)
+	req := &pb.SetIntegrationTrustTierOpRequest{CommandId: "t1", Reason: "vendor audited", Id: "gh", TrustTier: "first-party"}
+	resp, err := s.SetIntegrationTrustTier(ctx, req)
+	if err != nil || resp.GetIntegration().GetTrustTier() != "first-party" || resp.GetOutcome().GetEffect() != EffectLive {
+		t.Fatalf("set tier: %+v %v", resp, err)
+	}
+	again, err := s.SetIntegrationTrustTier(ctx, req)
+	if err != nil || !again.GetDeduped() || m.calls != 1 {
+		t.Fatalf("command_id dedupe failed: %+v calls=%d", again, m.calls)
+	}
+	rows, _ := s.audit.Query(ctx, AuditFilter{CommandID: "t1"})
+	if len(rows) != 1 {
+		t.Fatalf("want 1 audit row, got %d", len(rows))
+	}
+	r := rows[0]
+	if r.Actor != "alice" || r.ActionType != "set_integration_trust_tier" || r.TargetID != "gh" ||
+		r.Before != "trust_tier vetted" || r.After != "trust_tier first-party" || r.Reason != "vendor audited" {
+		t.Fatalf("audit row %+v: want who, before, after and reason", r)
+	}
+	if _, err := s.SetIntegrationTrustTier(ctx, &pb.SetIntegrationTrustTierOpRequest{CommandId: "t2", Id: "gh", TrustTier: "vetted"}); codeOf(err) != codes.InvalidArgument {
+		t.Fatalf("a tier change without a reason must be refused, got %v", err)
+	}
+	if !isOperatorOnly(operatorMethodPrefix+"SetIntegrationTrustTier", MethodRoles{}) {
+		t.Fatal("SetIntegrationTrustTier must be operator-only")
 	}
 }

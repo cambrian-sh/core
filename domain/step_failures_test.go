@@ -16,7 +16,7 @@ func failingExecutor(threshold int) (*ToolExecutor, *fakeHandler) {
 	reg.Register(SystemTool{Name: "mcp:filesystem/write_file"})
 	reg.Register(SystemTool{Name: "mcp:filesystem/read_file"})
 	h := &fakeHandler{err: errors.New("Error: file was replaced while it was being opened")}
-	e := &ToolExecutor{Registry: reg, Grants: NewInMemoryGrantsStore(), Handler: h, Unrestricted: true,
+	e := &ToolExecutor{Registry: reg, Grants: NewInMemoryGrantsStore(), Handler: h, unrestricted: true,
 		InlineThreshold: 1 << 20, StepFailures: NewStepFailures(threshold)}
 	return e, h
 }
