@@ -33,7 +33,7 @@ func (r retagThroughLifecycle) RetagDocument(ctx context.Context, documentID str
 // memorySharer is the ADR-0142 D12 publish: a person's private document is
 // re-classified to team/org knowledge.
 //
-// It holds the RAW adapter (VecDB) — AGENTS.md §2.2: a kernel-authored retag
+// It holds the RAW adapter (tier 0) — AGENTS.md §2.2: a kernel-authored retag
 // after an explicit, authorised action, the same lane TagMemory uses
 // (RetagDocument moves the document row, every chunk and the document's facts in one
 // transaction, PgDocumentLifecycle.RetagDocument).

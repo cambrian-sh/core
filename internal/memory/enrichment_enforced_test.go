@@ -119,7 +119,13 @@ func TestInjectQueryEntitySeeds_LegacyPathDropsForbiddenThroughDecorator(t *test
 // ScopeSystem; with no predicate they fail closed.
 func TestMemoryManager_ByIDReadsKeepTheCallersScope(t *testing.T) {
 	t.Parallel()
-	m := NewMemoryManager(enforcedStore(), &fakeEmbedder{})
+	// The manager holds the tiers composed (ENG-1476); this test reads only, so the
+	// write and maintenance sides are the raw fake.
+	m := NewMemoryManager(struct {
+		domain.VectorReader
+		domain.VectorWriter
+		domain.VectorMaintenance
+	}{enforcedStore(), mapInner{}, mapInner{}}, &fakeEmbedder{})
 	ctx := domain.WithScope(context.Background(), forbidInternal)
 
 	if d, err := m.GetByID(ctx, "secret"); err != nil || d != nil {

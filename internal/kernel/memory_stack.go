@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -19,15 +20,22 @@ import (
 //
 // Biologically: this is the hippocampus + long-term memory cortex.
 type MemoryStack struct {
-	VecDB domain.VectorStore
-	// ReadStore is the fail-closed read chokepoint over VecDB. Every principal-facing
-	// read goes through it; the raw VecDB is reserved for kernel-internal components
-	// that need the concrete adapter (graph store, spreader, profile store).
-	ReadStore  domain.VectorStore
-	WriteStore domain.VectorStore // ADR-0085: write classification over ReadStore
+	// The three tiers (AGENTS.md §2.1) are unexported and reached only through
+	// Reader(), Writer() and KernelArtifactStore(reason) (ENG-1476). They were public
+	// domain.VectorStore fields, so a raw store and an enforced one had the same type
+	// and only review kept principal-serving code off the raw one.
+	//
+	// vecDB is tier 0, the raw adapter: no enforcement.
+	vecDB domain.VectorStore
+	// readStore is tier 1, the fail-closed read chokepoint over vecDB
+	// (*authz.EnforcingVectorStore). It is a VectorReader only: it cannot write.
+	readStore domain.VectorReader
+	// writeStore is tier 2, write classification (*authz.EnforcingStoreWriter, ADR-0085)
+	// over vecDB's write side. It is a VectorWriter only: it cannot read.
+	writeStore domain.VectorWriter
 	// DocumentStore is the ADR-0093 write chokepoint for the source-document row
-	// (memory.EnforcingDocumentStore over VecDB), already held by IngestionManager.
-	// nil when VecDB cannot store documents (a test fake).
+	// (memory.EnforcingDocumentStore over the raw adapter), already held by
+	// IngestionManager. nil when the backend cannot store documents (a test fake).
 	DocumentStore        domain.DocumentStore
 	ProfileStore         memstore.ProfileStore
 	Agent                *memory.Agent
@@ -109,7 +117,18 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 	backend.reportMissing()
 	vec := backend.Vector
 	scopedRead := authz.NewEnforcingVectorStore(vec, slog.Default())
-	writeStore := authz.NewEnforcingStoreWriter(scopedRead, authorizer, slog.Default())
+	// The write chokepoint wraps the raw adapter's WRITE side directly. It used to wrap
+	// scopedRead, whose write methods were unenforced pass-throughs to the same adapter
+	// — the rows written are identical; the read tier just no longer has a write path
+	// to forward through (ENG-1476).
+	writeStore := authz.NewEnforcingStoreWriter(vec, authorizer, slog.Default())
+	// enforced is the view handed to the consumers that both read and write (the
+	// memory manager, the profile store): reads through tier 1, writes through tier 2,
+	// and the kernel's own maintenance (IncrementAccess, the decay sweep's
+	// GetStaleMemories) on the raw adapter — exactly what they reached before, when
+	// they held writeStore and its reads and maintenance fell through scopedRead's
+	// pass-throughs to the adapter. Maintenance serves no principal.
+	enforced := tieredStore{VectorReader: scopedRead, VectorWriter: writeStore, VectorMaintenance: vec}
 	// The profile store writes agent profiles and JUDICIAL RECORDS — verifier
 	// critiques of agent output, carrying caller-supplied metadata. It used to hold
 	// the raw adapter, so those were the one write class that reached Postgres with
@@ -120,8 +139,8 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 	// decide whether an agent may bid at all), so they seed the explicit ScopeSystem
 	// bypass inside the store rather than inheriting whatever the caller carried —
 	// see kernelRead in pgvector_profile_store.go.
-	profileStore := memstore.NewProfileStore(writeStore)
-	memoryManager := memory.NewMemoryManager(writeStore, embed)
+	profileStore := memstore.NewProfileStore(enforced)
+	memoryManager := memory.NewMemoryManager(enforced, embed)
 	memoryAgent := memory.NewAgent(memoryManager, execCfg.Memory.MaxNeighborExpansion)
 	// The passive raw capture (auto-embedded step results and tool outputs behind
 	// `experiential_memory_enabled`, curated by the ADR-0015 tier-2 judge) was deleted
@@ -317,9 +336,9 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 	// still served by the WorkspaceStage procedure lane and still fed outcomes.
 
 	return &MemoryStack{
-		VecDB:                vec,
-		ReadStore:            scopedRead,
-		WriteStore:           writeStore,
+		vecDB:                vec,
+		readStore:            scopedRead,
+		writeStore:           writeStore,
 		DocumentStore:        documentStore,
 		ProfileStore:         profileStore,
 		Agent:                memoryAgent,
@@ -335,6 +354,36 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 		FactBackfill:         factBackfill,
 		FactReset:            facts.Resetter,
 	}
+}
+
+// tieredStore composes the tiers into the whole port for a consumer that needs all
+// three sides. Each side is a different tier; the embedded method sets are disjoint.
+type tieredStore struct {
+	domain.VectorReader
+	domain.VectorWriter
+	domain.VectorMaintenance
+}
+
+// Reader is tier 1, the fail-closed read chokepoint. Every principal-serving read
+// uses it (AGENTS.md §2.2); the caller's predicate travels on SearchOptions.Scope and
+// on ctx (domain.WithScope), and a read with neither is refused.
+func (s *MemoryStack) Reader() domain.VectorReader { return s.readStore }
+
+// Writer is tier 2, the classification chokepoint. Every principal-serving write uses
+// it (AGENTS.md §2.2): the decision point's classification replaces the authored tags.
+func (s *MemoryStack) Writer() domain.VectorWriter { return s.writeStore }
+
+// KernelArtifactStore is tier 0, the raw adapter, for a kernel-authored artifact that
+// serves no principal (the tool and skill indexes, for example). reason names the ADR
+// that permits the use; it replaces the "comment naming the ADR" AGENTS.md §2.2 asked
+// for, and TestKernelArtifactStoreCallSites lists every call site with its reason, so
+// a new raw use is a visible test change. An empty reason panics: it is a programming
+// error at boot, never a runtime condition.
+func (s *MemoryStack) KernelArtifactStore(reason domain.ADRRef) domain.VectorStore {
+	if !strings.HasPrefix(string(reason), "ADR-") {
+		panic(fmt.Sprintf("kernel.MemoryStack.KernelArtifactStore: reason %q must name an ADR (\"ADR-NNNN ...\")", reason))
+	}
+	return s.vecDB
 }
 
 // Start launches the memory Agent's background workers and the ingestion pipeline.
@@ -358,7 +407,7 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 	return s.Agent.StartMemoryWorker(ctx, false)
 }
 
-// Shutdown is a no-op for MemoryStack — its resources (VecDB) are closed by
+// Shutdown is a no-op for MemoryStack — its resources (the raw adapter) are closed by
 // the Kernel which owns the infrastructure handle.
 func (s *MemoryStack) Shutdown(_ context.Context) {
 	slog.Info("🧠 MemoryStack: shutdown acknowledged")

@@ -63,7 +63,8 @@ type MetabolismStack struct {
 // Parameters:
 //   - reg: the domain decorator (implements AgentRegistry, AgentUpdater, TaskEventReadWriter)
 //   - embedder: embeds task descriptions (semantic gate) and agent descriptions (profile seeding)
-//   - vec: the vector store (for the profile searcher)
+//   - profileReader: the read side the profile searcher ANN-searches agent
+//     profiles through (MemoryStack.Reader(); the searcher passes ScopeSystem)
 //   - profileStore: agent cognitive fingerprints (from MemoryStack)
 //   - memoryAgent: for the Memory Barrier in AgentManager
 //   - cfg: execution + metabolism parameters
@@ -73,7 +74,7 @@ type MetabolismStack struct {
 func NewMetabolismStack(
 	reg *AgentRepoDecorator,
 	embedder domain.Embedder,
-	vec domain.VectorStore,
+	profileReader domain.VectorReader,
 	profileStore memstore.ProfileStore,
 	memoryAgent domain.MemoryAgent,
 	cfg *config.Config,
@@ -139,7 +140,7 @@ func NewMetabolismStack(
 		manager.DefaultOutputCostPer1M = def.CostPer1MOutput
 	}
 
-	profileSearcher := registration.NewProfileSearcher(vec)
+	profileSearcher := registration.NewProfileSearcher(profileReader)
 	seeder := registration.NewProfileSeeder(reg, embedder, profileStore, reg)
 
 	gatekeeper := supgk.NewGatekeeper(reg, cfg.Execution,

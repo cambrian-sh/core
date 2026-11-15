@@ -18,7 +18,7 @@ type SkillRetriever interface {
 // uses (no new permission logic, ADR-0046 D9). A relevance Floor returns up to k
 // names, or none when nothing clears it.
 type VectorSkillRetriever struct {
-	Store    VectorStore
+	Store    VectorReader
 	Embedder Embedder
 	Floor    float64 // minimum cosine (RawScore) to include; <=0 disables the floor
 }

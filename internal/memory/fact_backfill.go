@@ -64,7 +64,7 @@ import (
 // phases resumes with no second extraction call and still assesses it.
 type FactBackfill struct {
 	lister    domain.FactBackfillLister
-	reader    domain.VectorStore
+	reader    domain.VectorReader
 	extractor FactBackfillSink
 }
 
@@ -84,8 +84,8 @@ type FactBackfillSink interface {
 var _ FactBackfillSink = (*FactExtractor)(nil)
 
 // NewFactBackfill builds the backfill. reader must be the enforcing read store
-// (MemoryStack.ReadStore) and sink must write through the enforcing tier.
-func NewFactBackfill(lister domain.FactBackfillLister, reader domain.VectorStore, sink FactBackfillSink) *FactBackfill {
+// (MemoryStack.Reader()) and sink must write through the enforcing tier.
+func NewFactBackfill(lister domain.FactBackfillLister, reader domain.VectorReader, sink FactBackfillSink) *FactBackfill {
 	return &FactBackfill{lister: lister, reader: reader, extractor: sink}
 }
 

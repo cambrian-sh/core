@@ -129,7 +129,7 @@ func stagedMainCorpus() []domain.FactBackfillCandidate {
 	}
 }
 
-func stagedChunkStore() domain.VectorStore {
+func stagedChunkStore() domain.VectorReader {
 	var docs []domain.Document
 	for id, text := range stagedChunkText {
 		doc := "d" + strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(id, "c"), "a"), "b")

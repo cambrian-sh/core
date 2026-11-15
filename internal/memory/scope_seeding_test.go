@@ -22,8 +22,13 @@ import (
 
 // strictScopeStore wraps a lifecycle store in the production read chokepoint, so an
 // unseeded by-identity read returns authz.ErrScopeMissing exactly as it does live.
-func strictScopeStore(inner domain.VectorStore) domain.VectorStore {
-	return authz.NewEnforcingVectorStore(inner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+// Writes go straight to the lifecycle store: the read tier has no write side
+// (ENG-1476), and the kernel composes the two tiers the same way.
+func strictScopeStore(inner domain.VectorStore) domain.VectorReadWriter {
+	return struct {
+		domain.VectorReader
+		domain.VectorWriter
+	}{authz.NewEnforcingVectorStore(inner, slog.New(slog.NewTextHandler(io.Discard, nil))), inner}
 }
 
 // TestFeedProcedureOutcome_SurvivesEnforcedReads closes the ADR-0094 co-evolution loop

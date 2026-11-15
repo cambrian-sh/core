@@ -71,7 +71,7 @@ func TestSaveProfile_BackgroundCtx_IsAttributedToKernelUnderFailClosedAuthz(t *t
 	t.Parallel()
 	stub := &stubVectorStore{}
 	az := &failClosedAuthorizer{}
-	ps := NewProfileStore(authz.NewEnforcingStoreWriter(stub, az, slog.Default()))
+	ps := NewProfileStore(readWrite{stub, authz.NewEnforcingStoreWriter(stub, az, slog.Default())})
 
 	// context.Background(): exactly what ProfileSeeder.Start hands Seed.
 	err := ps.SaveProfile(context.Background(), "chat_agent", "h1", []float32{1}, domain.AgentProfile{AgentID: "chat_agent"})
@@ -103,7 +103,7 @@ func TestSaveProfile_CallerAgentPrincipal_IsReplacedByKernel(t *testing.T) {
 	t.Parallel()
 	stub := &stubVectorStore{}
 	az := &failClosedAuthorizer{}
-	ps := NewProfileStore(authz.NewEnforcingStoreWriter(stub, az, slog.Default()))
+	ps := NewProfileStore(readWrite{stub, authz.NewEnforcingStoreWriter(stub, az, slog.Default())})
 
 	ctx := domain.WithPrincipal(context.Background(), domain.AgentPrincipal("chat_agent"))
 	if err := ps.Save(ctx, "critique", []float32{1}, map[string]interface{}{"agent_id": "chat_agent", "source_hash": "h1"}); err != nil {
@@ -162,8 +162,10 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 	defer vec.Close()
 	az := &failClosedAuthorizer{}
 	var logs syncBuffer
-	ps := NewProfileStore(authz.NewEnforcingStoreWriter(authz.NewEnforcingVectorStore(vec, slog.Default()), az,
-		slog.New(slog.NewTextHandler(&logs, nil))))
+	// The kernel's composition (ENG-1476): reads through the enforcing reader, writes
+	// through the enforcing writer over the adapter's write side.
+	ps := NewProfileStore(readWrite{authz.NewEnforcingVectorStore(vec, slog.Default()),
+		authz.NewEnforcingStoreWriter(vec, az, slog.New(slog.NewTextHandler(&logs, nil)))})
 
 	agent := "test-kernelwrite-" + time.Now().Format("150405.000000")
 	md := map[string]interface{}{"agent_id": agent, "source_hash": "h1"}
@@ -224,4 +226,11 @@ func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+// readWrite composes a reader and a writer into the domain.VectorReadWriter the
+// profile store takes, the way kernel.NewMemoryStack composes the two tiers.
+type readWrite struct {
+	domain.VectorReader
+	domain.VectorWriter
 }

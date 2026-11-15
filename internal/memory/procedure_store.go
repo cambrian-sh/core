@@ -78,7 +78,7 @@ func procedureActivation(p domain.Procedure) float64 {
 // already durable, so failing to store one loses an optimisation, never a fact. That is
 // also why ADR-0049 A2.5 could permit the batch pass at all — nothing load-bearing may
 // depend on it.
-func SaveProcedure(ctx context.Context, store domain.VectorStore, embedder domain.Embedder, p domain.Procedure) error {
+func SaveProcedure(ctx context.Context, store domain.VectorWriter, embedder domain.Embedder, p domain.Procedure) error {
 	if store == nil || embedder == nil || p.ID == "" || p.Trigger == "" {
 		return nil
 	}
@@ -197,7 +197,7 @@ func stringsFromMeta(v interface{}) []string {
 // fail because the routine it consulted could not be updated afterwards.
 func FeedProcedureOutcome(
 	ctx context.Context,
-	store domain.VectorStore,
+	store domain.VectorReadWriter,
 	embedder domain.Embedder,
 	procedureIDs []string,
 	succeeded bool,

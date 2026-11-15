@@ -8,7 +8,7 @@ import "context"
 // as a DocTypeTool keyed by the tool's identity. Called at discovery — native
 // tools at LoadRegistry, MCP tools at tools/list — and on MCP re-sync.
 type ToolIndexer struct {
-	Store    VectorStore
+	Store    VectorWriter
 	Embedder Embedder
 }
 

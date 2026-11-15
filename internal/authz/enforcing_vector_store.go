@@ -27,7 +27,7 @@ import (
 // wiring bug does.
 var ErrScopeMissing = errors.New("authz: refusing unfiltered Search (fail-closed); seed domain.WithScope or pass SearchOptions.Scope")
 
-// EnforcingVectorStore decorates a domain.VectorStore and applies the resolved
+// EnforcingVectorStore decorates a domain.VectorReader and applies the resolved
 // read predicate on the retrieval path. It is the read-side chokepoint: agents
 // are wired with this decorator ONLY, never the base store, so there is no bypass
 // path.
@@ -45,27 +45,30 @@ var ErrScopeMissing = errors.New("authz: refusing unfiltered Search (fail-closed
 // reads it filters the returned rows directly, because those queries have no
 // opts.Scope to push down.
 //
-// # Why this type does not embed domain.VectorStore
+// # Why this type does not embed the port it wraps
 //
-// It used to, and the embed was the bug. An embedded interface silently forwards
+// It used to embed domain.VectorStore, and the embed was the bug. An embedded interface silently forwards
 // every method nobody overrode, so "Search is the single chokepoint" held only while
 // every read went through Search — and the compiler could not say otherwise. KG
 // expansion reaches chunks BY ID, so it was never covered, and nothing failed: the
 // decorator was correctly wired and simply had no opinion about the method being
 // called (ADR-0095 D9).
 //
-// Every method is therefore written out and labelled ENFORCED or PASS-THROUGH. The
-// point is not the labels — it is that adding a method to domain.VectorStore now
-// breaks this file until someone decides which it is, instead of defaulting to
-// unguarded.
+// Every method is therefore written out and labelled ENFORCED. The point is not the
+// labels — it is that adding a method to domain.VectorReader now breaks this file
+// until someone decides how it is enforced, instead of defaulting to unguarded. It
+// implements only domain.VectorReader (ENG-1476): the compile-time assertion below
+// and TestEnforcingVectorStore_IsReadOnly keep it that way.
 type EnforcingVectorStore struct {
-	inner  domain.VectorStore
+	inner  domain.VectorReader
 	logger *slog.Logger
 }
 
+var _ domain.VectorReader = (*EnforcingVectorStore)(nil)
+
 // NewEnforcingVectorStore wraps inner with read enforcement. A nil logger falls
 // back to slog.Default().
-func NewEnforcingVectorStore(inner domain.VectorStore, logger *slog.Logger) *EnforcingVectorStore {
+func NewEnforcingVectorStore(inner domain.VectorReader, logger *slog.Logger) *EnforcingVectorStore {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -186,38 +189,14 @@ func (s *EnforcingVectorStore) filter(ctx context.Context, docs []domain.Documen
 	return out
 }
 
-// GetStaleMemories — PASS-THROUGH. Kernel maintenance only: the decay/consolidation
-// worker sweeps by activation age, not on behalf of a principal, and the rows never
-// reach a caller's context. A principal-facing caller of this method would need it
-// enforced; there is none, and adding one is the trigger to revisit.
-func (s *EnforcingVectorStore) GetStaleMemories(ctx context.Context, limit int) ([]domain.Document, error) {
-	return s.inner.GetStaleMemories(ctx, limit)
-}
-
-// The write path — PASS-THROUGH, deliberately. Writes are governed by the OTHER
-// chokepoint (EnforcingStoreWriter, which stamps kernel-derived classification per
-// ADR-0035). Enforcing writes here as well would put one decision in two places, and
-// the second copy is the one nobody reads.
-
-func (s *EnforcingVectorStore) Save(ctx context.Context, doc *domain.Document) error {
-	return s.inner.Save(ctx, doc)
-}
-
-func (s *EnforcingVectorStore) SaveBatch(ctx context.Context, docs []*domain.Document) error {
-	return s.inner.SaveBatch(ctx, docs)
-}
-
-func (s *EnforcingVectorStore) Delete(ctx context.Context, id string) error {
-	return s.inner.Delete(ctx, id)
-}
-
-func (s *EnforcingVectorStore) DeleteBatch(ctx context.Context, ids []string) error {
-	return s.inner.DeleteBatch(ctx, ids)
-}
-
-func (s *EnforcingVectorStore) IncrementAccess(ctx context.Context, id string) error {
-	return s.inner.IncrementAccess(ctx, id)
-}
+// The write and maintenance methods are not here (ENG-1476). This type is a
+// domain.VectorReader and nothing more, so a holder of the read tier cannot write:
+// writes are governed by the OTHER chokepoint (EnforcingStoreWriter, which stamps
+// kernel-derived classification per ADR-0035), and the kernel's maintenance sweep
+// (GetStaleMemories, IncrementAccess) is handed the raw adapter's
+// domain.VectorMaintenance directly by the memory stack. They used to be
+// PASS-THROUGH methods on this type, which made the read tier an unenforced write
+// path that only review kept unused.
 
 // Search enforces the fail-closed gate, then delegates. It resolves the predicate
 // with precedence: an explicit opts.Scope wins; otherwise the ctx-carried one

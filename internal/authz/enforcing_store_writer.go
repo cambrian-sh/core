@@ -27,23 +27,29 @@ var ErrWriteDenied = errors.New("authz: write denied by policy")
 // derives them from the principal's operator-configured write classification,
 // narrowed (never broadened) by the writer's hint, and stamps provenance.
 //
-// Reads and other methods pass through the embedded store unchanged.
+// It is a domain.VectorWriter and nothing more (ENG-1476): it has no read methods,
+// so it can never become a read path that skips EnforcingVectorStore, and a consumer
+// that reads and writes is handed the two tiers composed (the memory stack does
+// this), not one type that does both. Delete and DeleteBatch pass through unchanged:
+// removal carries no classification to decide.
 type EnforcingStoreWriter struct {
-	domain.VectorStore
+	inner  domain.VectorWriter
 	authz  domain.Authorizer
 	logger *slog.Logger
 }
 
+var _ domain.VectorWriter = (*EnforcingStoreWriter)(nil)
+
 // NewEnforcingStoreWriter wraps inner with write-side enforcement. A nil
 // authorizer falls back to the OSS allow-all default; a nil logger to slog.Default().
-func NewEnforcingStoreWriter(inner domain.VectorStore, a domain.Authorizer, logger *slog.Logger) *EnforcingStoreWriter {
+func NewEnforcingStoreWriter(inner domain.VectorWriter, a domain.Authorizer, logger *slog.Logger) *EnforcingStoreWriter {
 	if a == nil {
 		a = domain.AllowAllAuthorizer{}
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &EnforcingStoreWriter{VectorStore: inner, authz: a, logger: logger}
+	return &EnforcingStoreWriter{inner: inner, authz: a, logger: logger}
 }
 
 // Save classifies and stamps a single document, then delegates.
@@ -51,7 +57,7 @@ func (w *EnforcingStoreWriter) Save(ctx context.Context, doc *domain.Document) e
 	if err := w.classify(ctx, doc); err != nil {
 		return err
 	}
-	return w.VectorStore.Save(ctx, doc)
+	return w.inner.Save(ctx, doc)
 }
 
 // SaveBatch classifies and stamps every document, then delegates. A single
@@ -62,7 +68,17 @@ func (w *EnforcingStoreWriter) SaveBatch(ctx context.Context, docs []*domain.Doc
 			return err
 		}
 	}
-	return w.VectorStore.SaveBatch(ctx, docs)
+	return w.inner.SaveBatch(ctx, docs)
+}
+
+// Delete — PASS-THROUGH: a removal carries no classification to decide.
+func (w *EnforcingStoreWriter) Delete(ctx context.Context, id string) error {
+	return w.inner.Delete(ctx, id)
+}
+
+// DeleteBatch — PASS-THROUGH, as Delete.
+func (w *EnforcingStoreWriter) DeleteBatch(ctx context.Context, ids []string) error {
+	return w.inner.DeleteBatch(ctx, ids)
 }
 
 // classify replaces the document's authored tags with the decision point's

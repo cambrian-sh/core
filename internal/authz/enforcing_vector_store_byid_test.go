@@ -3,6 +3,7 @@ package authz_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -165,19 +166,48 @@ func TestQueryByMetadata_NoPredicateFailsClosed(t *testing.T) {
 	}
 }
 
-// GetStaleMemories is a documented PASS-THROUGH (kernel maintenance sweeps by
-// activation age, on nobody's behalf). This test pins that as a DECISION: if it is
-// ever made principal-facing, this test is the thing that should fail and force the
-// enforcement question to be reopened.
-func TestGetStaleMemories_IsDocumentedPassThrough(t *testing.T) {
+// The read tier is a domain.VectorReader and nothing else (ENG-1476). It used to
+// carry Save/SaveBatch/Delete/DeleteBatch/IncrementAccess/GetStaleMemories as
+// unenforced pass-throughs to the raw adapter, so anything holding the read
+// chokepoint could write. If a write or maintenance method comes back, this test
+// fails and the question "which chokepoint governs it?" has to be answered again.
+func TestEnforcingVectorStore_IsReadOnly(t *testing.T) {
 	t.Parallel()
-	_, s := newByIDFixture()
-
-	docs, err := s.GetStaleMemories(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("maintenance sweep must not require a predicate: %v", err)
+	typ := reflect.TypeOf((*authz.EnforcingVectorStore)(nil))
+	if !typ.Implements(reflect.TypeOf((*domain.VectorReader)(nil)).Elem()) {
+		t.Fatal("EnforcingVectorStore must implement domain.VectorReader")
 	}
-	if len(docs) != 1 {
-		t.Errorf("expected pass-through of the stale row, got %+v", docs)
+	for _, port := range []reflect.Type{
+		reflect.TypeOf((*domain.VectorWriter)(nil)).Elem(),
+		reflect.TypeOf((*domain.VectorMaintenance)(nil)).Elem(),
+	} {
+		if typ.Implements(port) {
+			t.Errorf("EnforcingVectorStore implements %s: the read tier must not write or run maintenance", port)
+		}
+		for i := 0; i < port.NumMethod(); i++ {
+			if _, ok := typ.MethodByName(port.Method(i).Name); ok {
+				t.Errorf("EnforcingVectorStore has %s.%s", port.Name(), port.Method(i).Name)
+			}
+		}
+	}
+}
+
+// The write tier is a domain.VectorWriter and nothing else: no read method, so it
+// can never become a read path that skips EnforcingVectorStore.
+func TestEnforcingStoreWriter_IsWriteOnly(t *testing.T) {
+	t.Parallel()
+	typ := reflect.TypeOf((*authz.EnforcingStoreWriter)(nil))
+	if !typ.Implements(reflect.TypeOf((*domain.VectorWriter)(nil)).Elem()) {
+		t.Fatal("EnforcingStoreWriter must implement domain.VectorWriter")
+	}
+	for _, port := range []reflect.Type{
+		reflect.TypeOf((*domain.VectorReader)(nil)).Elem(),
+		reflect.TypeOf((*domain.VectorMaintenance)(nil)).Elem(),
+	} {
+		for i := 0; i < port.NumMethod(); i++ {
+			if _, ok := typ.MethodByName(port.Method(i).Name); ok {
+				t.Errorf("EnforcingStoreWriter has %s.%s", port.Name(), port.Method(i).Name)
+			}
+		}
 	}
 }

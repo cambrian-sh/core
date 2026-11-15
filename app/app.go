@@ -956,8 +956,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// meter to the Provider and the server.
 	spendMeter := llm.NewSpendMeter(cfg.Execution.Session.MaxSessionTokens, llmProvider.Ledger(), slog.Default())
 	llmGateway := subnetwork.NewLLMGateway(cfg.Execution, spendMeter)
-	meta := kernel.NewMetabolismStack(reg, embedder, vec, mem.ProfileStore, mem.Agent, cfg, observer, llmGateway)
-	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, mem.VecDB, supervisionGen, cfg, observer)
+	meta := kernel.NewMetabolismStack(reg, embedder, mem.Reader(), mem.ProfileStore, mem.Agent, cfg, observer, llmGateway)
+	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, supervisionGen, cfg, observer)
 
 	// 3. Wire storage callback so newly-registered agents are enqueued for profile
 	// seeding (deterministic description vector + neutral prior; the ADR-0037 LLM
@@ -1449,9 +1449,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Execute path runs plans is constructed after this bundle; bound below.
 	// (planExec itself is declared above the Watcher, which also runs plans.)
 	// One reader, shared by the plugin seam and the operator RPC.
-	// mem.ReadStore is the stack's tier-1 fail-closed read chokepoint (AGENTS.md §2.1:
+	// mem.Reader() is the stack's tier-1 fail-closed read chokepoint (AGENTS.md §2.1:
 	// NewMemoryStack is the only place it is built; T-20261113-enforcingvectorstore-is-constructed-outside).
-	docReader := newKernelDocumentReader(mem.ReadStore, authorizer) // RESOLVED authorizer: it turns the principal into the predicate the by-id read needs (ENG-1610)
+	docReader := newKernelDocumentReader(mem.Reader(), authorizer) // RESOLVED authorizer: it turns the principal into the predicate the by-id read needs (ENG-1610)
 
 	// ADR-0105/0108: the evidence foundation's pieces, built ONCE here so the
 	// plugin seam, the ingest chokepoint and the outbox consumer share one
@@ -2547,13 +2547,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// the ToolExecutor depends only on the ToolRetriever port. Indexing is
 	// best-effort — a failure degrades retrieval to the full menu, never blocks boot.
 	//
-	// AGENTS.md §2.2: tier-0 vec, a kernel-authored artifact writer and reader. Tool
+	// AGENTS.md §2.2: tier 0, a kernel-authored artifact writer and reader. Tool
 	// index docs are written by the kernel from the tool registry (native + MCP
 	// manifests) at boot and carry no principal scope (ADR-0044 D3); ranking is
 	// restricted to the caller's GRANTED tools by the in-query ID filter
 	// (VectorToolRetriever.Rank), so no read-scope predicate applies to this index.
-	// The same vec is used by reconcileIndex and VectorToolRetriever just below.
-	toolIndexer := &domain.ToolIndexer{Store: vec, Embedder: embedder}
+	// The same store is used by VectorToolRetriever just below; reconcileIndex lists
+	// ids through the concrete adapter (vec).
+	toolIndexStore := mem.KernelArtifactStore("ADR-0044 D3")
+	toolIndexer := &domain.ToolIndexer{Store: toolIndexStore, Embedder: embedder}
 	if err := toolIndexer.IndexAll(ctx, toolReg.All()); err != nil {
 		slog.Warn("ADR-0044: tool indexing failed (retrieval degraded to full menu)", "err", err)
 	}
@@ -2578,9 +2580,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 		reconcileIndex(ctx, vec, toolIndexer, domain.DocTypeTool, toolKeepFunc(currentTools, configuredMCP))
 	}
-	// Tier-0 vec: see the AGENTS.md §2.2 note on toolIndexer above (ADR-0044 D3).
+	// Tier 0: see the AGENTS.md §2.2 note on toolIndexer above (ADR-0044 D3).
 	cambrianServer.ToolExecutor.Retriever = domain.VectorToolRetriever{
-		Store: vec, Embedder: embedder, Floor: cfg.Execution.Tools.ToolRetrievalFloor,
+		Store: toolIndexStore, Embedder: embedder, Floor: cfg.Execution.Tools.ToolRetrievalFloor,
 	}
 
 	// AGENTIC_RETRIEVAL_SPEC Phase 2a: wire the LLM query-planner (retrieval_agent)
@@ -2634,14 +2636,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if skerr != nil {
 		slog.Warn("ADR-0046: skill discovery failed; system skills disabled", "err", skerr)
 	}
-	// AGENTS.md §2.2: tier-0 vec, a kernel-authored artifact writer. The skill index
+	// AGENTS.md §2.2: tier 0, a kernel-authored artifact writer. The skill index
 	// docs are written by the kernel from operator-authored SKILL.md files at boot,
 	// serve no principal, and carry the skill's scope tags as their classification
 	// (ADR-0046 D2/D4/D9, the DocTypeSkill sibling of the ADR-0044 tool index, which
 	// toolIndexer above writes the same way). Reads of this index go through the
 	// fail-closed EnforcingVectorStore below (VectorSkillRetriever), so scope is
 	// enforced where principals are served.
-	skillIndexer := &domain.SkillIndexer{Store: vec, Embedder: embedder}
+	skillIndexer := &domain.SkillIndexer{Store: mem.KernelArtifactStore("ADR-0046 D2"), Embedder: embedder}
 	if err := skillIndexer.IndexAll(ctx, discoveredSkills); err != nil {
 		slog.Warn("ADR-0046: skill indexing failed (system skills unavailable)", "err", err)
 	}
@@ -2662,7 +2664,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// retrieves skills its effective scope permits (the same read path as memory).
 	cambrianServer.SkillRegistry = skillReg
 	cambrianServer.SkillRetriever = domain.VectorSkillRetriever{
-		Store:    mem.ReadStore, // the stack's tier-1 read chokepoint (AGENTS.md §2.1)
+		Store:    mem.Reader(), // the stack's tier-1 read chokepoint (AGENTS.md §2.1)
 		Embedder: embedder,
 		Floor:    cfg.Execution.Tools.ToolRetrievalFloor,
 	}
@@ -2845,7 +2847,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		return nil, err
 	}
 
-	// ADR-0142 D12: the explicit publish. VecDB (the raw adapter) for the retag —
+	// ADR-0142 D12: the explicit publish. The raw adapter (tier 0) for the retag —
 	// a kernel-authored write after the owner, policy and approval checks in
 	// memorySharer.plan and operator.ShareToTeam, the TagMemory lane.
 	sharer := &memorySharer{docs: retagThroughLifecycle{vec, docLifecycle}, authz: authorizer}

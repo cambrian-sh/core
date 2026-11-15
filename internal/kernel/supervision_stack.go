@@ -28,12 +28,13 @@ type SupervisionStack struct {
 	ProfileAggregator *aggregator.ProfileAggregator
 }
 
-// NewSupervisionStack constructs the trust layer. vecStore and gen are retained in the
-// signature (no caller change) but no longer used since the clusterer's retirement.
+// NewSupervisionStack constructs the trust layer. gen is retained in the signature
+// but unused since the clusterer's retirement. The vector store it also took for the
+// clusterer was dropped (ENG-1476): an unused parameter that receives the raw
+// adapter is still a raw-store hand-off a reader has to rule out.
 func NewSupervisionStack(
 	reg *AgentRepoDecorator,
 	profileStore memstore.ProfileStore,
-	_ domain.VectorStore,
 	_ domain.Generator,
 	cfg *config.Config,
 	observer domain.TelemetryObserver,

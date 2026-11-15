@@ -15,7 +15,7 @@ import (
 // Tool documents are stored with Document.ID = the tool's identity (native name
 // or mcp:<server>/<tool>), which is what the search returns and the Filter matches.
 type VectorToolRetriever struct {
-	Store    VectorStore
+	Store    VectorReader
 	Embedder Embedder
 	Floor    float64 // minimum cosine (RawScore) to include; <=0 disables the floor
 }

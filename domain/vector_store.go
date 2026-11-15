@@ -176,22 +176,62 @@ type SearchResult struct {
 	LexicalRaw float64
 }
 
-// VectorStore defines the interface for underlying vector database operations.
-type VectorStore interface {
-	Save(ctx context.Context, doc *Document) error
-	SaveBatch(ctx context.Context, docs []*Document) error
+// The vector store port is split by what a caller may DO (ENG-1476, interface
+// segregation): read, write, or run kernel maintenance. The split is what lets the
+// compiler enforce the memory tiers (AGENTS.md §2.2): the tier-1 read chokepoint
+// (authz.EnforcingVectorStore) is only a VectorReader, so nothing holding it can
+// write; the tier-2 write chokepoint (authz.EnforcingStoreWriter) is only a
+// VectorWriter. Only the raw adapter is a whole VectorStore, and the kernel hands it
+// out solely through MemoryStack.KernelArtifactStore with a named ADR.
+
+// VectorReader is the read side of the vector store: similarity search and the
+// by-identity reads.
+type VectorReader interface {
 	Search(ctx context.Context, vector []float32, opts SearchOptions) ([]SearchResult, error)
 	GetByID(ctx context.Context, id string) (*Document, error)
 	GetBatch(ctx context.Context, ids []string) ([]Document, error)
-	Delete(ctx context.Context, id string) error
-	DeleteBatch(ctx context.Context, ids []string) error
-	IncrementAccess(ctx context.Context, id string) error
-	GetStaleMemories(ctx context.Context, limit int) ([]Document, error)
-	// QueryByMetadata returns documents whose metadata JSONB contains all key-value
-	// pairs in filter (PostgreSQL @> containment). Results ordered by created_at ASC.
-	// limit == 0 returns all matching documents. ADR-0033.
+	// QueryByMetadata returns documents whose metadata contains every key-value pair
+	// in filter, ordered oldest first. limit == 0 returns all matching documents.
+	// ADR-0033.
 	QueryByMetadata(ctx context.Context, filter map[string]string, limit int) ([]Document, error)
 }
+
+// VectorWriter is the write side of the vector store: upserts and deletes.
+type VectorWriter interface {
+	Save(ctx context.Context, doc *Document) error
+	SaveBatch(ctx context.Context, docs []*Document) error
+	Delete(ctx context.Context, id string) error
+	DeleteBatch(ctx context.Context, ids []string) error
+}
+
+// VectorMaintenance is the kernel's own bookkeeping on stored memories: access
+// counting and the decay sweep. It serves no principal.
+type VectorMaintenance interface {
+	IncrementAccess(ctx context.Context, id string) error
+	GetStaleMemories(ctx context.Context, limit int) ([]Document, error)
+}
+
+// VectorReadWriter is a consumer that both reads and writes (the profile store,
+// procedure feedback). In the kernel it is composed from the two enforcing tiers,
+// never from the raw adapter.
+type VectorReadWriter interface {
+	VectorReader
+	VectorWriter
+}
+
+// VectorStore is the whole port, implemented by adapters (Postgres pgvector).
+// Consumers take the narrowest of the ports above that they need.
+type VectorStore interface {
+	VectorReader
+	VectorWriter
+	VectorMaintenance
+}
+
+// ADRRef names the ADR (with decision, e.g. "ADR-0044 D3") that permits a use of
+// the raw, unenforced vector store. It is the required argument of
+// MemoryStack.KernelArtifactStore: the justification AGENTS.md §2.2 used to ask for
+// in a comment is now a value a test can list.
+type ADRRef string
 
 // ErrDocumentNotFound is returned when no document carries the given id.
 //

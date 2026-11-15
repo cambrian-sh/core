@@ -18,7 +18,7 @@ import (
 // the recall path does not branch on EdgeType.
 type SpreadingEngine struct {
 	GraphStore  domain.GraphStore
-	VectorStore domain.VectorStore
+	VectorStore domain.VectorReader
 	DecayFactor float64 // default 0.75
 	MaxDepth    int     // default 3
 	EnergyFloor float64 // default 0.15
@@ -31,7 +31,7 @@ type SpreadingEngine struct {
 }
 
 // NewSpreadingEngine creates a SpreadingEngine with optional config overrides.
-func NewSpreadingEngine(gs domain.GraphStore, vs domain.VectorStore, decay float64, maxDepth int, energyFloor float64) *SpreadingEngine {
+func NewSpreadingEngine(gs domain.GraphStore, vs domain.VectorReader, decay float64, maxDepth int, energyFloor float64) *SpreadingEngine {
 	if decay <= 0 {
 		decay = 0.75
 	}

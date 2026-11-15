@@ -149,7 +149,7 @@ func newIngestServer(known map[string]bool, writeTags map[string][]string, vocab
 // and a stand-in for the deleted RememberService would re-implement the thing
 // being tested.
 type writerProcessor struct {
-	store    domain.VectorStore
+	store    domain.VectorWriter
 	embedder domain.Embedder
 }
 

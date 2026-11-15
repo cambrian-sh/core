@@ -59,8 +59,13 @@ func TestGetJudicialRecords_AgentIDIsATypedFilterValue(t *testing.T) {
 // lookup would fail the moment the store stopped holding the raw adapter.
 func TestGetProfile_SeedsKernelScopeThroughEnforcingStore(t *testing.T) {
 	t.Parallel()
+	// The kernel hands the profile store the two tiers composed (ENG-1476): reads
+	// through the enforcing reader, writes through a writer.
 	enforcing := authz.NewEnforcingVectorStore(&recordingStore{}, nil)
-	store := NewProfileStore(enforcing)
+	store := NewProfileStore(struct {
+		domain.VectorReader
+		domain.VectorWriter
+	}{enforcing, &recordingStore{}})
 
 	// context.Background() carries no predicate at all — the exact condition
 	// EnforcingVectorStore refuses.

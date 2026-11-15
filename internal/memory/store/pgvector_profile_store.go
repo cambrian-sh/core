@@ -25,11 +25,13 @@ type ProfileStore interface {
 // PgVectorProfileStore implements domain.ProfileStore and domain.JudicialStore
 // by persisting AgentProfiles and Judicial Records as documents in a VectorStore.
 type PgVectorProfileStore struct {
-	store domain.VectorStore
+	store domain.VectorReadWriter
 }
 
-// NewProfileStore returns a PgVectorProfileStore backed by the given VectorStore.
-func NewProfileStore(store domain.VectorStore) *PgVectorProfileStore {
+// NewProfileStore returns a PgVectorProfileStore backed by the given store. In the
+// kernel it is the two enforcing tiers composed (reads through the tier-1 reader,
+// writes through the tier-2 classifier), never the raw adapter (ENG-1476).
+func NewProfileStore(store domain.VectorReadWriter) *PgVectorProfileStore {
 	return &PgVectorProfileStore{store: store}
 }
 

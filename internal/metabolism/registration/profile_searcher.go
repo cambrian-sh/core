@@ -7,16 +7,16 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// pgvectorProfileSearcher wraps a domain.VectorStore and implements
+// pgvectorProfileSearcher wraps a domain.VectorReader and implements
 // domain.ProfileSearcher. It filters results to agent_profile documents
 // and applies the caller-supplied similarity threshold.
 type pgvectorProfileSearcher struct {
-	store domain.VectorStore
+	store domain.VectorReader
 }
 
 // NewProfileSearcher returns a domain.ProfileSearcher backed by the given
-// VectorStore.
-func NewProfileSearcher(store domain.VectorStore) domain.ProfileSearcher {
+// VectorReader (Search is all it calls).
+func NewProfileSearcher(store domain.VectorReader) domain.ProfileSearcher {
 	return &pgvectorProfileSearcher{store: store}
 }
 

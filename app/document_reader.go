@@ -50,7 +50,7 @@ import (
 type kernelDocumentReader struct {
 	// store is the ENFORCING store. Handing this the raw adapter would skip the
 	// decorator that is the enforcement point.
-	store domain.VectorStore
+	store domain.VectorReader
 	// authorizer is the decision point that turns a principal into its read
 	// predicate. nil refuses every non-system read rather than allowing it.
 	authorizer domain.Authorizer
@@ -58,7 +58,7 @@ type kernelDocumentReader struct {
 
 // newKernelDocumentReader builds the reader over the tier-1 enforcing read store
 // and the kernel's resolved Authorizer (ADR-0085).
-func newKernelDocumentReader(store domain.VectorStore, authorizer domain.Authorizer) *kernelDocumentReader {
+func newKernelDocumentReader(store domain.VectorReader, authorizer domain.Authorizer) *kernelDocumentReader {
 	return &kernelDocumentReader{store: store, authorizer: authorizer}
 }
 

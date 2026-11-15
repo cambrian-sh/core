@@ -37,7 +37,7 @@ type Spreader interface {
 // vector store for memory documents, and applies ACL filtering before returning results.
 type QueryService struct {
 	embedder         domain.Embedder
-	vectorStore      domain.VectorStore
+	vectorStore      domain.VectorReader
 	authz            domain.Authorizer         // ADR-0085: decision point; nil ⇒ OSS allow-all
 	spreader         Spreader                  // ADR-0048 D2: nil = no associative expansion (flag-gated at wiring)
 	spreadKeepsOrder bool                      // ENG-484: seeds keep the assembled order; expansions after them (default off)
@@ -497,7 +497,7 @@ func (q *QueryService) SetSpreadingKeepsAssemblyOrder(on bool) { q.spreadKeepsOr
 // second embedding of the kernel or a new cmd/ binary that does not know the
 // mutator exists. Taking the enforcing store as a required argument moves that
 // from a runtime hope to a compile error.
-func NewQueryService(embedder domain.Embedder, readStore domain.VectorStore, authorizer domain.Authorizer) *QueryService {
+func NewQueryService(embedder domain.Embedder, readStore domain.VectorReader, authorizer domain.Authorizer) *QueryService {
 	if authorizer == nil {
 		authorizer = domain.AllowAllAuthorizer{}
 	}

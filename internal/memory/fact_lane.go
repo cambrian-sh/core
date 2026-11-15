@@ -48,7 +48,7 @@ type FactReader interface {
 // CONSTRUCTOR argument (AGENTS.md §2.3: the reader is the enforcing fact reader, and
 // there is no mutator that could attach an unenforced one later). nil facts ⇒ no fact
 // lane, whatever RankingV2.FactLane says.
-func NewQueryServiceWithFacts(embedder domain.Embedder, readStore domain.VectorStore, authorizer domain.Authorizer, facts FactReader) *QueryService {
+func NewQueryServiceWithFacts(embedder domain.Embedder, readStore domain.VectorReader, authorizer domain.Authorizer, facts FactReader) *QueryService {
 	q := NewQueryService(embedder, readStore, authorizer)
 	q.facts = facts
 	return q

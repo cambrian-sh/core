@@ -138,7 +138,7 @@ func SkillVisible(eff *TagPredicate, s Skill) bool {
 // keyed by name (ADR-0046 D2/D4) — the SkillRetriever ranks over these. Mirrors
 // ToolIndexer. Called at boot (discovery) and on re-index.
 type SkillIndexer struct {
-	Store    VectorStore
+	Store    VectorWriter
 	Embedder Embedder
 }
 
