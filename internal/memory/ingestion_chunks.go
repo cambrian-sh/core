@@ -335,10 +335,10 @@ func (im *IngestionManager) persistChunksTracked(
 	if im.tripletsBatcher != nil {
 		t := time.Now()
 		if trackKG {
-			outcome.KGWait = im.tripletsBatcher.EnqueueTracked(docs)
+			outcome.KGWait = im.tripletsBatcher.EnqueueTracked(ctx, docs)
 		} else {
 			for _, d := range docs {
-				im.tripletsBatcher.Enqueue(d)
+				im.tripletsBatcher.Enqueue(ctx, d)
 			}
 		}
 		clock.Since(StageTripletsEnqueue, t)

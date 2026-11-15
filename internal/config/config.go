@@ -2067,6 +2067,10 @@ type ExecutionConfig struct {
 	// Lane is ADR-0150: how a request is executed (the single-agent default lane
 	// and its kernel-run subtasks; lane.go).
 	Lane LaneConfig `json:"lane"`
+
+	// Erasure is ADR-0137: the principal-initiated forget — the enforcing eraser, the
+	// async erasure worker and their limits (erasure.go). Default off.
+	Erasure ErasureConfig `json:"erasure"`
 }
 
 // Hook kinds accepted in execution.hooks.entries[].kind (ADR-0139 D11).
@@ -4280,6 +4284,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	errs = append(errs, c.Skills.validate()...)
 	errs = append(errs, c.Schedules.validate()...)
 	errs = append(errs, c.Ledger.validate()...)
+	errs = append(errs, c.Erasure.validate()...)
 	errs = append(errs, c.Content.validate()...)
 	errs = append(errs, c.Chat.validateGrounding(c.Ledger.Enabled)...)
 	errs = append(errs, c.Workers.validate(c.Ledger.Enabled)...)

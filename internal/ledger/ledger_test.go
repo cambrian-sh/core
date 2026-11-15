@@ -263,3 +263,8 @@ func TestLedgerFind_ScopeComesFromTheCallersProvenance(t *testing.T) {
 		t.Fatal("a call with no run must not search the whole ledger")
 	}
 }
+
+// AuthorizeErase completes domain.Authorizer (ADR-0137 D3); this fake is not about erasure.
+func (denyAll) AuthorizeErase(ctx context.Context, p domain.PrincipalRef, s domain.SurfaceRef, t domain.Taggable) domain.AccessDecision {
+	return domain.AllowAllAuthorizer{}.AuthorizeErase(ctx, p, s, t)
+}

@@ -134,9 +134,9 @@ func TestTripletsWait_SignalledPerDocumentAcrossMixedBatches(t *testing.T) {
 	a := chunkDocs("a", 3)
 	bb := chunkDocs("b", 3)
 	// Enqueued before Start so the first drain sees all six items.
-	wa := b.EnqueueTracked(a)
-	wb := b.EnqueueTracked(bb)
-	b.Enqueue(&domain.Document{ID: "u0", Text: "untracked"})
+	wa := b.EnqueueTracked(context.Background(), a)
+	wb := b.EnqueueTracked(context.Background(), bb)
+	b.Enqueue(context.Background(), &domain.Document{ID: "u0", Text: "untracked"})
 	b.Start(context.Background())
 	defer b.Stop()
 
@@ -189,12 +189,12 @@ func TestTripletsWait_TrackedItemDrainsImmediately(t *testing.T) {
 	b.Start(context.Background())
 	defer b.Stop()
 
-	b.Enqueue(&domain.Document{ID: "async0", Text: "x"})
+	b.Enqueue(context.Background(), &domain.Document{ID: "async0", Text: "x"})
 	time.Sleep(50 * time.Millisecond)
 	if store.has("async0") {
 		t.Fatal("an untracked item drained before a full batch or the idle timer: async batching changed")
 	}
-	w := b.EnqueueTracked(chunkDocs("s", 2))
+	w := b.EnqueueTracked(context.Background(), chunkDocs("s", 2))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := w.Wait(ctx); err != nil {
@@ -217,7 +217,7 @@ func TestTripletsWait_CtxCancelStopsWaitNotExtraction(t *testing.T) {
 	// Enqueue before Start so both chunks form ONE batch: release() frees a
 	// single ExtractBatch call, and a tracked item makes the loop drain at once,
 	// so enqueueing after Start could split 1+1 and leave the second batch gated.
-	w := b.EnqueueTracked(chunkDocs("c", 2))
+	w := b.EnqueueTracked(context.Background(), chunkDocs("c", 2))
 	b.Start(context.Background())
 	defer b.Stop()
 
@@ -256,8 +256,8 @@ func TestTripletsWait_StopUnblocksWaiters(t *testing.T) {
 		QueueSize: 64, BatchSize: 2, MaxIdle: time.Hour, LLMTimeout: 5 * time.Second,
 	})
 	b.UseExtractor(ext)
-	w1 := b.EnqueueTracked(chunkDocs("p", 2))
-	w2 := b.EnqueueTracked(chunkDocs("q", 2))
+	w1 := b.EnqueueTracked(context.Background(), chunkDocs("p", 2))
+	w2 := b.EnqueueTracked(context.Background(), chunkDocs("q", 2))
 	b.Start(context.Background())
 
 	stopped := make(chan struct{})
@@ -287,7 +287,7 @@ func TestTripletsWait_StopUnblocksWaiters(t *testing.T) {
 	if err := w2.Wait(ctx); err != nil {
 		t.Fatalf("w2 (backlog Stop drains): %v", err)
 	}
-	late := b.EnqueueTracked(chunkDocs("late", 1))
+	late := b.EnqueueTracked(context.Background(), chunkDocs("late", 1))
 	if err := late.Wait(ctx); !errors.Is(err, ErrTripletsBatcherStopped) {
 		t.Fatalf("enqueue after Stop = %v, want ErrTripletsBatcherStopped", err)
 	}
@@ -299,7 +299,7 @@ func TestTripletsWait_ReleaseRemainingStopsQueuedWaiters(t *testing.T) {
 	b := NewChunkTripletsBatcher(&streamingBatchGen{}, newLockedTripletStore(), ChunkTripletsBatcherConfig{
 		QueueSize: 64, BatchSize: 2, MaxIdle: time.Hour, LLMTimeout: 5 * time.Second,
 	})
-	w := b.EnqueueTracked(chunkDocs("r", 3))
+	w := b.EnqueueTracked(context.Background(), chunkDocs("r", 3))
 	b.drainQueueToPending() // as the exit path does: queued items become pending
 	b.releaseRemaining()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -322,7 +322,7 @@ func TestTripletsWait_DropAndSaveErrorSettleAsFailed(t *testing.T) {
 	})
 	b.UseExtractor(instantExtractor{})
 	// Not started: queue of 2 holds f0 f1; f2 is dropped at enqueue.
-	w := b.EnqueueTracked(chunkDocs("f", 3))
+	w := b.EnqueueTracked(context.Background(), chunkDocs("f", 3))
 	if w.Failed() != 1 || w.Pending() != 2 {
 		t.Fatalf("after a queue-full drop: failed=%d pending=%d, want 1 and 2", w.Failed(), w.Pending())
 	}

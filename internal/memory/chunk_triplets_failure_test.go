@@ -82,7 +82,7 @@ func TestChunkTripletsBatcher_ExtractionErrorIsFailedNotEmpty(t *testing.T) {
 	store := newLockedTripletStore()
 	b := newFailureBatcher(&scriptedExtractor{failFirst: 1 << 30, err: errUnavailable}, store, 0)
 	b.Start(context.Background())
-	w := b.EnqueueTracked(chunkDocs("f", 3))
+	w := b.EnqueueTracked(context.Background(), chunkDocs("f", 3))
 	if err := w.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestChunkTripletsBatcher_ExtractionErrorIsFailedNotEmpty(t *testing.T) {
 	empty := newFailureBatcher(&scriptedExtractor{empty: true}, newLockedTripletStore(), 0)
 	empty.Start(context.Background())
 	defer empty.Stop()
-	we := empty.EnqueueTracked(chunkDocs("e", 3))
+	we := empty.EnqueueTracked(context.Background(), chunkDocs("e", 3))
 	if err := we.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestChunkTripletsBatcher_UnavailableRequeuedThenSucceeds(t *testing.T) {
 	ext := &scriptedExtractor{failFirst: 1, err: errUnavailable}
 	b := newFailureBatcher(ext, store, 1)
 	docs := chunkDocs("c", 4)
-	w := b.EnqueueTracked(docs) // before Start: one batch (see FailureWarnOncePerBatch)
+	w := b.EnqueueTracked(context.Background(), docs) // before Start: one batch (see FailureWarnOncePerBatch)
 	b.Start(context.Background())
 	defer b.Stop()
 	if err := w.Wait(waitCtx(t)); err != nil {
@@ -141,7 +141,7 @@ func TestChunkTripletsBatcher_UnavailableRequeuedThenSucceeds(t *testing.T) {
 func TestChunkTripletsBatcher_RequeuesBounded(t *testing.T) {
 	ext := &scriptedExtractor{failFirst: 1 << 30, err: errUnavailable}
 	b := newFailureBatcher(ext, newLockedTripletStore(), 2)
-	w := b.EnqueueTracked(chunkDocs("p", 5)) // before Start: one batch (see FailureWarnOncePerBatch)
+	w := b.EnqueueTracked(context.Background(), chunkDocs("p", 5)) // before Start: one batch (see FailureWarnOncePerBatch)
 	b.Start(context.Background())
 	defer b.Stop()
 	if err := w.Wait(waitCtx(t)); err != nil {
@@ -162,7 +162,7 @@ func TestChunkTripletsBatcher_RequeuesBounded(t *testing.T) {
 func TestChunkTripletsBatcher_BadReplyNotRequeued(t *testing.T) {
 	ext := &scriptedExtractor{failFirst: 1 << 30, err: errors.New("bad response JSON")}
 	b := newFailureBatcher(ext, newLockedTripletStore(), 3)
-	w := b.EnqueueTracked(chunkDocs("j", 2)) // before Start: one batch (see FailureWarnOncePerBatch)
+	w := b.EnqueueTracked(context.Background(), chunkDocs("j", 2)) // before Start: one batch (see FailureWarnOncePerBatch)
 	b.Start(context.Background())
 	defer b.Stop()
 	if err := w.Wait(waitCtx(t)); err != nil {
@@ -182,7 +182,7 @@ func TestChunkTripletsBatcher_FailureWarnOncePerBatch(t *testing.T) {
 	// worker and the 10 chunks can split into two batches (seen on CI as 3+7,
 	// two WARNs). With all 10 queued first, the first drain takes them as one
 	// batch (BatchSize 16).
-	w := b.EnqueueTracked(chunkDocs("w", 10)) // one batch of 10
+	w := b.EnqueueTracked(context.Background(), chunkDocs("w", 10)) // one batch of 10
 	b.Start(context.Background())
 	if err := w.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
@@ -261,7 +261,7 @@ func TestChunkTripletsBatcher_ReadinessProbeLogged(t *testing.T) {
 			ext := &probeExtractor{ready: tc.ready}
 			b := newFailureBatcher(ext, newLockedTripletStore(), 0)
 			b.Start(context.Background())
-			w := b.EnqueueTracked(chunkDocs("r", 2))
+			w := b.EnqueueTracked(context.Background(), chunkDocs("r", 2))
 			if err := w.Wait(waitCtx(t)); err != nil {
 				t.Fatalf("wait: %v", err)
 			}

@@ -16,7 +16,7 @@ func TestChunkTripletsBatcher_AgentExtractorMakesNoLLMCalls(t *testing.T) {
 		t.Fatalf("extractorBackend = %q, want agent", got)
 	}
 	b.Start(context.Background())
-	w := b.EnqueueTracked(chunkDocs("c", 3))
+	w := b.EnqueueTracked(context.Background(), chunkDocs("c", 3))
 	if err := w.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
 	}

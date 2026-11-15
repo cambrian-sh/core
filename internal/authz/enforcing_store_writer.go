@@ -30,8 +30,18 @@ var ErrWriteDenied = errors.New("authz: write denied by policy")
 // It is a domain.VectorWriter and nothing more (ENG-1476): it has no read methods,
 // so it can never become a read path that skips EnforcingVectorStore, and a consumer
 // that reads and writes is handed the two tiers composed (the memory stack does
-// this), not one type that does both. Delete and DeleteBatch pass through unchanged:
-// removal carries no classification to decide.
+// this), not one type that does both.
+//
+// Delete and DeleteBatch are KERNEL MAINTENANCE ONLY (ADR-0137 D3, ENG-411 stage B): a
+// row-by-id delete leaves the record's derivatives (document edges, fact items) and no
+// tombstone or receipt, so it is never a principal's way to forget. The system principal
+// with an explicit bypass predicate on ctx (the nightly decay sweep) may delete; no
+// principal or no predicate is ErrScopeMissing; any other principal is ErrEraseDenied —
+// a principal forgets through the erasure chokepoint (EnforcingEraser).
+//
+// Every classified write is also stamped with its writer of record
+// (domain.MetaWrittenBy = the ctx principal's WriterID), replacing whatever the writer
+// put there: it is what an agent's erasure is checked against.
 type EnforcingStoreWriter struct {
 	inner  domain.VectorWriter
 	authz  domain.Authorizer
@@ -71,14 +81,39 @@ func (w *EnforcingStoreWriter) SaveBatch(ctx context.Context, docs []*domain.Doc
 	return w.inner.SaveBatch(ctx, docs)
 }
 
-// Delete — PASS-THROUGH: a removal carries no classification to decide.
+// Delete removes one row by id — kernel maintenance only (see the type comment).
 func (w *EnforcingStoreWriter) Delete(ctx context.Context, id string) error {
+	if err := w.maintenanceDelete(ctx, 1); err != nil {
+		return err
+	}
 	return w.inner.Delete(ctx, id)
 }
 
-// DeleteBatch — PASS-THROUGH, as Delete.
+// DeleteBatch removes rows by id — kernel maintenance only, as Delete.
 func (w *EnforcingStoreWriter) DeleteBatch(ctx context.Context, ids []string) error {
+	if err := w.maintenanceDelete(ctx, len(ids)); err != nil {
+		return err
+	}
 	return w.inner.DeleteBatch(ctx, ids)
+}
+
+// maintenanceDelete admits a row delete only for the kernel acting under an explicit
+// bypass predicate (ADR-0137 D3: kernel GC seeds the greppable bypass).
+func (w *EnforcingStoreWriter) maintenanceDelete(ctx context.Context, n int) error {
+	principal := domain.PrincipalFromContext(ctx)
+	pred, present := domain.ScopeFromContext(ctx)
+	if principal.IsZero() || !present || pred == nil {
+		return ErrScopeMissing
+	}
+	if principal.Kind == domain.PrincipalSystem && pred.Bypass {
+		return nil
+	}
+	w.logger.WarnContext(ctx, "authz: row delete denied",
+		slog.String("event", "authz_delete_deny"),
+		slog.String("principal", principal.String()),
+		slog.Int("rows", n),
+		slog.String("detail", "row deletes are kernel maintenance; a principal forgets through the erasure path"))
+	return ErrEraseDenied
 }
 
 // classify replaces the document's authored tags with the decision point's
@@ -128,6 +163,13 @@ func (w *EnforcingStoreWriter) classify(ctx context.Context, doc *domain.Documen
 		doc.Metadata = make(map[string]interface{})
 	}
 	doc.Metadata["tags"] = final
+	// ADR-0137 D3: the writer of record is the kernel's to stamp, never the writer's to
+	// claim — a write with no principal carries none (operator-erasable only).
+	if principal.IsZero() {
+		delete(doc.Metadata, domain.MetaWrittenBy)
+	} else {
+		doc.Metadata[domain.MetaWrittenBy] = principal.WriterID()
+	}
 	return nil
 }
 

@@ -383,3 +383,8 @@ func TestEndpoint_HandlerSuppliedReceiptRefIsPreserved(t *testing.T) {
 		t.Error("no correlation was seeded for a handler that supplies its own ref")
 	}
 }
+
+// AuthorizeErase completes domain.Authorizer (ADR-0137 D3); this fake is not about erasure.
+func (perPrincipalPDP) AuthorizeErase(ctx context.Context, p domain.PrincipalRef, s domain.SurfaceRef, t domain.Taggable) domain.AccessDecision {
+	return domain.AllowAllAuthorizer{}.AuthorizeErase(ctx, p, s, t)
+}

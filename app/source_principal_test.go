@@ -100,3 +100,8 @@ func TestNewPluginKnowledgeSeam_ClassifiesWrites(t *testing.T) {
 		t.Fatalf("memory_fact through the plugin seam must be refused: %v", err)
 	}
 }
+
+// AuthorizeErase completes domain.Authorizer (ADR-0137 D3); this fake is not about erasure.
+func (denyAuthorizer) AuthorizeErase(ctx context.Context, p domain.PrincipalRef, s domain.SurfaceRef, t domain.Taggable) domain.AccessDecision {
+	return domain.AllowAllAuthorizer{}.AuthorizeErase(ctx, p, s, t)
+}

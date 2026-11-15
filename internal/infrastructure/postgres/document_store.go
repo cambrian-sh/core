@@ -65,8 +65,19 @@ func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc domain.SourceDoc
 	// that arrives without the owner:<id> tag the stored row carries keeps it, so
 	// an upsert can never publish a principal's personal material. RETURNING
 	// hands the caller what actually landed, which is what it stamps on chunks.
+	// ADR-0137 D5: the no-resurrection fence and the row write share one transaction,
+	// so an erase of this document either commits before the fence reads (the write is
+	// refused when it predates the erase) or waits for the write and then deletes it.
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapError("SaveDocument", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	if err := erasureFenceTx(ctx, tx, doc.ID, doc.ContentDigest); err != nil {
+		return nil, err
+	}
 	var stored []string
-	err := p.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO `+TableDocuments+` (id, title, source_type, text, tags, metadata,
 			event_time, event_time_end, time_source, time_precision, claimed_time,
 			written_by, content_digest)
@@ -77,6 +88,9 @@ func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc domain.SourceDoc
 		st["event_time"], st["event_time_end"], st["time_source"], st["time_precision"], st["claimed_time"],
 		doc.WrittenBy, doc.ContentDigest).Scan(&stored)
 	if err != nil {
+		return nil, mapError("SaveDocument", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, mapError("SaveDocument", err)
 	}
 	if stored == nil {

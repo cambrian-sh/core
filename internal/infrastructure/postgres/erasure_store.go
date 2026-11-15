@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/objects"
 )
 
 // PgErasureStore is the raw ADR-0137 memory eraser (S2): ONE Postgres transaction per
@@ -28,27 +29,50 @@ import (
 // ADR-0105 evidence of the documents with its dependents.
 //
 // It ENFORCES NOTHING about who may erase what: it is a tier-0 component. The kernel holds
-// it unexported (kernel.MemoryStack) until the S3 authz.EnforcingEraser wraps it; only
-// tests call it in stage A (ENG-411).
+// it unexported (kernel.MemoryStack) and hands principals only the authz.EnforcingEraser
+// that wraps it (ADR-0137 S3, ENG-411 stage B). It is also the domain.ErasureOutbox the
+// erasure worker drains (S5).
+//
+// The ADR-0149 object rows (objects_<kind>) of every entity an erased observation
+// described are recomputed inside the transaction (ENG-1858); knowledge items recompute
+// theirs through EraseItemsTx's re-derivation.
 //
 // Not in this transaction (yet): premium rows that reference evidence (ingress studio)
 // — the ErasureParticipant hook is S7; an erase whose evidence premium still references
-// fails on the evidence FK and rolls back, erasing nothing. Generated objects_<kind> rows
-// projected from erased events are not rebuilt here (ticketed).
+// fails on the evidence FK and rolls back, erasing nothing.
 type PgErasureStore struct {
 	l *PgDocumentLifecycle
+	// asyncDeadline is how long the async tail of a request may take (execution.erasure
+	// .async_deadline_seconds); 0 leaves memory_erasures.async_deadline NULL.
+	asyncDeadline time.Duration
+}
+
+// ErasureStoreOption configures a PgErasureStore.
+type ErasureStoreOption func(*PgErasureStore)
+
+// WithErasureAsyncDeadline sets the deadline stamped on a request with async steps
+// (ADR-0137 D7): past it the request reads overdue on the operator plane.
+func WithErasureAsyncDeadline(d time.Duration) ErasureStoreOption {
+	return func(s *PgErasureStore) { s.asyncDeadline = d }
 }
 
 // NewPgErasureStore builds the eraser over the document lifecycle (and through it the
 // knowledge store and its pool).
-func NewPgErasureStore(l *PgDocumentLifecycle) *PgErasureStore {
+func NewPgErasureStore(l *PgDocumentLifecycle, opts ...ErasureStoreOption) *PgErasureStore {
 	if l == nil || l.k == nil {
 		panic("postgres.NewPgErasureStore: nil document lifecycle")
 	}
-	return &PgErasureStore{l: l}
+	s := &PgErasureStore{l: l}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
-var _ domain.MemoryEraser = (*PgErasureStore)(nil)
+var (
+	_ domain.MemoryEraser  = (*PgErasureStore)(nil)
+	_ domain.ErasureOutbox = (*PgErasureStore)(nil)
+)
 
 // Store names the erasure counts use beyond the document cascade's (cascade* constants).
 const (
@@ -141,12 +165,15 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 	}
 	cj, _ := json.Marshal(run.counts) // map[string]int always marshals
 	var erasedAt time.Time
+	var deadline *time.Time
 	if err := tx.QueryRow(ctx, `INSERT INTO memory_erasures
-			(request_id, principal, principal_kind, reason_code, selector_kinds, status, counts, completed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CASE WHEN $6 = 'complete' THEN now() END)
-		RETURNING erased_at`,
-		id, req.Principal, string(req.PrincipalKind), string(req.Reason), req.Selector.Kinds(), status, string(cj)).
-		Scan(&erasedAt); err != nil {
+			(request_id, principal, principal_kind, reason_code, selector_kinds, status, counts, completed_at, async_deadline)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, CASE WHEN $6 = 'complete' THEN now() END,
+			CASE WHEN $6 = 'pending_async' AND $8::bigint > 0 THEN now() + make_interval(secs => $8::bigint) END)
+		RETURNING erased_at, async_deadline`,
+		id, req.Principal, string(req.PrincipalKind), string(req.Reason), req.Selector.Kinds(), status, string(cj),
+		int64(s.asyncDeadline/time.Second)).
+		Scan(&erasedAt, &deadline); err != nil {
 		return domain.ErasureReceipt{}, mapError("Erase: receipt", err)
 	}
 	seen := map[[2]string]bool{}
@@ -172,11 +199,15 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 	if err := tx.Commit(ctx); err != nil {
 		return domain.ErasureReceipt{}, err
 	}
-	return domain.ErasureReceipt{
+	rec := domain.ErasureReceipt{
 		RequestID: id, Principal: req.Principal, PrincipalKind: req.PrincipalKind, Reason: req.Reason,
 		SelectorKinds: req.Selector.Kinds(), Status: status, ErasedAt: erasedAt.UTC(),
 		Counts: run.counts, Targets: len(seen), PendingSteps: len(cids),
-	}, nil
+	}
+	if deadline != nil {
+		rec.AsyncDeadline = deadline.UTC()
+	}
+	return rec, nil
 }
 
 // eraseTx runs every deletion step of D4 inside run.tx. matched reports whether the
@@ -409,6 +440,45 @@ func (s *PgErasureStore) eraseDocuments(ctx context.Context, run *erasureRun, do
 // cascade), observations and links by evidence_id, the outbox rows, then the evidence.
 // entities.first_seen_evidence and evidence.revises_id become NULL by FK action (0051).
 func (s *PgErasureStore) eraseEvidence(ctx context.Context, run *erasureRun, evidenceIDs []string) error {
+	// ENG-1858: the entities the erased observations describe, read before they go, so
+	// their ADR-0149 object rows are recomputed from what survives (an object row must
+	// never keep a property value whose only source was erased — the query plane serves
+	// those rows to principals).
+	obsEntities := map[string][]string{}
+	obsRows, err := run.tx.Query(ctx, `SELECT DISTINCT namespace_id, entity_id FROM observations
+		WHERE evidence_id = ANY($1) ORDER BY 1, 2`, evidenceIDs)
+	if err != nil {
+		return fmt.Errorf("erase: observation entities: %w", err)
+	}
+	for obsRows.Next() {
+		var ns, e string
+		if err := obsRows.Scan(&ns, &e); err != nil {
+			obsRows.Close()
+			return err
+		}
+		obsEntities[ns] = append(obsEntities[ns], e)
+	}
+	obsRows.Close()
+	if err := obsRows.Err(); err != nil {
+		return err
+	}
+	if err := s.eraseEvidenceRows(ctx, run, evidenceIDs); err != nil {
+		return err
+	}
+	nss := make([]string, 0, len(obsEntities))
+	for ns := range obsEntities {
+		nss = append(nss, ns)
+	}
+	sort.Strings(nss)
+	for _, ns := range nss {
+		if err := objects.ApplyStateTx(ctx, run.tx, s.l.k.kinds, ns, obsEntities[ns]...); err != nil {
+			return fmt.Errorf("erase: object rows (%s): %w", ns, err)
+		}
+	}
+	return nil
+}
+
+func (s *PgErasureStore) eraseEvidenceRows(ctx context.Context, run *erasureRun, evidenceIDs []string) error {
 	if _, err := s.eraseItemsWhere(ctx, run, `ki.evidence_id = ANY($1)`, []any{evidenceIDs},
 		domain.KnowledgeErasure{EvidenceIDs: evidenceIDs}); err != nil {
 		return err

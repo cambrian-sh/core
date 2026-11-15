@@ -39,6 +39,10 @@ func (a *Agent) StartMemoryWorker(ctx context.Context, dryRun bool) error {
 // RunCleanupTask removes forgotten memories from vector store based on Decay logic.
 func (a *Agent) RunCleanupTask(ctx context.Context, dryRun bool) {
 	slog.Info("MemoryWorker running cleanup task")
+	// Kernel maintenance (ADR-0137 D3): the decay sweep deletes as the kernel under the
+	// explicit, greppable maintenance predicate; the write tier refuses a row delete by
+	// anyone else. Its result never reaches a principal.
+	ctx = domain.WithScope(domain.WithPrincipal(ctx, domain.SystemPrincipal), domain.ScopeMaintenance)
 
 	limit := 100
 	staleDocs, err := a.Manager.Store.GetStaleMemories(ctx, limit)

@@ -107,6 +107,17 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
 
+	// ADR-0137 D5: an item derived from a document (a memory_fact names its source
+	// document) is written under that document's no-resurrection fence, taken BEFORE the
+	// resolution lock — the erase transaction takes the document lock first and the
+	// resolution locks inside EraseItemsTx, so the order is the same and cannot deadlock.
+	// A fact job that predates an erase of its document therefore writes nothing.
+	if doc := itemSourceDocument(item); doc != "" {
+		if err := erasureFenceTx(ctx, tx, doc, ""); err != nil {
+			return "", false, err
+		}
+	}
+
 	// One writer at a time per resolution key: the recompute below reads the
 	// full item set and swaps the current version, so two concurrent writers
 	// must serialize or the second could close a version it never read. An
@@ -803,4 +814,15 @@ func equalTimePtr(a, b *time.Time) bool {
 		return a == nil && b == nil
 	}
 	return a.Equal(*b)
+}
+
+// itemSourceDocument is the source document an item's statement values name
+// (domain.FactPredSourceDocument), or "".
+func itemSourceDocument(item domain.KnowledgeItem) string {
+	for _, v := range item.Values {
+		if v.Predicate == domain.FactPredSourceDocument && v.Text != "" {
+			return v.Text
+		}
+	}
+	return ""
 }

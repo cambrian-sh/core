@@ -1,0 +1,295 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/cambrian-sh/core/domain"
+)
+
+// ADR-0137 S3–S5 (ENG-411 stage B): candidate resolution for the authorization
+// decision, the outbox the erasure worker drains, and the no-resurrection fence every
+// content write path takes.
+
+// Resolve implements domain.MemoryEraser: the stored records sel names, content-free.
+// It reads outside the erase transaction; the enforcing eraser decides on it and then
+// calls Erase with the same concrete ids, which re-resolves them under the per-document
+// locks.
+func (s *PgErasureStore) Resolve(ctx context.Context, sel domain.ErasureSelector) ([]domain.ErasureCandidate, error) {
+	sel = sel.Normalized()
+	q := s.l.k.pool
+	var out []domain.ErasureCandidate
+
+	docs := func(via string, ids []string) error {
+		if len(ids) == 0 {
+			return nil
+		}
+		rows, err := q.Query(ctx, `SELECT id, COALESCE(written_by, ''), COALESCE(tags, '{}') FROM `+TableDocuments+`
+			WHERE id = ANY($1) ORDER BY id`, ids)
+		if err != nil {
+			return fmt.Errorf("erasure resolve: documents: %w", err)
+		}
+		found := map[string]bool{}
+		for rows.Next() {
+			var c domain.ErasureCandidate
+			if err := rows.Scan(&c.ID, &c.WrittenBy, &c.Tags); err != nil {
+				rows.Close()
+				return err
+			}
+			c.Kind, c.DocumentID, c.Via = domain.ErasureTargetDocument, c.ID, orID(via, c.ID)
+			found[c.ID] = true
+			out = append(out, c)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		// A document that survives only as evidence or as an ADR-0093 frozen copy has no
+		// writer of record and no tags: an operator-only candidate (ADR-0137 D3).
+		var missing []string
+		for _, id := range ids {
+			if !found[id] {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		hasLegacy, err := tableExists(ctx, q, "documents_legacy")
+		if err != nil {
+			return err
+		}
+		sql := `SELECT DISTINCT d FROM unnest($1::text[]) d WHERE EXISTS (SELECT 1 FROM evidence e WHERE e.source_key = d)`
+		if hasLegacy {
+			sql += ` OR EXISTS (SELECT 1 FROM documents_legacy l WHERE l.id = d OR l.metadata->>'document_id' = d)`
+		}
+		rest, err := collectIDs(ctx, q, sql+` ORDER BY 1`, missing)
+		if err != nil {
+			return fmt.Errorf("erasure resolve: residual documents: %w", err)
+		}
+		for _, id := range rest {
+			out = append(out, domain.ErasureCandidate{Kind: domain.ErasureTargetDocument, ID: id, DocumentID: id, Via: orID(via, id)})
+		}
+		return nil
+	}
+
+	if err := docs("", sel.DocumentIDs); err != nil {
+		return nil, err
+	}
+	for _, th := range sel.ThreadIDs {
+		ids, err := collectIDs(ctx, q, `SELECT document_id FROM document_associations WHERE session_id = $1
+			UNION SELECT document_id FROM `+TableChunks+`
+			 WHERE metadata->>'`+domain.MetaIngestThreadID+`' = $1 AND document_id IS NOT NULL
+			ORDER BY 1`, th)
+		if err != nil {
+			return nil, fmt.Errorf("erasure resolve: thread: %w", err)
+		}
+		if err := docs(th, ids); err != nil {
+			return nil, err
+		}
+	}
+	if len(sel.ChunkIDs) > 0 {
+		// A chunk's writer of record is its document's (the unit an erase may widen to);
+		// a document-less chunk carries the writer the write tier stamped on it.
+		rows, err := q.Query(ctx, `SELECT c.id, COALESCE(c.document_id, ''),
+				COALESCE(NULLIF(d.written_by, ''), c.metadata->>'`+domain.MetaWrittenBy+`', ''),
+				COALESCE(c.metadata->'tags', '[]'::jsonb)
+			FROM `+TableChunks+` c LEFT JOIN `+TableDocuments+` d ON d.id = c.document_id
+			WHERE c.id = ANY($1) ORDER BY c.id`, sel.ChunkIDs)
+		if err != nil {
+			return nil, fmt.Errorf("erasure resolve: chunks: %w", err)
+		}
+		for rows.Next() {
+			var (
+				c    domain.ErasureCandidate
+				tags []byte
+			)
+			if err := rows.Scan(&c.ID, &c.DocumentID, &c.WrittenBy, &tags); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			c.Kind, c.Via = domain.ErasureTargetChunk, c.ID
+			c.Tags = jsonTags(tags)
+			out = append(out, c)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if len(sel.ExperienceIDs) > 0 {
+		rows, err := q.Query(ctx, `SELECT id, COALESCE(tags, '{}') FROM `+TableExperiences+` WHERE id = ANY($1) ORDER BY id`, sel.ExperienceIDs)
+		if err != nil {
+			return nil, fmt.Errorf("erasure resolve: experiences: %w", err)
+		}
+		for rows.Next() {
+			var c domain.ErasureCandidate
+			if err := rows.Scan(&c.ID, &c.Tags); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			c.Kind, c.Via = domain.ErasureTargetExperience, c.ID
+			out = append(out, c)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	for _, ref := range sel.EntityRefs {
+		var ok bool
+		if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM knowledge_items ki WHERE ki.entity_id = $1
+			OR EXISTS (SELECT 1 FROM statement_values sv WHERE sv.item_id = ki.id
+				AND sv.value_type = 'entity' AND sv.value_entity_id = $1))`, ref).Scan(&ok); err != nil {
+			return nil, fmt.Errorf("erasure resolve: entity: %w", err)
+		}
+		if ok {
+			out = append(out, domain.ErasureCandidate{Kind: domain.ErasureTargetEntity, ID: ref, Via: ref})
+		}
+	}
+	return out, nil
+}
+
+func orID(via, id string) string {
+	if via != "" {
+		return via
+	}
+	return id
+}
+
+// jsonTags decodes a JSONB tag array; anything else is no tags.
+func jsonTags(raw []byte) []string {
+	var tags []string
+	if len(raw) == 0 || json.Unmarshal(raw, &tags) != nil {
+		return nil
+	}
+	return tags
+}
+
+// PendingSteps implements domain.ErasureOutbox.
+func (s *PgErasureStore) PendingSteps(ctx context.Context, limit, maxAttempts int) ([]domain.ErasureOutboxRow, error) {
+	rows, err := s.l.k.pool.Query(ctx, `SELECT id, request_id, step, ref, attempts FROM memory_erasure_outbox
+		WHERE processed_at IS NULL AND attempts < $2 ORDER BY created_at, id LIMIT $1`, limit, maxAttempts)
+	if err != nil {
+		return nil, mapError("PendingSteps", err)
+	}
+	defer rows.Close()
+	var out []domain.ErasureOutboxRow
+	for rows.Next() {
+		var r domain.ErasureOutboxRow
+		if err := rows.Scan(&r.ID, &r.RequestID, &r.Step, &r.Ref, &r.Attempts); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CIDStillReferenced implements domain.ErasureOutbox: evidence with the same content hash,
+// or a surviving source-document stub naming the CID, keeps the blob.
+func (s *PgErasureStore) CIDStillReferenced(ctx context.Context, cid string) (bool, error) {
+	var ok bool
+	err := s.l.k.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM evidence WHERE content_hash = $1)
+		OR EXISTS (SELECT 1 FROM `+TableChunks+` WHERE metadata->>'content_cid' = $1)`, cid).Scan(&ok)
+	if err != nil {
+		return false, mapError("CIDStillReferenced", err)
+	}
+	return ok, nil
+}
+
+// MarkStepDone implements domain.ErasureOutbox (exactly once).
+func (s *PgErasureStore) MarkStepDone(ctx context.Context, id int64) (bool, error) {
+	tag, err := s.l.k.pool.Exec(ctx, `UPDATE memory_erasure_outbox SET processed_at = now()
+		WHERE id = $1 AND processed_at IS NULL`, id)
+	if err != nil {
+		return false, mapError("MarkStepDone", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MarkStepFailed implements domain.ErasureOutbox.
+func (s *PgErasureStore) MarkStepFailed(ctx context.Context, id int64, errClass string) error {
+	if _, err := s.l.k.pool.Exec(ctx, `UPDATE memory_erasure_outbox SET attempts = attempts + 1, last_error = $2
+		WHERE id = $1 AND processed_at IS NULL`, id, errClass); err != nil {
+		return mapError("MarkStepFailed", err)
+	}
+	return nil
+}
+
+// CompleteRequests implements domain.ErasureOutbox.
+func (s *PgErasureStore) CompleteRequests(ctx context.Context) (int, error) {
+	tag, err := s.l.k.pool.Exec(ctx, `UPDATE memory_erasures e SET status = $1, completed_at = now()
+		WHERE e.status = $2 AND NOT EXISTS (SELECT 1 FROM memory_erasure_outbox o
+			WHERE o.request_id = e.request_id AND o.processed_at IS NULL)`,
+		domain.ErasureStatusComplete, domain.ErasureStatusPendingAsync)
+	if err != nil {
+		return 0, mapError("CompleteRequests", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// PruneTombstones implements domain.ErasureOutbox. The receipt row itself is kept: it is
+// the record that an erasure happened; only the per-unit fence rows go.
+func (s *PgErasureStore) PruneTombstones(ctx context.Context, cutoff time.Time) (int, error) {
+	tag, err := s.l.k.pool.Exec(ctx, `DELETE FROM memory_erasure_targets WHERE erased_at < $1`, cutoff)
+	if err != nil {
+		return 0, mapError("PruneTombstones", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// erasureFenceTx is the ADR-0137 D5 no-resurrection fence, run inside the writer's
+// transaction before it writes content of documentID:
+//
+//  1. it takes the per-document advisory lock in SHARED mode — the erase transaction
+//     takes the same key exclusively (PgErasureStore.eraseTx), so a write and an erase
+//     of one document serialise: a write that started first commits before the erase
+//     deletes it; a write that waits sees the committed tombstone;
+//  2. when ctx carries an ingest origin (domain.IngestOriginFrom), it refuses with
+//     domain.ErrSourceErased if a tombstone of the document (or of digest, a document's
+//     content digest) was written after that origin — a replay, retry or queued job that
+//     predates the erase. A genuinely new ingest (origin after the erase) passes: a
+//     re-ingest is a new act (ADR-0137 Q4).
+//
+// Kernel-authored writes carry no origin and only take the lock. An empty documentID is
+// a no-op.
+func erasureFenceTx(ctx context.Context, q fenceQuerier, documentID, digest string) error {
+	if documentID == "" {
+		return nil
+	}
+	if _, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtext($1))`, documentID); err != nil {
+		return fmt.Errorf("erasure fence: lock: %w", err)
+	}
+	origin, ok := domain.IngestOriginFrom(ctx)
+	if !ok {
+		return nil
+	}
+	var erased bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM memory_erasure_targets
+		WHERE (document_id = $1 OR (NULLIF($2, '') IS NOT NULL AND content_digest = $2)) AND erased_at > $3)`,
+		documentID, digest, origin).Scan(&erased); err != nil {
+		return fmt.Errorf("erasure fence: tombstone: %w", err)
+	}
+	if erased {
+		return fmt.Errorf("document %s: %w", documentID, domain.ErrSourceErased)
+	}
+	return nil
+}
+
+// fenceQuerier is what erasureFenceTx needs of a transaction.
+type fenceQuerier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// isForeignKeyViolation reports a Postgres FK violation (23503) on constraint.
+func isForeignKeyViolation(err error, constraint string) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23503" && (constraint == "" || pg.ConstraintName == constraint)
+}

@@ -20,10 +20,11 @@ import (
 // quote (D1). It is disjoint from supersession (ADR-0136 D5): supersession closes
 // intervals and never deletes; erasure deletes and never merely invalidates.
 //
-// Stage A (S1–S2) ships the storage and the transaction. Authorization (S3,
-// authz.EnforcingEraser), the no-resurrection fences (S4), the async worker (S5) and the
-// RPCs (S6) follow; until S3 nothing outside tests may call a MemoryEraser, and the
-// kernel holds the raw one unexported (kernel.MemoryStack).
+// Stage A (S1–S2) shipped the storage and the transaction; stage B (S3–S5) the
+// authorization (authz.EnforcingEraser, built only in kernel.NewMemoryStack and reached
+// only through MemoryStack.Eraser()), the no-resurrection fences (ErrSourceErased, the
+// ingest origin) and the async worker (internal/memory/erasureworker). The RPCs (S6)
+// follow; until then no production path calls the enforcing eraser either.
 
 // Errors a MemoryEraser returns. Each is distinguishable (AGENTS.md §3.2): an empty or
 // malformed request is a caller error, nothing-matched is NotFound, never a silent
@@ -36,6 +37,10 @@ var (
 	// of the same request exists). See NothingToEraseError for the earlier request that
 	// may have erased the same ids.
 	ErrNothingToErase = errors.New("nothing to erase")
+	// ErrEraseDenied: the caller may not erase at least one record the selector names
+	// (ADR-0137 D3); nothing was erased (all-or-nothing). Distinct from
+	// ErrNothingToErase: a record the caller cannot even read is reported as absent.
+	ErrEraseDenied = errors.New("erase denied")
 )
 
 // NothingToEraseError is ErrNothingToErase with the id of an earlier erase request that
@@ -280,7 +285,7 @@ type ErasureReceipt struct {
 
 // MemoryEraser executes erasures. The Postgres implementation runs one transaction per
 // request (ADR-0137 D4). It is the RAW eraser: it enforces nothing about who may erase
-// what — callers reach it only through the enforcing decorator (S3).
+// what — callers reach it only through the enforcing decorator (authz.EnforcingEraser).
 type MemoryEraser interface {
 	// Erase executes req. Idempotent: a request whose ID already has a receipt returns
 	// that receipt with Replayed=true and deletes nothing. Errors: ErrInvalidErasureRequest,
@@ -289,4 +294,8 @@ type MemoryEraser interface {
 	Erase(ctx context.Context, req ErasureRequest) (ErasureReceipt, error)
 	// Receipt returns the stored receipt of requestID (found=false when there is none).
 	Receipt(ctx context.Context, requestID string) (receipt ErasureReceipt, found bool, err error)
+	// Resolve lists the stored records sel names (content-free candidates: ids, the
+	// writer of record, tags), the basis of the authorization decision and of a preview.
+	// Ids that match nothing are absent from the result, never an error.
+	Resolve(ctx context.Context, sel ErasureSelector) ([]ErasureCandidate, error)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -21,6 +22,9 @@ type tripletItem struct {
 	// attempts counts how many times this item was re-queued after its batch
 	// failed because the extractor was unavailable (bounded by maxRequeues).
 	attempts int
+	// origin is the ingest origin of the write that queued the chunk (ADR-0137 D5):
+	// its triplet save is refused when the chunk's document was erased after it.
+	origin time.Time
 }
 
 // TripletsWait is the completion signal for one document's chunks in the

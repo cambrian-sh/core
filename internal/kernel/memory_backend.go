@@ -47,8 +47,8 @@ type MemoryBackend struct {
 	// a content-free receipt. It is not bound by NewMemoryBackend because it is built over
 	// the knowledge store and document lifecycle, not the vector adapter: app.go sets it.
 	// Optional (nil = no erasure; not reported by Missing): the maintenance commands and
-	// test fakes leave it unset. NewMemoryStack keeps it unexported (MemoryStack.eraser)
-	// with no accessor until the S3 enforcing decorator wraps it (ENG-411 stage A).
+	// test fakes leave it unset. NewMemoryStack hands it only to the S3 enforcing
+	// decorator (authz.EnforcingEraser) and exposes only that (MemoryStack.Eraser).
 	Eraser domain.MemoryEraser
 }
 

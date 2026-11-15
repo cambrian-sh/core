@@ -33,14 +33,12 @@ type MemoryStack struct {
 	// writeStore is tier 2, write classification (*authz.EnforcingStoreWriter, ADR-0085)
 	// over vecDB's write side. It is a VectorWriter only: it cannot read.
 	writeStore domain.VectorWriter
-	// eraser is the RAW ADR-0137 memory eraser (MemoryBackend.Eraser), composed here
-	// with the other tier-0 components and deliberately UNEXPORTED with no accessor:
-	// it enforces nothing about who may erase what, so no production code may reach it
-	// until ADR-0137 S3 (ENG-411 job B) wraps it in authz.EnforcingEraser — that
-	// constructor-injected decorator is what this stack will expose, never this field
-	// (AGENTS.md §2.3). Stage A (S1–S2) ships the storage and transaction only; the
-	// field is read by kernel tests (memory_eraser_composition_test.go). It is NOT dead
-	// code: job B consumes it. nil when the backend has no eraser.
+	// eraser is the ENFORCING ADR-0137 memory eraser (*authz.EnforcingEraser, S3;
+	// ENG-411 stage B) over the raw one (MemoryBackend.Eraser), built here and nowhere
+	// else, reached only through Eraser(). The raw eraser is held by nothing but the
+	// decorator: no field or method of this stack returns it
+	// (memory_eraser_composition_test.go). nil when the backend has no eraser or
+	// execution.erasure.enabled is off.
 	eraser domain.MemoryEraser
 	// DocumentStore is the ADR-0093 write chokepoint for the source-document row
 	// (memory.EnforcingDocumentStore over the raw adapter), already held by
@@ -344,11 +342,29 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 	// scenes were cancelled (decisions/scenes-cancelled.md). Stored procedures are
 	// still served by the WorkspaceStage procedure lane and still fed outcomes.
 
+	// ADR-0137 S3: the one erasure chokepoint, constructor-injected with the decision
+	// point and the kernel's erasure policy. Off by default (execution.erasure.enabled)
+	// until the ADR-0137 gate passes; off, no eraser exists at all.
+	var eraser domain.MemoryEraser
+	if backend.Eraser != nil && execCfg.Erasure.Enabled {
+		ea := authorizer
+		if ea == nil {
+			ea = domain.AllowAllAuthorizer{}
+		}
+		eraser = authz.NewEnforcingEraser(backend.Eraser, ea, authz.EraserPolicy{
+			AgentErase: execCfg.Erasure.AgentEraseEnabled,
+			MaxTargets: execCfg.Erasure.MaxTargets(),
+		}, slog.Default())
+		slog.Info("ADR-0137: memory erasure ENABLED",
+			"agent_erase_enabled", execCfg.Erasure.AgentEraseEnabled,
+			"max_targets_per_request", execCfg.Erasure.MaxTargets())
+	}
+
 	return &MemoryStack{
 		vecDB:                vec,
 		readStore:            scopedRead,
 		writeStore:           writeStore,
-		eraser:               backend.Eraser,
+		eraser:               eraser,
 		DocumentStore:        documentStore,
 		ProfileStore:         profileStore,
 		Agent:                memoryAgent,
@@ -382,6 +398,12 @@ func (s *MemoryStack) Reader() domain.VectorReader { return s.readStore }
 // Writer is tier 2, the classification chokepoint. Every principal-serving write uses
 // it (AGENTS.md §2.2): the decision point's classification replaces the authored tags.
 func (s *MemoryStack) Writer() domain.VectorWriter { return s.writeStore }
+
+// Eraser is the ADR-0137 erasure chokepoint (*authz.EnforcingEraser): the only way to
+// forget memory. nil when erasure is off (execution.erasure.enabled) or the backend
+// has none. Its callers decide on the principal and scope they put on ctx; no
+// production RPC calls it yet (job C of ENG-411 adds PreviewForget/Forget).
+func (s *MemoryStack) Eraser() domain.MemoryEraser { return s.eraser }
 
 // KernelArtifactStore is tier 0, the raw adapter, for a kernel-authored artifact that
 // serves no principal (the tool and skill indexes, for example). reason names the ADR

@@ -24,6 +24,12 @@ const (
 	// MetaSourceAgent is the producer of the document. "System" marks the kernel's own
 	// auto-recorded step output, which is what the ADR-0048 D1 self-recall filter keys on.
 	MetaSourceAgent = "source_agent"
+
+	// MetaWrittenBy is the kernel-stamped writer of record of a stored record: the
+	// WriterID of the principal on the write's ctx, stamped by the write tier
+	// (authz.EnforcingStoreWriter) and never taken from the writer's own metadata. It
+	// is what an agent's erasure is checked against (ADR-0137 D3).
+	MetaWrittenBy = "written_by"
 )
 
 // DocIngestThreadID returns the ingestion thread of a document, tolerating documents written

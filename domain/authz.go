@@ -287,6 +287,11 @@ const (
 	// whose private material exists.
 	ReasonNotOwner DecisionReason = "not_owner"
 
+	// ReasonNotWriter: an agent principal asked to erase a record it can read but
+	// did not write (ADR-0137 D3, Q3: writer-only within read scope). Records with
+	// no writer of record are erasable only by an operator.
+	ReasonNotWriter DecisionReason = "not_writer"
+
 	// ReasonWorkerNotOwned: a contributed local:<machine>/<tool> step named a
 	// machine that is not in the task beneficiary's fleet (ADR-0127 D1/D9 —
 	// authority owner must equal task beneficiary, per call). An unknown
@@ -478,6 +483,15 @@ type Authorizer interface {
 	// denial is expressed by a AccessDecision with Allowed=false; the write chokepoint
 	// refuses the write.
 	ClassifyWrite(ctx context.Context, principal PrincipalRef, hint []string) ([]string, AccessDecision)
+
+	// AuthorizeErase decides whether principal may erase one stored record (ADR-0137
+	// D3). It is asked by the kernel's erasure chokepoint (authz.EnforcingEraser)
+	// AFTER the kernel's own structural rules held — the record is inside the
+	// caller's read predicate and, for an agent principal, the caller is its
+	// kernel-stamped writer of record — so a decision point can only NARROW who may
+	// erase (closed tags, per-tag erase grants); it can never let an agent erase a
+	// record it did not write. A denial is an AccessDecision with Allowed=false.
+	AuthorizeErase(ctx context.Context, principal PrincipalRef, surface SurfaceRef, target Taggable) AccessDecision
 }
 
 // Explainer is the OPTIONAL administrator-facing surface of a decision point: it
@@ -558,6 +572,22 @@ func (AllowAllAuthorizer) ClassifyWrite(_ context.Context, principal PrincipalRe
 		Reason:    ReasonAllowed,
 		Detail:    "no policy plugin installed (writes keep their authored tags)",
 	}
+}
+
+// AuthorizeErase permits: the unscoped product adds no rule beyond the kernel's own
+// structural ones (read scope, writer of record), which hold in OSS too (ADR-0137 D3).
+func (AllowAllAuthorizer) AuthorizeErase(_ context.Context, principal PrincipalRef, surface SurfaceRef, target Taggable) AccessDecision {
+	dec := AccessDecision{
+		Allowed:   true,
+		Principal: principal,
+		Surface:   surface,
+		Reason:    ReasonAllowed,
+		Detail:    "no policy plugin installed (the kernel's writer-of-record and read-scope rules apply)",
+	}
+	if target != nil {
+		dec.Resource = target.AuthzRef()
+	}
+	return dec
 }
 
 // authorizerCtxKey carries the Authorizer through intermediate helpers whose

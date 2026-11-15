@@ -116,7 +116,7 @@ Triplets 2: <bob##works at##ibm>`,
 	// after the chunks' triplets are PERSISTED), not on wall-clock polling of the
 	// drained counter, which ticks before persistence and made this test flake under
 	// load (T-20261102-three-more-wall-clock-timed-tests-flake-under, item 3).
-	w := b.EnqueueTracked([]*domain.Document{
+	w := b.EnqueueTracked(context.Background(), []*domain.Document{
 		{ID: "c1", Text: "caroline researched quantum and lives in Melbourne."},
 		{ID: "c2", Text: "bob works at IBM."},
 	})
@@ -160,7 +160,7 @@ func TestChunkTripletsBatcher_UsesStreaming(t *testing.T) {
 		QueueSize: 8, BatchSize: 1, MaxIdle: 50 * time.Millisecond, LLMTimeout: 5 * time.Second,
 	})
 	b.Start(context.Background())
-	b.Enqueue(&domain.Document{ID: "c1", Text: "caroline researched quantum."})
+	b.Enqueue(context.Background(), &domain.Document{ID: "c1", Text: "caroline researched quantum."})
 
 	// Wait for at least 1 LLM call.
 	deadline := time.Now().Add(2 * time.Second)
@@ -186,7 +186,7 @@ func TestChunkTripletsBatcher_DropsOnQueueFull(t *testing.T) {
 	defer b.Stop()
 
 	for i := 0; i < 10; i++ {
-		b.Enqueue(&domain.Document{ID: "c" + itoa(i), Text: "x"})
+		b.Enqueue(context.Background(), &domain.Document{ID: "c" + itoa(i), Text: "x"})
 	}
 	_, dropped, _, _, _ := b.Stats()
 	if dropped == 0 {
@@ -246,7 +246,7 @@ func TestChunkTripletsBatcher_RespectsBatchSize(t *testing.T) {
 
 	const total = 50
 	for i := 0; i < total; i++ {
-		b.Enqueue(&domain.Document{ID: "c" + itoa(i), Text: "some text"})
+		b.Enqueue(context.Background(), &domain.Document{ID: "c" + itoa(i), Text: "some text"})
 	}
 
 	// Wait until all 50 are enqueued AND drained.
@@ -343,7 +343,7 @@ func TestChunkTripletsBatcher_PendingIsCapped(t *testing.T) {
 
 	maxSeen := 0
 	for i := 0; i < 200; i++ {
-		b.Enqueue(&domain.Document{ID: "c" + itoa(i), Text: "x",
+		b.Enqueue(context.Background(), &domain.Document{ID: "c" + itoa(i), Text: "x",
 			Embedding: domain.Embedding{Vector: make([]float32, 1024)}})
 		time.Sleep(time.Millisecond)
 		b.mu.Lock()

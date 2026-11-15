@@ -105,3 +105,8 @@ func TestCallerScope_NoAuthorizerOrNoPrincipal(t *testing.T) {
 		t.Fatalf("unauthenticated context produced %+v — an identity was invented", got)
 	}
 }
+
+// AuthorizeErase completes domain.Authorizer (ADR-0137 D3); this fake is not about erasure.
+func (*scopeAuthz) AuthorizeErase(ctx context.Context, p domain.PrincipalRef, s domain.SurfaceRef, t domain.Taggable) domain.AccessDecision {
+	return domain.AllowAllAuthorizer{}.AuthorizeErase(ctx, p, s, t)
+}

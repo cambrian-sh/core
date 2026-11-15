@@ -42,6 +42,7 @@ import (
 	"github.com/cambrian-sh/core/internal/knowledgecommit"
 	"github.com/cambrian-sh/core/internal/ledger"
 	"github.com/cambrian-sh/core/internal/memory"
+	"github.com/cambrian-sh/core/internal/memory/erasureworker"
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
@@ -911,9 +912,27 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// instead of a feature NewMemoryStack silently switches off.
 	memBackend := kernel.NewMemoryBackend(vec)
 	// ADR-0137 S2 (ENG-411 stage A): the raw memory eraser over the document lifecycle.
-	// NewMemoryStack holds it unexported until the S3 enforcing decorator exposes it.
-	memBackend.Eraser = postgres.NewPgErasureStore(docLifecycle)
+	// NewMemoryStack wraps it in the S3 enforcing decorator (only with
+	// execution.erasure.enabled) and exposes only that, MemoryStack.Eraser().
+	erasureStore := postgres.NewPgErasureStore(docLifecycle,
+		postgres.WithErasureAsyncDeadline(cfg.Execution.Erasure.AsyncDeadline()))
+	memBackend.Eraser = erasureStore
 	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
+	// ADR-0137 S5: the one drainer of the erasure outbox (CAS deletes of erased evidence
+	// and source-document bodies; request completion; tombstone retention). Started only
+	// with erasure on — off, nothing writes the outbox.
+	if cfg.Execution.Erasure.Enabled {
+		ew := erasureworker.New(erasureStore, storeHandle.ContentEraser, erasureworker.Config{
+			Poll:               cfg.Execution.Erasure.WorkerPoll(),
+			MaxAttempts:        cfg.Execution.Erasure.WorkerAttempts(),
+			TombstoneRetention: cfg.Execution.Erasure.TombstoneRetention(),
+		}, slog.Default())
+		lifecycles = append(lifecycles, Lifecycle{Name: "erasure-worker", Start: ew.Start, Stop: ew.Stop})
+		slog.Info("ADR-0137: erasure worker configured",
+			"poll", cfg.Execution.Erasure.WorkerPoll(), "max_attempts", cfg.Execution.Erasure.WorkerAttempts(),
+			"async_deadline", cfg.Execution.Erasure.AsyncDeadline(),
+			"tombstone_retention_days", cfg.Execution.Erasure.TombstoneRetentionDays)
+	}
 	// ADR-0103 D3/D7: wire the decision-provenance seam. nil observer (the OSS default)
 	// leaves the emit site a nil check. The fingerprint is computed ONCE here, not per
 	// query: it describes configuration that cannot change without a restart, so hashing

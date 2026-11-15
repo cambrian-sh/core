@@ -431,3 +431,60 @@ func decodeScratch(c domain.CID, v []byte) (nodeRecord, bool) {
 	}
 	return rec, domain.IsPlanScopedNodeType(rec.Type)
 }
+
+// erasableNodeTypes are the durable node types an ADR-0137 erasure may delete: evidence
+// bytes (internal/evidence, contentNodeType) and source-document bodies
+// (memory.IngestionManager.mintSourceDoc). A blob of any other type that happens to
+// hold identical bytes belongs to another owner (a tool artifact, a ledger offload) and
+// is kept.
+var erasableNodeTypes = map[string]bool{"evidence": true, "source_document": true}
+
+var _ domain.ContentEraser = (*BBoltContentStore)(nil)
+
+// DeleteContent is the targeted delete-by-CID of an erasure's async tail (ADR-0137 D7;
+// GC is not one). Absent CIDs are not an error; a node whose type is not erasable is
+// kept (logged). The record and its blob file go under cs.mu, like GC's evict phase.
+func (cs *BBoltContentStore) DeleteContent(_ context.Context, cid domain.CID) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	var (
+		blob    bool
+		kept    string
+		deleted bool
+	)
+	if err := cs.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(contentStoreBucket))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte(cid))
+		if v == nil {
+			return nil
+		}
+		var rec nodeRecord
+		if err := json.Unmarshal(v, &rec); err != nil {
+			return fmt.Errorf("content_store erase decode %s: %w", cid, err)
+		}
+		if !erasableNodeTypes[rec.Type] {
+			kept = rec.Type
+			return nil
+		}
+		blob, deleted = rec.Data == nil, true
+		return b.Delete([]byte(cid))
+	}); err != nil {
+		return fmt.Errorf("content_store erase: %w", err)
+	}
+	if kept != "" {
+		slog.Info("content_store_erase: node kept (not an erasable type)", "cid", cid, "type", kept)
+		return nil
+	}
+	if blob {
+		if err := os.Remove(filepath.Join(cs.FsDir, string(cid))); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("content_store erase blob: %w", err)
+		}
+	}
+	if deleted {
+		slog.Info("content_store_erase", "cid", cid, "blob_file", blob)
+	}
+	return nil
+}

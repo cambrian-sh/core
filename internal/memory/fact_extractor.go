@@ -452,6 +452,10 @@ type FactSaveStats struct {
 	Inserted int // new items
 	Existing int // items already present (an idempotent re-ingest)
 	Failed   int // items refused (denied by the chokepoint, refused by the kind declaration, store error)
+	// SourceErased counts items refused because their source document was erased after
+	// the ingest that queued this job (domain.ErrSourceErased, ADR-0137 D5). Final:
+	// the window's remaining items are not attempted.
+	SourceErased int
 }
 
 // FactDocumentResult is what one document's extraction did (ExtractDocument).
@@ -748,6 +752,12 @@ func (e *FactExtractor) writeItems(ctx context.Context, facts []domain.Fact) ([]
 	var embs []domain.ItemEmbedding
 	for _, f := range facts {
 		it, inserted, err := e.sink.PutClassifiedItem(ctx, f.ToItem(e.cfg.Namespace))
+		if errors.Is(err, domain.ErrSourceErased) {
+			st.SourceErased += len(facts) - len(stored) - st.Failed
+			slog.InfoContext(ctx, "FactExtractor: source erased while extracting; remaining facts dropped",
+				"source_chunk", f.SourceChunkID, "dropped", st.SourceErased)
+			break
+		}
 		if err != nil {
 			st.Failed++
 			slog.WarnContext(ctx, "FactExtractor: fact item not stored", "source_chunk", f.SourceChunkID,

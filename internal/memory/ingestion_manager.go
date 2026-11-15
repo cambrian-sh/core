@@ -303,6 +303,10 @@ func NewIngestionManagerWithRegistry(embedder domain.Embedder, agent *Agent, reg
 type queuedDoc struct {
 	doc       domain.ExternalDocument
 	principal domain.PrincipalRef
+	// origin is when the queue accepted the document (or the earlier origin the
+	// pusher's ctx carried): the ADR-0137 D5 fence refuses its writes if the document
+	// was erased after that, so a queued ingest that predates an erase never restores it.
+	origin time.Time
 }
 
 // Enqueue queues doc for the batch lane, carrying the principal on ctx (the
@@ -310,7 +314,7 @@ type queuedDoc struct {
 // Non-blocking: false when the queue is full.
 func (im *IngestionManager) Enqueue(ctx context.Context, doc domain.ExternalDocument) bool {
 	select {
-	case im.queue <- queuedDoc{doc: doc, principal: domain.PrincipalFromContext(ctx)}:
+	case im.queue <- queuedDoc{doc: doc, principal: domain.PrincipalFromContext(ctx), origin: ingestOrigin(ctx)}:
 		return true
 	default:
 		slog.Warn("IngestionManager: queue full, dropping document", "source_uri", doc.SourceURI)
@@ -333,6 +337,11 @@ func (im *IngestionManager) Enqueue(ctx context.Context, doc domain.ExternalDocu
 // paths share the chunker registry + agent
 // write path.
 func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.ExternalDocument) (entityID string, err error) {
+	// ADR-0137 D5: the ingest's origin — when this act was accepted, or the earlier
+	// origin a replaying door stamped — rides ctx to every write of the document, its
+	// triplet batch and its fact job, so a write that predates an erase of the document
+	// is refused instead of resurrecting it.
+	ctx = domain.EnsureIngestOrigin(ctx)
 	// One timing line per document (ingestion_timing.go). The clock rides ctx so
 	// the structure dispatcher and the store adapter can add what only they see.
 	started := time.Now()
@@ -526,9 +535,9 @@ func (im *IngestionManager) worker(ctx context.Context, jobs <-chan []queuedDoc)
 
 func (im *IngestionManager) processBatch(ctx context.Context, batch []queuedDoc) {
 	for _, q := range batch {
-		dctx := ctx
+		dctx := domain.WithIngestOrigin(ctx, q.origin)
 		if !q.principal.IsZero() {
-			dctx = domain.WithPrincipal(ctx, q.principal)
+			dctx = domain.WithPrincipal(dctx, q.principal)
 		}
 		im.processBatchDoc(dctx, q.doc)
 	}
@@ -726,4 +735,10 @@ func clip(s string, max int) string {
 		return s[:max]
 	}
 	return s
+}
+
+// ingestOrigin is the origin ctx carries, else now (the queue's acceptance time).
+func ingestOrigin(ctx context.Context) time.Time {
+	t, _ := domain.IngestOriginFrom(domain.EnsureIngestOrigin(ctx))
+	return t
 }

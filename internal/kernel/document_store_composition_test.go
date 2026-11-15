@@ -55,3 +55,8 @@ func TestNewMemoryStack_ComposesTheEnforcingDocumentStore(t *testing.T) {
 		t.Fatalf("an adapter without SaveDocument must leave DocumentStore nil, got %T", none.DocumentStore)
 	}
 }
+
+// AuthorizeErase completes domain.Authorizer (ADR-0137 D3); this fake is not about erasure.
+func (denyWrites) AuthorizeErase(ctx context.Context, p domain.PrincipalRef, s domain.SurfaceRef, t domain.Taggable) domain.AccessDecision {
+	return domain.AllowAllAuthorizer{}.AuthorizeErase(ctx, p, s, t)
+}

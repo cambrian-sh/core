@@ -802,6 +802,10 @@ func (p *PgVectorAdapter) Save(ctx context.Context, doc *domain.Document) error 
 	if err != nil {
 		return mapError("SaveBuild", err)
 	}
+	if parent := chunkDocumentID(doc); parent != "" {
+		// ADR-0137 D5: a chunk of a document is written under its document's fence.
+		return p.SaveBatch(ctx, []*domain.Document{doc})
+	}
 	if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
 		return mapError("Save", err)
 	}
@@ -837,6 +841,16 @@ func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document
 	}
 	defer tx.Rollback(ctx)
 	clock.Since(domain.StageChunkSaveBegin, t)
+
+	// ADR-0137 D5: the no-resurrection fence of every document the batch writes chunks
+	// of, in id order (the erase locks documents in id order too, so no deadlock). The
+	// chunk upsert resolves document_id by subselect and would store an erased
+	// document's chunks with a NULL parent; the fence refuses them first.
+	for _, parent := range chunkDocumentIDs(docs) {
+		if err := erasureFenceTx(ctx, tx, parent, ""); err != nil {
+			return err
+		}
+	}
 
 	// ENG-335: every upsert (and its ADR-0107 projection upsert, immediately after
 	// it, as before) is queued on ONE pgx.Batch and sent in a single round trip
@@ -1645,6 +1659,23 @@ func (p *PgVectorAdapter) SaveChunkTriplets(ctx context.Context, chunkID string,
 	}
 	defer tx.Rollback(ctx)
 
+	// ADR-0137 D5: a triplet batch is in flight for seconds while its chunk may be
+	// erased. A chunk that is gone refuses the write (the 0051 FK would too); a chunk
+	// of a document erased after the batch's ingest origin refuses it under the
+	// document fence — the same chunk id may already belong to a newer ingest.
+	var parent *string
+	if err := tx.QueryRow(ctx, `SELECT document_id FROM `+TableChunks+` WHERE id = $1`, chunkID).Scan(&parent); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("chunk %s: %w", chunkID, domain.ErrSourceErased)
+		}
+		return mapError("SaveChunkTriplets", err)
+	}
+	if parent != nil {
+		if err := erasureFenceTx(ctx, tx, *parent, ""); err != nil {
+			return err
+		}
+	}
+
 	// Build the prepared insert once (parameterized) and run per row. The
 	// columns are TEXT / REAL — no explicit cast needed (the SQL gets
 	// placeholder params $1..$5 that pgx infers from the column types).
@@ -1671,6 +1702,9 @@ func (p *PgVectorAdapter) SaveChunkTriplets(ctx context.Context, chunkID string,
 			srcs = t.Sources // pgx maps []string -> text[]
 		}
 		if _, err := tx.Exec(ctx, insertSQL, chunkID, t.H, t.R, t.T, t.Weight, conf, srcs); err != nil {
+			if isForeignKeyViolation(err, "chunk_triplets_chunk_id_fkey") {
+				return fmt.Errorf("chunk %s: %w", chunkID, domain.ErrSourceErased)
+			}
 			return mapError("SaveChunkTriplets", err)
 		}
 	}
@@ -2144,4 +2178,27 @@ func (p *PgVectorAdapter) PageRankMeta(ctx context.Context) (time.Time, int, int
 // the same connection the migration CLI uses. The caller closes it.
 func OpenPlainPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	return migrationPool(ctx, cfg)
+}
+
+// chunkDocumentID is the parent document a chunk write names (metadata document_id).
+func chunkDocumentID(doc *domain.Document) string {
+	if doc == nil || doc.Metadata == nil || tableFor(doc.DocumentType) != TableChunks {
+		return ""
+	}
+	parent, _ := doc.Metadata["document_id"].(string)
+	return parent
+}
+
+// chunkDocumentIDs is the sorted, de-duplicated parent documents of a batch.
+func chunkDocumentIDs(docs []*domain.Document) []string {
+	var ids []string
+	for _, d := range docs {
+		if parent := chunkDocumentID(d); parent != "" {
+			ids = append(ids, parent)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return domain.SortedUniqueIDs(ids)
 }

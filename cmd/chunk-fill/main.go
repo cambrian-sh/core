@@ -99,7 +99,7 @@ func main() {
 
 	enqueued := 0
 	for _, d := range scanned {
-		b.Enqueue(&d)
+		b.Enqueue(ctx, &d) // no ingest origin: a backfill of stored chunks; the 0051 FK still refuses erased chunks
 		enqueued++
 	}
 

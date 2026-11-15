@@ -25,6 +25,9 @@ type StorageHandle struct {
 	raw          *storage.BBoltAdapter // only accessible within kernel package
 	ContentStore domain.ContentStore   // ADR-0022: plan-trace CAS (separate file from agent registry)
 	StepCache    domain.StepCache      // ADR-0026: step-level memoization (same BBolt file as agent registry)
+	// ContentEraser is the same content store's targeted delete-by-CID (ADR-0137 D7),
+	// typed here so the erasure worker never probes ContentStore for it.
+	ContentEraser domain.ContentEraser
 }
 
 // Close implements io.Closer.
@@ -99,10 +102,11 @@ func BootstrapStorage(cfg *config.Config) (*StorageHandle, *AgentRepoDecorator, 
 
 	decorator := NewAgentRepoDecorator(store)
 	return &StorageHandle{
-		closer:       multiCloser{store, cs},
-		raw:          store,
-		ContentStore: cs,
-		StepCache:    sc,
+		closer:        multiCloser{store, cs},
+		raw:           store,
+		ContentStore:  cs,
+		StepCache:     sc,
+		ContentEraser: cs,
 	}, decorator, nil
 }
 
