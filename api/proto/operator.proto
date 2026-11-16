@@ -133,6 +133,23 @@ service OperatorConsole {
   // GetFactCoverage: extraction coverage of the corpus (counts only).
   rpc GetFactCoverage(GetFactCoverageOpRequest) returns (GetFactCoverageOpResponse);
 
+  // Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
+  // stage C; contract 0105, capability "memory-erasure", advertised only when
+  // execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
+  // erase LIFTS the owner fence, so a right-to-erasure request reaches every row of the
+  // subject, including rows owner-fenced to another person. Safeguards: the operator
+  // never sees content (previews and receipts carry ids, kinds and counts only); every
+  // erase is journalled and receipted; Operator role only (PreviewForgetMemory and
+  // ForgetMemory are commands by name; ListErasures/GetErasure are operator-only reads).
+  // UNIMPLEMENTED when erasure is disabled.
+  rpc PreviewForgetMemory(PreviewForgetMemoryOpRequest) returns (PreviewForgetMemoryOpResponse);
+  // ForgetMemory: command_id + reason (free-text operator note, audited) + reason_code
+  // (the receipt's closed reason). Idempotent: the erase request id is deterministic and
+  // a retried command_id answers deduped with the same receipt.
+  rpc ForgetMemory(ForgetMemoryOpRequest) returns (ForgetMemoryOpResponse);
+  rpc ListErasures(ListErasuresOpRequest) returns (ListErasuresOpResponse);
+  rpc GetErasure(GetErasureOpRequest) returns (GetErasureOpResponse);
+
   // ── ADR-0047 Amendment A2 (CORE-OPS-1): operator-plane read/exec/approval
   // surface. Distinct messages from the agent-plane equivalents (D1): the CLI
   // must never carry an x-agent-id principal.
@@ -4621,3 +4638,79 @@ message IntegrationTestResultOp {
   string probe_skipped_reason = 9;
 }
 
+// ── Memory erasure (contract 0105, ADR-0137) ──────────────────────────────────────
+
+message ErasureSelectorOp {
+  repeated string document_ids = 1;
+  repeated string thread_ids = 2;
+  repeated string chunk_ids = 3;
+  repeated string experience_ids = 4;
+  repeated string entity_refs = 5;
+}
+
+// ErasureCandidateOp: ids only — an operator never sees the content it erases.
+message ErasureCandidateOp {
+  string kind = 1;
+  string id = 2;
+  string via = 3;
+  string document_id = 4;
+}
+
+message ErasureReceiptOp {
+  string request_id = 1;
+  string principal = 2;
+  string principal_kind = 3;
+  string reason = 4;
+  repeated string selector_kinds = 5;
+  string status = 6;
+  google.protobuf.Timestamp erased_at = 7;
+  google.protobuf.Timestamp async_deadline = 8;
+  map<string, int32> counts = 9;
+  int32 targets = 10;
+  int32 pending_steps = 11;
+  bool replayed = 12;
+  bool overdue = 13; // pending_async past async_deadline (ADR-0137 D7)
+}
+
+message PreviewForgetMemoryOpRequest {
+  ErasureSelectorOp selector = 1;
+}
+
+message PreviewForgetMemoryOpResponse {
+  string preview_token = 1;
+  repeated ErasureCandidateOp candidates = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  map<string, int32> counts_by_kind = 4;
+}
+
+message ForgetMemoryOpRequest {
+  string command_id = 1;
+  string reason = 2;       // mandatory operator note (audit)
+  string reason_code = 3;  // compliance (default) | user_request | correction
+  string preview_token = 4; // exactly one of preview_token / selector
+  ErasureSelectorOp selector = 5;
+}
+
+message ForgetMemoryOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  ErasureReceiptOp receipt = 3;
+}
+
+message ListErasuresOpRequest {
+  string principal = 1; // "" = every principal
+  int32 limit = 2;
+  string before = 3;    // request_id cursor
+}
+
+message ListErasuresOpResponse {
+  repeated ErasureReceiptOp receipts = 1;
+}
+
+message GetErasureOpRequest {
+  string request_id = 1;
+}
+
+message GetErasureOpResponse {
+  ErasureReceiptOp receipt = 1;
+}

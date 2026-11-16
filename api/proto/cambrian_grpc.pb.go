@@ -47,6 +47,9 @@ const (
 	Orchestrator_ManageScheduledTask_FullMethodName    = "/cambrian.Orchestrator/ManageScheduledTask"
 	Orchestrator_ProposeKnowledge_FullMethodName       = "/cambrian.Orchestrator/ProposeKnowledge"
 	Orchestrator_ProposeOntologyChange_FullMethodName  = "/cambrian.Orchestrator/ProposeOntologyChange"
+	Orchestrator_PreviewForget_FullMethodName          = "/cambrian.Orchestrator/PreviewForget"
+	Orchestrator_Forget_FullMethodName                 = "/cambrian.Orchestrator/Forget"
+	Orchestrator_ListMyErasures_FullMethodName         = "/cambrian.Orchestrator/ListMyErasures"
 )
 
 // OrchestratorClient is the client API for Orchestrator service.
@@ -203,6 +206,19 @@ type OrchestratorClient interface {
 	// refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
 	// kernel has no ontology drafts (no Postgres).
 	ProposeOntologyChange(ctx context.Context, in *ProposeOntologyChangeRequest, opts ...grpc.CallOption) (*ProposeOntologyChangeResponse, error)
+	// Memory erasure (ADR-0137 D2/D9, ENG-411 stage C; contract 0105, capability
+	// "memory-erasure"). Two phases: PreviewForget resolves a selector of concrete ids to
+	// the records the CALLING agent can see (hidden records are absent) and returns them
+	// with a deterministic preview token; Forget executes exactly the previewed records
+	// (or explicit ids), re-authorized in full. An agent erases only what it wrote within
+	// its read scope, and only when execution.erasure.agent_erase_enabled is on. The
+	// kernel never resolves free text into deletions: search first, then preview the ids.
+	// Content-free: ids, kinds and counts only. UNIMPLEMENTED when erasure is disabled;
+	// PERMISSION_DENIED (denied) and NOT_FOUND (nothing to erase) are distinct.
+	PreviewForget(ctx context.Context, in *PreviewForgetRequest, opts ...grpc.CallOption) (*PreviewForgetResponse, error)
+	Forget(ctx context.Context, in *ForgetRequest, opts ...grpc.CallOption) (*ForgetResponse, error)
+	// ListMyErasures: the calling agent's own erasure receipts, newest first.
+	ListMyErasures(ctx context.Context, in *ListMyErasuresRequest, opts ...grpc.CallOption) (*ListMyErasuresResponse, error)
 }
 
 type orchestratorClient struct {
@@ -517,6 +533,36 @@ func (c *orchestratorClient) ProposeOntologyChange(ctx context.Context, in *Prop
 	return out, nil
 }
 
+func (c *orchestratorClient) PreviewForget(ctx context.Context, in *PreviewForgetRequest, opts ...grpc.CallOption) (*PreviewForgetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewForgetResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_PreviewForget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) Forget(ctx context.Context, in *ForgetRequest, opts ...grpc.CallOption) (*ForgetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ForgetResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_Forget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) ListMyErasures(ctx context.Context, in *ListMyErasuresRequest, opts ...grpc.CallOption) (*ListMyErasuresResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMyErasuresResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ListMyErasures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrchestratorServer is the server API for Orchestrator service.
 // All implementations must embed UnimplementedOrchestratorServer
 // for forward compatibility.
@@ -671,6 +717,19 @@ type OrchestratorServer interface {
 	// refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
 	// kernel has no ontology drafts (no Postgres).
 	ProposeOntologyChange(context.Context, *ProposeOntologyChangeRequest) (*ProposeOntologyChangeResponse, error)
+	// Memory erasure (ADR-0137 D2/D9, ENG-411 stage C; contract 0105, capability
+	// "memory-erasure"). Two phases: PreviewForget resolves a selector of concrete ids to
+	// the records the CALLING agent can see (hidden records are absent) and returns them
+	// with a deterministic preview token; Forget executes exactly the previewed records
+	// (or explicit ids), re-authorized in full. An agent erases only what it wrote within
+	// its read scope, and only when execution.erasure.agent_erase_enabled is on. The
+	// kernel never resolves free text into deletions: search first, then preview the ids.
+	// Content-free: ids, kinds and counts only. UNIMPLEMENTED when erasure is disabled;
+	// PERMISSION_DENIED (denied) and NOT_FOUND (nothing to erase) are distinct.
+	PreviewForget(context.Context, *PreviewForgetRequest) (*PreviewForgetResponse, error)
+	Forget(context.Context, *ForgetRequest) (*ForgetResponse, error)
+	// ListMyErasures: the calling agent's own erasure receipts, newest first.
+	ListMyErasures(context.Context, *ListMyErasuresRequest) (*ListMyErasuresResponse, error)
 	mustEmbedUnimplementedOrchestratorServer()
 }
 
@@ -764,6 +823,15 @@ func (UnimplementedOrchestratorServer) ProposeKnowledge(context.Context, *Propos
 }
 func (UnimplementedOrchestratorServer) ProposeOntologyChange(context.Context, *ProposeOntologyChangeRequest) (*ProposeOntologyChangeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ProposeOntologyChange not implemented")
+}
+func (UnimplementedOrchestratorServer) PreviewForget(context.Context, *PreviewForgetRequest) (*PreviewForgetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreviewForget not implemented")
+}
+func (UnimplementedOrchestratorServer) Forget(context.Context, *ForgetRequest) (*ForgetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Forget not implemented")
+}
+func (UnimplementedOrchestratorServer) ListMyErasures(context.Context, *ListMyErasuresRequest) (*ListMyErasuresResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMyErasures not implemented")
 }
 func (UnimplementedOrchestratorServer) mustEmbedUnimplementedOrchestratorServer() {}
 func (UnimplementedOrchestratorServer) testEmbeddedByValue()                      {}
@@ -1254,6 +1322,60 @@ func _Orchestrator_ProposeOntologyChange_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Orchestrator_PreviewForget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewForgetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).PreviewForget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_PreviewForget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).PreviewForget(ctx, req.(*PreviewForgetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_Forget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ForgetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).Forget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_Forget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).Forget(ctx, req.(*ForgetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_ListMyErasures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMyErasuresRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ListMyErasures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ListMyErasures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ListMyErasures(ctx, req.(*ListMyErasuresRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Orchestrator_ServiceDesc is the grpc.ServiceDesc for Orchestrator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1356,6 +1478,18 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ProposeOntologyChange",
 			Handler:    _Orchestrator_ProposeOntologyChange_Handler,
+		},
+		{
+			MethodName: "PreviewForget",
+			Handler:    _Orchestrator_PreviewForget_Handler,
+		},
+		{
+			MethodName: "Forget",
+			Handler:    _Orchestrator_Forget_Handler,
+		},
+		{
+			MethodName: "ListMyErasures",
+			Handler:    _Orchestrator_ListMyErasures_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

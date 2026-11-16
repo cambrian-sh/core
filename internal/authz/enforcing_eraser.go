@@ -130,6 +130,18 @@ func (e *EnforcingEraser) Erase(ctx context.Context, req domain.ErasureRequest) 
 		}
 	}
 
+	// D6 idempotency through the chokepoint (ENG-411 stage C): a retry of a request
+	// that already executed must return its receipt, but re-resolving would find the
+	// erased records gone and answer NothingToErase. The id is the caller's own (its
+	// WriterID and kind were stamped above, never the request's), so a stored receipt
+	// under it is the caller's own act; anything else falls through to the full check.
+	if prior, found, err := e.inner.Receipt(ctx, req.ID()); err != nil {
+		return domain.ErasureReceipt{}, fmt.Errorf("erase: receipt lookup: %w", err)
+	} else if found && prior.Principal == req.Principal && prior.PrincipalKind == req.PrincipalKind {
+		prior.Replayed = true
+		return prior, nil
+	}
+
 	if c.kind != domain.ErasureByKernel {
 		admitted, err := e.admit(ctx, c, req.Selector)
 		if err != nil {
@@ -285,4 +297,18 @@ func (e *EnforcingEraser) Resolve(ctx context.Context, sel domain.ErasureSelecto
 		}
 	}
 	return out, nil
+}
+
+// ListReceipts implements domain.MemoryEraser: an operator or the kernel lists every
+// receipt (or those of the principal it names); any other principal only its own,
+// whatever filter it asked for (ADR-0137 D8).
+func (e *EnforcingEraser) ListReceipts(ctx context.Context, f domain.ErasureReceiptFilter) ([]domain.ErasureReceipt, error) {
+	c, err := e.caller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if c.kind == domain.ErasureByAgent {
+		f.Principal = c.principal.WriterID()
+	}
+	return e.inner.ListReceipts(ctx, f)
 }

@@ -16,6 +16,7 @@ type fakeRawEraser struct {
 	records  []domain.ErasureCandidate
 	erased   []domain.ErasureRequest
 	receipts map[string]domain.ErasureReceipt
+	listed   []domain.ErasureReceiptFilter
 	eraseErr error
 }
 
@@ -44,6 +45,17 @@ func (f *fakeRawEraser) Erase(_ context.Context, req domain.ErasureRequest) (dom
 func (f *fakeRawEraser) Receipt(_ context.Context, id string) (domain.ErasureReceipt, bool, error) {
 	r, ok := f.receipts[id]
 	return r, ok, nil
+}
+
+func (f *fakeRawEraser) ListReceipts(_ context.Context, flt domain.ErasureReceiptFilter) ([]domain.ErasureReceipt, error) {
+	f.listed = append(f.listed, flt)
+	var out []domain.ErasureReceipt
+	for _, r := range f.receipts {
+		if flt.Principal == "" || r.Principal == flt.Principal {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 func eraseDoc(id, writer string, tags ...string) domain.ErasureCandidate {
@@ -329,5 +341,59 @@ func TestEnforcingWriter_StampsWriterOfRecord(t *testing.T) {
 	}
 	if got := store.saved[2].Metadata[domain.MetaWrittenBy]; got != "system:kernel" {
 		t.Fatalf("kernel written_by = %v", got)
+	}
+}
+
+// An agent lists only its own receipts whatever principal it names; an operator lists
+// what it asks for; no principal on ctx fails closed (ADR-0137 D8, stage C).
+func TestEnforcingEraser_ListReceipts_AgentSeesOnlyItsOwn(t *testing.T) {
+	raw := &fakeRawEraser{receipts: map[string]domain.ErasureReceipt{
+		"erase:a": {RequestID: "erase:a", Principal: domain.AgentPrincipal("alice").WriterID()},
+		"erase:b": {RequestID: "erase:b", Principal: domain.AgentPrincipal("bob").WriterID()},
+	}}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
+
+	got, err := e.ListReceipts(agentCtx("alice", &domain.TagPredicate{}), domain.ErasureReceiptFilter{Principal: domain.AgentPrincipal("bob").WriterID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].RequestID != "erase:a" {
+		t.Fatalf("agent listing = %+v, want only its own receipt", got)
+	}
+
+	opCtx := domain.WithScope(domain.WithPrincipalRoles(domain.WithPrincipal(context.Background(),
+		domain.PrincipalRef{Kind: domain.PrincipalUser, ID: "op"}), []string{"operator"}), domain.ScopeMaintenance)
+	got, err = e.ListReceipts(opCtx, domain.ErasureReceiptFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("operator listing = %d receipts, want 2", len(got))
+	}
+
+	if _, err := e.ListReceipts(context.Background(), domain.ErasureReceiptFilter{}); !errors.Is(err, authz.ErrScopeMissing) {
+		t.Fatalf("no principal: err = %v, want ErrScopeMissing", err)
+	}
+}
+
+// D6 through the chokepoint: a retry of an executed request returns its stored receipt
+// (Replayed) instead of NothingToErase, even though its records are gone; another
+// principal's receipt under a colliding lookup is never handed out.
+func TestEnforcingEraser_RetryReturnsTheCallersReceipt(t *testing.T) {
+	raw := &fakeRawEraser{records: []domain.ErasureCandidate{eraseDoc("d1", "alice")}, receipts: map[string]domain.ErasureReceipt{}}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
+	ctx := agentCtx("alice", &domain.TagPredicate{})
+	rec, err := e.Erase(ctx, eraseReq(domain.ErasureSelector{DocumentIDs: []string{"d1"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.receipts[rec.RequestID] = rec
+	raw.records = nil // erased
+	again, err := e.Erase(ctx, eraseReq(domain.ErasureSelector{DocumentIDs: []string{"d1"}}))
+	if err != nil || !again.Replayed || again.RequestID != rec.RequestID || len(raw.erased) != 1 {
+		t.Fatalf("retry = %+v, %v (erased %d times)", again, err, len(raw.erased))
+	}
+	if _, err := e.Erase(agentCtx("bob", &domain.TagPredicate{}), eraseReq(domain.ErasureSelector{DocumentIDs: []string{"d1"}})); !errors.Is(err, domain.ErrNothingToErase) {
+		t.Fatalf("bob's request for the erased id: %v, want ErrNothingToErase", err)
 	}
 }

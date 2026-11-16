@@ -234,6 +234,8 @@ type Registry struct {
 	hooks            []domain.Hook
 	hookObs          []domain.HookObserver
 	transformers     []domain.EvidenceTransformer
+	erasureParts     []domain.ErasureParticipant
+	erasureObs       []domain.ErasureObserver
 	kinds            []domain.KindSpec
 	authorities      []domain.ResolutionAuthority
 	relations        []domain.RelationSpec
@@ -619,6 +621,24 @@ func (r *Registry) AddDecisionObserver(o domain.DecisionObserver) {
 func (r *Registry) AddEvidenceTransformer(t domain.EvidenceTransformer) {
 	if t != nil {
 		r.transformers = append(r.transformers, t)
+	}
+}
+
+// AddErasureParticipant registers a plugin's participant in the ADR-0137 erase
+// transaction (S7): it deletes the plugin's own rows keyed by the evidence ids being
+// erased, inside the same transaction and before the evidence rows, so they never make
+// the erase roll back. Add-many. Failing the participant fails (rolls back) the erase.
+func (r *Registry) AddErasureParticipant(p domain.ErasureParticipant) {
+	if p != nil {
+		r.erasureParts = append(r.erasureParts, p)
+	}
+}
+
+// AddErasureObserver registers a receiver for every executed erasure's content-free
+// receipt, after commit (ADR-0137 D8). Add-many. MUST return promptly, MUST NOT panic.
+func (r *Registry) AddErasureObserver(o domain.ErasureObserver) {
+	if o != nil {
+		r.erasureObs = append(r.erasureObs, o)
 	}
 }
 
@@ -1041,6 +1061,17 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 		}
 		fan = append(fan, reg.hookObs...)
 		opts.HookObserver = fan
+	}
+	// Erasure participants and observers (ADR-0137 S7/D8): participants appended in
+	// registration order; observers fan out like the other observer seams.
+	opts.ErasureParticipants = append(opts.ErasureParticipants, reg.erasureParts...)
+	if len(reg.erasureObs) > 0 {
+		fan := make(domain.MultiErasureObserver, 0, len(reg.erasureObs)+1)
+		if opts.ErasureObserver != nil {
+			fan = append(fan, opts.ErasureObserver)
+		}
+		fan = append(fan, reg.erasureObs...)
+		opts.ErasureObserver = fan
 	}
 	// Evidence transformers (ADR-0108 D3): appended in registration order.
 	opts.EvidenceTransformers = append(opts.EvidenceTransformers, reg.transformers...)

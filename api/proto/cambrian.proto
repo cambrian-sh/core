@@ -229,6 +229,84 @@ service Orchestrator {
   // refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
   // kernel has no ontology drafts (no Postgres).
   rpc ProposeOntologyChange(ProposeOntologyChangeRequest) returns (ProposeOntologyChangeResponse);
+
+  // Memory erasure (ADR-0137 D2/D9, ENG-411 stage C; contract 0105, capability
+  // "memory-erasure"). Two phases: PreviewForget resolves a selector of concrete ids to
+  // the records the CALLING agent can see (hidden records are absent) and returns them
+  // with a deterministic preview token; Forget executes exactly the previewed records
+  // (or explicit ids), re-authorized in full. An agent erases only what it wrote within
+  // its read scope, and only when execution.erasure.agent_erase_enabled is on. The
+  // kernel never resolves free text into deletions: search first, then preview the ids.
+  // Content-free: ids, kinds and counts only. UNIMPLEMENTED when erasure is disabled;
+  // PERMISSION_DENIED (denied) and NOT_FOUND (nothing to erase) are distinct.
+  rpc PreviewForget(PreviewForgetRequest) returns (PreviewForgetResponse);
+  rpc Forget(ForgetRequest) returns (ForgetResponse);
+  // ListMyErasures: the calling agent's own erasure receipts, newest first.
+  rpc ListMyErasures(ListMyErasuresRequest) returns (ListMyErasuresResponse);
+}
+
+// ErasureSelector names what to erase by concrete id only (ADR-0137 D2).
+message ErasureSelector {
+  repeated string document_ids = 1;
+  repeated string thread_ids = 2;    // ingest threads (IngestMemoryRequest.session_id)
+  repeated string chunk_ids = 3;     // memory ids returned earlier
+  repeated string experience_ids = 4; // operator-only
+  repeated string entity_refs = 5;    // operator-only
+}
+
+// ErasureCandidate is one record a preview resolved to: ids only, never content.
+message ErasureCandidate {
+  string kind = 1;        // document | chunk | experience | entity
+  string id = 2;
+  string via = 3;         // the selector entry that named it (a thread id, else id)
+  string document_id = 4; // "" when none
+}
+
+// ErasureReceipt is the content-free record of one erasure (ADR-0137 D1/D8).
+message ErasureReceipt {
+  string request_id = 1;        // deterministic: erase:<sha256 prefix>, never a clock
+  string principal = 2;
+  string principal_kind = 3;    // agent | operator | kernel
+  string reason = 4;            // user_request | compliance | correction
+  repeated string selector_kinds = 5;
+  string status = 6;            // complete | pending_async
+  google.protobuf.Timestamp erased_at = 7;
+  google.protobuf.Timestamp async_deadline = 8; // unset when nothing is pending
+  map<string, int32> counts = 9; // rows deleted per store
+  int32 targets = 10;
+  int32 pending_steps = 11;
+  bool replayed = 12;            // a retry of an executed request: nothing deleted now
+}
+
+message PreviewForgetRequest {
+  ErasureSelector selector = 1;
+}
+
+message PreviewForgetResponse {
+  string preview_token = 1;
+  repeated ErasureCandidate candidates = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message ForgetRequest {
+  // Exactly one: a token from PreviewForget (executes exactly what it previewed), or
+  // explicit ids.
+  string preview_token = 1;
+  ErasureSelector selector = 2;
+  string reason_code = 3; // user_request (default) | compliance | correction
+}
+
+message ForgetResponse {
+  ErasureReceipt receipt = 1;
+}
+
+message ListMyErasuresRequest {
+  int32 limit = 1;       // 0 = 50, max 500
+  string before = 2;     // a request_id cursor: receipts older than it
+}
+
+message ListMyErasuresResponse {
+  repeated ErasureReceipt receipts = 1;
 }
 
 message ProposeOntologyChangeRequest {

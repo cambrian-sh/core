@@ -23,8 +23,11 @@ import (
 // Stage A (S1–S2) shipped the storage and the transaction; stage B (S3–S5) the
 // authorization (authz.EnforcingEraser, built only in kernel.NewMemoryStack and reached
 // only through MemoryStack.Eraser()), the no-resurrection fences (ErrSourceErased, the
-// ingest origin) and the async worker (internal/memory/erasureworker). The RPCs (S6)
-// follow; until then no production path calls the enforcing eraser either.
+// ingest origin) and the async worker (internal/memory/erasureworker). Stage C (S6–S7)
+// the contract: internal/memory/forget (two-phase preview/forget) behind the agent-plane
+// PreviewForget/Forget/ListMyErasures and operator-plane PreviewForgetMemory/
+// ForgetMemory/ListErasures/GetErasure RPCs and the forget_memory tool, plus the
+// ErasureParticipant / ErasureObserver plugin seams (erasure_contract.go).
 
 // Errors a MemoryEraser returns. Each is distinguishable (AGENTS.md §3.2): an empty or
 // malformed request is a caller error, nothing-matched is NotFound, never a silent
@@ -298,4 +301,7 @@ type MemoryEraser interface {
 	// writer of record, tags), the basis of the authorization decision and of a preview.
 	// Ids that match nothing are absent from the result, never an error.
 	Resolve(ctx context.Context, sel ErasureSelector) ([]ErasureCandidate, error)
+	// ListReceipts lists stored receipts newest first (ADR-0137 D8: an operator lists
+	// all, a principal its own — the enforcing layer forces the filter).
+	ListReceipts(ctx context.Context, f ErasureReceiptFilter) ([]ErasureReceipt, error)
 }

@@ -33,3 +33,17 @@ func TestErasureConfig_DefaultsAndValidation(t *testing.T) {
 		t.Fatalf("ExecutionConfig.Validate must report the erasure block: %v", err)
 	}
 }
+
+// ADR-0137 D2 (stage C): a forget preview is executable for preview_ttl_seconds,
+// 600 by default; a negative value fails validation.
+func TestErasureConfig_PreviewTTL(t *testing.T) {
+	if got := DefaultConfig().Execution.Erasure.PreviewTTL(); got != 10*time.Minute {
+		t.Fatalf("default preview TTL = %v, want 10m", got)
+	}
+	if got := (ErasureConfig{PreviewTTLSeconds: 30}).PreviewTTL(); got != 30*time.Second {
+		t.Fatalf("set preview TTL = %v, want 30s", got)
+	}
+	if errs := (ErasureConfig{PreviewTTLSeconds: -1}).validate(); len(errs) != 1 || !strings.Contains(errs[0], "preview_ttl_seconds") {
+		t.Fatalf("validate = %v", errs)
+	}
+}

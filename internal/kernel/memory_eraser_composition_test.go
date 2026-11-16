@@ -18,6 +18,9 @@ func (fakeEraser) Erase(context.Context, domain.ErasureRequest) (domain.ErasureR
 func (fakeEraser) Receipt(context.Context, string) (domain.ErasureReceipt, bool, error) {
 	return domain.ErasureReceipt{}, false, nil
 }
+func (fakeEraser) ListReceipts(context.Context, domain.ErasureReceiptFilter) ([]domain.ErasureReceipt, error) {
+	return nil, nil
+}
 func (fakeEraser) Resolve(context.Context, domain.ErasureSelector) ([]domain.ErasureCandidate, error) {
 	return nil, nil
 }

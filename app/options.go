@@ -170,6 +170,16 @@ type Options struct {
 	// trap with a ticker.
 	EvidenceTransformers []domain.EvidenceTransformer
 
+	// ErasureParticipants erase a plugin's own evidence-keyed rows inside the ADR-0137
+	// erase transaction, before the evidence rows go (S7: premium ingress studio).
+	// Plugins contribute through Registry.AddErasureParticipant. OSS default nil.
+	ErasureParticipants []domain.ErasureParticipant
+	// ErasureObserver receives every executed erasure's content-free receipt after
+	// commit (ADR-0137 D8: the premium signed receipt). Plugins contribute through
+	// Registry.AddErasureObserver (fanned into one). OSS default nil — the OSS record
+	// is the memory_erasures row itself.
+	ErasureObserver domain.ErasureObserver
+
 	// KnowledgeKinds and ResolutionAuthorities feed the ADR-0110 kind
 	// registry, validated as a unit at boot: a malformed spec, a duplicate
 	// kind, or a policy nobody registered refuses to start rather than

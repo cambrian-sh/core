@@ -9,7 +9,8 @@ import (
 // ENG-411 stage B). Every field is read at the composition root: Enabled, AgentErase
 // and MaxTargetsPerRequest by kernel.NewMemoryStack (the enforcing eraser), the rest by
 // app.go (the erasure store's deadline and the erasure worker). Zero values take the
-// documented defaults through the methods below.
+// documented defaults through the methods below. PreviewTTLSeconds is read by app.go
+// for the forget service (stage C).
 type ErasureConfig struct {
 	// Enabled composes the enforcing eraser (MemoryStack.Eraser) and starts the erasure
 	// worker. Default false until the ADR-0137 gate passes; off, nothing can erase.
@@ -32,6 +33,17 @@ type ErasureConfig struct {
 	// WorkerMaxAttempts bounds the retries of one async step; a step that fails this
 	// many times stays pending and its request reads overdue. 0 ⇒ 5.
 	WorkerMaxAttempts int `json:"worker_max_attempts,omitempty"`
+	// PreviewTTLSeconds is how long a forget preview's token stays executable
+	// (ADR-0137 D2; read by app.go for internal/memory/forget). 0 ⇒ 600.
+	PreviewTTLSeconds int `json:"preview_ttl_seconds,omitempty"`
+}
+
+// PreviewTTL is PreviewTTLSeconds as a duration, with its default applied.
+func (c ErasureConfig) PreviewTTL() time.Duration {
+	if c.PreviewTTLSeconds > 0 {
+		return time.Duration(c.PreviewTTLSeconds) * time.Second
+	}
+	return 10 * time.Minute
 }
 
 // MaxTargets is MaxTargetsPerRequest with its default applied.
@@ -83,6 +95,7 @@ func (c ErasureConfig) validate() []string {
 		{"tombstone_retention_days", c.TombstoneRetentionDays},
 		{"worker_poll_seconds", c.WorkerPollSeconds},
 		{"worker_max_attempts", c.WorkerMaxAttempts},
+		{"preview_ttl_seconds", c.PreviewTTLSeconds},
 	} {
 		if f.v < 0 {
 			errs = append(errs, fmt.Sprintf("execution.erasure.%s must be >= 0 (got %d)", f.name, f.v))

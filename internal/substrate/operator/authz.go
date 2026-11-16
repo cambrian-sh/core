@@ -244,6 +244,11 @@ var operatorOnlyReads = map[string]bool{
 	// Every principal's recurring tasks (scheduled_tasks.go) — other people's
 	// business, like ListAccounts.
 	"ListScheduledTasks": true,
+	// Memory erasure receipts (ADR-0137, contract 0105): content-free, but they list
+	// every principal's erasures, and the compliance erase they record is operator-only
+	// (owner decision 2026-11-16).
+	"ListErasures": true,
+	"GetErasure":   true,
 }
 
 // selfServiceMethods are the OperatorConsole methods open to every authenticated

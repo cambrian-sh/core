@@ -17,6 +17,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/ingress"
+	"github.com/cambrian-sh/core/internal/memory/forget"
 	"github.com/cambrian-sh/core/internal/memorynotes"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
@@ -78,8 +79,12 @@ type Server struct {
 	Watcher             *supwatcher.Watcher
 
 	MemorySearcher domain.MemorySearcher
-	Provider       domain.LLMProvider // ADR-0042: agent-step model provisioning (health-guarded)
-	SessionMgr     *session.SessionManager
+	// Forgetter is the ADR-0137 two-phase forget service (internal/memory/forget) behind
+	// PreviewForget / Forget / ListMyErasures (contract 0105). nil or built over a nil
+	// eraser (execution.erasure.enabled off) ⇒ those RPCs answer Unimplemented.
+	Forgetter  *forget.Service
+	Provider   domain.LLMProvider // ADR-0042: agent-step model provisioning (health-guarded)
+	SessionMgr *session.SessionManager
 	// ConvSurfaces resolves which ENTRY POINT a conversation arrived on, for turns
 	// that have no task session. Without it a chat turn from an ingress is
 	// authorised as an ordinary agent call and the ingress's policy never applies.

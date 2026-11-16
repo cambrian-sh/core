@@ -43,6 +43,7 @@ import (
 	"github.com/cambrian-sh/core/internal/ledger"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/erasureworker"
+	"github.com/cambrian-sh/core/internal/memory/forget"
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
@@ -916,10 +917,24 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0137 S2 (ENG-411 stage A): the raw memory eraser over the document lifecycle.
 	// NewMemoryStack wraps it in the S3 enforcing decorator (only with
 	// execution.erasure.enabled) and exposes only that, MemoryStack.Eraser().
+	// S7: plugin participants erase their evidence-keyed rows in the same transaction;
+	// observers (the premium signed receipt) are told after commit.
 	erasureStore := postgres.NewPgErasureStore(docLifecycle,
-		postgres.WithErasureAsyncDeadline(cfg.Execution.Erasure.AsyncDeadline()))
+		postgres.WithErasureAsyncDeadline(cfg.Execution.Erasure.AsyncDeadline()),
+		postgres.WithErasureParticipants(opts.ErasureParticipants...),
+		postgres.WithErasureObserver(opts.ErasureObserver))
 	memBackend.Eraser = erasureStore
 	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
+	// ADR-0137 S6 (ENG-411 stage C): the two-phase forget service every forget door
+	// shares (agent-plane PreviewForget/Forget, operator-plane PreviewForgetMemory/
+	// ForgetMemory, the forget_memory MCP tool). Built over MemoryStack.Eraser() — the
+	// enforcing chokepoint, nil when execution.erasure.enabled is off, in which case
+	// every door answers "erasure disabled".
+	forgetSvc := forget.New(mem.Eraser(), forget.Config{
+		PreviewTTL: cfg.Execution.Erasure.PreviewTTL(),
+		PolicyFingerprint: fmt.Sprintf("agent_erase=%t;max_targets=%d",
+			cfg.Execution.Erasure.AgentEraseEnabled, cfg.Execution.Erasure.MaxTargets()),
+	})
 	// ADR-0137 S5: the one drainer of the erasure outbox (CAS deletes of erased evidence
 	// and source-document bodies; request completion; tombstone retention). Started only
 	// with erasure on — off, nothing writes the outbox.
@@ -1952,6 +1967,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		runStore, checkpointStore = pgSessions, pgSessions
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler, runStore, checkpointStore, spendMeter)
+	// ADR-0137 S6: the agent-plane PreviewForget / Forget / ListMyErasures doors.
+	cambrianServer.Forgetter = forgetSvc
 	cambrianServer.Delegations = turnDelegations
 	cambrianServer.RunTracer = runTracer // ADR-0145 D10: step outputs + kernel tool calls
 	// Orchestrator/ProposeKnowledge: candidates and commit requests (knowledgeBridge above).
@@ -2527,6 +2544,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0145 D4: calculation tools (execution.tools.calc_tools, default on since 2026-11-15),
 	// after the ledger so they read and record through it.
 	wireCalcTools(cfg, cambrianServer, cambrianServer.Calendar)
+	// ADR-0137 D9 (ENG-411 stage C): forget_memory, the agent-facing two-phase forget
+	// over the same service as the PreviewForget/Forget RPCs. Offered on menus only with
+	// execution.erasure.enabled AND agent_erase_enabled (both default off).
+	if cambrianServer.ToolExecutor != nil {
+		cambrianServer.ToolExecutor.KernelTools = append(cambrianServer.ToolExecutor.KernelTools,
+			forget.NewTool(forgetSvc, cfg.Execution.Erasure.AgentEraseEnabled))
+	}
 	wireStagedInputs(cfg.Execution.Tools.StagedInputs, cambrianServer)
 	// The chat front desk is told which work systems the planner's agents can reach,
 	// from the planner's own live tool menu (the one wireEffectCheck just set), so a
@@ -3877,6 +3901,19 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			operatorCaps = append(operatorCaps, "facts-stats")
 		}
 		operatorCaps = append(operatorCaps, "session-lifecycle")
+		// Contract 0105 (ADR-0137 S6, ENG-411 stage C): the compliance erase —
+		// PreviewForgetMemory / ForgetMemory / ListErasures / GetErasure — over the same
+		// forget service as the agent plane. Advertised only when erasure is enabled
+		// (execution.erasure.enabled), so a console never offers a door that answers
+		// Unimplemented.
+		var forgetSvc *forget.Service
+		if k.Server != nil {
+			forgetSvc = k.Server.Forgetter
+		}
+		operatorSvc.SetForgetService(forgetSvc)
+		if forgetSvc.Enabled() {
+			operatorCaps = append(operatorCaps, "memory-erasure")
+		}
 		// step-output-stream (ADR-0139 amendment 2026-11-06, additive within 0101):
 		// TokenChunkOp carries the live step-output stream — kind, lease, chunk_seq,
 		// source — for every producer, the native tool lane included, and the agent
@@ -4014,7 +4051,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// overrides_file_value (ADR-0101 D8, ENG-257), MemoryOp fact_matches /
 		// fact_match / fact_current (ENG-461), and on the agent plane
 		// ExecuteToolResponse.annotations (ADR-0139 D11 hook context, ENG-629).
-		operatorSvc.SetHandshake(KernelVersion, "0104", operatorCaps)
+		// 0105 (2026-11-16, additive; ADR-0137 S6, ENG-411 stage C): memory erasure —
+		// operator plane PreviewForgetMemory / ForgetMemory / ListErasures / GetErasure
+		// (+ ErasureSelectorOp / ErasureCandidateOp / ErasureReceiptOp), agent plane
+		// PreviewForget / Forget / ListMyErasures; announced by "memory-erasure" when
+		// execution.erasure.enabled.
+		operatorSvc.SetHandshake(KernelVersion, "0105", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

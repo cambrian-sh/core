@@ -50,6 +50,10 @@ const (
 	OperatorConsole_ListFacts_FullMethodName                = "/cambrian.OperatorConsole/ListFacts"
 	OperatorConsole_GetFactChain_FullMethodName             = "/cambrian.OperatorConsole/GetFactChain"
 	OperatorConsole_GetFactCoverage_FullMethodName          = "/cambrian.OperatorConsole/GetFactCoverage"
+	OperatorConsole_PreviewForgetMemory_FullMethodName      = "/cambrian.OperatorConsole/PreviewForgetMemory"
+	OperatorConsole_ForgetMemory_FullMethodName             = "/cambrian.OperatorConsole/ForgetMemory"
+	OperatorConsole_ListErasures_FullMethodName             = "/cambrian.OperatorConsole/ListErasures"
+	OperatorConsole_GetErasure_FullMethodName               = "/cambrian.OperatorConsole/GetErasure"
 	OperatorConsole_ListTools_FullMethodName                = "/cambrian.OperatorConsole/ListTools"
 	OperatorConsole_ListSkills_FullMethodName               = "/cambrian.OperatorConsole/ListSkills"
 	OperatorConsole_QueryMemory_FullMethodName              = "/cambrian.OperatorConsole/QueryMemory"
@@ -258,6 +262,22 @@ type OperatorConsoleClient interface {
 	GetFactChain(ctx context.Context, in *GetFactChainOpRequest, opts ...grpc.CallOption) (*GetFactChainOpResponse, error)
 	// GetFactCoverage: extraction coverage of the corpus (counts only).
 	GetFactCoverage(ctx context.Context, in *GetFactCoverageOpRequest, opts ...grpc.CallOption) (*GetFactCoverageOpResponse, error)
+	// Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
+	// stage C; contract 0105, capability "memory-erasure", advertised only when
+	// execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
+	// erase LIFTS the owner fence, so a right-to-erasure request reaches every row of the
+	// subject, including rows owner-fenced to another person. Safeguards: the operator
+	// never sees content (previews and receipts carry ids, kinds and counts only); every
+	// erase is journalled and receipted; Operator role only (PreviewForgetMemory and
+	// ForgetMemory are commands by name; ListErasures/GetErasure are operator-only reads).
+	// UNIMPLEMENTED when erasure is disabled.
+	PreviewForgetMemory(ctx context.Context, in *PreviewForgetMemoryOpRequest, opts ...grpc.CallOption) (*PreviewForgetMemoryOpResponse, error)
+	// ForgetMemory: command_id + reason (free-text operator note, audited) + reason_code
+	// (the receipt's closed reason). Idempotent: the erase request id is deterministic and
+	// a retried command_id answers deduped with the same receipt.
+	ForgetMemory(ctx context.Context, in *ForgetMemoryOpRequest, opts ...grpc.CallOption) (*ForgetMemoryOpResponse, error)
+	ListErasures(ctx context.Context, in *ListErasuresOpRequest, opts ...grpc.CallOption) (*ListErasuresOpResponse, error)
+	GetErasure(ctx context.Context, in *GetErasureOpRequest, opts ...grpc.CallOption) (*GetErasureOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error)
 	ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error)
@@ -1217,6 +1237,46 @@ func (c *operatorConsoleClient) GetFactCoverage(ctx context.Context, in *GetFact
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFactCoverageOpResponse)
 	err := c.cc.Invoke(ctx, OperatorConsole_GetFactCoverage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) PreviewForgetMemory(ctx context.Context, in *PreviewForgetMemoryOpRequest, opts ...grpc.CallOption) (*PreviewForgetMemoryOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewForgetMemoryOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_PreviewForgetMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ForgetMemory(ctx context.Context, in *ForgetMemoryOpRequest, opts ...grpc.CallOption) (*ForgetMemoryOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ForgetMemoryOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ForgetMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListErasures(ctx context.Context, in *ListErasuresOpRequest, opts ...grpc.CallOption) (*ListErasuresOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListErasuresOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListErasures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetErasure(ctx context.Context, in *GetErasureOpRequest, opts ...grpc.CallOption) (*GetErasureOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetErasureOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetErasure_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2275,6 +2335,22 @@ type OperatorConsoleServer interface {
 	GetFactChain(context.Context, *GetFactChainOpRequest) (*GetFactChainOpResponse, error)
 	// GetFactCoverage: extraction coverage of the corpus (counts only).
 	GetFactCoverage(context.Context, *GetFactCoverageOpRequest) (*GetFactCoverageOpResponse, error)
+	// Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
+	// stage C; contract 0105, capability "memory-erasure", advertised only when
+	// execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
+	// erase LIFTS the owner fence, so a right-to-erasure request reaches every row of the
+	// subject, including rows owner-fenced to another person. Safeguards: the operator
+	// never sees content (previews and receipts carry ids, kinds and counts only); every
+	// erase is journalled and receipted; Operator role only (PreviewForgetMemory and
+	// ForgetMemory are commands by name; ListErasures/GetErasure are operator-only reads).
+	// UNIMPLEMENTED when erasure is disabled.
+	PreviewForgetMemory(context.Context, *PreviewForgetMemoryOpRequest) (*PreviewForgetMemoryOpResponse, error)
+	// ForgetMemory: command_id + reason (free-text operator note, audited) + reason_code
+	// (the receipt's closed reason). Idempotent: the erase request id is deterministic and
+	// a retried command_id answers deduped with the same receipt.
+	ForgetMemory(context.Context, *ForgetMemoryOpRequest) (*ForgetMemoryOpResponse, error)
+	ListErasures(context.Context, *ListErasuresOpRequest) (*ListErasuresOpResponse, error)
+	GetErasure(context.Context, *GetErasureOpRequest) (*GetErasureOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error)
 	ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error)
@@ -3013,6 +3089,18 @@ func (UnimplementedOperatorConsoleServer) GetFactChain(context.Context, *GetFact
 }
 func (UnimplementedOperatorConsoleServer) GetFactCoverage(context.Context, *GetFactCoverageOpRequest) (*GetFactCoverageOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFactCoverage not implemented")
+}
+func (UnimplementedOperatorConsoleServer) PreviewForgetMemory(context.Context, *PreviewForgetMemoryOpRequest) (*PreviewForgetMemoryOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreviewForgetMemory not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ForgetMemory(context.Context, *ForgetMemoryOpRequest) (*ForgetMemoryOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ForgetMemory not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListErasures(context.Context, *ListErasuresOpRequest) (*ListErasuresOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListErasures not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetErasure(context.Context, *GetErasureOpRequest) (*GetErasureOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetErasure not implemented")
 }
 func (UnimplementedOperatorConsoleServer) ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTools not implemented")
@@ -3855,6 +3943,78 @@ func _OperatorConsole_GetFactCoverage_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).GetFactCoverage(ctx, req.(*GetFactCoverageOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_PreviewForgetMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewForgetMemoryOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).PreviewForgetMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_PreviewForgetMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).PreviewForgetMemory(ctx, req.(*PreviewForgetMemoryOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ForgetMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ForgetMemoryOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ForgetMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ForgetMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ForgetMemory(ctx, req.(*ForgetMemoryOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListErasures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListErasuresOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListErasures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListErasures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListErasures(ctx, req.(*ListErasuresOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetErasure_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetErasureOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetErasure(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetErasure_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetErasure(ctx, req.(*GetErasureOpRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -5602,6 +5762,22 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFactCoverage",
 			Handler:    _OperatorConsole_GetFactCoverage_Handler,
+		},
+		{
+			MethodName: "PreviewForgetMemory",
+			Handler:    _OperatorConsole_PreviewForgetMemory_Handler,
+		},
+		{
+			MethodName: "ForgetMemory",
+			Handler:    _OperatorConsole_ForgetMemory_Handler,
+		},
+		{
+			MethodName: "ListErasures",
+			Handler:    _OperatorConsole_ListErasures_Handler,
+		},
+		{
+			MethodName: "GetErasure",
+			Handler:    _OperatorConsole_GetErasure_Handler,
 		},
 		{
 			MethodName: "ListTools",

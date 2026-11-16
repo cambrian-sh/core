@@ -15,6 +15,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
+	"github.com/cambrian-sh/core/internal/memory/forget"
 	"github.com/cambrian-sh/core/pkg/util"
 )
 
@@ -155,6 +156,9 @@ type Service struct {
 	// facts is the read-only fact inspection (contract 0103, facts.go); nil ⇒
 	// ListFacts / GetFactChain / GetFactCoverage answer Unimplemented.
 	facts domain.FactInspector
+	// forget is the ADR-0137 forget service (contract 0105); nil or disabled ⇒ the
+	// erasure RPCs answer Unimplemented.
+	forget *forget.Service
 	// factStats is the fact extractor whose counters the Snapshot reports (ENG-431); nil = absent.
 	factStats FactStatsSource
 

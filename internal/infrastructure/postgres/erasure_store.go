@@ -37,14 +37,20 @@ import (
 // described are recomputed inside the transaction (ENG-1858); knowledge items recompute
 // theirs through EraseItemsTx's re-derivation.
 //
-// Not in this transaction (yet): premium rows that reference evidence (ingress studio)
-// — the ErasureParticipant hook is S7; an erase whose evidence premium still references
-// fails on the evidence FK and rolls back, erasing nothing.
+// Plugin rows that reference the erased evidence (premium ingress studio) are erased by
+// the domain.ErasureParticipant hooks INSIDE the same transaction, before the evidence
+// rows (ADR-0137 D4 step 8, S7). Without a participant for them such a row still fails
+// the evidence FK and the whole erase rolls back, erasing nothing. After commit every
+// domain.ErasureObserver receives the receipt (the premium signed ADR-0103 receipt, D8).
 type PgErasureStore struct {
 	l *PgDocumentLifecycle
 	// asyncDeadline is how long the async tail of a request may take (execution.erasure
 	// .async_deadline_seconds); 0 leaves memory_erasures.async_deadline NULL.
 	asyncDeadline time.Duration
+	// participants erase plugin rows keyed by evidence ids inside the transaction.
+	participants []domain.ErasureParticipant
+	// observer receives each executed (non-replayed) receipt after commit.
+	observer domain.ErasureObserver
 }
 
 // ErasureStoreOption configures a PgErasureStore.
@@ -54,6 +60,24 @@ type ErasureStoreOption func(*PgErasureStore)
 // (ADR-0137 D7): past it the request reads overdue on the operator plane.
 func WithErasureAsyncDeadline(d time.Duration) ErasureStoreOption {
 	return func(s *PgErasureStore) { s.asyncDeadline = d }
+}
+
+// WithErasureParticipants adds plugin participants (app.Registry.AddErasureParticipant)
+// that erase their own evidence-keyed rows inside the erase transaction (ADR-0137 S7).
+func WithErasureParticipants(ps ...domain.ErasureParticipant) ErasureStoreOption {
+	return func(s *PgErasureStore) {
+		for _, p := range ps {
+			if p != nil {
+				s.participants = append(s.participants, p)
+			}
+		}
+	}
+}
+
+// WithErasureObserver sets the observer told of every executed erasure after commit
+// (app.Registry.AddErasureObserver fans several into one; ADR-0137 D8).
+func WithErasureObserver(o domain.ErasureObserver) ErasureStoreOption {
+	return func(s *PgErasureStore) { s.observer = o }
 }
 
 // NewPgErasureStore builds the eraser over the document lifecycle (and through it the
@@ -207,7 +231,24 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 	if deadline != nil {
 		rec.AsyncDeadline = deadline.UTC()
 	}
+	// D8: after commit, never inside the transaction — an observer cannot make an erase
+	// fail or roll back, and a replay (above) is not observed again.
+	if s.observer != nil {
+		s.observer.ObserveErasure(context.WithoutCancel(ctx), rec)
+	}
 	return rec, nil
+}
+
+// erasureTx adapts the run's pgx transaction to the driver-free domain.ErasureTx a
+// participant receives.
+type erasureTx struct{ tx pgx.Tx }
+
+func (t erasureTx) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
+	tag, err := t.tx.Exec(ctx, sql, args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // eraseTx runs every deletion step of D4 inside run.tx. matched reports whether the
@@ -479,6 +520,19 @@ func (s *PgErasureStore) eraseEvidence(ctx context.Context, run *erasureRun, evi
 }
 
 func (s *PgErasureStore) eraseEvidenceRows(ctx context.Context, run *erasureRun, evidenceIDs []string) error {
+	// S7: plugin rows referencing the evidence go first, in the same transaction, so
+	// none of them fails the evidence FK below.
+	for _, p := range s.participants {
+		counts, err := p.EraseEvidence(ctx, erasureTx{tx: run.tx}, evidenceIDs)
+		if err != nil {
+			return fmt.Errorf("erase: participant %s: %w", p.Name(), err)
+		}
+		for store, n := range counts {
+			if n > 0 {
+				run.counts[store] += n
+			}
+		}
+	}
 	if _, err := s.eraseItemsWhere(ctx, run, `ki.evidence_id = ANY($1)`, []any{evidenceIDs},
 		domain.KnowledgeErasure{EvidenceIDs: evidenceIDs}); err != nil {
 		return err
@@ -601,6 +655,38 @@ func earlierErasure(ctx context.Context, q pgxQuerier, sel domain.ErasureSelecto
 // Receipt implements domain.MemoryEraser.
 func (s *PgErasureStore) Receipt(ctx context.Context, requestID string) (domain.ErasureReceipt, bool, error) {
 	return receiptFrom(ctx, s.l.k.pool, requestID)
+}
+
+// ListReceipts implements domain.MemoryEraser: receipts newest first (erased_at, then
+// request id), filtered by principal, paged by the Before cursor.
+func (s *PgErasureStore) ListReceipts(ctx context.Context, f domain.ErasureReceiptFilter) ([]domain.ErasureReceipt, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	ids, err := collectIDs(ctx, s.l.k.pool, `SELECT e.request_id FROM memory_erasures e
+		WHERE ($1 = '' OR e.principal = $1)
+		  AND ($2 = '' OR (e.erased_at, e.request_id) < (
+		        SELECT c.erased_at, c.request_id FROM memory_erasures c WHERE c.request_id = $2))
+		ORDER BY e.erased_at DESC, e.request_id DESC
+		LIMIT $3`, f.Principal, f.Before, limit)
+	if err != nil {
+		return nil, mapError("ListReceipts", err)
+	}
+	out := make([]domain.ErasureReceipt, 0, len(ids))
+	for _, id := range ids {
+		rec, found, err := receiptFrom(ctx, s.l.k.pool, id)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
 }
 
 func receiptFrom(ctx context.Context, q pgxQuerier, requestID string) (domain.ErasureReceipt, bool, error) {
