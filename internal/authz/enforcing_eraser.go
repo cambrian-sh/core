@@ -185,7 +185,14 @@ func (e *EnforcingEraser) admit(ctx context.Context, c eraseCaller, sel domain.E
 	// holding a document the caller cannot see is erased only as far as it can see,
 	// which the raw eraser cannot express, so the thread's visible documents are
 	// named instead of the thread.
+	//
+	// A document candidate whose Via is a chunk id (not a thread) is a chunk selector
+	// widened to its document (ENG-1947): it is named by its document id.
 	var out domain.ErasureSelector
+	threads := map[string]bool{}
+	for _, th := range sel.ThreadIDs {
+		threads[th] = true
+	}
 	keptThreadDocs := map[string]bool{}
 	for _, cand := range cands {
 		if _, ok := c.pred.Check(cand.Tags); !ok {
@@ -202,7 +209,7 @@ func (e *EnforcingEraser) admit(ctx context.Context, c eraseCaller, sel domain.E
 		}
 		switch cand.Kind {
 		case domain.ErasureTargetDocument:
-			if cand.Via != cand.ID {
+			if cand.Via != cand.ID && threads[cand.Via] {
 				keptThreadDocs[cand.ID] = true
 				continue
 			}

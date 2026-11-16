@@ -278,8 +278,17 @@ func TestPg_ErasureResolve_WriterAndTags(t *testing.T) {
 	if c := byID["document:lctest-r"]; c.WrittenBy != "lctest-a" || len(c.Tags) != 1 || c.Tags[0] != "team-x" {
 		t.Fatalf("document candidate = %+v", c)
 	}
-	if c := byID["chunk:lctest-r-chunk-1"]; c.WrittenBy != "lctest-a" || c.DocumentID != "lctest-r" {
-		t.Fatalf("chunk of a document = %+v", c)
+	// ENG-1947: a chunk of a stored document resolves to the whole document (Via = the
+	// chunk id), with the document's writer of record and authoritative tags.
+	var viaChunk *domain.ErasureCandidate
+	for i := range cands {
+		if cands[i].Via == "lctest-r-chunk-1" {
+			viaChunk = &cands[i]
+		}
+	}
+	if c := viaChunk; c == nil || c.Kind != domain.ErasureTargetDocument || c.ID != "lctest-r" || c.DocumentID != "lctest-r" ||
+		c.WrittenBy != "lctest-a" || len(c.Tags) != 1 || c.Tags[0] != "team-x" {
+		t.Fatalf("chunk of a document = %+v, want its document", c)
 	}
 	if c := byID["chunk:lctest-loose"]; c.WrittenBy != "lctest-b" || len(c.Tags) != 1 || c.Tags[0] != "ops" {
 		t.Fatalf("document-less chunk = %+v", c)

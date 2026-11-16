@@ -212,17 +212,26 @@ func TestPg_Erase_ChunkThreadExperienceSelectors(t *testing.T) {
 	seedLifecycleDoc(t, a, ks, ctx, "lctest-multi", "agent:a", "multi", "dg-m", 2)
 	seedLifecycleDoc(t, a, ks, ctx, "lctest-solo", "agent:a", "solo", "dg-s", 1)
 
-	// One chunk of a two-chunk document: that chunk and its derivatives only.
+	// One chunk of a two-chunk document WIDENS to the whole document (ENG-1947, owner
+	// decision 2026-11-17): erasing it alone would leave its words in documents.text,
+	// which document-level readers serve. The chunk keeps its own tombstone.
 	rec, err := er.Erase(ctx, erasureReq("lctest-op", domain.ErasureSelector{ChunkIDs: []string{"lctest-multi-chunk-1"}}))
 	if err != nil {
 		t.Fatalf("chunk erase: %v", err)
 	}
-	if rec.Counts["chunks"] != 1 || rec.Counts["chunk_triplets"] != 1 || rec.Counts["knowledge_items"] != 1 || rec.Counts["documents"] != 0 {
-		t.Errorf("single-chunk counts = %v", rec.Counts)
+	if rec.Counts["documents"] != 1 || rec.Counts["chunks"] != 2 || rec.Counts["chunk_triplets"] != 1 || rec.Counts["knowledge_items"] != 1 {
+		t.Errorf("widened chunk counts = %v", rec.Counts)
 	}
-	if countRows(t, a, ctx, `SELECT count(*) FROM chunks WHERE id = 'lctest-multi-chunk-2'`) != 1 ||
-		countRows(t, a, ctx, `SELECT count(*) FROM documents WHERE id = 'lctest-multi'`) != 1 {
-		t.Error("erasing one chunk removed its sibling or its document")
+	if countRows(t, a, ctx, `SELECT count(*) FROM chunks WHERE document_id = 'lctest-multi'`) != 0 ||
+		countRows(t, a, ctx, `SELECT count(*) FROM documents WHERE id = 'lctest-multi'`) != 0 {
+		t.Error("erasing one chunk left its sibling or its document (and with it documents.text)")
+	}
+	if v, err := a.GetByID(domain.WithScope(ctx, domain.ScopeMaintenance), "lctest-multi"); err != nil || v != nil {
+		t.Errorf("document-level by-id read after the widened erase = %v, %v; want nothing", v, err)
+	}
+	if countRows(t, a, ctx, `SELECT count(*) FROM memory_erasure_targets WHERE request_id = $1
+		AND ((target_kind = 'chunk' AND target_id = 'lctest-multi-chunk-1') OR (target_kind = 'document' AND target_id = 'lctest-multi'))`, rec.RequestID) != 2 {
+		t.Error("the widened erase must tombstone the named chunk and its document")
 	}
 
 	// The only chunk of a document: the document goes (D2).
@@ -235,6 +244,7 @@ func TestPg_Erase_ChunkThreadExperienceSelectors(t *testing.T) {
 	}
 
 	// Thread: documents whose chunks arrived on it.
+	seedLifecycleDoc(t, a, ks, ctx, "lctest-multi", "agent:a", "multi", "dg-m2", 2)
 	execSQL(t, a, ctx, `UPDATE chunks SET metadata = metadata || '{"ingest_thread_id":"lctest-thread"}' WHERE document_id = 'lctest-multi'`)
 	rec, err = er.Erase(ctx, erasureReq("lctest-op", domain.ErasureSelector{ThreadIDs: []string{"lctest-thread"}}))
 	if err != nil {

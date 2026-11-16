@@ -26,6 +26,7 @@ func (f *fakeRawEraser) Resolve(_ context.Context, sel domain.ErasureSelector) (
 		switch {
 		case r.Kind == domain.ErasureTargetDocument && r.Via == r.ID && slices.Contains(sel.DocumentIDs, r.ID),
 			r.Kind == domain.ErasureTargetDocument && r.Via != r.ID && slices.Contains(sel.ThreadIDs, r.Via),
+			r.Kind == domain.ErasureTargetDocument && r.Via != r.ID && slices.Contains(sel.ChunkIDs, r.Via),
 			r.Kind == domain.ErasureTargetChunk && slices.Contains(sel.ChunkIDs, r.ID),
 			r.Kind == domain.ErasureTargetEntity && slices.Contains(sel.EntityRefs, r.ID):
 			out = append(out, r)
@@ -395,5 +396,30 @@ func TestEnforcingEraser_RetryReturnsTheCallersReceipt(t *testing.T) {
 	}
 	if _, err := e.Erase(agentCtx("bob", &domain.TagPredicate{}), eraseReq(domain.ErasureSelector{DocumentIDs: []string{"d1"}})); !errors.Is(err, domain.ErrNothingToErase) {
 		t.Fatalf("bob's request for the erased id: %v, want ErrNothingToErase", err)
+	}
+}
+
+// ENG-1947: a chunk of a stored document resolves to its document (Via = the chunk id).
+// The chokepoint names it by DOCUMENT id — it is not a thread document — and applies the
+// writer-of-record rule to the document.
+func TestEnforcingEraser_ChunkSelectorWidensToItsDocument(t *testing.T) {
+	widened := func(doc, chunk, writer string) domain.ErasureCandidate {
+		return domain.ErasureCandidate{Kind: domain.ErasureTargetDocument, ID: doc, Via: chunk, DocumentID: doc, WrittenBy: writer}
+	}
+	raw := &fakeRawEraser{records: []domain.ErasureCandidate{widened("a-doc", "a-doc-c2", "agent-a"), widened("b-doc", "b-doc-c1", "agent-b")}}
+	e := newEraser(raw, nil, true)
+	ctx := agentCtx("agent-a", &domain.TagPredicate{Bypass: true})
+	if _, err := e.Erase(ctx, eraseReq(domain.ErasureSelector{ChunkIDs: []string{"a-doc-c2"}})); err != nil {
+		t.Fatalf("A erasing a chunk of its own document: %v", err)
+	}
+	if len(raw.erased) != 1 {
+		t.Fatalf("raw eraser called %d times", len(raw.erased))
+	}
+	got := raw.erased[0].Selector
+	if !slices.Equal(got.DocumentIDs, []string{"a-doc"}) || len(got.ChunkIDs) != 0 || len(got.ThreadIDs) != 0 {
+		t.Fatalf("raw selector = %+v, want the whole document a-doc", got)
+	}
+	if _, err := e.Erase(ctx, eraseReq(domain.ErasureSelector{ChunkIDs: []string{"b-doc-c1"}})); !errors.Is(err, authz.ErrEraseDenied) {
+		t.Fatalf("A erasing a chunk of B's document: want ErrEraseDenied, got %v", err)
 	}
 }

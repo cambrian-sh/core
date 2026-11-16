@@ -277,8 +277,15 @@ func (s *PgErasureStore) eraseTx(ctx context.Context, run *erasureRun, sel domai
 		}
 	}
 
-	// Chunks: a chunk that is its document's only content (besides the source-doc entity
-	// stub) erases the document (D2); otherwise it is erased alone.
+	// Chunks: a chunk that belongs to a document WIDENS to the whole document (D2 as
+	// amended by the owner, 2026-11-17, ENG-1947). Erasing one chunk of a multi-chunk
+	// document alone would leave its words in documents.text, which the document-level
+	// readers (operator GetDocument, MCP get_document / kernelDocumentReader) serve —
+	// R5 broken. Rejected: redacting the chunk's span out of documents.text (partial-
+	// record redaction is a v1 non-goal) and refusing chunk selectors on multi-chunk
+	// documents. Resolve answers such a chunk as its document, so a preview shows what
+	// will go. A document-less chunk (a mnemonic fact, an episode chunk) is erased alone.
+	// (chunks.document_id references documents(id), so the document row exists.)
 	var singleChunks []string
 	for _, c := range sel.ChunkIDs {
 		var doc *string
@@ -294,17 +301,8 @@ func (s *PgErasureStore) eraseTx(ctx context.Context, run *erasureRun, sel domai
 			run.target(domain.ErasureTargetChunk, c, "", "")
 			continue
 		}
-		var others int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM `+TableChunks+`
-			WHERE document_id = $1 AND id <> $2 AND id NOT LIKE 'source_doc:%'`, *doc, c).Scan(&others); err != nil {
-			return false, fmt.Errorf("erase: resolve chunk siblings: %w", err)
-		}
 		run.target(domain.ErasureTargetChunk, c, *doc, "")
-		if others == 0 {
-			docSet[*doc] = true
-		} else {
-			singleChunks = append(singleChunks, c)
-		}
+		docSet[*doc] = true
 	}
 
 	docs := make([]string, 0, len(docSet))

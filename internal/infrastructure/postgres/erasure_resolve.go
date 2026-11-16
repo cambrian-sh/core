@@ -95,11 +95,15 @@ func (s *PgErasureStore) Resolve(ctx context.Context, sel domain.ErasureSelector
 		}
 	}
 	if len(sel.ChunkIDs) > 0 {
-		// A chunk's writer of record is its document's (the unit an erase may widen to);
-		// a document-less chunk carries the writer the write tier stamped on it.
-		rows, err := q.Query(ctx, `SELECT c.id, COALESCE(c.document_id, ''),
+		// A chunk of a stored document resolves to that DOCUMENT (Via = the chunk id):
+		// the erase widens to the whole document (D2 as amended 2026-11-17, ENG-1947), so
+		// the preview names what will go, and the writer of record and the authoritative
+		// tags are the document's (ADR-0093). A document-less chunk — or one whose
+		// document row is gone — is its own candidate with the writer the write tier
+		// stamped on it and its own tag copy.
+		rows, err := q.Query(ctx, `SELECT c.id, COALESCE(c.document_id, ''), d.id IS NOT NULL,
 				COALESCE(NULLIF(d.written_by, ''), c.metadata->>'`+domain.MetaWrittenBy+`', ''),
-				COALESCE(c.metadata->'tags', '[]'::jsonb)
+				COALESCE(c.metadata->'tags', '[]'::jsonb), COALESCE(d.tags, '{}')
 			FROM `+TableChunks+` c LEFT JOIN `+TableDocuments+` d ON d.id = c.document_id
 			WHERE c.id = ANY($1) ORDER BY c.id`, sel.ChunkIDs)
 		if err != nil {
@@ -107,15 +111,21 @@ func (s *PgErasureStore) Resolve(ctx context.Context, sel domain.ErasureSelector
 		}
 		for rows.Next() {
 			var (
-				c    domain.ErasureCandidate
-				tags []byte
+				c       domain.ErasureCandidate
+				hasDoc  bool
+				tags    []byte
+				docTags []string
 			)
-			if err := rows.Scan(&c.ID, &c.DocumentID, &c.WrittenBy, &tags); err != nil {
+			if err := rows.Scan(&c.ID, &c.DocumentID, &hasDoc, &c.WrittenBy, &tags, &docTags); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			c.Kind, c.Via = domain.ErasureTargetChunk, c.ID
-			c.Tags = jsonTags(tags)
+			if hasDoc {
+				c.Kind, c.Via, c.ID, c.Tags = domain.ErasureTargetDocument, c.ID, c.DocumentID, docTags
+			} else {
+				c.Kind, c.Via = domain.ErasureTargetChunk, c.ID
+				c.Tags = jsonTags(tags)
+			}
 			out = append(out, c)
 		}
 		rows.Close()
