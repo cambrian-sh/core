@@ -75,10 +75,10 @@ func TestReinforceCoActivation_WritesEdges(t *testing.T) {
 	q := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{}, nil)
 	q.EnableHebbian(gs, 0.05, 0.9, 0.5, 0.95, 0.2, 5)
 
-	q.reinforceCoActivation(context.Background(), []domain.SearchResult{
+	q.reinforcePairs(context.Background(), coActivatedPairs([]domain.SearchResult{
 		{Document: domain.Document{ID: "a"}, Score: 0.9},
 		{Document: domain.Document{ID: "b"}, Score: 0.8},
-	})
+	}, q.heb.floor, q.heb.topN))
 
 	if len(gs.edges) != 2 {
 		t.Fatalf("expected 2 co_activated edges (both directions); got %d", len(gs.edges))
@@ -87,5 +87,62 @@ func TestReinforceCoActivation_WritesEdges(t *testing.T) {
 		if e.EdgeType != domain.EdgeCoActivated || e.Weight != 0.2 {
 			t.Errorf("new co_activated edge should start at base 0.2; got %+v", e)
 		}
+	}
+}
+
+// waitHebbian blocks until every in-flight async reinforcement has finished, by
+// taking all of the semaphore's slots and giving them back.
+func waitHebbian(q *QueryService) {
+	for i := 0; i < cap(q.hebInflight); i++ {
+		q.hebInflight <- struct{}{}
+	}
+	for i := 0; i < cap(q.hebInflight); i++ {
+		<-q.hebInflight
+	}
+}
+
+// ENG-1951: the recall path's async reinforcement must reinforce exactly the
+// co-retrieved set and share nothing with the rest of searchByType. It used to close
+// over the variable `filtered`, which the neighbour window, document completion and
+// annotateFactHits reassign after the goroutine starts — a data race under -race
+// (this test failed there), and a reinforcement of whatever rows `filtered` held by
+// then.
+func TestSearch_HebbianReinforcesTheCoRetrievedSetWithoutRacing(t *testing.T) {
+	gs := &captureGraphStore{}
+	store := &scopeApplyingStore{docs: []domain.Document{
+		{ID: "a", Text: "alpha"}, {ID: "b", Text: "beta"}, {ID: "c", Text: "gamma"},
+	}}
+	q := NewQueryService(&fakeEmbedder{}, store, nil)
+	q.EnableNeighborWindow()
+	// floor 0: every returned row is "hot", so the pairs are all of {a,b,c}.
+	q.EnableHebbian(gs, 0.05, 0.9, 0, 0.95, 0.2, 5)
+
+	const recalls = 8
+	for i := 0; i < recalls; i++ {
+		got, err := q.SearchSystem(context.Background(), "what")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) < 2 {
+			t.Fatalf("fixture must recall >= 2 rows for Hebbian to fire; got %d", len(got))
+		}
+	}
+	waitHebbian(q)
+
+	edges := gs.snapshot()
+	if len(edges) == 0 {
+		t.Fatal("no co_activated edges written: the async reinforcement never ran")
+	}
+	want := map[string]bool{"a|b": true, "a|c": true, "b|c": true}
+	seen := map[string]bool{}
+	for _, e := range edges {
+		k := hebbianEdgeKey(e.SourceID, e.TargetID)
+		if e.EdgeType != domain.EdgeCoActivated || !want[k] {
+			t.Fatalf("edge outside the co-retrieved set {a,b,c}: %+v", e)
+		}
+		seen[e.SourceID+">"+e.TargetID] = true
+	}
+	if len(seen) != 6 {
+		t.Errorf("want both directions of all 3 pairs (6 directed edges); got %d: %v", len(seen), seen)
 	}
 }

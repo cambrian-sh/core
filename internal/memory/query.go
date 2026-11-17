@@ -437,7 +437,7 @@ type hebbianParams struct {
 	topN                              int
 }
 
-// hebbianMaxInflight caps concurrent reinforceCoActivation goroutines. Recalls
+// hebbianMaxInflight caps concurrent reinforcePairs goroutines. Recalls
 // beyond the cap drop their reinforcement rather than queue (see the call site).
 const hebbianMaxInflight = 4
 
@@ -2179,16 +2179,24 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	//
 	// context.WithoutCancel, not context.Background (AGENTS.md §2.7): the write
 	// must outlive the request, but trace/session values should travel with it.
+	//
+	// The pairs are computed HERE, synchronously, and handed to the goroutine by value
+	// (ENG-1951): the goroutine used to close over the variable `filtered`, which the
+	// neighbour window, document completion and annotateFactHits below reassign (and
+	// annotateFactHits writes rows' metadata in place) — a data race, and the goroutine
+	// could reinforce the neighbour-window rows instead of the co-retrieved set.
 	if spread && q.heb.enabled && len(filtered) >= 2 {
-		select {
-		case q.hebInflight <- struct{}{}:
-			bg := context.WithoutCancel(ctx)
-			go func() {
-				defer func() { <-q.hebInflight }()
-				q.reinforceCoActivation(bg, filtered)
-			}()
-		default:
-			slog.DebugContext(ctx, "hebbian: reinforcement dropped, in-flight cap reached")
+		if pairs := coActivatedPairs(filtered, q.heb.floor, q.heb.topN); len(pairs) > 0 {
+			select {
+			case q.hebInflight <- struct{}{}:
+				bg := context.WithoutCancel(ctx)
+				go func(pairs []docPair) {
+					defer func() { <-q.hebInflight }()
+					q.reinforcePairs(bg, pairs)
+				}(pairs)
+			default:
+				slog.DebugContext(ctx, "hebbian: reinforcement dropped, in-flight cap reached")
+			}
 		}
 	}
 	// ADR-0060: neighbor-window — append each returned chunk's document neighbors
@@ -2318,16 +2326,18 @@ func hebbianEdgeKey(a, b string) string {
 	return b + "|" + a
 }
 
-// reinforceCoActivation strengthens the co_activated edges among a recall's strongly
-// co-retrieved docs (ADR-0049 D10): read current weights, decay-by-age, add the
-// learning rate (capped), write both directions. Best-effort, async; lost updates
-// under concurrent recalls are acceptable for a statistical Hebbian signal.
-func (q *QueryService) reinforceCoActivation(ctx context.Context, results []domain.SearchResult) {
-	if q.graphWriter == nil {
-		return
-	}
-	pairs := coActivatedPairs(results, q.heb.floor, q.heb.topN)
-	if len(pairs) == 0 {
+// reinforcePairs strengthens the co_activated edges among a recall's strongly
+// co-retrieved docs (ADR-0049 D10), given as pairs: read current
+// weights, decay-by-age, add the learning rate (capped), write both directions.
+// Best-effort; lost updates under concurrent recalls are acceptable for a statistical
+// Hebbian signal.
+//
+// The write is GraphStore.SaveChunkEdges, not SaveEdge (ENG-1951, ADR-0137 D5): this
+// runs after the recall returned, and a chunk erased in between must not get an edge
+// back — SaveChunkEdges writes only edges whose both endpoints are live chunks, fenced
+// against a concurrent erase.
+func (q *QueryService) reinforcePairs(ctx context.Context, pairs []docPair) {
+	if q.graphWriter == nil || len(pairs) == 0 {
 		return
 	}
 
@@ -2351,16 +2361,22 @@ func (q *QueryService) reinforceCoActivation(ctx context.Context, results []doma
 	}
 
 	now := time.Now()
+	edges := make([]domain.DocumentEdge, 0, 2*len(pairs))
 	for _, p := range pairs {
 		w := q.heb.base
 		if e, ok := cur[hebbianEdgeKey(p.a, p.b)]; ok {
 			w = q.reinforcedWeight(float64(e.Weight), e.CreatedAt, now)
 		}
 		for _, dir := range [][2]string{{p.a, p.b}, {p.b, p.a}} {
-			_ = q.graphWriter.SaveEdge(ctx, domain.DocumentEdge{
+			edges = append(edges, domain.DocumentEdge{
 				SourceID: dir[0], TargetID: dir[1], EdgeType: domain.EdgeCoActivated, Weight: float32(w), CreatedAt: now,
 			})
 		}
+	}
+	// Best-effort by design (ADR-0049 D10): a failed reinforcement is dropped, never
+	// retried, but not silently — the debug line says it happened.
+	if _, err := q.graphWriter.SaveChunkEdges(ctx, edges); err != nil {
+		slog.DebugContext(ctx, "hebbian: reinforcement write failed", "error", err)
 	}
 }
 

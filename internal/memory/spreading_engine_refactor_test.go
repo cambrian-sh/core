@@ -19,6 +19,10 @@ func (r *recordingGraphStore) SaveEdge(_ context.Context, e domain.DocumentEdge)
 	r.edges = append(r.edges, e)
 	return nil
 }
+func (r *recordingGraphStore) SaveChunkEdges(_ context.Context, es []domain.DocumentEdge) (int, error) {
+	r.edges = append(r.edges, es...)
+	return len(es), nil
+}
 func (r *recordingGraphStore) GetAdjacentEdges(_ context.Context, docIDs []string) ([]domain.DocumentEdge, error) {
 	r.gotCalls++
 	idSet := make(map[string]bool, len(docIDs))

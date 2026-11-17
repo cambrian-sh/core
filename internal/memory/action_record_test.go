@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -47,11 +48,29 @@ func (c *collectStore) QueryByMetadata(_ context.Context, filter map[string]stri
 	return out, nil
 }
 
-type captureGraphStore struct{ edges []domain.DocumentEdge }
+// captureGraphStore records every edge write. The mutex lets the async Hebbian
+// reinforcement write through it while a test reads (ENG-1951 race test).
+type captureGraphStore struct {
+	mu    sync.Mutex
+	edges []domain.DocumentEdge
+}
 
 func (g *captureGraphStore) SaveEdge(_ context.Context, e domain.DocumentEdge) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.edges = append(g.edges, e)
 	return nil
+}
+func (g *captureGraphStore) SaveChunkEdges(_ context.Context, es []domain.DocumentEdge) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.edges = append(g.edges, es...)
+	return len(es), nil
+}
+func (g *captureGraphStore) snapshot() []domain.DocumentEdge {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]domain.DocumentEdge(nil), g.edges...)
 }
 func (g *captureGraphStore) GetAdjacentEdges(context.Context, []string) ([]domain.DocumentEdge, error) {
 	return nil, nil

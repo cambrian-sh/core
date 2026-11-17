@@ -275,9 +275,10 @@ func newGate(t *testing.T) *gate {
 	cfg.Execution.Facts.LaneEnabled = true
 	cfg.Execution.Retrieval.RecallSimilarityFloor = 0
 	cfg.Execution.Ingestion.SyncIngestWaitForKG = false
-	// Hebbian reinforcement is off: its async goroutine races the neighbour window
-	// under -race (T-20261116-data-race-in-queryservice-searchbytype-the).
-	cfg.Execution.Retrieval.HebbianEnabled = false
+	// Hebbian reinforcement ON (the shipped default), so every recall the gate probes
+	// also runs the async co_activated write across the erase — the ENG-1951 race and
+	// the no-resurrection fence of that write are both exercised under -race.
+	cfg.Execution.Retrieval.HebbianEnabled = true
 	ctx := context.Background()
 	vec, err := postgres.NewPgVectorAdapter(ctx, cfg)
 	if err != nil {
@@ -915,6 +916,112 @@ func TestPg_Forget_NoResurrection(t *testing.T) {
 		t.Errorf("a lane surfaces resurrected content: %v", got)
 	}
 	goleak.VerifyNone(t, leakOpts)
+}
+
+// TestPg_Forget_HebbianWriteCannotResurrectErasedChunks (ENG-1951, ADR-0137 D5): the
+// Hebbian reinforcement writes co_activated edges async, after the recall returned, so
+// its write can land across an erase of a chunk it names. document_edges has no FK;
+// the write goes through GraphStore.SaveChunkEdges, which writes only edges between
+// live chunks under a FOR KEY SHARE lock, and the erase cascade deletes edges AFTER the
+// chunk rows. Three interleavings: a write that lands before the erase is erased with
+// it; a write that holds its lock while the erase runs is waited for and then erased
+// (with edges deleted before chunks — the old order — this edge survived); a write
+// that lands after the erase is skipped.
+func TestPg_Forget_HebbianWriteCannotResurrectErasedChunks(t *testing.T) {
+	g := newGate(t)
+	alice := agentGateCtx("eng411d-alice")
+	doc, chunks := g.ingest(alice, "eng411d-alice", "hebb", paragraphs(g.tok("hebb"), 3))
+	_, keep := g.ingest(alice, "eng411d-alice", "hebbkeep", paragraphs(g.tok("hebbkeep"), 2))
+	if len(chunks) < 3 || len(keep) < 2 {
+		t.Fatalf("need >= 3 erased and >= 2 kept chunks, got %d and %d", len(chunks), len(keep))
+	}
+	pair := func(a, b string) []domain.DocumentEdge {
+		return []domain.DocumentEdge{
+			{SourceID: a, TargetID: b, EdgeType: domain.EdgeCoActivated, Weight: 0.3},
+			{SourceID: b, TargetID: a, EdgeType: domain.EdgeCoActivated, Weight: 0.3},
+		}
+	}
+	touching := func() int {
+		return g.n(`SELECT count(*) FROM document_edges WHERE source_id = ANY($1) OR target_id = ANY($1)`, chunks)
+	}
+
+	// 1. Before the erase: written.
+	if n, err := g.vec.SaveChunkEdges(g.ctx, pair(chunks[0], keep[0])); err != nil || n != 2 {
+		t.Fatalf("SaveChunkEdges between live chunks = %d, %v; want 2", n, err)
+	}
+
+	// 2. A write in flight across the erase: hold the endpoint lock and the edge
+	//    uncommitted (what SaveChunkEdges does between its lock and its commit) while
+	//    the erase runs.
+	tx, err := g.vec.Pool().Begin(g.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(g.ctx) //nolint:errcheck // no-op after commit
+	if _, err := tx.Exec(g.ctx, `SELECT id FROM chunks WHERE id = ANY($1) ORDER BY id FOR KEY SHARE`,
+		[]string{chunks[1], keep[1]}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(g.ctx, `INSERT INTO document_edges (source_id, target_id, edge_type, weight)
+		VALUES ($1, $2, 'co_activated', 0.3)`, chunks[1], keep[1]); err != nil {
+		t.Fatal(err)
+	}
+	erased := make(chan error, 1)
+	go func() {
+		_, err := g.svc.Forget(operatorGateCtx(), forget.Request{Selector: domain.ErasureSelector{DocumentIDs: []string{doc}},
+			Reason: domain.ErasureReasonCompliance})
+		erased <- err
+	}()
+	// The erase must reach the chunk DELETE and wait on the writer's lock.
+	deadline := time.Now().Add(15 * time.Second)
+	for g.n(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
+		AND wait_event_type = 'Lock' AND query LIKE 'DELETE FROM chunks%'`) == 0 {
+		select {
+		case err := <-erased:
+			t.Fatalf("the erase finished while a writer held its endpoint lock (err %v)", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the erase never waited on the writer's chunk lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := tx.Commit(g.ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-erased:
+		if err != nil {
+			t.Fatalf("Forget: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the erase never finished")
+	}
+	if n := touching(); n != 0 {
+		t.Fatalf("%d edge(s) still name an erased chunk (the in-flight write survived the erase)", n)
+	}
+
+	// 3. After the erase: skipped, nothing written; an edge between live chunks still is.
+	if n, err := g.vec.SaveChunkEdges(g.ctx, append(pair(chunks[2], keep[0]), pair(keep[0], keep[1])...)); err != nil || n != 2 {
+		t.Fatalf("SaveChunkEdges after the erase = %d, %v; want only the 2 live-live edges", n, err)
+	}
+	if n := touching(); n != 0 {
+		t.Fatalf("a Hebbian write after the erase re-created %d edge(s) to erased chunks", n)
+	}
+
+	// And the real recall path: recalls with Hebbian on after the erase never name an
+	// erased chunk, however their async writes are scheduled.
+	for i := 0; i < 3; i++ {
+		if _, err := g.mem.QueryService.Search(alice, g.tok("hebbkeep"), "eng411d-alice"); err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		if n := touching(); n != 0 {
+			t.Fatalf("a recall's Hebbian write named an erased chunk (%d edges)", n)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 // TestPg_Forget_ReingestIsNewAct is gate TestForget_ReingestIsNewAct (ADR-0137 Q4): after

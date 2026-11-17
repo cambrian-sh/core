@@ -50,6 +50,14 @@ type GraphStore interface {
 	SaveEdge(ctx context.Context, edge DocumentEdge) error
 	GetAdjacentEdges(ctx context.Context, docIDs []string) ([]DocumentEdge, error)
 	UpdateEdgeWeight(ctx context.Context, sourceID, targetID string, edgeType EdgeType, newWeight float32) error
+	// SaveChunkEdges upserts edges between two CHUNKS, writing only those whose both
+	// endpoints are live chunk rows when the write commits, and returns how many it
+	// wrote. It is the no-resurrection-safe write for an edge computed from a read that
+	// may predate an erasure (ADR-0137 D5): the Hebbian reinforcement (ADR-0049 D10)
+	// runs async after a recall, and a chunk erased in between must not get an edge
+	// back (document_edges has no FK, 0009). An edge to a missing endpoint is skipped,
+	// not an error.
+	SaveChunkEdges(ctx context.Context, edges []DocumentEdge) (int, error)
 }
 
 // GraphNodeExpansion represents a document discovered via BFS spreading activation.

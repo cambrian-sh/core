@@ -228,7 +228,8 @@ func (l *PgDocumentLifecycle) ReviseDocument(ctx context.Context, rev domain.Doc
 //
 // Order matters only where one step reads what a later one deletes: the chunk and
 // section ids are collected first, fact items are erased while their source chunks still
-// exist (EraseItemsTx re-derives surviving keys), and chunks go last.
+// exist (EraseItemsTx re-derives surviving keys), and edges go after the chunks (the
+// Hebbian write's fence, see step 5).
 func (l *PgDocumentLifecycle) retireDocumentsTx(ctx context.Context, tx pgx.Tx, docIDs []string) (domain.DocumentCascadeCounts, error) {
 	counts := domain.DocumentCascadeCounts{}
 	if len(docIDs) == 0 {
@@ -290,14 +291,17 @@ func (l *PgDocumentLifecycle) retireDocumentsTx(ctx context.Context, tx pgx.Tx, 
 		//    deleted by chunk id.
 		{cascadeTriplets, `DELETE FROM chunk_triplets WHERE chunk_id = ANY($1)`, chunkIDs},
 		{cascadePageRank, `DELETE FROM chunk_pagerank WHERE chunk_id = ANY($1)`, chunkIDs},
-		// 4. Structure and Hebbian edges touching any chunk, section or the document itself
-		//    (the target side has no FK, 0001/0009).
-		{cascadeEdges, `DELETE FROM document_edges WHERE source_id = ANY($1) OR target_id = ANY($1)`,
-			append(append(append([]string(nil), chunkIDs...), sectionIDs...), docIDs...)},
 	}
-	// 5. The sections and chunks themselves (chunk_embeddings cascade from chunks). This
+	// 4. The sections and chunks themselves (chunk_embeddings cascade from chunks). This
 	//    includes the source-doc entity stub, whose document_id is this document; the
 	//    ingest re-mints it after the new chunks.
+	// 5. Structure and Hebbian edges touching any chunk, section or the document itself
+	//    (the target side has no FK, 0001/0009) — AFTER the chunk rows (ENG-1951): the
+	//    async Hebbian write (PgVectorAdapter.SaveChunkEdges) fences on a FOR KEY SHARE
+	//    lock of its endpoint chunks, so a writer that locked first makes the chunk DELETE
+	//    wait for its commit and this edge DELETE then removes what it wrote; with edges
+	//    first, that writer could re-create an edge to a chunk deleted a moment later.
+	edgeEnds := append(append(append([]string(nil), chunkIDs...), sectionIDs...), docIDs...)
 	steps = append(steps,
 		struct {
 			table string
@@ -308,7 +312,12 @@ func (l *PgDocumentLifecycle) retireDocumentsTx(ctx context.Context, tx pgx.Tx, 
 			table string
 			sql   string
 			arg   []string
-		}{cascadeChunks, `DELETE FROM ` + TableChunks + ` WHERE document_id = ANY($1)`, docIDs})
+		}{cascadeChunks, `DELETE FROM ` + TableChunks + ` WHERE document_id = ANY($1)`, docIDs},
+		struct {
+			table string
+			sql   string
+			arg   []string
+		}{cascadeEdges, `DELETE FROM document_edges WHERE source_id = ANY($1) OR target_id = ANY($1)`, edgeEnds})
 	for _, st := range steps {
 		if len(st.arg) == 0 {
 			continue

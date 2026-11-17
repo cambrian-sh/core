@@ -608,7 +608,14 @@ func (s *PgErasureStore) eraseExperiences(ctx context.Context, run *erasureRun, 
 
 // eraseChunks erases single chunks and their derivatives: fact items keyed into them
 // (source_chunk value), KG triplets and PageRank (deleted explicitly so they are counted;
-// the 0051 FK would cascade them), structure/Hebbian edges, then the chunks.
+// the 0051 FK would cascade them), the chunks, then structure/Hebbian edges.
+//
+// Edges go AFTER the chunk rows (ENG-1951): document_edges has no FK, and the async
+// Hebbian write (PgVectorAdapter.SaveChunkEdges) fences on a FOR KEY SHARE lock of its
+// endpoint chunk rows. Deleting the chunks first makes this erase wait for a writer that
+// locked first, and the edge DELETE that follows then sees what it wrote; deleting the
+// edges first would leave a window in which that writer re-creates an edge to a chunk
+// this erase is about to delete.
 func (s *PgErasureStore) eraseChunks(ctx context.Context, run *erasureRun, chunkIDs []string) error {
 	if _, err := s.eraseItemsWhere(ctx, run,
 		`EXISTS (SELECT 1 FROM statement_values sv WHERE sv.item_id = ki.id AND sv.predicate = $2 AND sv.value_text = ANY($1))`,
@@ -622,8 +629,8 @@ func (s *PgErasureStore) eraseChunks(ctx context.Context, run *erasureRun, chunk
 	for _, st := range []struct{ store, sql string }{
 		{cascadeTriplets, `DELETE FROM chunk_triplets WHERE chunk_id = ANY($1)`},
 		{cascadePageRank, `DELETE FROM chunk_pagerank WHERE chunk_id = ANY($1)`},
-		{cascadeEdges, `DELETE FROM document_edges WHERE source_id = ANY($1) OR target_id = ANY($1)`},
 		{cascadeChunks, `DELETE FROM ` + TableChunks + ` WHERE id = ANY($1)`},
+		{cascadeEdges, `DELETE FROM document_edges WHERE source_id = ANY($1) OR target_id = ANY($1)`},
 	} {
 		if err := run.exec(ctx, st.store, st.sql, chunkIDs); err != nil {
 			return err

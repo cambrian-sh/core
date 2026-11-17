@@ -1606,6 +1606,84 @@ func (p *PgVectorAdapter) SaveEdge(ctx context.Context, edge domain.DocumentEdge
 	return mapError("SaveEdge", err)
 }
 
+// SaveChunkEdges upserts chunk-to-chunk edges (same columns and conflict rule as
+// SaveEdge) in one transaction, writing only edges whose both endpoints are live chunk
+// rows; it returns how many it wrote (ADR-0137 D5, ENG-1951).
+//
+// The fence is a row lock, not a pre-check: the endpoints are read FOR KEY SHARE, which
+// conflicts with the erase's DELETE of a chunk row, and both erase cascades
+// (PgErasureStore.eraseChunks, PgDocumentLifecycle.retireDocumentsTx) delete edges
+// AFTER the chunk rows. So either this transaction locks first — the erase's chunk
+// DELETE waits for its commit and the erase's later edge DELETE (a fresh READ COMMITTED
+// snapshot) removes what it wrote — or the erase deletes first, the lock waits for the
+// erase to commit and the rows are gone, so the edge is skipped. A plain existence
+// check would race; the per-document advisory lock of erasureFenceTx would not cover a
+// document-less chunk (a mnemonic fact, an episode chunk).
+func (p *PgVectorAdapter) SaveChunkEdges(ctx context.Context, edges []domain.DocumentEdge) (int, error) {
+	if len(edges) == 0 {
+		return 0, nil
+	}
+	seen := map[string]bool{}
+	ids := make([]string, 0, 2*len(edges))
+	for _, e := range edges {
+		for _, id := range []string{e.SourceID, e.TargetID} {
+			if id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	// Lock in id order so two concurrent writers cannot deadlock on each other.
+	sort.Strings(ids)
+
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, mapError("SaveChunkEdges: begin", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+
+	rows, err := tx.Query(ctx, `SELECT id FROM `+TableChunks+` WHERE id = ANY($1) ORDER BY id FOR KEY SHARE`, ids)
+	if err != nil {
+		return 0, mapError("SaveChunkEdges: lock endpoints", err)
+	}
+	live := make(map[string]bool, len(ids))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, mapError("SaveChunkEdges: scan", err)
+		}
+		live[id] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, mapError("SaveChunkEdges: endpoints", err)
+	}
+
+	written := 0
+	for _, e := range edges {
+		if !live[e.SourceID] || !live[e.TargetID] {
+			continue
+		}
+		sql, args, _ := dialect.Insert(TableEdges).Rows(goqu.Record{
+			"source_id": e.SourceID,
+			"target_id": e.TargetID,
+			"edge_type": string(e.EdgeType),
+			"weight":    e.Weight,
+		}).OnConflict(goqu.DoUpdate("source_id, target_id, edge_type", goqu.Record{
+			"weight": goqu.L("EXCLUDED.weight"),
+		})).ToSQL()
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			return 0, mapError("SaveChunkEdges", err)
+		}
+		written++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, mapError("SaveChunkEdges: commit", err)
+	}
+	return written, nil
+}
+
 // GetAdjacentEdges returns all edges where source_id is in docIDs.
 // Slice-only API enforces batch-per-depth query pattern (ADR-0017 review).
 func (p *PgVectorAdapter) GetAdjacentEdges(ctx context.Context, docIDs []string) ([]domain.DocumentEdge, error) {
