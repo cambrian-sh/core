@@ -259,7 +259,7 @@ func TestPg_GetObjectShowsFencedExtras(t *testing.T) {
 	e := newLPEnv(t, "lptest-extra")
 	e.seedEvidence("ext-")
 	e.mustObserve("lporder/o1", "status", txt("open"), 0, "ext-south", "x1")
-	e.mustObserve("lporder/o1", "weight", num(7), 0, "ext-south", "x2")     // undeclared → extra, south
+	e.mustObserve("lporder/o1", "weight", num(7), 0, "ext-south", "x2")      // undeclared → extra, south
 	e.mustObserve("lporder/o1", "carrier", txt("dhl"), 0, "ext-north", "x3") // undeclared → extra, north only
 	e.mustObserve("lporder/o1", "hazmat", txt("no"), 0, "ext-restr", "x4")   // undeclared → extra, restricted
 

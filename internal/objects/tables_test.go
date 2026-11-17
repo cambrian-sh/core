@@ -1,6 +1,9 @@
 package objects
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"reflect"
 	"regexp"
 	"strings"
@@ -38,10 +41,10 @@ func TestPlanTables_OnlyTableKindsWithTypedColumnsAndCompanions(t *testing.T) {
 		got[c.Name] = c.SQLType
 	}
 	want := map[string]string{
-		"status__text": "text", "status__tags": "text[]", "status__parties": "text[]",
-		"total__number": "double precision", "total__tags": "text[]", "total__parties": "text[]",
-		"due__date": "timestamptz", "due__tags": "text[]", "due__parties": "text[]",
-		"customer__entity": "text", "customer__tags": "text[]", "customer__parties": "text[]",
+		"status__text": "text", "status__tags": "text[]", "status__parties": "text[]", "status__rowtags": "text[]",
+		"total__number": "double precision", "total__tags": "text[]", "total__parties": "text[]", "total__rowtags": "text[]",
+		"due__date": "timestamptz", "due__tags": "text[]", "due__parties": "text[]", "due__rowtags": "text[]",
+		"customer__entity": "text", "customer__tags": "text[]", "customer__parties": "text[]", "customer__rowtags": "text[]",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("columns:\n got %v\nwant %v", got, want)
@@ -62,7 +65,7 @@ func TestPlanTables_NamespacesShareOneTableWithoutTypeConflicts(t *testing.T) {
 	for _, c := range tables[0].Columns {
 		names = append(names, c.Name)
 	}
-	if strings.Join(names, ",") != "ref__number,ref__parties,ref__tags,ref__text" {
+	if strings.Join(names, ",") != "ref__number,ref__parties,ref__rowtags,ref__tags,ref__text" {
 		t.Fatalf("one value column per (property, type), shared companions: %v", names)
 	}
 	if !reflect.DeepEqual(tables[0].Prefixes, []string{"order", "so"}) {
@@ -140,4 +143,38 @@ func TestPlanTables_Property_NamesFitAndPlanIsDeterministic(t *testing.T) {
 			t.Fatalf("table name %s too long", a[0].Name)
 		}
 	})
+}
+
+// ADR-0158 stage 4 bumps the row format to 3 (the <prop>__rowtags companions,
+// extra row_tags, fence-class triples): every table built under format 2 must be
+// stale, so the next Generate rebuilds it once.
+func TestPlanTables_RowFormat3MarksFormat2TablesStale(t *testing.T) {
+	spec := order(map[string]domain.ValueSpec{"status": {Type: "text"}})
+	tbl := PlanTables([]*domain.OntologySnapshot{snap(t, "*", spec)})[0]
+	var specJSON string
+	{
+		s, ok := snap(t, "*", spec).Kinds.Spec("order")
+		if !ok {
+			t.Fatal("order not declared")
+		}
+		raw, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		specJSON = string(raw)
+	}
+	hashUnder := func(format string) string {
+		h := sha256.New()
+		h.Write([]byte(format))
+		h.Write([]byte{0})
+		h.Write([]byte(specJSON))
+		h.Write([]byte{0})
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	if tbl.Hash != hashUnder("row-format:3") {
+		t.Fatalf("Table.Hash is not the row-format:3 fingerprint of the declarations")
+	}
+	if tbl.Hash == hashUnder("row-format:2") {
+		t.Fatal("a table built under row format 2 would not be rebuilt")
+	}
 }

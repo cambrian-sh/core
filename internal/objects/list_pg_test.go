@@ -154,6 +154,7 @@ type refLink struct {
 	from, to, relation, evidence string
 	family                       string
 	confirmed, retracted         bool
+	rowTags                      []string // links.classification (ADR-0158)
 }
 
 func (w refWorld) evidenceVisible(p *domain.TagPredicate, id string) bool {
@@ -176,7 +177,9 @@ func nonNilS(s []string) []string {
 }
 
 // visible is the per-property rule's reference: a value with no
-// classification (Tags nil) is visible only to ScopeMaintenance.
+// classification (Tags nil) is visible only to ScopeMaintenance; a value whose
+// row carries its own classification R passes CheckRow(E,P) AND
+// CheckRow(E ∪ R,P) (ADR-0158 D2), written out here from the Go predicate.
 func visible(p *domain.TagPredicate, c objects.Property) bool {
 	if p.Unfiltered() {
 		return true
@@ -184,7 +187,18 @@ func visible(p *domain.TagPredicate, c objects.Property) bool {
 	if c.Tags == nil {
 		return false
 	}
-	_, ok := p.CheckRow(c.Tags, nonNilS(c.Parties))
+	return typedVisible(p, c.Tags, nonNilS(c.Parties), c.RowTags)
+}
+
+// typedVisible is ADR-0158 D2 over CheckRow: both classifications must pass.
+func typedVisible(p *domain.TagPredicate, tags, parties, rowTags []string) bool {
+	if _, ok := p.CheckRow(tags, parties); !ok {
+		return false
+	}
+	if len(rowTags) == 0 {
+		return true
+	}
+	_, ok := p.CheckRow(append(append([]string{}, tags...), rowTags...), parties)
 	return ok
 }
 
@@ -197,7 +211,14 @@ func (w refWorld) value(p *domain.TagPredicate, entity, prop string) (domain.Sta
 }
 
 func (w refWorld) linkVisible(p *domain.TagPredicate, l refLink) bool {
-	return l.confirmed && !l.retracted && w.evidenceVisible(p, l.evidence)
+	if !l.confirmed || l.retracted || !w.evidenceVisible(p, l.evidence) {
+		return false
+	}
+	if p.Unfiltered() {
+		return true
+	}
+	r := w.evRows[l.evidence]
+	return typedVisible(p, r.tags, nonNilS(r.parties), l.rowTags)
 }
 
 func (w refWorld) exists(p *domain.TagPredicate, kind, entity string) bool {
@@ -499,7 +520,7 @@ func (e *lpEnv) readWorld(t *rapid.T, ev map[string]evidenceRow) refWorld {
 	cands := map[string][]objects.Candidate{}
 	rs, err := e.pool.Query(e.ctx, `
 		SELECT o.id, o.entity_id, o.predicate, o.value_type, o.value_text, o.value_number, o.value_date, o.value_entity_id,
-		       o.occurred_at, COALESCE(e.source_id,''), e.classification, e.parties, COALESCE(o.evidence_id, '')
+		       o.occurred_at, COALESCE(e.source_id,''), e.classification, e.parties, COALESCE(o.evidence_id, ''), o.classification
 		FROM observations o LEFT JOIN evidence e ON e.id = o.evidence_id
 		WHERE o.namespace_id = $1 AND NOT EXISTS (SELECT 1 FROM typed_row_retirements r
 		  WHERE r.namespace_id = o.namespace_id AND r.source_ref = o.source_ref AND r.reinstated_at IS NULL)`, e.ns)
@@ -513,9 +534,12 @@ func (e *lpEnv) readWorld(t *rapid.T, ev map[string]evidenceRow) refWorld {
 		var tx, ent *string
 		var nm *float64
 		var dt *time.Time
-		var tags, parties []string
-		if err := rs.Scan(&id, &entity, &c.Predicate, &c.Value.Type, &tx, &nm, &dt, &ent, &c.At, &c.Source, &tags, &parties, &c.EvidenceID); err != nil {
+		var tags, parties, rowTags []string
+		if err := rs.Scan(&id, &entity, &c.Predicate, &c.Value.Type, &tx, &nm, &dt, &ent, &c.At, &c.Source, &tags, &parties, &c.EvidenceID, &rowTags); err != nil {
 			t.Fatal(err)
+		}
+		if len(rowTags) > 0 {
+			c.RowTags = rowTags
 		}
 		switch {
 		case tx != nil:
@@ -567,14 +591,14 @@ func (e *lpEnv) readWorld(t *rapid.T, ev map[string]evidenceRow) refWorld {
 		w.minted[id] = evid
 	}
 	rs.Close()
-	rs, err = e.pool.Query(e.ctx, `SELECT from_ref, to_ref, relation, family, COALESCE(evidence_id,''), state = 'confirmed', retracted_at IS NOT NULL
+	rs, err = e.pool.Query(e.ctx, `SELECT from_ref, to_ref, relation, family, COALESCE(evidence_id,''), state = 'confirmed', retracted_at IS NOT NULL, classification
 		FROM links WHERE namespace_id = $1`, e.ns)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rs.Next() {
 		var l refLink
-		if err := rs.Scan(&l.from, &l.to, &l.relation, &l.family, &l.evidence, &l.confirmed, &l.retracted); err != nil {
+		if err := rs.Scan(&l.from, &l.to, &l.relation, &l.family, &l.evidence, &l.confirmed, &l.retracted, &l.rowTags); err != nil {
 			t.Fatal(err)
 		}
 		w.links = append(w.links, l)
@@ -600,10 +624,23 @@ func entityV(ref string) domain.StatementValue {
 	return domain.StatementValue{Type: "entity", EntityRef: ref}
 }
 
-// writeHistory writes a random history through the real stores.
-func (e *lpEnv) writeHistory(t *rapid.T, round int, evIDs []string) {
+// lpRowTags are the row classifications (ADR-0158) a history may carry: none
+// (most often); a closed tag some callers forbid; a party-scoped tag; and tags
+// that would WIDEN access under a plain union (r:north for the north reader on
+// south evidence, r:global for the any-of south/global reader).
+var lpRowTags = [][]string{nil, nil, nil, {"cls:restricted"}, {"cls:confidential"}, {"r:north"}, {"r:global", "r:south"}}
+
+// writeHistory writes a random history through the real stores. rowTagged:
+// whether rows may carry a row classification this round.
+func (e *lpEnv) writeHistory(t *rapid.T, round int, evIDs []string, rowTagged bool) {
 	var refs []string
 	evOrNone := append(append([]string{}, evIDs...), "")
+	drawRowTags := func(label string) []string {
+		if !rowTagged {
+			return nil
+		}
+		return rapid.SampledFrom(lpRowTags).Draw(t, label)
+	}
 	for i, n := 0, rapid.IntRange(4, 40).Draw(t, "ops"); i < n; i++ {
 		at := time.Duration(rapid.IntRange(0, 6).Draw(t, "at")) * time.Minute
 		ref := fmt.Sprintf("lp%d-%d", round, i)
@@ -625,14 +662,14 @@ func (e *lpEnv) writeHistory(t *rapid.T, round int, evIDs []string) {
 				pred, v = "colour", txt("red") // undeclared, open kind: extra only
 			}
 			ev := rapid.SampledFrom(evOrNone).Draw(t, "ev")
-			if err := e.observe(o, pred, v, at, domain.EvidenceID(ev), ref); err != nil {
+			if err := e.observeR(o, pred, v, at, domain.EvidenceID(ev), ref, drawRowTags("ort")...); err != nil {
 				t.Fatal(err)
 			}
 			refs = append(refs, ref)
 		case 4: // a customer observation
 			c := rapid.SampledFrom(lpCusts).Draw(t, "c")
 			ev := rapid.SampledFrom(evOrNone).Draw(t, "cev")
-			if err := e.observe(c, "segment", txt(rapid.SampledFrom(lpSegments).Draw(t, "seg")), at, domain.EvidenceID(ev), ref); err != nil {
+			if err := e.observeR(c, "segment", txt(rapid.SampledFrom(lpSegments).Draw(t, "seg")), at, domain.EvidenceID(ev), ref, drawRowTags("crt")...); err != nil {
 				t.Fatal(err)
 			}
 			refs = append(refs, ref)
@@ -655,7 +692,8 @@ func (e *lpEnv) writeHistory(t *rapid.T, round int, evIDs []string) {
 			}
 			if _, err := e.links.PutLink(e.ctx, domain.Link{NamespaceID: e.ns, FromRef: domain.EntityRef(from), ToRef: domain.EntityRef(to),
 				Relation: lpVerb, State: state, Mechanism: mech, SourceRef: ref,
-				EvidenceID: domain.EvidenceID(rapid.SampledFrom(evIDs).Draw(t, "lev")), AssertedBy: "test", AssertedAt: base.Add(at)}); err != nil {
+				EvidenceID: domain.EvidenceID(rapid.SampledFrom(evIDs).Draw(t, "lev")), AssertedBy: "test", AssertedAt: base.Add(at),
+				Classification: drawRowTags("lrt")}); err != nil {
 				t.Fatal(err)
 			}
 		case 7: // mint an entity handle with (or without) first-seen evidence
@@ -791,7 +829,9 @@ func TestPg_ListObjectsEqualsBruteForceFromHistory(t *testing.T) {
 			evIDs = append(evIDs, id)
 		}
 		sort.Strings(evIDs)
-		e.writeHistory(rt, round, evIDs)
+		// Half the rounds carry no row classification at all: then every read
+		// must equal the pre-ADR-0158 reference (R = ∅ changes nothing).
+		e.writeHistory(rt, round, evIDs, rapid.Bool().Draw(rt, "rowTagged"))
 		w := e.readWorld(rt, ev)
 		for qi := 0; qi < 3; qi++ {
 			q := drawQuery(rt)

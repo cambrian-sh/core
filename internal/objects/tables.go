@@ -24,7 +24,7 @@ import (
 // key). A property's value column carries its type in its name
 // (<property>__<type>), so two namespaces declaring one property with two types
 // get two columns instead of a conflict; its visibility companions
-// (<property>__tags, <property>__parties) are shared.
+// (<property>__tags, <property>__parties, <property>__rowtags) are shared.
 
 // Fixed columns of every object table.
 const (
@@ -46,8 +46,16 @@ const (
 // declarations. It is part of Table.Hash, so a change to it marks every table
 // stale and the next Generate rebuilds them: format 2 added vis_classes, which
 // rows written before it lack (NULL: such a row exists for no filtered caller
-// until it is rebuilt — closed, never open).
-const rowFormat = "row-format:2"
+// until it is rebuilt — closed, never open). Format 3 added the <prop>__rowtags
+// companions, extra entries' row_tags and (tags, parties, row_tags) fence
+// classes (ADR-0158 D2, stage 4). A row written before it reads as carrying no
+// row classification, which is exactly right for every row whose observations
+// carry none; the rebuild recomputes the rest. Because the maintainer writes an
+// empty row classification as NULL / omits it, the rebuild rewrites only rows
+// whose values carry one (the upsert skips an unchanged row), so on a database
+// without row classification the format-3 rebuild reads history and writes
+// nothing.
+const rowFormat = "row-format:3"
 
 // TableName is the object table of kind.
 func TableName(kind string) string { return "objects_" + kind }
@@ -57,9 +65,13 @@ func ValueColumn(property, valueType string) string { return property + "__" + v
 
 // TagsColumn and PartiesColumn are a property's visibility companions: the
 // classification and parties of the row its current value came from, so the
-// fence applies per property in filter, sort and aggregate (P4).
+// fence applies per property in filter, sort and aggregate (P4). RowTagsColumn
+// is the third (ADR-0158 D2): the row classification of the observation the
+// value came from, which can only narrow (sqlfence ObjectProperty(...).WithRowTags);
+// NULL when that row carries none.
 func TagsColumn(property string) string    { return property + "__tags" }
 func PartiesColumn(property string) string { return property + "__parties" }
+func RowTagsColumn(property string) string { return property + "__rowtags" }
 
 // sqlTypes maps a declared value type to its column type.
 var sqlTypes = map[string]string{
@@ -122,6 +134,7 @@ func PlanTables(snaps []*domain.OntologySnapshot) []Table {
 				a.columns[vc] = sqlTypes[v.Type]
 				a.columns[TagsColumn(p)] = "text[]"
 				a.columns[PartiesColumn(p)] = "text[]"
+				a.columns[RowTagsColumn(p)] = "text[]"
 				if v.Indexed {
 					a.indexed[vc] = true
 				}

@@ -46,11 +46,11 @@ func (r *Reader) List(ctx context.Context, scope *domain.TagPredicate, q domain.
 	out := domain.ObjectsResult{Kind: c.Spec.Kind, DeclVersion: c.DeclVersion}
 	if c.Group {
 		err = r.read(ctx, func(tx pgx.Tx) error {
-			vis, err := visibleClasses(ctx, tx, c, scope)
+			vis, rt, err := visibleClasses(ctx, tx, c, scope)
 			if err != nil {
 				return err
 			}
-			sql, args := planGroup(c, scope, vis)
+			sql, args := planGroup(c, scope, vis, rt)
 			out.Groups, out.Truncated, err = scanGroups(ctx, tx, c, sql, args)
 			return err
 		})
@@ -61,11 +61,11 @@ func (r *Reader) List(ctx context.Context, scope *domain.TagPredicate, q domain.
 		return domain.ObjectsResult{}, err
 	}
 	err = r.read(ctx, func(tx pgx.Tx) error {
-		vis, err := visibleClasses(ctx, tx, c, scope)
+		vis, rt, err := visibleClasses(ctx, tx, c, scope)
 		if err != nil {
 			return err
 		}
-		sql, args := planList(c, scope, cur, vis)
+		sql, args := planList(c, scope, cur, vis, rt)
 		rows, err := tx.Query(ctx, sql, args...)
 		if err != nil {
 			return err
@@ -96,32 +96,43 @@ func (r *Reader) List(ctx context.Context, scope *domain.TagPredicate, q domain.
 	return out, err
 }
 
-// visibleClasses computes the caller's visible fence classes V (planVisible)
-// when the request needs the existence rule; nil otherwise.
-func visibleClasses(ctx context.Context, tx pgx.Tx, c checked, scope *domain.TagPredicate) ([]int32, error) {
-	if !needsExistence(c, scope) {
-		return nil, nil
+// visibleClasses reads, in the request's snapshot, which row classifications
+// it holds (planRowTagged; for a filtered caller only — ScopeMaintenance renders
+// no fence) and the caller's visible fence classes V (planVisible) when the
+// request needs the existence rule (nil otherwise).
+func visibleClasses(ctx context.Context, tx pgx.Tx, c checked, scope *domain.TagPredicate) ([]int32, rowTagged, error) {
+	var rt rowTagged
+	if scope.Unfiltered() {
+		return nil, rt, nil
 	}
-	sql, args := planVisible(scope)
+	if err := tx.QueryRow(ctx, planRowTagged(c)).Scan(&rt.Values, &rt.Links); err != nil {
+		return nil, rt, err
+	}
+	if !needsExistence(c, scope) {
+		return nil, rt, nil
+	}
+	sql, args := planVisible(scope, rt.Values)
 	rows, err := tx.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, rt, err
 	}
 	vis, err := pgx.CollectRows(rows, pgx.RowTo[int32])
 	if err != nil {
-		return nil, err
+		return nil, rt, err
 	}
 	if vis == nil {
 		vis = []int32{} // binds '{}' (no class visible), never NULL
 	}
-	return vis, nil
+	return vis, rt, nil
 }
 
 // read runs fn in a read-only transaction under the statement timeout.
 //
-// REPEATABLE READ: a request may run two statements (the visible classes, then
-// the query), and both must see one snapshot, so a row rewritten between them
-// is judged by the classes of the same moment. A read-only transaction never
+// REPEATABLE READ: a request may run up to three statements (the row-tags
+// probe, the visible classes, then the query), and all must see one snapshot,
+// so a row rewritten between them is judged by the classes of the same moment,
+// and a row-classified row the query sees is one the probe saw (ADR-0158; the
+// plan renders the row-tags fence only when the probe found one). A read-only transaction never
 // fails serialization.
 //
 // jit = off: the planner's cost estimate for a fenced statement is inflated by

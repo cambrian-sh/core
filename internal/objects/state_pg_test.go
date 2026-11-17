@@ -131,9 +131,14 @@ func (e *env) evidenceP(id, source string, tags, parties []string) domain.Eviden
 	return domain.EvidenceID(id)
 }
 
-// pairKey is the test's own canonical rendering of a fence class: both sides
-// sorted and de-duplicated, absent parties empty.
-func pairKey(tags, parties []string) string {
+// pairKey is the test's own canonical rendering of a fence class with no row
+// classification.
+func pairKey(tags, parties []string) string { return classKey(tags, parties, nil) }
+
+// classKey is the test's own canonical rendering of a fence class triple
+// (ADR-0158 D2): every side sorted and de-duplicated, absent parties and row
+// tags empty.
+func classKey(tags, parties, rowTags []string) string {
 	set := func(xs []string) string {
 		m := map[string]bool{}
 		for _, x := range xs {
@@ -146,17 +151,17 @@ func pairKey(tags, parties []string) string {
 		sort.Strings(out)
 		return "[" + strings.Join(out, ",") + "]"
 	}
-	return set(tags) + "|" + set(parties)
+	return set(tags) + "|" + set(parties) + "|" + set(rowTags)
 }
 
 // expectedClasses is a row's vis_classes as the rule defines it, from an
 // independently computed state and the entity's minted evidence (nil = none):
-// every declared property's classified value's pair, and the minted pair.
+// every declared property's classified value's triple, and the minted pair.
 func expectedClasses(spec domain.KindSpec, st objects.State, minted *[2][]string) []string {
 	m := map[string]bool{}
 	for p := range spec.Predicates {
 		if v, ok := st.Props[p]; ok && v.Tags != nil {
-			m[pairKey(v.Tags, v.Parties)] = true
+			m[classKey(v.Tags, v.Parties, v.RowTags)] = true
 		}
 	}
 	if minted != nil {
@@ -191,13 +196,13 @@ func (e *env) classesOf(t interface {
 		if i > 0 && ids[i-1] >= id {
 			t.Fatalf("%s: vis_classes %v is not sorted and distinct", entity, ids)
 		}
-		var tags, parties []string
-		if err := e.pool.QueryRow(e.ctx, `SELECT tags, parties FROM object_fence_classes WHERE id = $1`, id).Scan(&tags, &parties); err != nil {
+		var tags, parties, rowTags []string
+		if err := e.pool.QueryRow(e.ctx, `SELECT tags, parties, row_tags FROM object_fence_classes WHERE id = $1`, id).Scan(&tags, &parties, &rowTags); err != nil {
 			t.Fatalf("%s: class %d: %v", entity, id, err)
 		}
-		k := pairKey(tags, parties)
-		if k != "["+strings.Join(tags, ",")+"]|["+strings.Join(parties, ",")+"]" {
-			t.Fatalf("class %d is not canonical: %v %v", id, tags, parties)
+		k := classKey(tags, parties, rowTags)
+		if k != "["+strings.Join(tags, ",")+"]|["+strings.Join(parties, ",")+"]|["+strings.Join(rowTags, ",")+"]" {
+			t.Fatalf("class %d is not canonical: %v %v %v", id, tags, parties, rowTags)
 		}
 		out = append(out, k)
 	}
@@ -530,7 +535,7 @@ func bruteForce(t *rapid.T, e *env, spec domain.KindSpec) map[string]objects.Sta
 	cands := map[string][]objects.Candidate{}
 	rs, err := e.pool.Query(e.ctx, `
 		SELECT o.id, o.entity_id, o.predicate, o.value_type, o.value_text, o.value_number, o.occurred_at, COALESCE(e.source_id,''),
-		       e.classification, e.parties
+		       e.classification, e.parties, o.classification
 		FROM observations o LEFT JOIN evidence e ON e.id = o.evidence_id
 		WHERE o.namespace_id = $1 AND NOT EXISTS (SELECT 1 FROM typed_row_retirements r
 		  WHERE r.namespace_id = o.namespace_id AND r.source_ref = o.source_ref AND r.reinstated_at IS NULL)`, e.ns)
@@ -543,8 +548,12 @@ func bruteForce(t *rapid.T, e *env, spec domain.KindSpec) map[string]objects.Sta
 		var entity string
 		var tx *string
 		var nm *float64
-		if err := rs.Scan(&id, &entity, &c.Predicate, &c.Value.Type, &tx, &nm, &c.At, &c.Source, &c.Tags, &c.Parties); err != nil {
+		var rowTags []string
+		if err := rs.Scan(&id, &entity, &c.Predicate, &c.Value.Type, &tx, &nm, &c.At, &c.Source, &c.Tags, &c.Parties, &rowTags); err != nil {
 			t.Fatal(err)
+		}
+		if len(rowTags) > 0 {
+			c.RowTags = rowTags
 		}
 		if c.Tags != nil && c.Parties == nil {
 			c.Parties = []string{}
@@ -627,7 +636,9 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 					v = txt(rapid.SampledFrom([]string{"open", "shipped"}).Draw(rt, "s"))
 				}
 				ev := domain.EvidenceID(rapid.SampledFrom(append(append([]string{}, evs...), "")).Draw(rt, "ev"))
-				if err := e.observe(entity, pred, v, at, ev, ref); err != nil {
+				// ADR-0158: the observation's own row classification, mostly none.
+				rowTags := rapid.SampledFrom([][]string{nil, nil, {"hr"}, {"hr", "pay"}}).Draw(rt, "rowtags")
+				if err := e.observeR(entity, pred, v, at, ev, ref, rowTags...); err != nil {
 					rt.Fatal(err)
 				}
 				refs = append(refs, ref)
@@ -687,6 +698,14 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 				if got[col] != valueOf(p.Value) || prov(got, pred)["id"] != p.ID || prov(got, pred)["conflict"] != p.Conflict {
 					rt.Fatalf("%s.%s: table %v %v, history %+v", entity, pred, got[col], prov(got, pred), p)
 				}
+				// The row-tags companion: NULL when the value's row carries none.
+				wantRT := "<nil>"
+				if len(p.RowTags) > 0 {
+					wantRT = fmt.Sprint(p.RowTags)
+				}
+				if gotRT := fmt.Sprint(got[objects.RowTagsColumn(pred)]); gotRT != wantRT {
+					rt.Fatalf("%s.%s row tags: table %s, history %s", entity, pred, gotRT, wantRT)
+				}
 			}
 			// vis_classes: exactly the classified properties' pairs and the
 			// minted evidence's, canonical, through the dictionary.
@@ -696,10 +715,19 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 			extra, _ := got["extra"].(map[string]any)
 			var gotX, wantX []string
 			for k, v := range extra {
-				gotX = append(gotX, k+"="+fmt.Sprint(v.(map[string]any)["id"]))
+				x := v.(map[string]any)
+				gotX = append(gotX, k+"="+fmt.Sprint(x["id"])+fmt.Sprint(x["row_tags"]))
 			}
 			for k, v := range st.Extra {
-				wantX = append(wantX, k+"="+v.ID)
+				var rtags any // absent when the row carries none (omitempty)
+				if len(v.RowTags) > 0 {
+					l := make([]any, len(v.RowTags))
+					for i, s := range v.RowTags {
+						l[i] = s
+					}
+					rtags = l
+				}
+				wantX = append(wantX, k+"="+v.ID+fmt.Sprint(rtags))
 			}
 			sort.Strings(gotX)
 			sort.Strings(wantX)

@@ -23,7 +23,7 @@ import (
 // viaTypedRow / the objects equivalent), which can only narrow. Every entry left
 // here is a ref that is NOT a typed row — an entity's minting evidence
 // (first_seen_evidence: ADR-0158 stage 5 classifies the mint), the evidence
-// outbox — or one of the objects sites ADR-0158 stage 4 moves.
+// outbox — or the objects link filter, gated as its comment says.
 //
 // If this test fails because you added an EvidenceExists call: if the column
 // belongs to events, observations or links, use TypedRowExists instead; if it
@@ -48,13 +48,12 @@ func TestEvidenceExistsNeverFencesATypedRow(t *testing.T) {
 		`internal/objects/get.go: evidenceVisible("en.first_seen_evidence")`,
 		`internal/ontology/violations.go: EvidenceExists("en.first_seen_evidence")`,
 
-		// Objects typed-row sites ADR-0158 stage 4 moves (D3 sites 38, 41-44):
-		// link filters, GetObject links, alternatives, event and observation
-		// timelines. Stage 4 must delete these lines.
-		`internal/objects/get.go: evidenceVisible("l.evidence_id")`,
-		`internal/objects/get.go: EvidenceExists("o.evidence_id")`,
-		`internal/objects/get.go: evidenceVisible("ev.evidence_id")`,
-		`internal/objects/get.go: evidenceVisible("o.evidence_id")`,
+		// Objects list/group link filters (ADR-0158 stage 4, D3 site 38): the
+		// evidence-only fence is rendered ONLY when the request's snapshot holds
+		// no link with a row classification (objects rowTagged.Links, probed in
+		// the same REPEATABLE READ transaction), where it admits exactly what
+		// TypedRowExists would; otherwise the link fence is typedRowVisible.
+		// Kept so the P4 plan stays byte-identical on unclassified data.
 		`internal/objects/plan.go: evidenceVisible(l + ".evidence_id")`,
 	}
 

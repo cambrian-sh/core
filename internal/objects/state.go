@@ -105,17 +105,20 @@ func applyEntity(ctx context.Context, tx pgx.Tx, kinds domain.KindSource, ns, en
 	return upsertRow(ctx, tx, spec, reg.Version(), ns, entity, st, classes)
 }
 
-// classPair is one canonical (tags, parties) pair of the class dictionary
-// (object_fence_classes, migration 0043).
-type classPair struct {
+// classTriple is one canonical (tags, parties, row_tags) triple of the class
+// dictionary (object_fence_classes, migrations 0043 and 0055): the three
+// companions a property value's fence reads (ADR-0158 D2).
+type classTriple struct {
 	Tags    []string `json:"tags"`
 	Parties []string `json:"parties"`
+	RowTags []string `json:"row_tags"`
 }
 
-// canonical sorts and de-duplicates both sides; absent parties are '{}'. The
-// fence reads a pair only through set operations, so this changes no decision
-// and makes one pair one dictionary row.
-func canonical(tags, parties []string) classPair {
+// canonical sorts and de-duplicates every side; absent parties and row tags are
+// '{}'. The fence reads a triple only through set operations (and the row-tags
+// side through cardinality and concatenation), so this changes no decision and
+// makes one triple one dictionary row.
+func canonical(tags, parties, rowTags []string) classTriple {
 	set := func(xs []string) []string {
 		out := make([]string, 0, len(xs))
 		seen := map[string]bool{}
@@ -128,31 +131,34 @@ func canonical(tags, parties []string) classPair {
 		sort.Strings(out)
 		return out
 	}
-	return classPair{Tags: set(tags), Parties: set(parties)}
+	return classTriple{Tags: set(tags), Parties: set(parties), RowTags: set(rowTags)}
 }
 
 // rowClasses is the row's vis_classes (ADR-0149 D6, the existence rule of
-// ADR-0128 D12 interned): the dictionary ids of the pairs that can make the
+// ADR-0128 D12 interned): the dictionary ids of the triples that can make the
 // object exist for a caller —
-//   - every declared property's current value's (tags, parties), exactly the
-//     companions upsertRow writes; a value with no classification (Tags nil, a
-//     NULL tags column) is never a class, as it is visible to no filtered caller;
-//   - the (classification, parties) of the evidence that minted the entity, read
+//   - every declared property's current value's (tags, parties, row_tags),
+//     exactly the companions upsertRow writes; a value with no classification
+//     (Tags nil, a NULL tags column) is never a class, as it is visible to no
+//     filtered caller;
+//   - the (classification, parties, '{}') of the evidence that minted the
+//     entity (its row classification is ADR-0158 stage 5's), read
 //     with the existence rule's own join (entities.first_seen_evidence). That row
 //     is written by the entity mint, which calls the maintainer when it creates
 //     one (PgEntityStore.EnsureEntity), and neither it nor the evidence row is
 //     ever updated, so the class cannot go stale.
 //
-// The object exists for a reader exactly when one of these pairs passes the
-// fence: the per-property fence is sqlfence.ObjectProperty, the dictionary's is
-// sqlfence.FenceClass (the same shape), and the evidence fence differs from it
-// only by the present term, which a NOT NULL classification always passes.
+// The object exists for a reader exactly when one of these triples passes the
+// fence: the per-property fence is sqlfence.ObjectProperty(...).WithRowTags, the
+// dictionary's is sqlfence.FenceClassRowTags (the same shape), and the evidence
+// fence differs from it only by the present term, which a NOT NULL
+// classification always passes.
 func rowClasses(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, ns, entity string, st State) ([]int32, error) {
-	var pairs []classPair
+	var pairs []classTriple
 	seen := map[string]bool{}
-	add := func(tags, parties []string) {
-		c := canonical(tags, parties)
-		raw, _ := json.Marshal(c) // two string slices always marshal
+	add := func(tags, parties, rowTags []string) {
+		c := canonical(tags, parties, rowTags)
+		raw, _ := json.Marshal(c) // three string slices always marshal
 		if key := string(raw); !seen[key] {
 			seen[key] = true
 			pairs = append(pairs, c)
@@ -160,7 +166,7 @@ func rowClasses(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, ns, entity
 	}
 	for p := range spec.Predicates {
 		if v, ok := st.Props[p]; ok && v.Tags != nil {
-			add(v.Tags, v.Parties)
+			add(v.Tags, v.Parties, v.RowTags)
 		}
 	}
 	var tags, parties []string
@@ -168,17 +174,18 @@ func rowClasses(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, ns, entity
 		WHERE en.id = $1 AND en.namespace_id = $2`, entity, ns).Scan(&tags, &parties)
 	switch {
 	case err == nil:
-		add(tags, parties)
+		add(tags, parties, nil)
 	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, err
 	}
 	return internClasses(ctx, tx, pairs)
 }
 
-// internClasses returns the dictionary ids of pairs (canonical, distinct),
-// sorted, inserting the pairs the dictionary lacks. The dictionary is
-// append-only and unique on the pair, so a pair has one id forever and a retry
-// reuses it. A pair another transaction inserted after this statement's
+// internClasses returns the dictionary ids of triples (canonical, distinct),
+// sorted, inserting the triples the dictionary lacks. The dictionary is
+// append-only and unique on the triple, so a triple has one id forever and a
+// retry reuses it (a pair interned before migration 0055 is the triple with
+// empty row tags, under its old id). A triple another transaction inserted after this statement's
 // snapshot is skipped by ON CONFLICT and not yet visible to the same statement;
 // the next attempt (a new READ COMMITTED snapshot, taken after ON CONFLICT
 // waited for that transaction) sees it.
@@ -189,7 +196,7 @@ func rowClasses(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, ns, entity
 // like any transient failure. That needs two concurrent writers both minting
 // new classification combinations, which is rare once a deployment's classes
 // exist; pairs inside one statement are inserted in sorted order.
-func internClasses(ctx context.Context, tx pgx.Tx, pairs []classPair) ([]int32, error) {
+func internClasses(ctx context.Context, tx pgx.Tx, pairs []classTriple) ([]int32, error) {
 	if len(pairs) == 0 {
 		return []int32{}, nil
 	}
@@ -199,16 +206,16 @@ func internClasses(ctx context.Context, tx pgx.Tx, pairs []classPair) ([]int32, 
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		rows, err := tx.Query(ctx, `
-			WITH want AS (SELECT x.tags, x.parties FROM jsonb_to_recordset($1::jsonb) AS x(tags text[], parties text[])),
+			WITH want AS (SELECT x.tags, x.parties, x.row_tags FROM jsonb_to_recordset($1::jsonb) AS x(tags text[], parties text[], row_tags text[])),
 			ins AS (
-				INSERT INTO object_fence_classes (tags, parties)
-				SELECT w.tags, w.parties FROM want w
-				WHERE NOT EXISTS (SELECT 1 FROM object_fence_classes c WHERE c.tags = w.tags AND c.parties = w.parties)
-				ORDER BY w.tags, w.parties
-				ON CONFLICT (tags, parties) DO NOTHING
+				INSERT INTO object_fence_classes (tags, parties, row_tags)
+				SELECT w.tags, w.parties, w.row_tags FROM want w
+				WHERE NOT EXISTS (SELECT 1 FROM object_fence_classes c WHERE c.tags = w.tags AND c.parties = w.parties AND c.row_tags = w.row_tags)
+				ORDER BY w.tags, w.parties, w.row_tags
+				ON CONFLICT (tags, parties, row_tags) DO NOTHING
 				RETURNING id)
 			SELECT id FROM ins
-			UNION SELECT c.id FROM object_fence_classes c JOIN want w ON c.tags = w.tags AND c.parties = w.parties`, string(doc))
+			UNION SELECT c.id FROM object_fence_classes c JOIN want w ON c.tags = w.tags AND c.parties = w.parties AND c.row_tags = w.row_tags`, string(doc))
 		if err != nil {
 			return nil, err
 		}
@@ -230,13 +237,14 @@ func internClasses(ctx context.Context, tx pgx.Tx, pairs []classPair) ([]int32, 
 // — and every value of every knowledge item that is a current resolution
 // winner about the entity. An entity-scoped kind contributes only its
 // cross-actor row (its per-actor rows are each speaker's word, kept for
-// contradictions, ADR-0106).
+// contradictions, ADR-0106). An observation's own row classification
+// (o.classification, ADR-0158 D1) rides along as the candidate's RowTags.
 func readCandidates(ctx context.Context, tx pgx.Tx, reg *domain.KindRegistry, ns, entity string) ([]Candidate, error) {
 	var out []Candidate
 	rows, err := tx.Query(ctx, `
 		SELECT DISTINCT ON (o.predicate, COALESCE(e.source_id, ''), o.value_type)
 			o.id, o.predicate, o.value_type, o.value_date, o.value_number, o.value_text, o.value_entity_id,
-			o.occurred_at, COALESCE(e.source_id, ''), e.classification, e.parties, COALESCE(o.evidence_id, '')
+			o.occurred_at, COALESCE(e.source_id, ''), e.classification, e.parties, COALESCE(o.evidence_id, ''), o.classification
 		FROM observations o
 		LEFT JOIN evidence e ON e.id = o.evidence_id
 		WHERE o.namespace_id = $1 AND o.entity_id = $2`+NotRetired("o")+`
@@ -247,9 +255,9 @@ func readCandidates(ctx context.Context, tx pgx.Tx, reg *domain.KindRegistry, ns
 	for rows.Next() {
 		var c Candidate
 		var id int64
-		var tags, parties []string
+		var tags, parties, rowTags []string
 		if err := scanValue(rows, &c, func(v ...any) []any {
-			return append([]any{&id}, append(v, &c.At, &c.Source, &tags, &parties, &c.EvidenceID)...)
+			return append([]any{&id}, append(v, &c.At, &c.Source, &tags, &parties, &c.EvidenceID, &rowTags)...)
 		}); err != nil {
 			rows.Close()
 			return nil, err
@@ -258,6 +266,9 @@ func readCandidates(ctx context.Context, tx pgx.Tx, reg *domain.KindRegistry, ns
 		c.Tags, c.Parties = tags, parties
 		if c.Tags != nil && c.Parties == nil {
 			c.Parties = []string{}
+		}
+		if len(rowTags) > 0 { // '{}' is no row classification: nil, so the companion stays NULL
+			c.RowTags = rowTags
 		}
 		out = append(out, c)
 	}
@@ -350,6 +361,10 @@ type provenance struct {
 	Evidence string   `json:"ev,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
 	Parties  []string `json:"parties,omitempty"`
+	// RowTags is an extra entry's row classification (ADR-0158 D2; read by
+	// sqlfence.ObjectExtraRowTags). omitempty: an entry whose row carries none is
+	// byte-identical to one written before row format 3.
+	RowTags  []string `json:"row_tags,omitempty"`
 	Conflict bool     `json:"conflict"`
 }
 
@@ -391,7 +406,7 @@ func upsertRow(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, declVersion
 	extra := map[string]provenance{}
 	for p, v := range st.Extra {
 		e := provOf(v)
-		e.Type, e.Value, e.Tags, e.Parties = v.Value.Type, jsonValue(v.Value), v.Tags, v.Parties
+		e.Type, e.Value, e.Tags, e.Parties, e.RowTags = v.Value.Type, jsonValue(v.Value), v.Tags, v.Parties, v.RowTags
 		extra[p] = e
 	}
 	provJSON, err := json.Marshal(prov)
@@ -414,11 +429,18 @@ func upsertRow(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, declVersion
 	}
 	sort.Strings(preds)
 	for _, p := range preds {
-		cols = append(cols, ValueColumn(p, spec.Predicates[p].Type), TagsColumn(p), PartiesColumn(p))
+		cols = append(cols, ValueColumn(p, spec.Predicates[p].Type), TagsColumn(p), PartiesColumn(p), RowTagsColumn(p))
 		if v, ok := st.Props[p]; ok {
-			args = append(args, columnValue(v.Value), v.Tags, v.Parties)
+			// An empty row classification is written as NULL (the fence reads NULL
+			// as empty): a row whose values carry none is then byte-identical to
+			// what row format 2 wrote, and the format-3 rebuild skips it.
+			var rowTags []string
+			if len(v.RowTags) > 0 {
+				rowTags = v.RowTags
+			}
+			args = append(args, columnValue(v.Value), v.Tags, v.Parties, rowTags)
 		} else {
-			args = append(args, nil, nil, nil)
+			args = append(args, nil, nil, nil, nil)
 		}
 	}
 	quoted := make([]string, len(cols))

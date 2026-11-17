@@ -23,9 +23,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -120,11 +122,19 @@ func (st *state) snapshots() []*domain.OntologySnapshot {
 }
 
 // rebuild recomputes each stale object table from history (objects.Rebuild).
+// Each rebuild is logged with the entities it walked and how long it took: a
+// declarations change or a row-format bump (objects rowFormat, e.g. ADR-0158
+// stage 4) rebuilds every affected table once, at boot or on the change, and an
+// operator should see what that cost.
 func (o *Ontology) rebuild(ctx context.Context, stale []objects.Table) error {
 	for _, t := range stale {
-		if _, err := objects.Rebuild(ctx, o.pool, o, t); err != nil {
+		start := time.Now()
+		n, err := objects.Rebuild(ctx, o.pool, o, t)
+		if err != nil {
 			return err
 		}
+		slog.InfoContext(ctx, "objects: table rebuilt from history", "table", t.Name, "entities", n,
+			"duration_ms", time.Since(start).Milliseconds())
 	}
 	return nil
 }

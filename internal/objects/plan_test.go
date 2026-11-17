@@ -21,7 +21,7 @@ import (
 // identifier comes from input, tokens round-trip and are refused under changed
 // parameters.
 
-var updatePlans = flag.Bool("update-plans", false, "rewrite testdata/plan.golden")
+var updatePlans = flag.Bool("update-plans", false, "rewrite testdata/plan.golden and testdata/plan_rowtags.golden")
 
 func planKinds(t testing.TB) (*domain.KindRegistry, *domain.RelationRegistry) {
 	kinds, err := domain.NewKindRegistry([]domain.KindSpec{
@@ -215,11 +215,27 @@ func goldenScopes() []struct {
 // result) in the golden: a constant, as the reader binds it.
 var goldenVis = []int32{3, 5, 8}
 
+// TestPlan_Golden pins the plans for a snapshot WITHOUT row classification
+// (rowTagged zero: no fence class carries row tags, no link a classification) —
+// every deployment until a mapping writes one (ADR-0158). They must stay the
+// statements P4 shipped, byte for byte: the benchmark harness ports this file
+// (cambrian-benchmarks objstate/p4plan.py, tests/test_p4plan_parity.py).
 func TestPlan_Golden(t *testing.T) {
+	checkPlanGolden(t, "testdata/plan.golden", rowTagged{})
+}
+
+// TestPlan_GoldenRowTagged pins the plans for a snapshot that holds row
+// classification (ADR-0158 D2, stage 4): every property fence, the visible
+// classes and every link filter carry the narrow-only row-tags conjunct.
+func TestPlan_GoldenRowTagged(t *testing.T) {
+	checkPlanGolden(t, "testdata/plan_rowtags.golden", allRowTagged)
+}
+
+func checkPlanGolden(t *testing.T, path string, rt rowTagged) {
 	kinds, rels := planKinds(t)
 	var b strings.Builder
 	for _, s := range goldenScopes() {
-		sql, args := planVisible(s.p)
+		sql, args := planVisible(s.p, rt.Values)
 		fmt.Fprintf(&b, "== visible %s\n%s\n-- args: %s\n\n", s.name, sql, renderArgs(args))
 	}
 	for _, r := range goldenRequests() {
@@ -235,15 +251,14 @@ func TestPlan_Golden(t *testing.T) {
 				vis = goldenVis
 			}
 			if c.Group {
-				sql, args = planGroup(c, s.p, vis)
+				sql, args = planGroup(c, s.p, vis, rt)
 			} else {
-				sql, args = planList(c, s.p, nil, vis)
+				sql, args = planList(c, s.p, nil, vis, rt)
 			}
 			fmt.Fprintf(&b, "== %s %s\n%s\n-- args: %s\n\n", r.name, s.name, sql, renderArgs(args))
 		}
 	}
 	got := b.String()
-	path := "testdata/plan.golden"
 	if *updatePlans {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
 			t.Fatal(err)
@@ -254,7 +269,25 @@ func TestPlan_Golden(t *testing.T) {
 		t.Fatalf("%v (run with -update-plans to create it)", err)
 	}
 	if string(want) != got {
-		t.Fatalf("plans changed; inspect the diff and rerun with -update-plans if intended")
+		t.Fatalf("%s: plans changed; inspect the diff and rerun with -update-plans if intended", path)
+	}
+}
+
+// The row-tags probe asks about links only when the request filters by one.
+func TestPlan_RowTaggedProbe(t *testing.T) {
+	kinds, rels := planKinds(t)
+	for _, r := range goldenRequests() {
+		c, err := validate(r.q, kinds, rels)
+		if err != nil {
+			t.Fatalf("%s: %v", r.name, err)
+		}
+		sql := planRowTagged(c)
+		if !strings.HasPrefix(sql, "SELECT EXISTS (SELECT 1 FROM object_fence_classes WHERE cardinality(row_tags) > 0), ") {
+			t.Fatalf("%s: %s", r.name, sql)
+		}
+		if asksLinks := strings.Contains(sql, "FROM links WHERE cardinality(classification) > 0"); asksLinks != (len(c.Links) > 0) {
+			t.Fatalf("%s: probe asks about links = %v with %d link filters: %s", r.name, asksLinks, len(c.Links), sql)
+		}
 	}
 }
 
@@ -351,12 +384,13 @@ func TestPlan_Properties(t *testing.T) {
 	for _, k := range []string{"order", "customer", "group"} {
 		spec, _ := kinds.Spec(k)
 		for p, v := range spec.Predicates {
-			allowed[ValueColumn(p, v.Type)], allowed[TagsColumn(p)], allowed[PartiesColumn(p)] = true, true, true
+			allowed[ValueColumn(p, v.Type)], allowed[TagsColumn(p)], allowed[PartiesColumn(p)], allowed[RowTagsColumn(p)] = true, true, true, true
 		}
 	}
 	rapid.Check(t, func(rt *rapid.T) {
 		q := drawRequest(rt)
 		scope := drawScope(rt)
+		tagged := rowTagged{Values: rapid.Bool().Draw(rt, "rtValues"), Links: rapid.Bool().Draw(rt, "rtLinks")}
 		c, err := validate(q, kinds, rels)
 		if err != nil {
 			if !errors.Is(err, domain.ErrObjectsInvalid) {
@@ -371,7 +405,7 @@ func TestPlan_Properties(t *testing.T) {
 			vis = []int32{1}
 		}
 		if c.Group {
-			sql, args = planGroup(c, scope, vis)
+			sql, args = planGroup(c, scope, vis, tagged)
 		} else {
 			cur := &cursor{ID: "order/x", Keys: make([]any, len(c.OrderBy))}
 			for i, o := range c.OrderBy {
@@ -380,7 +414,7 @@ func TestPlan_Properties(t *testing.T) {
 				}
 				cur.Keys[i] = map[string]any{"text": "k", "entity": "e/1", "number": 1.5, "date": time.Unix(0, 0).UTC()}[o.Prop.Type]
 			}
-			sql, args = planList(c, scope, cur, vis)
+			sql, args = planList(c, scope, cur, vis, tagged)
 		}
 		// Every validated request compiles: placeholders are exactly $1..$len(args).
 		max := 0
@@ -407,6 +441,12 @@ func TestPlan_Properties(t *testing.T) {
 				if !strings.Contains(sql, m[1]+`."`+m[2]+`__tags" IS NOT NULL`) {
 					rt.Fatalf("%s.%s read with no fence\n%s", m[1], m[2], sql)
 				}
+				// ADR-0158 D2: with row-classified values in the snapshot, every
+				// value's fence carries its row-tags conjunct; without, none does.
+				hasRow := strings.Contains(sql, `cardinality(`+m[1]+`."`+m[2]+`__rowtags") = 0`)
+				if hasRow != tagged.Values {
+					rt.Fatalf("%s.%s row-tags fence present=%v, rowTagged.Values=%v\n%s", m[1], m[2], hasRow, tagged.Values, sql)
+				}
 			}
 			// The existence rule is present exactly when needed, as the class test.
 			if hasEx := strings.Contains(sql, `unnest(o."vis_classes")`); hasEx != needsExistence(c, scope) {
@@ -414,6 +454,9 @@ func TestPlan_Properties(t *testing.T) {
 			}
 			if len(c.Links) > 0 && !regexp.MustCompile(`FROM evidence e\s+WHERE e\.id = l0_0\.evidence_id`).MatchString(sql) {
 				rt.Fatalf("link without its evidence fence\n%s", sql)
+			}
+			if hasRow := strings.Contains(sql, "cardinality(l0_0.classification) = 0"); len(c.Links) > 0 && hasRow != tagged.Links {
+				rt.Fatalf("link row-tags fence present=%v, rowTagged.Links=%v\n%s", hasRow, tagged.Links, sql)
 			}
 		}
 	})

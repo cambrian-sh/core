@@ -336,6 +336,15 @@ var concurrentIndexes = []concurrentIndex{
 	// written before 0026 carry no digest and can never match.
 	{name: "idx_documents_writer_digest", table: "documents",
 		using: "(written_by, content_digest) WHERE content_digest IS NOT NULL", requires: 26},
+	// ADR-0158 D2 (objects, stage 4): the objects reader renders the row-tags
+	// fence on its link filters only when some link carries a row classification
+	// (internal/objects visibleClasses: EXISTS (SELECT 1 FROM links WHERE
+	// cardinality(classification) > 0), repeating this predicate). Partial, so it
+	// holds only classified links — none until a mapping writes them — and the
+	// probe is one empty index lookup instead of a scan of links. 0054 creates the
+	// column.
+	{name: "idx_links_row_classified", table: "links",
+		using: "(id) WHERE cardinality(classification) > 0", requires: 54},
 }
 
 // ItemEmbeddingIndexName is the per-dimension partial HNSW index of the ADR-0136 A1 item

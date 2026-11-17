@@ -45,8 +45,14 @@ type Candidate struct {
 	// per-property companions the P4 fence reads. Tags is nil when the row has
 	// no evidence to classify it (an observation without evidence), which no
 	// filtered reader may see.
-	Tags       []string
-	Parties    []string
+	Tags    []string
+	Parties []string
+	// RowTags is the row classification of the observation the value came from
+	// (observations.classification, ADR-0158 D1): tags that can only narrow who
+	// sees the value — the fence is fence(Tags) AND fence(Tags ∪ RowTags), same
+	// parties (D2). nil when the row carries none, and always for a knowledge
+	// item's value (items carry their own classification in Tags).
+	RowTags    []string
 	EvidenceID string
 }
 

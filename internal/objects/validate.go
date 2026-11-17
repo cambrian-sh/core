@@ -50,6 +50,7 @@ type prop struct {
 func (p prop) valueCol() string   { return ValueColumn(p.Name, p.Type) }
 func (p prop) tagsCol() string    { return TagsColumn(p.Name) }
 func (p prop) partiesCol() string { return PartiesColumn(p.Name) }
+func (p prop) rowTagsCol() string { return RowTagsColumn(p.Name) }
 
 // cond is a validated condition on a resolved property.
 type cond struct {

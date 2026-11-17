@@ -19,10 +19,12 @@ import (
 // existing pieces — the object row (current values and their provenance), the
 // entity handle, confirmed links, events, observations, and the kind's
 // lifecycle declaration. Every read is fenced through the one fence renderer
-// (sqlfence): values per property (ObjectProperty), links, events and
-// observations by their own evidence (EvidenceExists), alternative item values
-// by their classification (TextArray). Nothing the caller cannot see is
-// present — omitted, never redacted.
+// (sqlfence): values per property (ObjectProperty with the value's row tags)
+// and undeclared values per entry (ObjectExtraRowTags); links, events and
+// observations by their own evidence AND their own row classification
+// (TypedRowExists, ADR-0158 D2: narrow-only, identical for an empty one);
+// alternative item values by their classification (TextArray). Nothing the
+// caller cannot see is present — omitted, never redacted.
 
 // Bounds of an object page.
 const (
@@ -88,7 +90,7 @@ func (r *Reader) Get(ctx context.Context, scope *domain.TagPredicate, namespace,
 // visible properties whose provenance records a conflict.
 func readObjectRow(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, spec domain.KindSpec, props []prop,
 	ns, entityID string, view *domain.ObjectView) (known bool, conflicted map[string]int, err error) {
-	b := &sqlb{scope: scope}
+	b := &sqlb{scope: scope, rt: allRowTagged}
 	cols := []string{"o.decl_version", "o.updated_at",
 		"(TRUE" + b.evidenceVisible("en.first_seen_evidence") + ")"}
 	for _, p := range props {
@@ -150,15 +152,15 @@ func readObjectRow(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, s
 }
 
 // readExtras reads an open kind's undeclared properties from the row's extra
-// jsonb, each entry fenced by its own tags/parties (sqlfence.ObjectExtra), in name
-// order. A key the kind now declares is skipped: the declared column is the value
+// jsonb, each entry fenced by its own tags/parties/row_tags
+// (sqlfence.ObjectExtraRowTags), in name order. A key the kind now declares is skipped: the declared column is the value
 // of record, and a row written before the declaration may still carry it in extra.
 func readExtras(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, spec domain.KindSpec,
 	ns, entityID string, view *domain.ObjectView) error {
 	b := &sqlb{scope: scope}
 	sql := "SELECT x.key, x.value FROM " + ident(TableName(spec.Kind)) + " o, jsonb_each(o." + colExtra + ") AS x(key, value)" +
 		" WHERE o.namespace_id = " + b.arg(ns) + " AND o.entity_id = " + b.arg(entityID)
-	fence, args := sqlfence.ObjectExtra("x.value").Expr(scope, len(b.args))
+	fence, args := sqlfence.ObjectExtraRowTags("x.value").Expr(scope, len(b.args))
 	b.args = append(b.args, args...)
 	if fence != "TRUE" {
 		sql += " AND " + fence
@@ -236,7 +238,7 @@ func (p provenance) at() time.Time {
 }
 
 // readLinks reads the confirmed, unretracted links touching the object that the
-// caller may read (their own evidence), newest first: identity links become
+// caller may read (their own evidence and row classification), newest first: identity links become
 // aliases, every other link a typed link in its direction.
 func readLinks(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, kinds *domain.KindRegistry,
 	rels *domain.RelationRegistry, ns, entityID string, view *domain.ObjectView) error {
@@ -244,7 +246,7 @@ func readLinks(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, kinds
 	ref := domain.EntityRef(entityID)
 	sql := `SELECT l.id, l.relation, l.family, l.from_ref, l.to_ref, COALESCE(l.evidence_id, ''), l.asserted_at, l.valid_from, l.valid_to
 		FROM links l WHERE l.namespace_id = ` + b.arg(ns) + ` AND (l.from_ref = ` + b.arg(ref) + ` OR l.to_ref = $2)
-		  AND l.state = '` + domain.LinkStateConfirmed + `' AND l.retracted_at IS NULL` + b.evidenceVisible("l.evidence_id") + `
+		  AND l.state = '` + domain.LinkStateConfirmed + `' AND l.retracted_at IS NULL` + b.typedRowVisible("l.evidence_id", "l.classification") + `
 		ORDER BY l.asserted_at DESC, l.id LIMIT ` + strconv.Itoa(getMaxLinks)
 	rows, err := tx.Query(ctx, sql, b.args...)
 	if err != nil {
@@ -330,7 +332,8 @@ func readAlternatives(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate
 }
 
 // readableRows reports which candidates' source rows the caller may read:
-// observations by their evidence, items by their classification.
+// observations by their evidence and row classification, items by their
+// classification.
 func readableRows(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, cs []Candidate) (map[string]bool, error) {
 	var obs []int64
 	var items []string
@@ -346,7 +349,7 @@ func readableRows(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, cs
 	}
 	out := map[string]bool{}
 	if len(obs) > 0 {
-		fence, fargs := sqlfence.EvidenceExists(scope, "o.evidence_id", 1)
+		fence, fargs := sqlfence.TypedRowExists(scope, "o.evidence_id", "o.classification", 1)
 		rows, err := tx.Query(ctx, `SELECT o.id FROM observations o WHERE o.id = ANY($1)`+fence, append([]any{obs}, fargs...)...)
 		if err != nil {
 			return nil, err
@@ -391,12 +394,12 @@ func leftPad(id int64) string {
 
 // readTimeline reads the object's recent timeline: the latest events it took
 // part in and the latest recorded values about it, each visible by its own
-// evidence and not retired, merged newest first.
+// evidence and row classification and not retired, merged newest first.
 func readTimeline(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, ns, entityID string, view *domain.ObjectView) error {
 	b := &sqlb{scope: scope}
 	sql := `SELECT ev.id, ev.event_type, ev.occurred_at, COALESCE(ev.evidence_id, '') FROM events ev
 		WHERE ev.namespace_id = ` + b.arg(ns) + ` AND EXISTS (SELECT 1 FROM event_roles r WHERE r.event_id = ev.id AND r.entity_id = ` + b.arg(entityID) + `)` +
-		NotRetired("ev") + b.evidenceVisible("ev.evidence_id") + `
+		NotRetired("ev") + b.typedRowVisible("ev.evidence_id", "ev.classification") + `
 		ORDER BY ev.occurred_at DESC, ev.id DESC LIMIT ` + strconv.Itoa(getTimelineEvents)
 	rows, err := tx.Query(ctx, sql, b.args...)
 	if err != nil {
@@ -447,7 +450,7 @@ func readTimeline(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, ns
 	b = &sqlb{scope: scope}
 	sql = `SELECT o.predicate, o.value_type, o.value_date, o.value_number, o.value_text, o.value_entity_id, o.occurred_at, COALESCE(o.evidence_id, '')
 		FROM observations o WHERE o.namespace_id = ` + b.arg(ns) + ` AND o.entity_id = ` + b.arg(entityID) +
-		NotRetired("o") + b.evidenceVisible("o.evidence_id") + `
+		NotRetired("o") + b.typedRowVisible("o.evidence_id", "o.classification") + `
 		ORDER BY o.occurred_at DESC, o.id DESC LIMIT ` + strconv.Itoa(getTimelineChanges)
 	rows, err = tx.Query(ctx, sql, b.args...)
 	if err != nil {

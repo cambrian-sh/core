@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // The read transaction's settings are part of the existence rule's contract
@@ -43,4 +45,60 @@ func TestPg_ReadTransactionSettings(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT current_setting('plan_cache_mode')`).Scan(&after); err != nil || after == "force_custom_plan" {
 		t.Fatalf("settings leaked past the transaction: %q %v", after, err)
 	}
+}
+
+// The row-tags probe (ADR-0158 stage 4) reads the request's own snapshot: no
+// row-classified fence class / link → the plan stays the P4 one; one → the
+// row-tags fence. Runs in a transaction that is rolled back, so the shared
+// dictionary is left as it was found.
+func TestPg_RowTaggedProbeFollowsTheSnapshot(t *testing.T) {
+	dsn := os.Getenv("PG_TEST_DSN")
+	if dsn == "" || !strings.Contains(strings.ToLower(dsn), "test") {
+		t.Skip("PG_TEST_DSN not set to a disposable (…test…) database")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // test-only: leave the shared dictionary untouched
+	for _, q := range []string{
+		`DELETE FROM object_fence_classes WHERE cardinality(row_tags) > 0`,
+		`DELETE FROM links WHERE cardinality(classification) > 0`,
+	} {
+		if _, err := tx.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scope := &domain.TagPredicate{RequiredTags: []string{"a"}}
+	withLink := checked{Links: []linkFilter{{}}}
+	probe := func(step string, c checked, want rowTagged) {
+		t.Helper()
+		_, got, err := visibleClasses(ctx, tx, c, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s: rowTagged %+v, want %+v", step, got, want)
+		}
+		if _, got, _ := visibleClasses(ctx, tx, c, domain.ScopeMaintenance); got != (rowTagged{}) {
+			t.Fatalf("%s: maintenance probed %+v (it renders no fence)", step, got)
+		}
+	}
+	probe("nothing row-classified", withLink, rowTagged{})
+	if _, err := tx.Exec(ctx, `INSERT INTO object_fence_classes (tags, parties, row_tags) VALUES ('{probe:x}', '{}', '{cls:restricted}')`); err != nil {
+		t.Fatal(err)
+	}
+	probe("a row-classified fence class", withLink, rowTagged{Values: true})
+	if _, err := tx.Exec(ctx, `INSERT INTO links (id, family, from_ref, to_ref, relation, state, mechanism, asserted_by, asserted_at, classification)
+		VALUES ('probe-link', 'relation', 'entity:a/1', 'entity:b/1', 'probe_rel', 'confirmed', 'record', 't', now(), '{cls:restricted}')`); err != nil {
+		t.Fatal(err)
+	}
+	probe("a row-classified link", withLink, rowTagged{Values: true, Links: true})
+	probe("a request without link filters does not ask about links", checked{}, rowTagged{Values: true})
 }

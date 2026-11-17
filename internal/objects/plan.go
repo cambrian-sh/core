@@ -38,6 +38,21 @@ import (
 // When a filter on P already guarantees visible(P) AND P IS NOT NULL, P's
 // sort/group/metric expression is the bare column: same value, and the btree
 // on (namespace_id, P) stays usable for order.
+//
+// ROW CLASSIFICATION (ADR-0158 D2, stage 4). A value derived from an
+// observation that carries its own row classification R (<prop>__rowtags) is
+// visible only when fence(tags) AND fence(tags || R) pass — narrow-only, and for
+// R = ∅ exactly the fence above. A link filter's link likewise
+// (sqlfence.TypedRowExists over links.classification). The planner renders the
+// row-tags variants only where the request's snapshot holds row-classified data
+// (rowTagged, probed once per filtered request by visibleClasses in the same
+// REPEATABLE READ transaction): when no fence class carries row tags, no visible
+// value does — the maintainer interns every visible value's triple in the
+// transaction that writes it, and the dictionary is append-only — and when no
+// link carries a classification, TypedRowExists and EvidenceExists admit the
+// same links. So on data without row classification the statement is the one P4
+// shipped, byte for byte (testdata/plan.golden; the benchmark harness ports it),
+// and costs nothing more.
 
 // cursor is a decoded page token: the last row's sort values (nil = absent)
 // and entity id.
@@ -46,6 +61,19 @@ type cursor struct {
 	ID   string
 }
 
+// rowTagged records which row classifications the request's snapshot holds
+// (see ROW CLASSIFICATION above): Values — some fence class carries row tags, so
+// property fences and the visible classes render WithRowTags; Links — some link
+// carries a row classification, so link filters render TypedRowExists. GetObject
+// sets both (a point read; no golden, no probe).
+type rowTagged struct {
+	Values bool
+	Links  bool
+}
+
+// allRowTagged renders every row-tags variant.
+var allRowTagged = rowTagged{Values: true, Links: true}
+
 // sqlb accumulates bind parameters.
 type sqlb struct {
 	args  []any
@@ -53,6 +81,8 @@ type sqlb struct {
 	// vis is the caller's visible fence classes (planVisible's result), read by
 	// the existence rule; unused when needsExistence is false.
 	vis []int32
+	// rt is which row-tags variants to render.
+	rt rowTagged
 }
 
 func (b *sqlb) arg(v any) string {
@@ -62,7 +92,11 @@ func (b *sqlb) arg(v any) string {
 
 // visible is P's fence on alias a as one boolean expression ("TRUE" = none).
 func (b *sqlb) visible(a string, p prop) string {
-	body, args := sqlfence.ObjectProperty(a+"."+ident(p.tagsCol()), a+"."+ident(p.partiesCol())).Expr(b.scope, len(b.args))
+	shape := sqlfence.ObjectProperty(a+"."+ident(p.tagsCol()), a+"."+ident(p.partiesCol()))
+	if b.rt.Values {
+		shape = shape.WithRowTags(a + "." + ident(p.rowTagsCol()))
+	}
+	body, args := shape.Expr(b.scope, len(b.args))
 	b.args = append(b.args, args...)
 	return body
 }
@@ -76,9 +110,19 @@ func (b *sqlb) value(a string, p prop) string {
 	return col
 }
 
-// evidenceVisible renders "the caller may read the evidence refCol names".
+// evidenceVisible renders "the caller may read the evidence refCol names". Not
+// for a typed row (events, observations, links): use typedRowVisible.
 func (b *sqlb) evidenceVisible(refCol string) string {
 	sql, args := sqlfence.EvidenceExists(b.scope, refCol, len(b.args))
+	b.args = append(b.args, args...)
+	return sql
+}
+
+// typedRowVisible renders "the caller may read the typed row whose evidence is
+// refCol and whose own classification is rowCol" (sqlfence.TypedRowExists,
+// ADR-0158 D2): narrow-only, and for an empty rowCol exactly evidenceVisible.
+func (b *sqlb) typedRowVisible(refCol, rowCol string) string {
+	sql, args := sqlfence.TypedRowExists(b.scope, refCol, rowCol, len(b.args))
 	b.args = append(b.args, args...)
 	return sql
 }
@@ -171,7 +215,16 @@ func (b *sqlb) link(o string, i int, lf linkFilter) string {
 		}
 		where = append(where, l+".relation = "+b.arg(hp.Relation),
 			l+".state = '"+domain.LinkStateConfirmed+"'", l+".retracted_at IS NULL")
-		if ev := b.evidenceVisible(l + ".evidence_id"); ev != "" {
+		var ev string
+		if b.rt.Links {
+			ev = b.typedRowVisible(l+".evidence_id", l+".classification")
+		} else {
+			// No link in the snapshot carries a row classification (rowTagged):
+			// the evidence fence admits exactly what TypedRowExists would, and
+			// the statement stays the one plan.golden pins.
+			ev = b.evidenceVisible(l + ".evidence_id")
+		}
+		if ev != "" {
 			where = append(where, strings.TrimPrefix(ev, " AND "))
 		}
 		prev = l
@@ -230,13 +283,35 @@ func needsExistence(c checked, scope *domain.TagPredicate) bool {
 }
 
 // planVisible renders the caller's visible fence classes V: the ids of the
-// dictionary pairs that pass the caller's fence, through sqlfence.FenceClass —
-// the same shape as a property's fence, so a pair is in V exactly when a
-// property (or the minted evidence) carrying it is visible. Run once per
-// request, in the request's read transaction, only when needsExistence.
-func planVisible(scope *domain.TagPredicate) (string, []any) {
-	body, args := sqlfence.FenceClass("c").Expr(scope, 0)
+// dictionary triples that pass the caller's fence, through sqlfence.FenceClass —
+// the same shape as a property's fence, so a triple is in V exactly when a
+// property (or the minted evidence) carrying it is visible. With rowTags
+// (rowTagged.Values) it is sqlfence.FenceClassRowTags, the fence of a property
+// carrying row tags; without, no triple has row tags and the two admit the same
+// ids. Run once per request, in the request's read transaction, only when
+// needsExistence.
+func planVisible(scope *domain.TagPredicate, rowTags bool) (string, []any) {
+	shape := sqlfence.FenceClass("c")
+	if rowTags {
+		shape = sqlfence.FenceClassRowTags("c")
+	}
+	body, args := shape.Expr(scope, 0)
 	return "SELECT c.id FROM object_fence_classes c WHERE " + body, args
+}
+
+// planRowTagged renders the probe for rowTagged in the request's snapshot: one
+// row, (some fence class carries row tags, some link carries a row
+// classification — FALSE when the request has no link filter). Each EXISTS is
+// served by a partial index holding only row-classified rows
+// (object_fence_classes_row_tagged, migration 0055; idx_links_row_classified,
+// internal/migrate concurrentIndexes), empty until a mapping writes row
+// classification. Run only for a filtered caller.
+func planRowTagged(c checked) string {
+	links := "FALSE"
+	if len(c.Links) > 0 {
+		links = "EXISTS (SELECT 1 FROM links WHERE cardinality(classification) > 0)"
+	}
+	return "SELECT EXISTS (SELECT 1 FROM object_fence_classes WHERE cardinality(row_tags) > 0), " + links
 }
 
 // existence is ADR-0128 D12 on the root alias: the caller may read the evidence
@@ -254,9 +329,10 @@ func (b *sqlb) existence(c checked) string {
 // planList renders a list request: the page plus one row (to know whether a
 // next page exists). Columns: entity_id, one per sort key, one per field.
 //
-// vis is planVisible's result (nil when needsExistence is false).
-func planList(c checked, scope *domain.TagPredicate, cur *cursor, vis []int32) (string, []any) {
-	b := &sqlb{scope: scope, vis: vis}
+// vis is planVisible's result (nil when needsExistence is false); rt is the
+// snapshot's rowTagged.
+func planList(c checked, scope *domain.TagPredicate, cur *cursor, vis []int32, rt rowTagged) (string, []any) {
+	b := &sqlb{scope: scope, vis: vis, rt: rt}
 	proven := filtered(c)
 	keys := make([]string, len(c.OrderBy))
 	for i, o := range c.OrderBy {
@@ -323,9 +399,9 @@ func (b *sqlb) after(c checked, keys []string, cur *cursor) string {
 
 // planGroup renders a group request: one row per bucket (keys then metrics),
 // ordered by the keys, at most ObjectsMaxGroups+1 (to report truncation).
-// vis as for planList.
-func planGroup(c checked, scope *domain.TagPredicate, vis []int32) (string, []any) {
-	b := &sqlb{scope: scope, vis: vis}
+// vis and rt as for planList.
+func planGroup(c checked, scope *domain.TagPredicate, vis []int32, rt rowTagged) (string, []any) {
+	b := &sqlb{scope: scope, vis: vis, rt: rt}
 	proven := filtered(c)
 	var cols, pos []string
 	for i, g := range c.GroupBy {
