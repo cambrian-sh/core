@@ -47,6 +47,11 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 			ControlHideState: "Windows low integrity confines writes only: reads of configs/, the key file and the data directories are NOT confined (the AppContainer-class runner is ADR-0157 S5)",
 		},
 	}
+	if spec.Agent != nil {
+		// ADR-0157 D3: a kernel-only agent tier needs a native network control
+		// Windows does not have yet; the tier's on_unavailable decides.
+		c.missing[ControlNetwork] = "no native network control on Windows for agents: the kernel-only agent network needs the AppContainer runner (ADR-0157 S5)"
+	}
 	if tp.ConfineFS {
 		c.notes = append(c.notes, "fs: writes confined to the workdir by integrity level; reads are not confined")
 		if spec.Server.Root != "" {

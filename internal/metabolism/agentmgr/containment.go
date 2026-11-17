@@ -60,18 +60,12 @@ func agentTrustTier(def *domain.AgentDefinition) string {
 	return def.TrustTier
 }
 
-// thirdPartyMissing lists the third-party controls the agent launch path cannot
-// deliver today (stages S2/S3 of the ticket build them): write confinement,
-// network denial, a low-privilege identity — and the memory cap where this OS
-// has no resource caps (process_caps_other.go).
+// thirdPartyMissing lists the third-party controls the UNSANDBOXED agent launch
+// path cannot deliver: write confinement, network denial, a low-privilege
+// identity — and the memory cap where this OS has no resource caps
+// (process_caps_other.go). With the agent sandbox on, every one of them is the
+// sandbox's to enforce or report (admitLaunch).
 func (im *InstanceManager) thirdPartyMissing() []string {
-	if im.containment.Sandbox != nil {
-		// ADR-0157 S1: write confinement, a low-privilege identity and hidden
-		// kernel state are the sandbox's to enforce or report (its plan refuses
-		// or degrades by the same on_unavailable); the agents' kernel-only
-		// network is stage S2 and not built.
-		return []string{"network (kernel-only agent network: ADR-0157 S2, not built)"}
-	}
 	missing := []string{"fs_confine", "network", "low_privilege"}
 	if goruntime.GOOS != "windows" && goruntime.GOOS != "linux" {
 		missing = append(missing, "memory")
@@ -85,9 +79,25 @@ func (im *InstanceManager) thirdPartyMissing() []string {
 // is refused while controls are missing, unless the operator chose degrade; then
 // it runs with the env allowlist and the tier memory cap (a smaller manifest
 // limit still applies; a larger one cannot lift the tier's).
+//
+// With the agent sandbox on (ADR-0157 S2) a third-party agent is ADMITTED here
+// with the tier memory cap: D1 confinement, the low-privilege identity and the
+// kernel-only network (D3) are the sandbox plan's to enforce, and the plan
+// refuses — or, with degrade, starts and reports — over exactly the controls
+// the runner lacks on this host (Windows: network and hidden reads until S5).
 func (im *InstanceManager) admitLaunch(ctx context.Context, def *domain.AgentDefinition) (memMB int, err error) {
 	if agentTrustTier(def) != agentTierThirdParty {
 		return im.spawnMemLimitMB(ctx, def), nil
+	}
+	if im.containment.Sandbox != nil {
+		if goruntime.GOOS == "linux" && domain.IsJSRuntime(def.Runtime) {
+			return 0, nil // RLIMIT_AS kills V8 at boot (spawnMemLimitMB)
+		}
+		memMB = im.containment.thirdPartyMemoryMB()
+		if m := im.spawnMemLimitMB(ctx, def); m > 0 && m < memMB {
+			memMB = m
+		}
+		return memMB, nil
 	}
 	missing := im.thirdPartyMissing()
 	if !im.containment.ThirdPartyDegrade {

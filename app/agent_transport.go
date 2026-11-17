@@ -56,6 +56,11 @@ func agentTransport(cfg *config.Config) (agentmgr.AgentTransport, string, error)
 	if leaf.VerifyHostname(host) != nil {
 		t.TLSServerName = certServerName(leaf)
 	}
+	// ADR-0157 S2: a kernel-only agent dials the kernel's unix socket, whose
+	// gRPC authority is "localhost"; give it a name the certificate covers.
+	if leaf.VerifyHostname("localhost") != nil {
+		t.UnixTLSServerName = certServerName(leaf)
+	}
 	warn := ""
 	if !selfSigned {
 		// A CA-issued leaf is not a trust anchor: the SDK pins exactly the root

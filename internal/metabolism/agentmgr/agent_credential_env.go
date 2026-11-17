@@ -1,5 +1,7 @@
 package agentmgr
 
+import "io"
+
 // The agent's credential, placed in its process environment at spawn
 // (ADR-0130 D1).
 //
@@ -74,7 +76,22 @@ type AgentTransport struct {
 	TLSCAFile string
 	// TLSServerName, when set, is injected as CAMBRIAN_TLS_SERVER_NAME.
 	TLSServerName string
+	// KernelSocket opens the kernel's agent plane on a unix socket at path, for
+	// one KERNEL-ONLY instance (ADR-0157 S2, D3): the sandboxed agent has no
+	// network, so it reaches the kernel through this socket in its own socket
+	// directory, passed as --substrate-addr unix:<path>. The listener is served
+	// by the kernel's one gRPC server (same interceptors, same credential
+	// check); Close stops it. nil ⇒ a kernel-only instance cannot start.
+	KernelSocket KernelSocketOpener
+	// UnixTLSServerName, when TLSCAFile is set, is the name a kernel-only
+	// agent verifies the certificate against over the unix socket (whose
+	// authority is "localhost"); "" when the certificate names localhost.
+	UnixTLSServerName string
 }
+
+// KernelSocketOpener listens on a unix socket at path and serves the kernel's
+// agent plane there until the returned Closer is closed.
+type KernelSocketOpener func(path string) (io.Closer, error)
 
 // SetAgentTransport wires the dial facts every spawn uses. Called once by the
 // composition root before any agent spawns. It is transport plumbing, not a
@@ -86,6 +103,8 @@ func (im *InstanceManager) SetAgentTransport(t AgentTransport) {
 	}
 	im.agentTLSCA = t.TLSCAFile
 	im.agentTLSServerName = t.TLSServerName
+	im.kernelSocket = t.KernelSocket
+	im.agentUnixTLSServerName = t.UnixTLSServerName
 }
 
 // agentTransportEnv returns the TLS KEY=VALUE pairs for a spawn. Like the

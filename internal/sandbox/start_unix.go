@@ -76,6 +76,9 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		c.missing[ControlNetwork] = bwWhy
 		c.missing[ControlHideState] = bwWhy
 	}
+	if spec.Agent != nil && tp.DenyNetwork && bw != "" {
+		c.notes = append(c.notes, "network: kernel-only (no network namespace; the kernel is reached through the unix socket in the socket directory)")
+	}
 	if spec.Agent != nil && tp.HideState && runtime.GOOS == "linux" {
 		c.notes = append(c.notes, "fs: landlock and seccomp are not applied (bubblewrap mount namespace only)")
 	}

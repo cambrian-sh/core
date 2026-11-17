@@ -62,6 +62,9 @@ type AgentSandboxOptions struct {
 	DockerImage, DockerUser string
 	BwrapPath, DockerPath   string
 	CgroupParent            string
+	// KernelOnlyAll is execution.agents.sandbox.network: kernel_only_all —
+	// every tier kernel-only, not only third-party (ADR-0157 D3).
+	KernelOnlyAll bool
 }
 
 // NewAgentSandbox builds the agent tiers' sandbox policy.
@@ -69,10 +72,11 @@ type AgentSandboxOptions struct {
 // Tiers (D1, D3): first-party (system agents run at it too) wants the env
 // allowlist, a workdir, a killable tree, the memory cap, write confinement and
 // hidden kernel state — and, when the kernel runs as root on Unix, a separate
-// uid (D2.2). Third-party additionally always wants a low-privilege identity.
-// Neither tier wants the network denied in S1: the agent must reach the kernel
-// over its TCP plane until the kernel-only mode (S2) exists, so a third-party
-// agent's missing network control is reported by admitLaunch instead.
+// uid (D2.2). Third-party additionally always wants a low-privilege identity
+// and the network denied: it is KERNEL-ONLY (ADR-0157 S2), reaching the kernel
+// through a unix socket in its own socket directory (kernelSocketPath) and
+// nothing else. First-party keeps the normal network unless KernelOnlyAll
+// (execution.agents.sandbox.network: kernel_only_all) makes it kernel-only too.
 func NewAgentSandbox(o AgentSandboxOptions) *AgentSandbox {
 	runner := o.Runner
 	if runner == "" {
@@ -94,9 +98,9 @@ func NewAgentSandbox(o AgentSandboxOptions) *AgentSandbox {
 		DefaultTier: sandbox.TierThirdParty,
 		Tiers: map[sandbox.Tier]sandbox.TierPolicy{
 			sandbox.TierFirstParty: {OnUnavailable: onUnavail(o.FirstPartyRefuse), Runner: runner,
-				ConfineFS: true, HideState: true, LowPrivilege: rootUnix},
+				ConfineFS: true, HideState: true, LowPrivilege: rootUnix, DenyNetwork: o.KernelOnlyAll},
 			sandbox.TierThirdParty: {OnUnavailable: onUnavail(o.ThirdPartyRefuse), Runner: runner,
-				ConfineFS: true, HideState: true, LowPrivilege: true},
+				ConfineFS: true, HideState: true, LowPrivilege: true, DenyNetwork: true},
 		},
 		WorkRoot:     workRoot,
 		WorkdirEnv:   map[string]string{"TEMP": "tmp", "TMP": "tmp", "TMPDIR": "tmp", "HOME": "home"},
@@ -146,6 +150,65 @@ func shortInstance(instanceID string) string {
 // socketDir is an instance's socket directory under the sandbox work root.
 func (s *AgentSandbox) socketDir(instanceID string) string {
 	return filepath.Join(s.policy.WorkRoot, "sock", shortInstance(instanceID))
+}
+
+// kernelSocketName is the kernel's agent-plane socket in a kernel-only
+// instance's socket directory (ADR-0157 S2). It cannot collide with the
+// agent's own socket, whose name starts with "cambrian_" (socketPathIn).
+const kernelSocketName = "kernel.sock"
+
+// kernelSocketPath is a kernel-only instance's kernel socket.
+func (s *AgentSandbox) kernelSocketPath(instanceID string) string {
+	return filepath.Join(s.socketDir(instanceID), kernelSocketName)
+}
+
+// kernelOnly reports whether an agent of this tier reaches the kernel through
+// the kernel socket instead of TCP (ADR-0157 D3): its tier denies the network,
+// and the OS can pass a unix socket into the sandbox. Windows keeps TCP: it has
+// no native network control for agents yet (the AppContainer runner is S5), so
+// the network is reported MISSING there and the tier's on_unavailable decides.
+func (s *AgentSandbox) kernelOnly(t sandbox.Tier) bool {
+	return s.policy.Tiers[t].DenyNetwork && goruntime.GOOS != "windows"
+}
+
+// KernelOnlyTiers names the tiers whose agents are kernel-only (boot log).
+func (s *AgentSandbox) KernelOnlyTiers() []string {
+	var out []string
+	for _, t := range []sandbox.Tier{sandbox.TierFirstParty, sandbox.TierThirdParty} {
+		if s.policy.Tiers[t].DenyNetwork {
+			out = append(out, string(t))
+		}
+	}
+	return out
+}
+
+// kernelOnlyCommand points a kernel-only instance at its kernel socket: the
+// value of --substrate-addr becomes unix:<path> (the flag and its place in argv
+// are unchanged, D2.6), and over TLS the server name the agent verifies is the
+// one the certificate gives for the socket's "localhost" authority.
+func (im *InstanceManager) kernelOnlyCommand(c sandbox.Command, kernelSock string) sandbox.Command {
+	args := append([]string(nil), c.Args...)
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--substrate-addr" {
+			args[i+1] = "unix:" + kernelSock
+			break
+		}
+	}
+	c.Args = args
+	if im.agentTLSCA != "" {
+		env := make([]string, 0, len(c.Env)+1)
+		for _, kv := range c.Env {
+			if !strings.HasPrefix(kv, TLSServerNameEnv+"=") {
+				env = append(env, kv)
+			}
+		}
+		if im.agentUnixTLSServerName != "" {
+			env = append(env, TLSServerNameEnv+"="+im.agentUnixTLSServerName)
+		}
+		c.Env = env
+		c.Forward = forwardNames(env)
+	}
+	return c
 }
 
 // agentSocketPath is where an instance serves its socket: the OS temp
@@ -296,6 +359,9 @@ func (im *InstanceManager) sandboxLaunch(ctx context.Context, def *domain.AgentD
 			Ephemeral: true},
 	}
 	c := sandbox.Command{Path: desc.Path, Args: desc.Args[1:], Env: desc.Env, Dir: dir, Forward: forwardNames(desc.Env)}
+	if sb.kernelOnly(spec.Tier) {
+		c = im.kernelOnlyCommand(c, sb.kernelSocketPath(inst.ID))
+	}
 	return spec, c, nil
 }
 
@@ -312,6 +378,26 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	if err := mkdirPrivate(spec.Policy.WorkRoot, sockDir); err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("agent %s: socket directory: %w", def.ID, err)
 	}
+	// ADR-0157 S2: a kernel-only instance has no network; the kernel serves its
+	// agent plane on a unix socket in the instance's socket directory, which the
+	// sandbox already shows at its own path (bwrap bind, docker -v).
+	var kernelSock io.Closer
+	if sb := im.containment.Sandbox; sb.kernelOnly(spec.Tier) {
+		if im.kernelSocket == nil {
+			_ = os.RemoveAll(sockDir)
+			return nil, nil, nil, nil, fmt.Errorf("agent %s (%s) is kernel-only (ADR-0157 D3) but the kernel has no agent socket to give it; not started",
+				def.ID, agentTrustTier(def))
+		}
+		if kernelSock, err = im.kernelSocket(sb.kernelSocketPath(inst.ID)); err != nil {
+			_ = os.RemoveAll(sockDir)
+			return nil, nil, nil, nil, fmt.Errorf("agent %s: kernel socket: %w", def.ID, err)
+		}
+	}
+	closeKernelSock := func() {
+		if kernelSock != nil {
+			_ = kernelSock.Close()
+		}
+	}
 	var stdout, stderr io.ReadCloser
 	l, rep, err := sandbox.StartCmd(ctx, spec, c, func(cmd *exec.Cmd) error {
 		var perr error
@@ -325,6 +411,7 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	})
 	im.reportContainment(ctx, def, rep, err)
 	if err != nil {
+		closeKernelSock()
 		_ = os.RemoveAll(sockDir)
 		var refused *sandbox.RefusedError
 		if errors.As(err, &refused) {
@@ -338,6 +425,7 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	im.mu.Unlock()
 	cleanup := func() {
 		l.Release()
+		closeKernelSock()
 		_ = os.RemoveAll(sockDir)
 		im.mu.Lock()
 		delete(im.capCleanups, inst.ID)

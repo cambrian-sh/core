@@ -213,6 +213,19 @@ func TestDockerAgentArgs(t *testing.T) {
 	if !slices.Contains(cliEnv, "CAMBRIAN_AGENT_TOKEN=s3cr3t") {
 		t.Fatal("the forwarded value is not in the docker CLI's own environment")
 	}
+	// ADR-0157 S2: a kernel-only tier runs with --network none; the socket
+	// directory (the kernel socket's home) stays mounted at its own path.
+	kp := p.Tiers[TierFirstParty]
+	kp.DenyNetwork = true
+	args, _, err = dockerAgentArgs(p, spec, kp, c, workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(args, " ")
+	if !strings.Contains(joined, "--network none") || strings.Contains(joined, "--network host") ||
+		!strings.Contains(joined, "-v "+sock+":"+sock) {
+		t.Fatalf("kernel-only docker argv: %s", joined)
+	}
 }
 
 // Docker for agents needs a Linux host: elsewhere it is unusable, and a
@@ -221,7 +234,8 @@ func TestDockerAgentRunnerNeedsLinux(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("Linux host")
 	}
-	capab := dockerAgentCapability(context.Background(), agentPolicy(t), agentSpec(agentPolicy(t), TierFirstParty, ""), Command{Path: "x"})
+	ap := agentPolicy(t)
+	capab := dockerAgentCapability(context.Background(), ap, agentSpec(ap, TierFirstParty, ""), ap.Tiers[TierFirstParty], Command{Path: "x"})
 	if !strings.Contains(capab.unusable, "needs a Linux host") {
 		t.Fatalf("unusable = %q", capab.unusable)
 	}

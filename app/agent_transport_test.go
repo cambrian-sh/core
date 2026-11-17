@@ -96,6 +96,15 @@ func TestAgentTransport_TLSRoutableBindInjectsRootAndReachableAddr(t *testing.T)
 	if tr.Addr != "192.168.1.10:50051" || tr.TLSCAFile != cert || tr.TLSServerName != "" || warn != "" {
 		t.Fatalf("specific bind: %+v warn=%q", tr, warn)
 	}
+	// ADR-0157 S2: over the kernel-only unix socket the authority is
+	// "localhost", which this certificate does not name.
+	if tr.UnixTLSServerName != "kernel.lan" {
+		t.Fatalf("unix server name = %q, want kernel.lan", tr.UnixTLSServerName)
+	}
+	certLocal, keyLocal := writeCert(t, t.TempDir(), []string{"localhost", "kernel.lan"}, []net.IP{net.ParseIP("192.168.1.10")}, false)
+	if tr, _, err = agentTransport(cfgWith("192.168.1.10", certLocal, keyLocal, false)); err != nil || tr.UnixTLSServerName != "" {
+		t.Fatalf("a certificate naming localhost needs no unix override: %+v err=%v", tr, err)
+	}
 
 	tr, _, err = agentTransport(cfgWith("0.0.0.0", cert, key, false))
 	if err != nil {

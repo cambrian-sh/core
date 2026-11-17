@@ -53,6 +53,14 @@ type AgentSandboxConfig struct {
 	// DockerUser is the docker runner's --user ("" ⇒ 65534:65534): a separate
 	// non-root identity, never the kernel's (ADR-0157 D2.1).
 	DockerUser string `json:"docker_user,omitempty"`
+	// Network is the agents' network policy when enabled (ADR-0157 D3, Q3):
+	// "per_tier" (default; "" means it) — third-party agents are kernel-only
+	// (no network namespace / --network none; they reach the kernel through a
+	// unix socket in their socket directory), first-party and system agents keep
+	// the normal network; "kernel_only_all" — every agent is kernel-only, for
+	// sovereign and defence installs (first-party agents then reach the outside
+	// only through kernel-mediated tools).
+	Network string `json:"network,omitempty"`
 	// FirstParty is the first-party (and system) tier's policy when enabled.
 	FirstParty AgentFirstPartySandbox `json:"first_party"`
 	ThirdParty AgentTierSandbox       `json:"third_party"`
@@ -98,6 +106,23 @@ func (t AgentTierSandbox) Refuses() bool { return t.OnUnavailable != "degrade" }
 // Memory is MemoryMB with its default applied.
 func (t AgentTierSandbox) Memory() int { return orDefault(t.MemoryMB, 2048) }
 
+// Agent network policies (execution.agents.sandbox.network).
+const (
+	AgentNetworkPerTier       = "per_tier"
+	AgentNetworkKernelOnlyAll = "kernel_only_all"
+)
+
+// KernelOnlyAll reports whether every agent tier is kernel-only (ADR-0157 D3).
+func (c AgentSandboxConfig) KernelOnlyAll() bool { return c.Network == AgentNetworkKernelOnlyAll }
+
+// NetworkOrDefault is Network with its default applied.
+func (c AgentSandboxConfig) NetworkOrDefault() string {
+	if c.Network == "" {
+		return AgentNetworkPerTier
+	}
+	return c.Network
+}
+
 // RunnerOrDefault is Runner with its default applied.
 func (c AgentSandboxConfig) RunnerOrDefault() string {
 	if c.Runner == "" {
@@ -126,6 +151,12 @@ func (c AgentSandboxConfig) validate() []string {
 	case "", "native", "docker":
 	default:
 		errs = append(errs, fmt.Sprintf("execution.agents.sandbox.runner must be \"native\" or \"docker\" (got %q)", c.Runner))
+	}
+	switch c.Network {
+	case "", AgentNetworkPerTier, AgentNetworkKernelOnlyAll:
+	default:
+		errs = append(errs, fmt.Sprintf("execution.agents.sandbox.network must be %q or %q (got %q)",
+			AgentNetworkPerTier, AgentNetworkKernelOnlyAll, c.Network))
 	}
 	if c.Enabled && c.Runner == "docker" && strings.TrimSpace(c.DockerImage) == "" {
 		errs = append(errs, "execution.agents.sandbox.docker_image is required when runner is \"docker\"")

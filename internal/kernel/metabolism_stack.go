@@ -281,8 +281,8 @@ func (s *MetabolismStack) ProfileSeedEnqueuer() func(domain.AgentDefinition) {
 }
 
 // agentSandboxFromConfig is execution.agents.sandbox as the instance manager
-// applies it: nil when disabled (the launch is unchanged), else the ADR-0157 S1
-// agent sandbox. The kernel-state and runtime paths were resolved by the
+// applies it: nil when disabled (the launch is unchanged), else the ADR-0157
+// agent sandbox (S1 confinement, S2 network by tier). The kernel-state and runtime paths were resolved by the
 // composition root (app.anchorAgentSandboxPaths); the host tool locations
 // (bwrap, docker, the cgroup parent) are mcp.sandbox's, one fact per host.
 func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
@@ -305,11 +305,15 @@ func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
 		BwrapPath:        cfg.MCP.Sandbox.BwrapPath,
 		DockerPath:       cfg.MCP.Sandbox.DockerPath,
 		CgroupParent:     cfg.MCP.Sandbox.CgroupParent,
+		KernelOnlyAll:    sb.KernelOnlyAll(),
 	})
 	p := s.Policy()
 	slog.Info("ADR-0157 S1: agents launch through the sandbox (D1 confinement, every tier)",
 		"runner", sb.RunnerOrDefault(), "work_root", p.WorkRoot, "hidden", p.HidePaths,
 		"first_party_on_unavailable", map[bool]string{true: "refuse", false: "degrade"}[sb.FirstParty.Refuses()],
-		"allowlist_cap", sb.AllowlistCap)
+		"allowlist_cap", sb.AllowlistCap,
+		// ADR-0157 S2 (D3): the tiers whose agents have no network but the
+		// kernel's unix socket (execution.agents.sandbox.network).
+		"network", sb.NetworkOrDefault(), "kernel_only_tiers", s.KernelOnlyTiers())
 	return s
 }

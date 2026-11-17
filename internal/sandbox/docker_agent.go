@@ -20,10 +20,15 @@ import (
 //
 //	--rm --init --read-only --tmpfs /tmp --cap-drop ALL
 //	--security-opt no-new-privileges --user <non-root uid, not the kernel's>
-//	--network host                       (normal network; kernel-only is S2)
+//	--network host | none                (normal network, or kernel-only: S2)
 //	-v <scratch>:/work                   (its TEMP/TMPDIR/HOME)
 //	-v <socket dir>:<socket dir>         (D2.6: the --socket path is unchanged)
 //	-v <code, runtime, declared paths>:<same path>[:ro]
+//
+// A kernel-only tier (DenyNetwork, ADR-0157 D3) runs with --network none: the
+// container has a loopback interface only, and reaches the kernel through the
+// kernel socket the agent manager puts in the instance's socket directory,
+// which is mounted at its own path. Everything else runs with the host network.
 //
 // Nothing else of the host is visible, so the D1 hide-list is enforced by
 // absence; a hidden path that lies inside a mounted one is masked again
@@ -37,7 +42,7 @@ import (
 
 const agentDefaultDockerUser = "65534:65534"
 
-func dockerAgentCapability(ctx context.Context, p *Policy, spec Spec, c Command) capability {
+func dockerAgentCapability(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Command) capability {
 	capab := capability{runner: RunnerDocker}
 	if runtime.GOOS != "linux" {
 		capab.unusable = "the docker runner for agents needs a Linux host (host paths and the agent's unix socket are shared with the container); " + runtime.GOOS + " runs the engine in a VM"
@@ -55,14 +60,16 @@ func dockerAgentCapability(ctx context.Context, p *Policy, spec Spec, c Command)
 		ControlEnv: "", ControlWorkdir: "", ControlOutputCap: "", ControlStallKill: "",
 		ControlKillTree: "docker", ControlMemory: "docker", ControlProcesses: "docker", ControlCPUTime: "docker",
 		ControlFSConfine: "docker", ControlLowPrivilege: "docker", ControlHideState: "docker",
-	}
-	capab.missing = map[Control]string{
-		ControlNetwork: "the agent's kernel-only network is ADR-0157 S2 (not built)",
+		ControlNetwork: "docker",
 	}
 	capab.notes = append(capab.notes,
 		"fs: host filesystem invisible except the agent's code, runtime, declared paths, scratch (/work) and socket directory",
-		"docker: the image "+spec.Server.Image+" must provide the agent runtime at "+c.Path,
-		"network: host network (first-party normal network)")
+		"docker: the image "+spec.Server.Image+" must provide the agent runtime at "+c.Path)
+	if tp.DenyNetwork {
+		capab.notes = append(capab.notes, "network: kernel-only (--network none; the kernel is reached through the unix socket in the socket directory)")
+	} else {
+		capab.notes = append(capab.notes, "network: host network (normal network)")
+	}
 	return capab
 }
 
@@ -104,8 +111,12 @@ func dockerAgentArgs(p *Policy, spec Spec, tp TierPolicy, c Command, workdir str
 	if user == "" {
 		user = agentDefaultDockerUser
 	}
+	network := "host"
+	if tp.DenyNetwork {
+		network = "none" // ADR-0157 D3 kernel-only: the kernel socket is in the socket dir
+	}
 	args := []string{"run", "--rm", "--init", "--name", name,
-		"--network", "host",
+		"--network", network,
 		"--read-only", "--tmpfs", "/tmp:rw,size=256m",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 		"--user", user,

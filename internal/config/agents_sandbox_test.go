@@ -47,3 +47,26 @@ func TestAgentSandbox_S1Keys(t *testing.T) {
 		t.Fatalf("docker without an image: %v", errs)
 	}
 }
+
+// ADR-0157 S2: execution.agents.sandbox.network — "" is per_tier (third-party
+// kernel-only, first-party normal network), kernel_only_all applies kernel-only
+// to every tier, anything else is refused at load.
+func TestAgentSandbox_NetworkKey(t *testing.T) {
+	d := DefaultConfig().Execution.Agents.Sandbox
+	if d.KernelOnlyAll() || d.NetworkOrDefault() != AgentNetworkPerTier {
+		t.Fatalf("default: kernel_only_all=%v network=%q", d.KernelOnlyAll(), d.NetworkOrDefault())
+	}
+	for _, v := range []string{"", AgentNetworkPerTier, AgentNetworkKernelOnlyAll} {
+		c := AgentSandboxConfig{Network: v}
+		if errs := c.validate(); len(errs) != 0 {
+			t.Fatalf("network %q refused: %v", v, errs)
+		}
+		if c.KernelOnlyAll() != (v == AgentNetworkKernelOnlyAll) {
+			t.Fatalf("network %q: KernelOnlyAll=%v", v, c.KernelOnlyAll())
+		}
+	}
+	bad := AgentSandboxConfig{Network: "none"}
+	if errs := bad.validate(); len(errs) != 1 || !strings.Contains(errs[0], "execution.agents.sandbox.network") {
+		t.Fatalf("bad network: %v", errs)
+	}
+}

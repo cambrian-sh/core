@@ -125,6 +125,9 @@ type Kernel struct {
 	Server      *subnetwork.Server
 	Listener    net.Listener
 	GRPC        *grpc.Server
+	// agentSockets serves the gRPC plane on the kernel-only agents' unix
+	// sockets (ADR-0157 S2); started with GRPC, stopped after it.
+	agentSockets *agentSocketServer
 	// Health is the grpc.health.v1 checker (PLAT-03 / ADR-0065): SERVING once the DB is
 	// reachable, NOT_SERVING while draining. Registered on the main listener.
 	Health *health.Checker
@@ -351,6 +354,11 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	// 2. Close network listener
 	if k.Listener != nil {
 		_ = k.Listener.Close()
+	}
+	// 2b. ADR-0157 S2: the kernel-only agents' unix sockets — the served ones
+	// ended with GracefulStop above; close the never-served ones and wait.
+	if k.agentSockets != nil {
+		k.agentSockets.stop()
 	}
 
 	// 2a. ADR-0126: drain the inbound MCP endpoint. Before the plugin lifecycles
@@ -1078,6 +1086,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if agentTrWarn != "" {
 		slog.Warn("ADR-0130: "+agentTrWarn, "tls_cert_file", cfg.Server.TLSCertFile)
 	}
+	// ADR-0157 S2: kernel-only (network-denied) sandboxed instances reach the
+	// same gRPC plane through a unix socket in their own socket directory;
+	// served from the moment the gRPC server starts (agent_kernel_socket.go).
+	agentSockets := newAgentSocketServer()
+	agentTr.KernelSocket = agentSockets.Open
 	meta.Manager.InstanceManager.SetAgentTransport(agentTr)
 	slog.Info("ADR-0130: spawned agents dial the kernel", "addr", agentTr.Addr,
 		"tls", agentTr.TLSCAFile != "", "server_name", agentTr.TLSServerName)
@@ -2926,6 +2939,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	toolApproval.HandleKind(domain.ApprovalKindPublish, publishHandler(sharer))
 
 	return &Kernel{
+		agentSockets:    agentSockets,
 		Links:           linkStore,
 		linkReview:      queryPlane,
 		OperatorEffects: operatorEffects,
@@ -4204,6 +4218,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			mount(k.GRPC)
 		}
 		slog.Info("🧬 Cambrian Substrate Active", "port", k.Config.Server.Port)
+		// ADR-0157 S2: every service is registered; the kernel-only agents'
+		// unix sockets (opened as their instances spawned) serve from here on.
+		if k.agentSockets != nil {
+			k.agentSockets.start(k.GRPC)
+		}
 		return k.GRPC.Serve(k.Listener)
 	})
 

@@ -64,6 +64,10 @@ type InstanceManager struct {
 	// agent dials plaintext, which is right on loopback.
 	agentTLSCA         string
 	agentTLSServerName string
+	// kernelSocket / agentUnixTLSServerName: how a kernel-only (network-denied)
+	// sandboxed instance reaches the kernel (ADR-0157 S2; SetAgentTransport).
+	kernelSocket           KernelSocketOpener
+	agentUnixTLSServerName string
 	// agentMemLimitMB is the GLOBAL default memory cap (SEC-01), used for agents
 	// that don't declare their own. 0 = no default.
 	agentMemLimitMB int

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -327,6 +328,34 @@ func serveHTTP(cfg *config.Config, port string, handler http.Handler, label stri
 	}()
 	slog.Info("ADR-0130: listener serving", "listener", label, "addr", addr, "transport", mode)
 	return srv, addr, nil
+}
+
+// listenAgentUnix binds the kernel's agent plane on a unix socket for ONE
+// kernel-only agent instance (ADR-0157 S2, D3; agentSocketServer). It lives
+// here because every listener the kernel opens is this file's (ADR-0130 D3).
+// There is no bind address and no TLS decision to make: a unix socket is
+// reachable only through the filesystem, and the gRPC server that serves it
+// carries the same transport credentials as the TCP plane. The socket file is
+// 0666 so a sandbox running under another uid (docker --user, uid 65534 under
+// a root kernel) can connect; the gate is the instance's private socket
+// directory (0700, or handed to that uid), not the file mode.
+func listenAgentUnix(path string) (net.Listener, error) {
+	if path == "" {
+		return nil, errors.New("agent socket: empty path")
+	}
+	// A stale file from a crashed run would make bind fail with EADDRINUSE.
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		_ = os.Remove(path)
+	}
+	lis, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("agent socket %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		_ = lis.Close()
+		return nil, fmt.Errorf("agent socket %s: %w", path, err)
+	}
+	return lis, nil
 }
 
 // The plugin-facing seam. Premium plugins cannot import internal/config, so the

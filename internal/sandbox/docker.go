@@ -97,10 +97,10 @@ func imageFor(p *Policy, spec Spec, c Command) string {
 	return p.DockerImages[base]
 }
 
-func dockerCapability(ctx context.Context, p *Policy, spec Spec, c Command) capability {
+func dockerCapability(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Command) capability {
 	capab := capability{runner: RunnerDocker}
 	if spec.Agent != nil {
-		return dockerAgentCapability(ctx, p, spec, c)
+		return dockerAgentCapability(ctx, p, spec, tp, c)
 	}
 	if _, why := dockerReachable(ctx, p.DockerPath); why != "" {
 		capab.unusable = why

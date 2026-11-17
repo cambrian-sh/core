@@ -17,7 +17,8 @@ import (
 
 // The bwrap argv puts binds outside the hide-list before the hides, binds
 // inside a hidden path after them, the socket directory at its own path, and
-// leaves the network shared (S1: normal network).
+// leaves the network shared for a tier that does not deny it (first-party:
+// normal network, ADR-0157 D3).
 func TestBwrapArgsForAnAgent(t *testing.T) {
 	root := t.TempDir()
 	kernel := filepath.Join(root, "kernel")
@@ -51,8 +52,17 @@ func TestBwrapArgsForAnAgent(t *testing.T) {
 	idx("--bind", sock, sock)
 	idx("--chdir", code)
 	if slices.Contains(a, "--unshare-net") {
-		t.Fatalf("an S1 agent keeps the normal network: %v", a)
+		t.Fatalf("a first-party agent keeps the normal network: %v", a)
 	}
+	// ADR-0157 S2: a kernel-only tier gets its own (empty) network namespace;
+	// its socket directory — where the kernel socket lives — is still bound.
+	kp := p.Tiers[TierFirstParty]
+	kp.DenyNetwork = true
+	a = bwrapArgs("bwrap", p, spec, kp, filepath.Join(root, "work"), code, true)
+	if !slices.Contains(a, "--unshare-net") {
+		t.Fatalf("a kernel-only agent must get --unshare-net: %v", a)
+	}
+	idx("--bind", sock, sock)
 }
 
 // End to end through StartCmd under bubblewrap: the agent cannot read the

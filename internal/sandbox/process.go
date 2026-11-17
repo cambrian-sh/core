@@ -220,7 +220,7 @@ func choose(ctx context.Context, spec Spec, p *Policy, c Command) (string, Repor
 	var capab capability
 	switch runner {
 	case RunnerDocker:
-		capab = dockerCapability(ctx, p, spec, c)
+		capab = dockerCapability(ctx, p, spec, tp, c)
 		if capab.unusable != "" {
 			if tp.OnUnavailable != OnUnavailableDegrade {
 				return runner, Report{ServerID: spec.ServerID, Tier: spec.Tier, TierSource: spec.TierSource,

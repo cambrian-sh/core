@@ -168,7 +168,15 @@ func TestSandboxLaunch_SpecFromTierAndAllowlist(t *testing.T) {
 		if spec.Agent.Binds[len(spec.Agent.Binds)-1] != (sandbox.Bind{Path: cache, Write: true}) {
 			t.Errorf("%s: the declared cache is not writable: %+v", tc.def.ID, spec.Agent.Binds)
 		}
-		if !slices.Equal(c.Args, cmd.Args[1:]) || !slices.Equal(c.Env, cmd.Env) || c.Dir != absDir {
+		wantArgs := cmd.Args[1:]
+		if tc.tier == sandbox.TierThirdParty && runtime.GOOS != "windows" {
+			// ADR-0157 S2: a kernel-only instance dials its kernel socket; only
+			// the --substrate-addr VALUE changes.
+			wantArgs = slices.Clone(wantArgs)
+			i := slices.Index(wantArgs, "--substrate-addr")
+			wantArgs[i+1] = "unix:" + filepath.Join(spec.Agent.SocketDir, kernelSocketName)
+		}
+		if !slices.Equal(c.Args, wantArgs) || !slices.Equal(c.Env, cmd.Env) || c.Dir != absDir {
 			t.Errorf("%s: command changed: %+v", tc.def.ID, c)
 		}
 		if slices.Contains(c.Forward, "PATH") {
@@ -191,23 +199,103 @@ func TestNewAgentSandbox_PolicyAndHideList(t *testing.T) {
 	if !fp.ConfineFS || !fp.HideState || fp.DenyNetwork || fp.OnUnavailable != sandbox.OnUnavailableRefuse {
 		t.Errorf("first-party tier: %+v", fp)
 	}
-	if !tp.ConfineFS || !tp.HideState || !tp.LowPrivilege || tp.DenyNetwork || tp.OnUnavailable != sandbox.OnUnavailableDegrade {
-		t.Errorf("third-party tier: %+v", tp)
+	if !tp.ConfineFS || !tp.HideState || !tp.LowPrivilege || !tp.DenyNetwork || tp.OnUnavailable != sandbox.OnUnavailableDegrade {
+		t.Errorf("third-party tier (ADR-0157 D3: kernel-only): %+v", tp)
+	}
+	if got := sb.KernelOnlyTiers(); !slices.Equal(got, []string{string(sandbox.TierThirdParty)}) {
+		t.Errorf("per_tier kernel-only tiers = %v", got)
 	}
 	if def := NewAgentSandbox(AgentSandboxOptions{ThirdPartyRefuse: true}).Policy(); def.Tiers[sandbox.TierFirstParty].OnUnavailable != sandbox.OnUnavailableDegrade || def.WorkRoot == "" {
 		t.Errorf("defaults: first-party %q (Q2: degrade), work root %q", def.Tiers[sandbox.TierFirstParty].OnUnavailable, def.WorkRoot)
 	}
 }
 
-// A third-party agent with the sandbox on is still refused by default: its
-// kernel-only network is S2. The message says so.
-func TestAdmitLaunch_ThirdPartyWithSandboxNamesTheS2Network(t *testing.T) {
+// ADR-0157 S2: with the sandbox on, a third-party agent is ADMITTED with the
+// tier memory cap — whether it starts is the sandbox plan's decision over the
+// controls the runner actually has (D1 + D3). Without the sandbox it is still
+// refused, naming the missing controls.
+func TestAdmitLaunch_ThirdPartyWithSandboxIsAdmitted(t *testing.T) {
 	sb, _ := testAgentSandbox(t, nil)
 	im := NewInstanceManager("python", "")
+	im.SetAgentContainment(AgentContainment{Sandbox: sb, ThirdPartyMemoryMB: 768})
+	mem, err := im.admitLaunch(context.Background(), &domain.AgentDefinition{ID: "vendor", Runtime: domain.RuntimePython, TrustTier: "third-party"})
+	if err != nil || mem != 768 {
+		t.Fatalf("admit = %d, %v", mem, err)
+	}
+	bare := NewInstanceManager("python", "")
+	if _, err := bare.admitLaunch(context.Background(), &domain.AgentDefinition{ID: "vendor", TrustTier: "third-party"}); err == nil ||
+		!strings.Contains(err.Error(), "network") || !strings.Contains(err.Error(), "fs_confine") {
+		t.Fatalf("unsandboxed third-party: err = %v", err)
+	}
+}
+
+// kernel_only_all: every tier is kernel-only; per_tier leaves first-party on
+// the normal network.
+func TestNewAgentSandbox_KernelOnlyAll(t *testing.T) {
+	sb, _ := testAgentSandbox(t, func(o *AgentSandboxOptions) { o.KernelOnlyAll = true })
+	p := sb.Policy()
+	if !p.Tiers[sandbox.TierFirstParty].DenyNetwork || !p.Tiers[sandbox.TierThirdParty].DenyNetwork {
+		t.Fatalf("kernel_only_all tiers: %+v", p.Tiers)
+	}
+	if got := sb.KernelOnlyTiers(); len(got) != 2 {
+		t.Fatalf("kernel-only tiers = %v", got)
+	}
+	if want := runtime.GOOS != "windows"; sb.kernelOnly(sandbox.TierFirstParty) != want {
+		t.Fatalf("first-party kernelOnly = %v on %s", !want, runtime.GOOS)
+	}
+}
+
+// The kernel-only command: only the --substrate-addr value moves to the
+// kernel socket; over TLS the unix authority's server name replaces the TCP one
+// (and is dropped when the certificate names localhost).
+func TestKernelOnlyCommand(t *testing.T) {
+	im := NewInstanceManager("python", "127.0.0.1:50051")
+	c := sandbox.Command{Path: "python", Args: []string{"a.py", "--socket", "/s/a.sock", "--substrate-addr", "127.0.0.1:50051", "--profile", "x"},
+		Env: []string{"PATH=/bin", TLSCAEnv + "=/ca.pem", TLSServerNameEnv + "=kernel.lan"}}
+	got := im.kernelOnlyCommand(c, "/s/kernel.sock")
+	if want := []string{"a.py", "--socket", "/s/a.sock", "--substrate-addr", "unix:/s/kernel.sock", "--profile", "x"}; !slices.Equal(got.Args, want) {
+		t.Fatalf("args = %v", got.Args)
+	}
+	if c.Args[4] != "127.0.0.1:50051" {
+		t.Fatal("the caller's argv was mutated")
+	}
+	if !slices.Equal(got.Env, c.Env) {
+		t.Fatalf("no TLS root on the manager: env must be unchanged, got %v", got.Env)
+	}
+	im.SetAgentTransport(AgentTransport{TLSCAFile: "/ca.pem", TLSServerName: "kernel.lan", UnixTLSServerName: "kernel.example"})
+	got = im.kernelOnlyCommand(c, "/s/kernel.sock")
+	if !slices.Contains(got.Env, TLSServerNameEnv+"=kernel.example") || slices.Contains(got.Env, TLSServerNameEnv+"=kernel.lan") ||
+		!slices.Contains(got.Forward, TLSServerNameEnv) {
+		t.Fatalf("TLS env = %v forward = %v", got.Env, got.Forward)
+	}
+	im.SetAgentTransport(AgentTransport{TLSCAFile: "/ca.pem", TLSServerName: "kernel.lan"})
+	got = im.kernelOnlyCommand(c, "/s/kernel.sock")
+	if slices.ContainsFunc(got.Env, func(kv string) bool { return strings.HasPrefix(kv, TLSServerNameEnv+"=") }) {
+		t.Fatalf("certificate names localhost: no override expected, env = %v", got.Env)
+	}
+}
+
+// A kernel-only instance without a kernel socket opener is not started, and
+// leaves no socket directory behind.
+func TestStartSandboxed_KernelOnlyNeedsTheKernelSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows agents keep TCP until the AppContainer runner (S5)")
+	}
+	sb, _ := testAgentSandbox(t, func(o *AgentSandboxOptions) { o.KernelOnlyAll = true })
+	im := NewInstanceManager("/bin/sh", "127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
-	_, err := im.admitLaunch(context.Background(), &domain.AgentDefinition{ID: "vendor", TrustTier: "third-party"})
-	if err == nil || !strings.Contains(err.Error(), "ADR-0157 S2") || strings.Contains(err.Error(), "fs_confine") {
+	def := &domain.AgentDefinition{ID: "probe", Runtime: domain.RuntimeBinary, ExecPath: "/bin/true"}
+	inst := domain.NewInstance(def.ID)
+	cmd, err := im.buildAgentCmd(def, inst, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _, err = im.startSandboxed(context.Background(), def, inst, cmd, 0)
+	if err == nil || !strings.Contains(err.Error(), "kernel-only") {
 		t.Fatalf("err = %v", err)
+	}
+	if _, serr := os.Stat(sb.socketDir(inst.ID)); !os.IsNotExist(serr) {
+		t.Fatalf("socket directory left behind: %v", serr)
 	}
 }
 
