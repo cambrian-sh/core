@@ -22,6 +22,7 @@
       "model",
       "name",
       "role",
+      "sandbox_paths",
       "skills",
       "streams_output",
       "tools",
@@ -100,7 +101,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -139,7 +141,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -170,7 +173,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -241,7 +245,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -336,7 +341,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -399,7 +405,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -486,7 +493,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 1
     },
@@ -573,7 +581,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -612,7 +621,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -651,7 +661,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -706,7 +717,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -753,7 +765,8 @@
         "max_tokens": null,
         "version": "1.0.0",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -816,7 +829,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -855,7 +869,8 @@
         "max_tokens": 4096,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -942,7 +957,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -981,7 +997,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1028,7 +1045,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1067,7 +1085,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1106,7 +1125,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1201,7 +1221,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1252,7 +1273,8 @@
           "Compare: a and b",
           "Padded example"
         ],
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1294,7 +1316,8 @@
           "one task",
           "another task"
         ],
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1333,7 +1356,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1372,7 +1396,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1443,7 +1468,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": true
+        "streams_output": true,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1474,7 +1500,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1505,7 +1532,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": true
+        "streams_output": true,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1536,7 +1564,8 @@
         "max_tokens": null,
         "version": "1.2.3",
         "examples": null,
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1609,8 +1638,363 @@
         "examples": [
           "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
         ],
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-ok",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/models\"}, {\"path\": \"~/cache/hf\", \"write\": true}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": [
+          {
+            "path": "/srv/models"
+          },
+          {
+            "path": "~/cache/hf",
+            "write": true
+          }
+        ]
+      },
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-windows",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"C:\\\\models\"}, {\"path\": \"D:/data\", \"write\": false}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": [
+          {
+            "path": "C:\\models"
+          },
+          {
+            "path": "D:/data"
+          }
+        ]
+      },
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-unc-and-tilde-backslash",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"\\\\\\\\nas\\\\share\"}, {\"path\": \"~\\\\cache\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": [
+          {
+            "path": "\\\\nas\\share"
+          },
+          {
+            "path": "~\\cache"
+          }
+        ]
+      },
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-write-null",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/a\", \"write\": null}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": [
+          {
+            "path": "/srv/a"
+          }
+        ]
+      },
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-empty-list",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: []\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": null
+      },
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-null",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: ~\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": null
+      },
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-relative",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"models/cache\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-dot-relative",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"./models\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-tilde-user",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"~bob/models\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-drive-relative",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"C:models\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-unknown-key",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/a\", \"mode\": \"rw\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-write-string",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/a\", \"write\": \"true\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-write-int",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/a\", \"write\": 1}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-duplicate",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/a\"}, {\"path\": \"/srv/a\", \"write\": true}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-missing-path",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"write\": true}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-path-not-string",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": 7}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-whitespace",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \" /srv/a\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-mixed",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/a\"}, \"/srv/b\"]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-bad-json",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [{\"path\": \"/srv/a\",}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-object",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: {\"path\": \"/srv/a\"}\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-scalar",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: /srv/models\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-flow-strings",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths: [/srv/models]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "sandbox-paths-block-strings",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\nsandbox_paths:\n  - /srv/models\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
       "warnings": 0
     },
     {
@@ -1706,7 +2090,8 @@
           "What is 18.5 percent of 4,382,950?",
           "Move last month's PDF receipts from Downloads into Documents/Receipts and rename them by date and title"
         ],
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1794,7 +2179,8 @@
           "Chart monthly revenue from the sales table in this SQLite database",
           "Compute summary statistics for each numeric column and explain the caveats"
         ],
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     },
@@ -1881,7 +2267,8 @@
           "Check whether this claim from a news article is supported by primary sources",
           "Compare the published benchmarks of two open-source vector databases"
         ],
-        "streams_output": false
+        "streams_output": false,
+        "sandbox_paths": null
       },
       "warnings": 0
     }

@@ -160,6 +160,31 @@ func rawCases(t *testing.T) []profileCase {
 		{Name: "streams-output-list", Text: baseProfile + "streams_output: [true]\n", ExpectedName: "tester"},
 		{Name: "examples-too-long", Text: baseProfile + "examples:\n  - " + strings.Repeat("x", MaxExampleRunes+1) + "\n", ExpectedName: "tester"},
 		{Name: "examples-max-length-multibyte", Text: baseProfile + "examples:\n  - " + strings.Repeat("é", MaxExampleRunes) + "\n", ExpectedName: "tester", Skills: fixtureSkills},
+		// ADR-0157 D1.2 (ENG-1960): sandbox_paths, one-line JSON [{"path", "write"}]; the
+		// path absolute on some OS or ~/; cap and kernel-state checks are boot-time.
+		{Name: "sandbox-paths-ok", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/models"}, {"path": "~/cache/hf", "write": true}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-windows", Text: baseProfile + "sandbox_paths: " + `[{"path": "C:\\models"}, {"path": "D:/data", "write": false}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-unc-and-tilde-backslash", Text: baseProfile + "sandbox_paths: " + `[{"path": "\\\\nas\\share"}, {"path": "~\\cache"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-write-null", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/a", "write": null}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-empty-list", Text: baseProfile + "sandbox_paths: " + `[]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-null", Text: baseProfile + "sandbox_paths: " + `~` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-relative", Text: baseProfile + "sandbox_paths: " + `[{"path": "models/cache"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-dot-relative", Text: baseProfile + "sandbox_paths: " + `[{"path": "./models"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-tilde-user", Text: baseProfile + "sandbox_paths: " + `[{"path": "~bob/models"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-drive-relative", Text: baseProfile + "sandbox_paths: " + `[{"path": "C:models"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-unknown-key", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/a", "mode": "rw"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-write-string", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/a", "write": "true"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-write-int", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/a", "write": 1}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-duplicate", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/a"}, {"path": "/srv/a", "write": true}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-missing-path", Text: baseProfile + "sandbox_paths: " + `[{"write": true}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-path-not-string", Text: baseProfile + "sandbox_paths: " + `[{"path": 7}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-whitespace", Text: baseProfile + "sandbox_paths: " + `[{"path": " /srv/a"}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-mixed", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/a"}, "/srv/b"]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-bad-json", Text: baseProfile + "sandbox_paths: " + `[{"path": "/srv/a",}]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-object", Text: baseProfile + "sandbox_paths: " + `{"path": "/srv/a"}` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-scalar", Text: baseProfile + "sandbox_paths: " + `/srv/models` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-flow-strings", Text: baseProfile + "sandbox_paths: " + `[/srv/models]` + "\n", ExpectedName: "tester"},
+		{Name: "sandbox-paths-block-strings", Text: baseProfile + "sandbox_paths:\n  - /srv/models\n", ExpectedName: "tester"},
 	}
 	// The shipped profiles, against the shipped skills (the kernel's view).
 	shipped := shippedSkillTools(t)
@@ -306,6 +331,14 @@ func TestParseVerdicts(t *testing.T) {
 		"streams-output-true": true, "streams-output-false": true, "streams-output-quoted": true,
 		"streams-output-null": true, "streams-output-yes": false, "streams-output-int": false,
 		"streams-output-list": false,
+		"sandbox-paths-ok":    true, "sandbox-paths-windows": true, "sandbox-paths-unc-and-tilde-backslash": true,
+		"sandbox-paths-write-null": true, "sandbox-paths-empty-list": true, "sandbox-paths-null": true,
+		"sandbox-paths-relative": false, "sandbox-paths-dot-relative": false, "sandbox-paths-tilde-user": false,
+		"sandbox-paths-drive-relative": false, "sandbox-paths-unknown-key": false, "sandbox-paths-write-string": false,
+		"sandbox-paths-write-int": false, "sandbox-paths-duplicate": false, "sandbox-paths-missing-path": false,
+		"sandbox-paths-path-not-string": false, "sandbox-paths-whitespace": false, "sandbox-paths-mixed": false,
+		"sandbox-paths-bad-json": false, "sandbox-paths-object": false, "sandbox-paths-scalar": false,
+		"sandbox-paths-flow-strings": false, "sandbox-paths-block-strings": false,
 	} {
 		if byName[name].Valid != valid {
 			t.Errorf("%s: valid=%v, want %v", name, byName[name].Valid, valid)
@@ -319,6 +352,17 @@ func TestParseVerdicts(t *testing.T) {
 	}
 	if p := byName["base"].Profile; p == nil || p.StreamsOutput {
 		t.Errorf("streams_output defaults to false: %+v", p)
+	}
+	if p := byName["sandbox-paths-ok"].Profile; p == nil || len(p.SandboxPaths) != 2 ||
+		p.SandboxPaths[0] != (domain.SandboxPath{Path: "/srv/models"}) ||
+		p.SandboxPaths[1] != (domain.SandboxPath{Path: "~/cache/hf", Write: true}) {
+		t.Errorf("sandbox_paths parsed wrong: %+v", p)
+	}
+	if p := byName["sandbox-paths-windows"].Profile; p == nil || p.SandboxPaths[0].Path != `C:\models` {
+		t.Errorf("a JSON-escaped Windows path must decode to one backslash: %+v", p)
+	}
+	if p := byName["base"].Profile; p == nil || p.SandboxPaths != nil {
+		t.Errorf("sandbox_paths defaults to none: %+v", p)
 	}
 	if p := byName["base"].Profile; p == nil || p.Role != "You test: carefully." || *p.MaxToolRounds != 8 || p.Version != "1.2.3" {
 		t.Errorf("base parsed wrong: %+v", p)

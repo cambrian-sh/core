@@ -57,6 +57,7 @@ equal `name`.
 | `version` | no | `MAJOR.MINOR.PATCH`, default `1.0.0`. Becomes the manifest version. |
 | `examples` | no | Up to 5 example tasks (one line each, at most 300 characters, no duplicates), ADR-0139 C2. Carried on the manifest and published on the agent's A2A card skills (`internal/agentcard`). |
 | `streams_output` | no | `true` or `false` (default `false`). `true` declares that the agent pushes its own live step output over the agent-plane `EmitStepOutput` RPC (an adapter around an agent that calls its own model), so the kernel stops forwarding gateway deltas for its steps and one step never streams twice (ADR-0139 amendment 2026-11-06). Carried on the manifest and on the A2A card's Cambrian extension. A profile run by `worker_agent.py` generates through the kernel and leaves it unset. |
+| `sandbox_paths` | no | Paths the agent needs beyond its code and runtime when it runs confined (ADR-0157 D1.2), e.g. a model cache or a data directory: a one-line JSON list of `{"path": ..., "write": ...}` objects, `sandbox_paths: [{"path": "/srv/models"}, {"path": "~/cache/hf", "write": true}]`. `path` is absolute (`/…`, `C:\\…` escaped in JSON, `D:/…`) or starts with `~/`; `write` is `true`/`false` (default read-only); no other key, no path twice. Carried on the manifest's `sandbox_paths`; at boot (with `execution.agents.sandbox.enabled`) each path must sit inside the operator's `execution.agents.sandbox.allowlist_cap` and outside the kernel's own state, exactly like an `AGENT_MANIFEST`'s, or the agent is not started and the error names the path. The starter profiles need none: the kernel shows every agent `agents/`, `prompts/` and `skills/`. |
 
 Any other field is an error.
 
@@ -68,9 +69,10 @@ parsed by the SDK's prompt-library parser:
 
 - `key: value` scalars; quote a value that contains `": "` or `" #"`, or starts with one of `&*!|>%@` or a backquote;
 - block lists (`key:` then `  - item` lines) and flow lists (`[a, b]`);
+- an inline list of objects as one-line JSON (`[{"path": "/srv/models"}]`, for `sandbox_paths`);
 - full-line `#` comments; integers.
 
-No multi-line strings, anchors or nested maps. Every file in the subset is valid YAML that a
+No multi-line strings, anchors or nested maps (JSON is YAML flow syntax, so the inline list of objects reads the same in a full parser). Every file in the subset is valid YAML that a
 full parser reads the same way. The kernel does NOT use a full parser: it ports this subset
 and the validator (`internal/agentprofile`), because a full parser accepts files the
 runtime refuses, and a profile the kernel registered but the runtime refused at boot would

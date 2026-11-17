@@ -25,8 +25,10 @@ var subsetInt = regexp.MustCompile(`^-?[0-9]+$`)
 type null struct{}
 
 // parseSubset parses the profile text (already CRLF-normalised) into key → value,
-// where a value is string, int64, null, []any (of string/int64/null), or any
-// JSON value for an inline `{...}` object.
+// where a value is string, int64, null, []any (of string/int64/null), any JSON
+// value for an inline `{...}` object, or a JSON array for an inline list of
+// objects `[{...}, ...]` (a profile's sandbox_paths, ADR-0157 D1.2). JSON is YAML
+// flow syntax, so a full YAML parser reads both inline forms the same way.
 func parseSubset(front string) (map[string]any, []string, error) {
 	out := map[string]any{}
 	var order []string
@@ -71,6 +73,15 @@ func parseSubset(front string) (map[string]any, []string, error) {
 		case strings.HasPrefix(value, "["):
 			if !strings.HasSuffix(value, "]") {
 				return nil, nil, fmt.Errorf("frontmatter line %d: unterminated flow list", n)
+			}
+			if strings.HasPrefix(strings.TrimSpace(value[1:]), "{") {
+				// An inline list of objects is one-line JSON, as an inline object is.
+				var l []any
+				if err := json.Unmarshal([]byte(value), &l); err != nil {
+					return nil, nil, fmt.Errorf("frontmatter line %d: inline list of objects is not JSON: %v", n, err)
+				}
+				out[key] = l
+				continue
 			}
 			l, err := subsetFlowList(value)
 			if err != nil {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/agentprofile"
 )
 
@@ -141,7 +142,11 @@ func profileAgentRecords(agentsDir string, isSystemAgent func(string) bool, opt 
 				Skills:           append([]string(nil), p.Skills...),
 				Examples:         append([]string(nil), p.Examples...),
 				StreamsOutput:    p.StreamsOutput,
-				ReleaseNotes:     "worker_agent profile " + p.Name + " (agent stack v2).",
+				// ADR-0157 D1.2 (ENG-1960): the profile's declared paths reach the
+				// manifest, so the boot admits them exactly like an AGENT_MANIFEST's
+				// (agentmgr.AgentSandbox.admitDeclared against allowlist_cap).
+				SandboxPaths: profileSandboxPaths(p.SandboxPaths),
+				ReleaseNotes: "worker_agent profile " + p.Name + " (agent stack v2).",
 			},
 		})
 	}
@@ -189,6 +194,19 @@ func composedRuntimeRecord(agentsDir, id string, runtime []byte, taken map[strin
 			ReleaseNotes:     "ADR-0145 D12 composed worker runtime.",
 		},
 	}, true
+}
+
+// profileSandboxPaths copies a profile's sandbox_paths into the manifest's
+// record shape (nil when it declares none).
+func profileSandboxPaths(in []domain.SandboxPath) []SandboxPathRecord {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]SandboxPathRecord, len(in))
+	for i, p := range in {
+		out[i] = SandboxPathRecord{Path: p.Path, Write: p.Write}
+	}
+	return out
 }
 
 func humanizeProfileName(id string) string {

@@ -48,6 +48,7 @@ var ModelRoles = []string{"planner", "verifier", "router", "memory", "facts"}
 var Fields = []string{
 	"name", "description", "capabilities", "skills", "tools", "model", "trust_tier",
 	"max_tool_rounds", "max_tokens", "role", "version", "examples", "streams_output",
+	"sandbox_paths",
 }
 
 // Required are the keys a profile must set.
@@ -77,6 +78,13 @@ var (
 	reGeneratorID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 	reMCPGlob     = regexp.MustCompile(`^mcp:([a-z0-9][a-z0-9._-]*)/([A-Za-z0-9_.*?-]+)$`)
 	reNativeGlob  = regexp.MustCompile(`^[a-z][a-z0-9_.*?-]*$`)
+	// reSandboxPath is the form a declared sandbox path takes (ADR-0157 D1.2):
+	// absolute on some OS (/…, X:\… or X:/…, \\server\…) or home-relative
+	// (~/… or ~\…, the kernel's expandHome). It is OS-independent on purpose, so
+	// the parity fixture holds on every host; whether the path is absolute HERE,
+	// inside allowlist_cap and outside the kernel's state is decided at boot
+	// (agentmgr.AgentSandbox.admitDeclared), with the path named.
+	reSandboxPath = regexp.MustCompile(`^(/|~[/\\]|[A-Za-z]:[/\\]|\\\\)`)
 	// reLocalGlob is a contributed-tool pattern (ADR-0127): local:<machine>/<tool glob>,
 	// the machine a literal id or exactly '*' (every machine of the owner the run serves).
 	reLocalGlob = regexp.MustCompile(`^local:(\*|[A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9_.*?-]+)$`)
@@ -102,6 +110,11 @@ type Profile struct {
 	// (agent-plane EmitStepOutput), so the kernel forwards no gateway deltas for its
 	// steps (ADR-0139 amendment 2026-11-06). Optional; `true` or `false`.
 	StreamsOutput bool `json:"streams_output"`
+	// SandboxPaths are the paths the agent needs beyond its code and runtime when
+	// it runs confined (ADR-0157 D1.2), carried into its manifest by discovery and
+	// admitted at boot exactly like an AGENT_MANIFEST's sandbox_paths. Optional;
+	// one-line JSON: [{"path": "/srv/models"}, {"path": "~/cache", "write": true}].
+	SandboxPaths []domain.SandboxPath `json:"sandbox_paths"`
 	// Warnings are non-fatal findings (a capability new to the fleet vocabulary).
 	Warnings []string `json:"-"`
 }
@@ -265,6 +278,10 @@ func Parse(text string, opt Options) (Profile, error) {
 		return Profile{}, err
 	}
 
+	if p.SandboxPaths, err = sandboxPathsField(data); err != nil {
+		return Profile{}, err
+	}
+
 	if p.MaxToolRounds, err = intField(data, "max_tool_rounds", MaxToolRoundsBounds); err != nil {
 		return Profile{}, err
 	}
@@ -416,7 +433,60 @@ func intField(data map[string]any, key string, bounds [2]int64) (*int64, error) 
 	return &i, nil
 }
 
-// isEmpty mirrors Python's `data.get(k) in (None, "", [])`.
+// sandboxPathsField reads the optional sandbox_paths (the SDK's
+// _sandbox_paths_field): a list of {"path", "write"} objects, path in the
+// reSandboxPath form, write a JSON boolean (absent or null ⇒ false), no other
+// key, no path twice. Absent, null or [] ⇒ none.
+func sandboxPathsField(data map[string]any) ([]domain.SandboxPath, error) {
+	v, present := data["sandbox_paths"]
+	if !present || isEmpty(v) {
+		return nil, nil
+	}
+	l, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf(`"sandbox_paths" must be a one-line JSON list of {"path": ..., "write": ...} objects`)
+	}
+	var out []domain.SandboxPath
+	seen := map[string]bool{}
+	for _, e := range l {
+		m, ok := e.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(`sandbox_paths entry %s must be an object {"path": ..., "write": ...}`, pyRepr(e))
+		}
+		var extra []string
+		for k := range m {
+			if k != "path" && k != "write" {
+				extra = append(extra, k)
+			}
+		}
+		if len(extra) > 0 {
+			sort.Strings(extra)
+			return nil, fmt.Errorf("sandbox_paths entry has unknown key(s) %v; allowed: [path write]", extra)
+		}
+		path, ok := m["path"].(string)
+		if !ok || path == "" || path != strings.TrimSpace(path) || strings.ContainsRune(path, 0) {
+			return nil, fmt.Errorf(`sandbox_paths "path" must be a non-empty string without surrounding whitespace`)
+		}
+		if !reSandboxPath.MatchString(path) {
+			return nil, fmt.Errorf("sandbox_paths path %q must be absolute or start with ~/ (a relative path has no meaning to a confined agent)", path)
+		}
+		write := false
+		if w, has := m["write"]; has && w != nil {
+			b, isBool := w.(bool)
+			if !isBool {
+				return nil, fmt.Errorf("sandbox_paths %q: \"write\" must be true or false", path)
+			}
+			write = b
+		}
+		if seen[path] {
+			return nil, fmt.Errorf("sandbox_paths declares %q twice", path)
+		}
+		seen[path] = true
+		out = append(out, domain.SandboxPath{Path: path, Write: write})
+	}
+	return out, nil
+}
+
 // boolField reads an optional boolean. The frontmatter subset has no boolean
 // scalar (an unquoted true is the string "true", as in the SDK's _scalar), so the
 // field accepts exactly "true" or "false"; absent, null or blank is false.
@@ -436,6 +506,7 @@ func boolField(data map[string]any, key string) (bool, error) {
 	return false, fmt.Errorf("%q must be true or false (got %s)", key, pyRepr(v))
 }
 
+// isEmpty mirrors Python's `data.get(k) in (None, "", [])`.
 func isEmpty(v any) bool {
 	switch x := v.(type) {
 	case nil, null:

@@ -191,3 +191,57 @@ func TestUpsert_RefreshesProfileFieldsOnSourceChange(t *testing.T) {
 		t.Fatalf("profile fields not refreshed on source change: %+v", got)
 	}
 }
+
+// ADR-0157 D1.2 (ENG-1960): a profile's sandbox_paths reach its manifest and
+// survive the bbolt round trip the boot reads them from; a profile that declares
+// none carries none, and an invalid declaration skips the profile.
+func TestDiscover_ProfileSandboxPathsReachTheManifest(t *testing.T) {
+	dir := writeProfileTree(t)
+	p := filepath.Join(dir, ProfilesDirName, "alpha.yaml")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl := `sandbox_paths: [{"path": "/srv/models"}, {"path": "~/cache/hf", "write": true}]` + "\n"
+	if err := os.WriteFile(p, append(b, []byte(decl)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := strings.ReplaceAll(testProfile, "%s", "gamma") + `sandbox_paths: [{"path": "models"}]` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ProfilesDirName, "gamma.yaml"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiscoverFilesystemAgentsWith(dir, nil, DiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]DiscoveredAgent{}
+	for _, da := range got {
+		byID[da.Agent.ID] = da
+	}
+	want := []SandboxPathRecord{{Path: "/srv/models"}, {Path: "~/cache/hf", Write: true}}
+	if !slices.Equal(byID["alpha"].Manifest.SandboxPaths, want) {
+		t.Fatalf("alpha manifest sandbox_paths = %+v, want %+v", byID["alpha"].Manifest.SandboxPaths, want)
+	}
+	if byID["beta"].Manifest.SandboxPaths != nil {
+		t.Errorf("a profile without sandbox_paths must carry none: %+v", byID["beta"].Manifest.SandboxPaths)
+	}
+	if _, ok := byID["gamma"]; ok {
+		t.Error("a profile with a relative sandbox path was registered")
+	}
+
+	a, err := NewBBoltAdapterNoScan(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err := a.UpsertDiscoveredAgent(byID["alpha"]); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := a.GetManifestRecord("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rec.SandboxPaths, want) {
+		t.Fatalf("stored manifest sandbox_paths = %+v, want %+v", rec.SandboxPaths, want)
+	}
+}
