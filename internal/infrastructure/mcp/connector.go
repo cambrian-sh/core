@@ -202,6 +202,9 @@ type Connector struct {
 	// pingWait bounds one health ping; 0 ⇒ defaultPingTimeout. A field only so
 	// tests can exercise the silence path without waiting 10 s.
 	pingWait time.Duration
+	// handshakeWait bounds one connect handshake; 0 ⇒ defaultHandshakeTimeout
+	// (handshake.go). A field only so tests need not wait 60 s.
+	handshakeWait time.Duration
 
 	// configs is each armed server's config, for per-call session selection
 	// (ADR-0140: a per_user server's call needs its scope and injection mode).
@@ -309,7 +312,7 @@ func (c *Connector) connectAndDiscover(ctx context.Context, s ServerConfig) []do
 	c.sessions[s.ID] = sess
 	c.mu.Unlock()
 
-	discovered, derr := discover(ctx, s, sess)
+	discovered, derr := c.boundedDiscover(ctx, s, sess)
 	if derr != nil {
 		msg := redact(derr.Error(), secrets)
 		slog.Warn("ADR-0043: MCP tool discovery failed", "server", s.ID, "err", msg)
@@ -361,7 +364,7 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 	default:
 		return nil, nil, fmt.Errorf("unknown transport %q (want stdio|http|sse)", s.Transport)
 	}
-	sess, err := c.client.Connect(ctx, transport, nil)
+	sess, err := c.connectSession(ctx, transport) // handshake bounded (ENG-1528)
 	return sess, secrets, err
 }
 
@@ -717,7 +720,7 @@ func (c *Connector) watchServer(ctx context.Context, s ServerConfig, sink ToolSi
 		c.mu.Lock()
 		c.sessions[s.ID] = newSess
 		c.mu.Unlock()
-		tools, derr := discover(ctx, s, newSess)
+		tools, derr := c.boundedDiscover(ctx, s, newSess)
 		if derr != nil {
 			msg := redact(derr.Error(), secrets)
 			slog.Warn("ADR-0043: MCP re-discovery failed", "server", s.ID, "err", msg)

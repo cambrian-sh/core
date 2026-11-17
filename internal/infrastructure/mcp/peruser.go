@@ -479,9 +479,10 @@ func (c *Connector) dialUser(ctx context.Context, s ServerConfig, principal stri
 	default:
 		return nil, fmt.Errorf("unknown transport %q (want stdio|http|sse)", s.Transport)
 	}
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
-	defer cancel()
-	sess, err := c.client.Connect(dctx, transport, nil)
+	// Detached from the call (the session is pooled past it); only the
+	// handshake is bounded — a WithTimeout here cancelled the legacy-SSE
+	// stream the moment this function returned (ENG-1528, handshake.go).
+	sess, err := c.connectSession(context.WithoutCancel(ctx), transport)
 	if err != nil {
 		return nil, fmt.Errorf("integration %q: starting your session failed: %s", s.ID, redact(err.Error(), []string{tok.Token}))
 	}
@@ -591,7 +592,9 @@ func (c *Connector) discoverAs(ctx context.Context, s ServerConfig, sink ToolSin
 	if err != nil {
 		return 0, err
 	}
-	adv, derr := listAdvertised(ctx, inst.sess)
+	lctx, cancel := context.WithTimeout(ctx, c.handshakeTimeout()) // a silent tools/list must not stall the loop (ENG-1528)
+	adv, derr := listAdvertised(lctx, inst.sess)
+	cancel()
 	c.releaseUser(inst, derr != nil)
 	if derr != nil {
 		return 0, fmt.Errorf("connected, but listing tools failed: %s", redact(derr.Error(), []string{tok.Token}))
