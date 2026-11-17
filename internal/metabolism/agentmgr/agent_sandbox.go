@@ -427,10 +427,11 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 		}
 		return nil, nil, nil, nil, fmt.Errorf("agent %s: sandboxed start: %w", def.ID, err)
 	}
-	// Teardown paths (EvictInstance, killAllInstances) hold the manager lock, so
-	// they only KILL the tree; the process's one Wait then runs cleanup, which
-	// collects out/ and releases the sandbox (scratch removal) — ADR-0157 D5.1:
-	// nothing in the scratch survives the instance except what the kernel took.
+	// Teardown paths (detachLocked: EvictInstance, ReleaseInstance, EvictAgent,
+	// KillAllAgents) only KILL the tree, after releasing the manager lock; the
+	// process's one Wait then runs cleanup, which collects out/ and releases the
+	// sandbox (scratch removal) — ADR-0157 D5.1: nothing in the scratch survives
+	// the instance except what the kernel took.
 	im.mu.Lock()
 	im.capCleanups[inst.ID] = func() { _ = l.Kill() }
 	im.mu.Unlock()

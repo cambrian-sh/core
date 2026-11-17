@@ -81,7 +81,9 @@ type InstanceManager struct {
 	manifestFor func(ctx context.Context, agentID string) *domain.AgentManifest
 	// capCleanups holds the per-instance resource-cap teardown (Windows: closes
 	// the Job Object handle, which reaps the whole process tree via
-	// kill-on-close). Keyed by instance ID; invoked on eviction.
+	// kill-on-close; sandboxed: kills the contained tree). Keyed by instance
+	// ID; taken exactly once (takeCapCleanup) by whichever comes first: a
+	// teardown path (detachLocked) or the process's exit (watchExitThen).
 	capCleanups map[string]func()
 	// outputs collects an exited sandboxed instance's out/ into the run ledger
 	// (ADR-0157 D5.1, agent_outputs.go). nil ⇒ out/ goes with the scratch.
@@ -243,63 +245,81 @@ func (im *InstanceManager) GetInstanceByID(instanceID string) (*domain.Instance,
 // EvictInstance removes a single instance by UUID.
 func (im *InstanceManager) EvictInstance(instanceID string) {
 	im.mu.Lock()
-	defer im.mu.Unlock()
-
-	inst, ok := im.instances[instanceID]
-	if !ok {
+	if _, ok := im.instances[instanceID]; !ok {
+		im.mu.Unlock()
 		return
 	}
+	teardown := im.detachLocked(instanceID)
+	im.mu.Unlock()
+	teardown()
+}
+
+// detachLocked unregisters an instance from every map and returns its
+// teardown, which the caller runs AFTER releasing im.mu (ENG-1963): it kills
+// the process, runs the resource-cap cleanup (SEC-01: closing the Windows Job
+// Object reaps grandchildren a bare Process.Kill cannot reach; for a
+// sandboxed instance it kills the contained tree, which for a docker-run
+// agent is a `docker rm -f` that can take seconds) and removes the socket.
+// Every teardown path — EvictInstance, ReleaseInstance, EvictAgent,
+// KillAllAgents — goes through here, so none can skip a step; a sandboxed
+// instance's out/ collection and scratch removal still run in its one Wait
+// goroutine after the exit (ADR-0157 D5.1). Caller holds im.mu.
+func (im *InstanceManager) detachLocked(instanceID string) func() {
 	// ADR-0157 D4.2: the token dies with the instance, before the kill, so no
 	// RPC is admitted on it while the process is being reaped.
 	im.tokens.Revoke(instanceID)
-	if cmd, hasCMD := im.cmds[instanceID]; hasCMD && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
+	inst := im.instances[instanceID]
+	cmd := im.cmds[instanceID]
+	capCleanup := im.capCleanups[instanceID]
 	delete(im.cmds, instanceID)
 	delete(im.exits, instanceID)
-	// SEC-01: close the Job Object (Windows kill-on-close reaps grandchildren the
-	// bare Process.Kill above cannot reach) / release the rlimit handle.
-	if cleanup, ok := im.capCleanups[instanceID]; ok {
-		cleanup()
-		delete(im.capCleanups, instanceID)
-	}
-	if inst.SocketPath != "" {
-		_ = os.Remove(inst.SocketPath)
-	}
+	delete(im.capCleanups, instanceID)
 	delete(im.instances, instanceID)
-
-	ids := im.agentIndex[inst.AgentID]
-	for i, id := range ids {
-		if id == instanceID {
-			im.agentIndex[inst.AgentID] = append(ids[:i], ids[i+1:]...)
-			break
+	if inst != nil {
+		ids := im.agentIndex[inst.AgentID]
+		for i, id := range ids {
+			if id == instanceID {
+				im.agentIndex[inst.AgentID] = append(ids[:i], ids[i+1:]...)
+				break
+			}
+		}
+		if len(im.agentIndex[inst.AgentID]) == 0 {
+			delete(im.agentIndex, inst.AgentID)
 		}
 	}
-	if len(im.agentIndex[inst.AgentID]) == 0 {
-		delete(im.agentIndex, inst.AgentID)
-	}
-}
-
-func (im *InstanceManager) killAllInstances() {
-	im.mu.Lock()
-	defer im.mu.Unlock()
-	for id, inst := range im.instances {
-		im.tokens.Revoke(id) // ADR-0157 D4.2
-		if cmd, hasCMD := im.cmds[id]; hasCMD && cmd.Process != nil {
+	return func() {
+		if cmd != nil && cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
-		if cleanup, ok := im.capCleanups[id]; ok {
-			cleanup()
-			delete(im.capCleanups, id)
+		if capCleanup != nil {
+			capCleanup()
 		}
-		if inst.SocketPath != "" {
+		if inst != nil && inst.SocketPath != "" {
 			_ = os.Remove(inst.SocketPath)
 		}
 	}
-	im.instances = make(map[string]*domain.Instance)
-	im.agentIndex = make(map[string][]string)
-	im.cmds = make(map[string]*exec.Cmd)
-	im.exits = make(map[string]*processExit)
+}
+
+// takeCapCleanup removes and returns an instance's resource-cap cleanup, so
+// exactly one caller runs it (nil when another already took it).
+func (im *InstanceManager) takeCapCleanup(instanceID string) func() {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	c := im.capCleanups[instanceID]
+	delete(im.capCleanups, instanceID)
+	return c
+}
+
+// capCleanupOnExit is an unsandboxed launch's exit hook: once the process has
+// exited (crash, normal return, kill), its Job Object handle is closed if no
+// teardown path closed it first — an exited instance that is never evicted
+// (a crashed daemon that was restarted) no longer holds it (ENG-1963).
+func (im *InstanceManager) capCleanupOnExit(instanceID string) func() {
+	return func() {
+		if c := im.takeCapCleanup(instanceID); c != nil {
+			c()
+		}
+	}
 }
 
 // maxSocketPathLen is the sockaddr_un limit every gRPC implementation enforces.
@@ -511,34 +531,14 @@ func (im *InstanceManager) exitedLocked(instanceID string) bool {
 // ReleaseInstance conditionally evicts a JIT instance.
 func (im *InstanceManager) ReleaseInstance(instanceID string) {
 	im.mu.Lock()
-	defer im.mu.Unlock()
-
 	inst, ok := im.instances[instanceID]
-	if !ok {
+	if !ok || inst.Mode != domain.ModeJIT {
+		im.mu.Unlock()
 		return
 	}
-	if inst.Mode == domain.ModeJIT {
-		im.tokens.Revoke(instanceID) // ADR-0157 D4.2
-		if cmd, hasCMD := im.cmds[instanceID]; hasCMD && cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		delete(im.cmds, instanceID)
-		delete(im.exits, instanceID)
-		if inst.SocketPath != "" {
-			_ = os.Remove(inst.SocketPath)
-		}
-		delete(im.instances, instanceID)
-		ids := im.agentIndex[inst.AgentID]
-		for i, id := range ids {
-			if id == instanceID {
-				im.agentIndex[inst.AgentID] = append(ids[:i], ids[i+1:]...)
-				break
-			}
-		}
-		if len(im.agentIndex[inst.AgentID]) == 0 {
-			delete(im.agentIndex, inst.AgentID)
-		}
-	}
+	teardown := im.detachLocked(instanceID)
+	im.mu.Unlock()
+	teardown()
 }
 
 // FindInstanceByToken finds the live Instance a per-instance token was minted
@@ -568,53 +568,47 @@ func (im *InstanceManager) FindInstanceByToken(token string) *domain.Instance {
 // EvictAgent kills all instances of an agent.
 func (im *InstanceManager) EvictAgent(agentID string) {
 	im.mu.Lock()
-	defer im.mu.Unlock()
 	ids := append([]string{}, im.agentIndex[agentID]...)
+	teardowns := make([]func(), 0, len(ids))
 	for _, id := range ids {
-		im.tokens.Revoke(id) // ADR-0157 D4.2: every instance of the agent
-		if cmd, hasCMD := im.cmds[id]; hasCMD && cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		delete(im.cmds, id)
-		delete(im.exits, id)
-		delete(im.instances, id)
+		teardowns = append(teardowns, im.detachLocked(id)) // ADR-0157 D4.2: every instance revoked
 	}
 	delete(im.agentIndex, agentID)
+	im.mu.Unlock()
+	for _, td := range teardowns {
+		td()
+	}
 }
 
 // KillAllAgents kills every instance in parallel and clears all tracking maps.
+// The maps are cleared under the lock; the kills and cleanups run after it is
+// released (ENG-1963), bounded by a 5 s wait.
 func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
 	im.mu.Lock()
-	defer im.mu.Unlock()
-
 	if len(im.instances) == 0 {
+		im.mu.Unlock()
 		return nil
 	}
+	teardowns := make([]func(), 0, len(im.instances))
+	for id := range im.instances {
+		teardowns = append(teardowns, im.detachLocked(id))
+	}
+	im.mu.Unlock()
+
 	cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-
 	var wg sync.WaitGroup
-	for id := range im.instances {
-		im.tokens.Revoke(id) // ADR-0157 D4.2
-		cmd, hasCMD := im.cmds[id]
-		if !hasCMD || cmd.Process == nil {
-			continue
-		}
+	for _, td := range teardowns {
 		wg.Add(1)
-		go func(p *os.Process) {
+		go func(td func()) {
 			defer wg.Done()
-			_ = p.Kill()
-		}(cmd.Process)
+			td()
+		}(td)
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
-
 	select {
 	case <-done:
-		im.instances = make(map[string]*domain.Instance)
-		im.agentIndex = make(map[string][]string)
-		im.cmds = make(map[string]*exec.Cmd)
-		im.exits = make(map[string]*processExit)
 		return nil
 	case <-cleanupCtx.Done():
 		return fmt.Errorf("agent cleanup timed out: %w", cleanupCtx.Err())
@@ -718,6 +712,7 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 			im.mu.Lock()
 			im.capCleanups[inst.ID] = cleanup
 			im.mu.Unlock()
+			onExit = im.capCleanupOnExit(inst.ID)
 		}
 	}
 	go forwardPipe(ctx, stdout, def.ID, false)
@@ -839,6 +834,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 			im.mu.Lock()
 			im.capCleanups[inst.ID] = cleanup
 			im.mu.Unlock()
+			onExit = im.capCleanupOnExit(inst.ID)
 		}
 	}
 	go forwardPipe(ctx, stdout, def.ID, false)

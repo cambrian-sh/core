@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"context"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -120,7 +121,7 @@ func TestAgentManager_KillAllAgents(t *testing.T) {
 	m.InstanceManager.agentIndex["agent-C"] = []string{i2.ID}
 	m.InstanceManager.mu.Unlock()
 
-	m.killAllInstances()
+	_ = m.KillAllAgents(context.Background())
 
 	if len(m.InstanceManager.instances) != 0 {
 		t.Errorf("Instances not empty after killAll, got %d remaining", len(m.InstanceManager.instances))

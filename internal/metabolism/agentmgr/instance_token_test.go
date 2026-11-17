@@ -66,7 +66,7 @@ func tokenProbeManager(t *testing.T) *InstanceManager {
 	t.Helper()
 	im := NewInstanceManager("", "127.0.0.1:1")
 	im.SetEnvExtras([]string{"AGENTMGR_CHAOS_HELPER=token"})
-	t.Cleanup(func() { im.killAllInstances() })
+	t.Cleanup(func() { _ = im.KillAllAgents(context.Background()) })
 	return im
 }
 
