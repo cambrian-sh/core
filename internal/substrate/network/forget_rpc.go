@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -14,7 +15,8 @@ import (
 	"github.com/cambrian-sh/core/internal/memory/forget"
 )
 
-// Agent-plane memory erasure (ADR-0137 D2/D9, ENG-411 stage C; contract 0105).
+// Agent-plane memory erasure (ADR-0137 D2/D9, ENG-411 stage C; contract 0105; the
+// query form of PreviewForget, contract 0106, ENG-1948).
 //
 // Every handler seeds the CALLER's principal and read predicate on ctx (AGENTS.md
 // §2.4) before it reaches the forget service, which runs the one erasure chokepoint
@@ -48,19 +50,36 @@ func (s *Server) forgetCaller(ctx context.Context) (context.Context, error) {
 	return domain.WithScope(domain.WithPrincipal(ctx, p), pred), nil
 }
 
-// PreviewForget resolves a selector to the records the calling agent can see.
+// PreviewForget resolves a selector — or, since contract 0106 (ENG-1948), a free-text
+// query — to the records the calling agent can see. The query form runs the agent's own
+// recall (forget.Service.PreviewQuery over the QueryService QueryMemory uses) under the
+// principal and predicate forgetCaller seeded, lists only whole documents (or
+// document-less chunks) the agent wrote, and attaches a clipped snippet of the agent's
+// own text to each candidate. Exactly one of selector or query.
 func (s *Server) PreviewForget(ctx context.Context, req *pb.PreviewForgetRequest) (*pb.PreviewForgetResponse, error) {
 	ctx, err := s.forgetCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.Forgetter.Preview(ctx, selectorFromPB(req.GetSelector()))
+	sel := selectorFromPB(req.GetSelector())
+	query := strings.TrimSpace(req.GetQuery())
+	var p forget.Preview
+	switch {
+	case query != "" && !sel.Normalized().IsEmpty():
+		return nil, status.Error(codes.InvalidArgument, "preview forget: name a selector or a query, not both")
+	case query != "":
+		p, err = s.Forgetter.PreviewQuery(ctx, query, callerAgentID(ctx))
+	default:
+		p, err = s.Forgetter.Preview(ctx, sel)
+	}
 	if err != nil {
 		return nil, forgetStatus("preview forget", err)
 	}
 	out := &pb.PreviewForgetResponse{PreviewToken: p.Token, ExpiresAt: timestamppb.New(p.ExpiresAt)}
 	for _, c := range p.Candidates {
-		out.Candidates = append(out.Candidates, &pb.ErasureCandidate{Kind: c.Kind, Id: c.ID, Via: c.Via, DocumentId: c.DocumentID})
+		out.Candidates = append(out.Candidates, &pb.ErasureCandidate{
+			Kind: c.Kind, Id: c.ID, Via: c.Via, DocumentId: c.DocumentID, Snippet: p.Snippets[forget.SnippetKey(c)],
+		})
 	}
 	return out, nil
 }
@@ -132,8 +151,10 @@ func receiptToPB(r domain.ErasureReceipt) *pb.ErasureReceipt {
 func forgetStatus(op string, err error) error {
 	var code codes.Code
 	switch {
-	case errors.Is(err, domain.ErrErasureDisabled):
+	case errors.Is(err, domain.ErrErasureDisabled), errors.Is(err, forget.ErrQueryUnavailable):
 		code = codes.Unimplemented
+	case errors.Is(err, forget.ErrNoPrincipal):
+		code = codes.PermissionDenied
 	case errors.Is(err, authz.ErrScopeMissing), errors.Is(err, domain.ErrEraseDenied):
 		code = codes.PermissionDenied
 	case errors.Is(err, domain.ErrNothingToErase):

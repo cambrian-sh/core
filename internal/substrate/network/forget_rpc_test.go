@@ -110,3 +110,88 @@ func TestForgetRPC_UnknownCallerDisabledAndAgentEraseOff(t *testing.T) {
 		}
 	}
 }
+
+// chunkResolvingFake resolves a chunk id to its document the way PgErasureStore does
+// since ENG-1947 (Via = the chunk id).
+type chunkResolvingFake struct {
+	forgetRawFake
+	chunkDoc map[string]domain.ErasureCandidate
+}
+
+func (f *chunkResolvingFake) Resolve(ctx context.Context, sel domain.ErasureSelector) ([]domain.ErasureCandidate, error) {
+	out, _ := f.forgetRawFake.Resolve(ctx, sel)
+	for _, id := range sel.ChunkIDs {
+		if c, ok := f.chunkDoc[id]; ok {
+			c.Via = id
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+type scopeRecordingSearcher struct {
+	hits     []domain.SearchResult
+	callerID string
+	scoped   bool
+}
+
+func (s *scopeRecordingSearcher) Search(ctx context.Context, _, callerID string) ([]domain.SearchResult, error) {
+	s.callerID = callerID
+	p, ok := domain.ScopeFromContext(ctx)
+	s.scoped = ok && p != nil && domain.PrincipalFromContext(ctx).ID == callerID
+	return s.hits, nil
+}
+
+// ENG-1948 (contract 0106): PreviewForget's query form runs the agent's own search under
+// the principal and predicate forgetCaller seeded, lists only whole documents the agent
+// wrote, each with a snippet; selector + query is refused; no searcher is Unimplemented.
+func TestForgetRPC_QueryForm(t *testing.T) {
+	mine := domain.ErasureCandidate{Kind: domain.ErasureTargetDocument, ID: "mine", DocumentID: "mine", WrittenBy: "alice"}
+	bobs := domain.ErasureCandidate{Kind: domain.ErasureTargetDocument, ID: "bobs", DocumentID: "bobs", WrittenBy: "bob"}
+	raw := &chunkResolvingFake{
+		forgetRawFake: forgetRawFake{records: []domain.ErasureCandidate{mine, bobs}},
+		chunkDoc:      map[string]domain.ErasureCandidate{"m1": mine, "m2": mine, "b1": bobs},
+	}
+	srch := &scopeRecordingSearcher{hits: []domain.SearchResult{
+		{Document: domain.Document{ID: "b1", Text: "bob wrote this"}},
+		{Document: domain.Document{ID: "m2", Text: "alice wrote this"}},
+		{Document: domain.Document{ID: "m1", Text: "alice wrote that too"}},
+	}}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
+	s := &Server{Forgetter: forget.New(e, forget.Config{PolicyFingerprint: "t", Searcher: srch})}
+	ctx := agentCall("alice")
+
+	p, err := s.PreviewForget(ctx, &pb.PreviewForgetRequest{Query: "what I wrote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srch.scoped || srch.callerID != "alice" {
+		t.Fatalf("search must run as alice with her predicate on ctx: %+v", srch)
+	}
+	c := p.GetCandidates()
+	if len(c) != 1 || c[0].GetId() != "mine" || c[0].GetKind() != "document" || c[0].GetVia() != "m2" || c[0].GetSnippet() != "alice wrote this" {
+		t.Fatalf("candidates = %+v", c)
+	}
+	if _, err := s.Forget(ctx, &pb.ForgetRequest{PreviewToken: p.GetPreviewToken()}); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.erased) != 1 || !slices.Equal(raw.erased[0].Selector.DocumentIDs, []string{"mine"}) {
+		t.Fatalf("erased = %+v", raw.erased)
+	}
+	// A selector preview stays content-free.
+	sp, err := s.PreviewForget(ctx, &pb.PreviewForgetRequest{Selector: &pb.ErasureSelector{DocumentIds: []string{"mine"}}})
+	if err != nil || len(sp.GetCandidates()) != 1 || sp.GetCandidates()[0].GetSnippet() != "" {
+		t.Fatalf("selector preview = %+v, %v", sp, err)
+	}
+	if _, err := s.PreviewForget(ctx, &pb.PreviewForgetRequest{Query: "x", Selector: &pb.ErasureSelector{DocumentIds: []string{"mine"}}}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("selector + query: %v", err)
+	}
+	srch.hits = srch.hits[:1] // only bob's
+	if _, err := s.PreviewForget(ctx, &pb.PreviewForgetRequest{Query: "bob"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("only another writer's hits must be NotFound: %v", err)
+	}
+	noSearch := &Server{Forgetter: forget.New(e, forget.Config{})}
+	if _, err := noSearch.PreviewForget(ctx, &pb.PreviewForgetRequest{Query: "x"}); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("no searcher: %v", err)
+	}
+}

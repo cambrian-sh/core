@@ -5,14 +5,17 @@
 //
 // It is the single service behind every forget door — the agent-plane PreviewForget /
 // Forget / ListMyErasures RPCs, the operator-plane PreviewForgetMemory / ForgetMemory /
-// ListErasures / GetErasure RPCs and the forget_memory MCP tool — so the two-phase rule
+// ListErasures / GetErasure RPCs and the forget_memory kernel tool — so the two-phase rule
 // and the disabled answer are the same everywhere (AGENTS.md §4.3).
 //
 // It decides nothing about who may erase what: the caller's principal and read
 // predicate ride ctx (AGENTS.md §2.4) and the enforcing eraser applies them, at preview
 // (hidden = absent) and again at execution (a preview is never a capability). The kernel
-// never asks a model which rows to delete: a natural-language forget is the agent's own
-// search followed by a preview of the ids it found.
+// never asks a model which rows to delete. A natural-language forget is either the
+// agent's own search followed by a preview of the ids it found, or — the query form,
+// PreviewQuery (ENG-1948, owner decision 2026-11-17) — the same search run here with
+// the caller's own read scope, whose hits are previewed as concrete ids. Either way the
+// preview names concrete records and nothing is erased until Forget runs with its token.
 package forget
 
 import (
@@ -20,8 +23,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -38,7 +43,29 @@ type Config struct {
 	MaxPreviews int
 	// Now is the clock for preview expiry only (never an identifier); nil ⇒ time.Now.
 	Now func() time.Time
+	// Searcher resolves PreviewQuery's free text: the caller's own memory search, the
+	// one QueryMemory runs (memory.QueryService). nil ⇒ the query form answers
+	// ErrQueryUnavailable; the selector form is unaffected.
+	Searcher Searcher
+	// SnippetChars bounds each query-preview snippet in characters
+	// (execution.erasure.preview_snippet_chars); 0 ⇒ 200.
+	SnippetChars int
 }
+
+// Searcher is the slice of domain.MemorySearcher the query form uses: the caller-scoped
+// recall an agent's own QueryMemory runs. It honours the predicate on ctx exactly as
+// QueryMemory does, so the query form can never see more than a search by the same
+// caller would (AGENTS.md §2.4; §4.3 — no second retrieval pathway).
+type Searcher interface {
+	Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error)
+}
+
+// ErrQueryUnavailable: the query form was asked for but no searcher is composed.
+var ErrQueryUnavailable = errors.New("forget: the query form is unavailable (no memory searcher)")
+
+// ErrNoPrincipal: the query form needs the caller's principal on ctx. The chokepoint
+// would refuse later; refusing before the search spends nothing.
+var ErrNoPrincipal = errors.New("forget: no principal on the call")
 
 // Preview is one resolved forget preview: content-free (ids and kinds only).
 type Preview struct {
@@ -49,7 +76,14 @@ type Preview struct {
 	// Selector is the concrete selector Forget will execute for Token.
 	Selector  domain.ErasureSelector
 	ExpiresAt time.Time
+	// Snippets (query previews only) holds, per candidate (SnippetKey), a clipped
+	// excerpt of the caller's own text that matched. nil for selector previews, which
+	// stay content-free.
+	Snippets map[string]string
 }
+
+// SnippetKey is the Preview.Snippets key of a candidate.
+func SnippetKey(c domain.ErasureCandidate) string { return c.Kind + ":" + c.ID }
 
 // Request is one Forget: a preview token, or explicit ids — exactly one.
 type Request struct {
@@ -86,6 +120,9 @@ func New(eraser domain.MemoryEraser, cfg Config) *Service {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.SnippetChars <= 0 {
+		cfg.SnippetChars = 200
+	}
 	return &Service{eraser: eraser, cfg: cfg, previews: map[string]preview{}}
 }
 
@@ -116,16 +153,124 @@ func (s *Service) Preview(ctx context.Context, sel domain.ErasureSelector) (Prev
 	if err != nil {
 		return Preview{}, err
 	}
-	concrete := domain.SelectorOfCandidates(cands)
-	if concrete.IsEmpty() {
-		return Preview{}, &domain.NothingToEraseError{}
-	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].Kind != cands[j].Kind {
 			return cands[i].Kind < cands[j].Kind
 		}
 		return cands[i].ID < cands[j].ID
 	})
+	return s.issue(ctx, cands)
+}
+
+// PreviewQuery is the query form of Preview for an AGENT caller (ADR-0137 D2,
+// ENG-1948, owner decision 2026-11-17). The free text is resolved by the caller's own
+// memory search — Config.Searcher, the recall QueryMemory runs, under the principal and
+// predicate already on ctx — never by a model deciding what to delete. Then:
+//
+//   - every hit is named by its chunk id and resolved through the same chokepoint
+//     Resolve as the selector form (hidden = absent), so a hit in a stored document
+//     becomes that WHOLE DOCUMENT (ENG-1947); a chunk with no document stays a chunk;
+//   - candidates the caller did not write are OMITTED (agent erase is writer-only
+//     within read scope, ADR-0137 Q3): the preview lists only what the caller can
+//     actually erase, so its snippets only ever quote the caller's own text;
+//   - candidates are deduplicated (several hits in one document are one candidate)
+//     and kept in rank order, each with a snippet of its best-ranked hit, clipped to
+//     Config.SnippetChars.
+//
+// The token covers exactly the concrete ids listed; Forget re-authorizes them in full.
+// No candidate → domain.ErrNothingToErase. callerID is the agent id the search runs as.
+func (s *Service) PreviewQuery(ctx context.Context, query, callerID string) (Preview, error) {
+	e, err := s.eraserOrDisabled()
+	if err != nil {
+		return Preview{}, err
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return Preview{}, fmt.Errorf("%w: the query is empty", domain.ErrInvalidErasureRequest)
+	}
+	if s.cfg.Searcher == nil {
+		return Preview{}, ErrQueryUnavailable
+	}
+	writer := domain.PrincipalFromContext(ctx).WriterID()
+	if writer == "" {
+		return Preview{}, ErrNoPrincipal
+	}
+	hits, err := s.cfg.Searcher.Search(ctx, query, callerID)
+	if err != nil {
+		return Preview{}, fmt.Errorf("forget preview: search: %w", err)
+	}
+	rank := map[string]int{}
+	text := map[string]string{}
+	var ids []string
+	for _, h := range hits {
+		id := h.Document.ID
+		if id == "" {
+			continue
+		}
+		if _, seen := rank[id]; seen {
+			continue
+		}
+		rank[id] = len(ids)
+		text[id] = h.Document.Text
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return Preview{}, &domain.NothingToEraseError{}
+	}
+	cands, err := e.Resolve(ctx, domain.ErasureSelector{ChunkIDs: ids})
+	if err != nil {
+		return Preview{}, err
+	}
+	best := map[string]domain.ErasureCandidate{}
+	for _, c := range cands {
+		if c.WrittenBy == "" || c.WrittenBy != writer {
+			continue // not the caller's to erase: omitted, never listed
+		}
+		r, ok := rank[c.Via]
+		if !ok {
+			continue // defensive: Via is always the hit chunk id that named it
+		}
+		k := SnippetKey(c)
+		if prev, dup := best[k]; dup && rank[prev.Via] <= r {
+			continue
+		}
+		best[k] = c
+	}
+	kept := make([]domain.ErasureCandidate, 0, len(best))
+	for _, c := range best {
+		kept = append(kept, c)
+	}
+	sort.SliceStable(kept, func(i, j int) bool { return rank[kept[i].Via] < rank[kept[j].Via] })
+	p, err := s.issue(ctx, kept)
+	if err != nil {
+		return Preview{}, err
+	}
+	p.Snippets = make(map[string]string, len(kept))
+	for _, c := range kept {
+		p.Snippets[SnippetKey(c)] = clip(text[c.Via], s.cfg.SnippetChars)
+	}
+	return p, nil
+}
+
+// clip collapses whitespace and cuts s to at most n characters, marking a cut with "…".
+func clip(s string, n int) string {
+	s = strings.Join(strings.FieldsFunc(s, unicode.IsSpace), " ")
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return strings.TrimRightFunc(string(r[:n-1]), unicode.IsSpace) + "…"
+}
+
+// issue mints the token over the candidates' concrete selector and remembers it.
+func (s *Service) issue(ctx context.Context, cands []domain.ErasureCandidate) (Preview, error) {
+	concrete := domain.SelectorOfCandidates(cands)
+	if concrete.IsEmpty() {
+		return Preview{}, &domain.NothingToEraseError{}
+	}
 	principal := domain.PrincipalFromContext(ctx).String()
 	token := domain.ErasurePreviewToken(principal, concrete, s.cfg.PolicyFingerprint)
 	expires := s.cfg.Now().Add(s.cfg.PreviewTTL)

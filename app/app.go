@@ -930,10 +930,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ForgetMemory, the forget_memory MCP tool). Built over MemoryStack.Eraser() — the
 	// enforcing chokepoint, nil when execution.erasure.enabled is off, in which case
 	// every door answers "erasure disabled".
+	//
+	// ENG-1948: the agent query form (PreviewForget.query, forget_memory `query`)
+	// resolves free text with the caller's own recall — mem.QueryService, the same
+	// searcher QueryMemory serves — so it sees exactly what that caller's search sees.
 	forgetSvc := forget.New(mem.Eraser(), forget.Config{
 		PreviewTTL: cfg.Execution.Erasure.PreviewTTL(),
 		PolicyFingerprint: fmt.Sprintf("agent_erase=%t;max_targets=%d",
 			cfg.Execution.Erasure.AgentEraseEnabled, cfg.Execution.Erasure.MaxTargets()),
+		Searcher:     mem.QueryService,
+		SnippetChars: cfg.Execution.Erasure.PreviewSnippet(),
 	})
 	// ADR-0137 S5: the one drainer of the erasure outbox (CAS deletes of erased evidence
 	// and source-document bodies; request completion; tombstone retention). Started only
@@ -4056,7 +4062,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// (+ ErasureSelectorOp / ErasureCandidateOp / ErasureReceiptOp), agent plane
 		// PreviewForget / Forget / ListMyErasures; announced by "memory-erasure" when
 		// execution.erasure.enabled.
-		operatorSvc.SetHandshake(KernelVersion, "0105", operatorCaps)
+		// 0106 (2026-11-17, additive; ADR-0137 D2, ENG-1948): agent-plane
+		// PreviewForgetRequest.query (the query form, resolved by the caller's own
+		// scoped recall) and ErasureCandidate.snippet (agent query previews only).
+		// The operator plane is unchanged: its previews stay ids/counts only.
+		operatorSvc.SetHandshake(KernelVersion, "0106", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

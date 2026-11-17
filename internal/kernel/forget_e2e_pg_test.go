@@ -985,3 +985,138 @@ func TestPg_Forget_SupersessionIsNotErasure(t *testing.T) {
 		t.Fatalf("the older value re-opened or vanished after the erase: %+v", p)
 	}
 }
+
+// TestPg_Forget_QueryPreview is the ENG-1948 end-to-end test (contract 0106): the query
+// form of PreviewForget through the real agent-plane handler, resolved by the caller's
+// own recall (the composed QueryService — dense + hybrid FTS + the lanes newGate turns
+// on) on a real Postgres:
+//   - the search sees alice's document, bob's document (readable to alice) and not the
+//     document owner-fenced to carol; the preview lists ONLY alice's document, once, as
+//     the whole document, with a clipped snippet of alice's own text;
+//   - the operator plane's preview is ids-only by type (no snippet field, no query);
+//   - Forget with the token erases exactly the previewed document: bob's, carol's, the
+//     control and a document alice wrote after the preview all survive;
+//   - erasure disabled answers Unimplemented for the query form.
+func TestPg_Forget_QueryPreview(t *testing.T) {
+	g := newGate(t)
+	const snippetChars = 60
+	svc := forget.New(g.mem.Eraser(), forget.Config{PreviewTTL: time.Minute, PolicyFingerprint: "gate",
+		Searcher: g.mem.QueryService, SnippetChars: snippetChars})
+	agentSrv := &subnetwork.Server{Forgetter: svc}
+	aliceRPC := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-agent-id", "eng411d-alice"))
+	alice, bob := agentGateCtx("eng411d-alice"), agentGateCtx("eng411d-bob")
+	secret := g.tok("salary")
+
+	mine, mineChunks := g.ingest(alice, "eng411d-alice", "salary", paragraphs(secret, 4))
+	if len(mineChunks) < 2 {
+		t.Fatalf("need a multi-chunk document, got %d chunk(s)", len(mineChunks))
+	}
+	bobs, _ := g.ingest(bob, "eng411d-bob", "bobsalary", "Bob private note. The "+secret+" bonus figures for the quarter.")
+	fenced, _ := g.ingest(alice, "eng411d-alice", "carolsalary", "Carol fenced note. The "+secret+" figures are private to Carol.")
+	g.exec(`UPDATE documents SET tags = '{owner:eng411d-carol}' WHERE id = $1`, fenced)
+	g.exec(`UPDATE chunks SET metadata = jsonb_set(metadata, '{tags}', '["owner:eng411d-carol"]'::jsonb) WHERE document_id = $1`, fenced)
+	ctrl, _ := g.ingest(alice, "eng411d-alice", "unrelated", paragraphs(g.tok("unrelated"), 1))
+	docs := func(id string) int { return g.n(`SELECT count(*) FROM documents WHERE id = $1`, id) }
+	docOf := func(chunk string) string {
+		var d string
+		_ = g.vec.Pool().QueryRow(g.ctx, `SELECT COALESCE(document_id, '') FROM chunks WHERE id = $1`, chunk).Scan(&d)
+		return d
+	}
+
+	// Precondition: alice's own search reaches her document and bob's, never carol's.
+	hits, err := g.mem.QueryService.Search(alice, secret, "eng411d-alice")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, h := range hits {
+		seen[docOf(h.Document.ID)] = true
+	}
+	if !seen[mine] || !seen[bobs] || seen[fenced] {
+		t.Fatalf("precondition: alice's search saw mine=%t bobs=%t fenced=%t", seen[mine], seen[bobs], seen[fenced])
+	}
+
+	p, err := agentSrv.PreviewForget(aliceRPC, &pb.PreviewForgetRequest{Query: secret})
+	if err != nil {
+		t.Fatalf("PreviewForget(query): %v", err)
+	}
+	// The search is top-k with no relevance floor by default, so other documents alice
+	// wrote that merely resemble the query may be listed too (here the control, which
+	// shares the boilerplate) — the reason the preview names every candidate with a
+	// snippet and Forget runs only on its token. What must hold: alice's matching
+	// document ranks first, as one whole-document candidate; every candidate is a
+	// whole document alice wrote; bob's and carol's never appear.
+	cands := p.GetCandidates()
+	if len(cands) == 0 || cands[0].GetKind() != domain.ErasureTargetDocument || cands[0].GetId() != mine ||
+		cands[0].GetDocumentId() != mine || !slices.Contains(mineChunks, cands[0].GetVia()) {
+		t.Fatalf("query preview = %+v; want alice's whole document %s first", cands, mine)
+	}
+	listed := map[string]bool{}
+	for _, c := range cands {
+		id := c.GetId()
+		if listed[id] {
+			t.Fatalf("candidate %s listed twice (hits must be deduplicated per document)", id)
+		}
+		listed[id] = true
+		if id == bobs || id == fenced || c.GetKind() != domain.ErasureTargetDocument ||
+			g.n(`SELECT count(*) FROM documents WHERE id = $1 AND written_by = 'eng411d-alice'`, id) != 1 {
+			t.Fatalf("candidate %+v is not a whole document alice wrote", c)
+		}
+		sn := c.GetSnippet()
+		if sn == "" || len([]rune(sn)) > snippetChars || strings.Contains(sn, "Bob") || strings.Contains(sn, "Carol") {
+			t.Fatalf("snippet = %q; want a non-empty excerpt of alice's own text, at most %d chars", sn, snippetChars)
+		}
+		var viaText string
+		if err := g.vec.Pool().QueryRow(g.ctx, `SELECT text FROM chunks WHERE id = $1 AND document_id = $2`, c.GetVia(), id).Scan(&viaText); err != nil {
+			t.Fatalf("hit chunk %s of %s: %v", c.GetVia(), id, err)
+		}
+		if !strings.HasPrefix(strings.Join(strings.Fields(viaText), " "), strings.TrimSuffix(sn, "…")) {
+			t.Fatalf("snippet %q is not an excerpt of the hit chunk %s", sn, c.GetVia())
+		}
+	}
+	if docs(mine) != 1 {
+		t.Fatal("a preview must erase nothing")
+	}
+
+	// The operator plane: ids/counts only, by type — no snippet, no query form.
+	if (&pb.ErasureCandidateOp{}).ProtoReflect().Descriptor().Fields().ByName("snippet") != nil ||
+		(&pb.PreviewForgetMemoryOpRequest{}).ProtoReflect().Descriptor().Fields().ByName("query") != nil {
+		t.Fatal("operator previews must stay ids/counts only")
+	}
+	opSvc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
+	opSvc.SetForgetService(svc)
+	opCtx := domain.WithPrincipal(domain.WithPrincipalRoles(context.Background(), []string{"operator"}),
+		domain.PrincipalRef{Kind: domain.PrincipalUser, ID: "eng411d-ops"})
+	op, err := opSvc.PreviewForgetMemory(opCtx, &pb.PreviewForgetMemoryOpRequest{Selector: &pb.ErasureSelectorOp{DocumentIds: []string{mine}}})
+	if err != nil || len(op.GetCandidates()) != 1 || op.GetCountsByKind()[domain.ErasureTargetDocument] != 1 {
+		t.Fatalf("operator preview = %+v, %v", op, err)
+	}
+
+	// Written after the preview, matching the query: not part of the token.
+	late, _ := g.ingest(alice, "eng411d-alice", "late", "A later note about "+secret+".")
+	resp, err := agentSrv.Forget(aliceRPC, &pb.ForgetRequest{PreviewToken: p.GetPreviewToken()})
+	if err != nil {
+		t.Fatalf("Forget(token): %v", err)
+	}
+	if r := resp.GetReceipt(); r.GetPrincipal() != "eng411d-alice" || int(r.GetCounts()["documents"]) != len(cands) {
+		t.Fatalf("receipt = %+v; want %d documents", r, len(cands))
+	}
+	for id := range listed {
+		if docs(id) != 0 || g.n(`SELECT count(*) FROM chunks WHERE document_id = $1`, id) != 0 {
+			t.Fatalf("previewed document %s must be gone, every chunk of it", id)
+		}
+	}
+	for name, id := range map[string]string{"bob's": bobs, "carol's": fenced, "the control": ctrl, "the late": late} {
+		if !listed[id] && docs(id) != 1 {
+			t.Errorf("%s document was erased; only the previewed set may be", name)
+		}
+	}
+	if docs(late) != 1 || docs(bobs) != 1 || docs(fenced) != 1 {
+		t.Fatal("bob's, carol's and the late document must survive")
+	}
+
+	off := &subnetwork.Server{Forgetter: forget.New(nil, forget.Config{Searcher: g.mem.QueryService})}
+	if _, err := off.PreviewForget(aliceRPC, &pb.PreviewForgetRequest{Query: secret}); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("erasure disabled: %v, want Unimplemented", err)
+	}
+}

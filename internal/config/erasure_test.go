@@ -47,3 +47,17 @@ func TestErasureConfig_PreviewTTL(t *testing.T) {
 		t.Fatalf("validate = %v", errs)
 	}
 }
+
+// ENG-1948: an agent query preview clips snippets to preview_snippet_chars, 200 by
+// default; a negative value fails validation.
+func TestErasureConfig_PreviewSnippet(t *testing.T) {
+	if got := DefaultConfig().Execution.Erasure.PreviewSnippet(); got != 200 {
+		t.Fatalf("default snippet = %d, want 200", got)
+	}
+	if got := (ErasureConfig{PreviewSnippetChars: 40}).PreviewSnippet(); got != 40 {
+		t.Fatalf("set snippet = %d, want 40", got)
+	}
+	if errs := (ErasureConfig{PreviewSnippetChars: -1}).validate(); len(errs) != 1 || !strings.Contains(errs[0], "preview_snippet_chars") {
+		t.Fatalf("validate = %v", errs)
+	}
+}

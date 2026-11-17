@@ -1052,11 +1052,15 @@ func (x *ErasureSelector) GetEntityRefs() []string {
 
 // ErasureCandidate is one record a preview resolved to: ids only, never content.
 type ErasureCandidate struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"` // document | chunk | experience | entity
-	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
-	Via           string                 `protobuf:"bytes,3,opt,name=via,proto3" json:"via,omitempty"`                                 // the selector entry that named it (a thread id, else id)
-	DocumentId    string                 `protobuf:"bytes,4,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"` // "" when none
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Kind  string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"` // document | chunk | experience | entity
+	Id    string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Via   string                 `protobuf:"bytes,3,opt,name=via,proto3" json:"via,omitempty"` // the selector entry that named it (a thread id, a hit chunk
+	// id for a query preview, else id)
+	DocumentId string `protobuf:"bytes,4,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"` // "" when none
+	// Query previews only (contract 0106): a clipped excerpt of the caller's own text
+	// that matched (execution.erasure.preview_snippet_chars). "" for selector previews.
+	Snippet       string `protobuf:"bytes,5,opt,name=snippet,proto3" json:"snippet,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1115,6 +1119,13 @@ func (x *ErasureCandidate) GetVia() string {
 func (x *ErasureCandidate) GetDocumentId() string {
 	if x != nil {
 		return x.DocumentId
+	}
+	return ""
+}
+
+func (x *ErasureCandidate) GetSnippet() string {
+	if x != nil {
+		return x.Snippet
 	}
 	return ""
 }
@@ -1253,8 +1264,10 @@ func (x *ErasureReceipt) GetReplayed() bool {
 }
 
 type PreviewForgetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Selector      *ErasureSelector       `protobuf:"bytes,1,opt,name=selector,proto3" json:"selector,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exactly one of selector (concrete ids) or query (free text, contract 0106).
+	Selector      *ErasureSelector `protobuf:"bytes,1,opt,name=selector,proto3" json:"selector,omitempty"`
+	Query         string           `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1294,6 +1307,13 @@ func (x *PreviewForgetRequest) GetSelector() *ErasureSelector {
 		return x.Selector
 	}
 	return nil
+}
+
+func (x *PreviewForgetRequest) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
 }
 
 type PreviewForgetResponse struct {
@@ -7831,13 +7851,14 @@ const file_cambrian_proto_rawDesc = "" +
 	"\tchunk_ids\x18\x03 \x03(\tR\bchunkIds\x12%\n" +
 	"\x0eexperience_ids\x18\x04 \x03(\tR\rexperienceIds\x12\x1f\n" +
 	"\ventity_refs\x18\x05 \x03(\tR\n" +
-	"entityRefs\"i\n" +
+	"entityRefs\"\x83\x01\n" +
 	"\x10ErasureCandidate\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x10\n" +
 	"\x03via\x18\x03 \x01(\tR\x03via\x12\x1f\n" +
 	"\vdocument_id\x18\x04 \x01(\tR\n" +
-	"documentId\"\x9b\x04\n" +
+	"documentId\x12\x18\n" +
+	"\asnippet\x18\x05 \x01(\tR\asnippet\"\x9b\x04\n" +
 	"\x0eErasureReceipt\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1c\n" +
@@ -7855,9 +7876,10 @@ const file_cambrian_proto_rawDesc = "" +
 	"\breplayed\x18\f \x01(\bR\breplayed\x1a9\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"M\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"c\n" +
 	"\x14PreviewForgetRequest\x125\n" +
-	"\bselector\x18\x01 \x01(\v2\x19.cambrian.ErasureSelectorR\bselector\"\xb3\x01\n" +
+	"\bselector\x18\x01 \x01(\v2\x19.cambrian.ErasureSelectorR\bselector\x12\x14\n" +
+	"\x05query\x18\x02 \x01(\tR\x05query\"\xb3\x01\n" +
 	"\x15PreviewForgetResponse\x12#\n" +
 	"\rpreview_token\x18\x01 \x01(\tR\fpreviewToken\x12:\n" +
 	"\n" +

@@ -36,6 +36,19 @@ type ErasureConfig struct {
 	// PreviewTTLSeconds is how long a forget preview's token stays executable
 	// (ADR-0137 D2; read by app.go for internal/memory/forget). 0 ⇒ 600.
 	PreviewTTLSeconds int `json:"preview_ttl_seconds,omitempty"`
+	// PreviewSnippetChars bounds the excerpt (in characters) an AGENT's query-form
+	// forget preview shows per candidate, from the caller's own text (ENG-1948; read by
+	// app.go for internal/memory/forget). Operator previews never carry snippets.
+	// 0 ⇒ 200.
+	PreviewSnippetChars int `json:"preview_snippet_chars,omitempty"`
+}
+
+// PreviewSnippet is PreviewSnippetChars with its default applied.
+func (c ErasureConfig) PreviewSnippet() int {
+	if c.PreviewSnippetChars > 0 {
+		return c.PreviewSnippetChars
+	}
+	return 200
 }
 
 // PreviewTTL is PreviewTTLSeconds as a duration, with its default applied.
@@ -96,6 +109,7 @@ func (c ErasureConfig) validate() []string {
 		{"worker_poll_seconds", c.WorkerPollSeconds},
 		{"worker_max_attempts", c.WorkerMaxAttempts},
 		{"preview_ttl_seconds", c.PreviewTTLSeconds},
+		{"preview_snippet_chars", c.PreviewSnippetChars},
 	} {
 		if f.v < 0 {
 			errs = append(errs, fmt.Sprintf("execution.erasure.%s must be >= 0 (got %d)", f.name, f.v))
