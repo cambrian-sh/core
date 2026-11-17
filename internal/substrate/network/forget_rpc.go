@@ -75,7 +75,7 @@ func (s *Server) PreviewForget(ctx context.Context, req *pb.PreviewForgetRequest
 	if err != nil {
 		return nil, forgetStatus("preview forget", err)
 	}
-	out := &pb.PreviewForgetResponse{PreviewToken: p.Token, ExpiresAt: timestamppb.New(p.ExpiresAt)}
+	out := &pb.PreviewForgetResponse{PreviewToken: p.Token, ExpiresAt: timestamppb.New(p.ExpiresAt), Truncated: p.Truncated}
 	for _, c := range p.Candidates {
 		out.Candidates = append(out.Candidates, &pb.ErasureCandidate{
 			Kind: c.Kind, Id: c.ID, Via: c.Via, DocumentId: c.DocumentID, Snippet: p.Snippets[forget.SnippetKey(c)],

@@ -41,6 +41,40 @@ type ErasureConfig struct {
 	// app.go for internal/memory/forget). Operator previews never carry snippets.
 	// 0 ⇒ 200.
 	PreviewSnippetChars int `json:"preview_snippet_chars,omitempty"`
+	// PreviewMinCosine is the relevance floor of an agent's query-form forget preview
+	// (ENG-1953, owner decision 2026-11-17; read by app.go for internal/memory/forget):
+	// a recall hit names a record only when its COSINE similarity to the query
+	// (SearchResult.RawScore, the dense lane's 1 - cosine distance) is at least this.
+	// It is the scale of retrieval.recall_similarity_floor and
+	// workspace.workspace_min_fact_cosine — not the fused/blended Score, whose scale
+	// changes with RRF, the Stage-A blend, promotion and spreading. A hit with no
+	// cosine (lexical-only or associatively injected) never qualifies. A document
+	// qualifies when any of its hits passes. Range [0, 1]; 0 ⇒ 0.60 (the
+	// workspace_min_fact_cosine default: the kernel's "this memory is about the query"
+	// threshold for the default embedder, bge-large). Selector previews ignore it.
+	PreviewMinCosine float64 `json:"preview_min_cosine,omitempty"`
+	// PreviewMaxCandidates caps the records one query-form preview lists, after
+	// per-document deduplication, in rank order; when the cap cuts the list the
+	// preview says truncated (PreviewForgetResponse.truncated, forget_memory
+	// `truncated`) so the agent narrows the query (ENG-1953; read by app.go). At most
+	// max_targets_per_request, so a full preview stays executable. 0 ⇒ 20.
+	PreviewMaxCandidates int `json:"preview_max_candidates,omitempty"`
+}
+
+// PreviewMinCos is PreviewMinCosine with its default applied.
+func (c ErasureConfig) PreviewMinCos() float64 {
+	if c.PreviewMinCosine > 0 {
+		return c.PreviewMinCosine
+	}
+	return 0.60
+}
+
+// PreviewMaxCands is PreviewMaxCandidates with its default applied.
+func (c ErasureConfig) PreviewMaxCands() int {
+	if c.PreviewMaxCandidates > 0 {
+		return c.PreviewMaxCandidates
+	}
+	return 20
 }
 
 // PreviewSnippet is PreviewSnippetChars with its default applied.
@@ -110,10 +144,18 @@ func (c ErasureConfig) validate() []string {
 		{"worker_max_attempts", c.WorkerMaxAttempts},
 		{"preview_ttl_seconds", c.PreviewTTLSeconds},
 		{"preview_snippet_chars", c.PreviewSnippetChars},
+		{"preview_max_candidates", c.PreviewMaxCandidates},
 	} {
 		if f.v < 0 {
 			errs = append(errs, fmt.Sprintf("execution.erasure.%s must be >= 0 (got %d)", f.name, f.v))
 		}
+	}
+	if c.PreviewMinCosine < 0 || c.PreviewMinCosine > 1 {
+		errs = append(errs, fmt.Sprintf("execution.erasure.preview_min_cosine must be in [0, 1] (got %g)", c.PreviewMinCosine))
+	}
+	if c.PreviewMaxCandidates >= 0 && c.PreviewMaxCands() > c.MaxTargets() {
+		errs = append(errs, fmt.Sprintf("execution.erasure.preview_max_candidates (%d) must not exceed max_targets_per_request (%d)",
+			c.PreviewMaxCands(), c.MaxTargets()))
 	}
 	return errs
 }

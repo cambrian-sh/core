@@ -241,6 +241,17 @@ func (h hashEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 	return v, nil
 }
 
+// hashCosine is hashEmbedder's cosine between two texts.
+func hashCosine(e hashEmbedder, a, b string) float64 {
+	va, _ := e.Embed(context.Background(), a)
+	vb, _ := e.Embed(context.Background(), b)
+	var dot float64
+	for i := range va {
+		dot += float64(va[i]) * float64(vb[i])
+	}
+	return dot
+}
+
 // gate is one composed kernel memory stack over the scratch database.
 type gate struct {
 	t     *testing.T
@@ -997,15 +1008,43 @@ func TestPg_Forget_SupersessionIsNotErasure(t *testing.T) {
 //   - Forget with the token erases exactly the previewed document: bob's, carol's, the
 //     control and a document alice wrote after the preview all survive;
 //   - erasure disabled answers Unimplemented for the query form.
+//
+// ENG-1953 (contract 0107) adds the relevance floor and the candidate cap:
+//   - the control document alice wrote shares the boilerplate but not the query term;
+//     recall returns it (top-k, retrieval floor 0) with no cosine to the query, so the
+//     preview's floor excludes it: it is neither listed nor erased;
+//   - the floor is on the hit cosine (RawScore). The default (0.60) is on the scale of
+//     the production embedder (bge-large); this test's bag-of-words hashEmbedder puts a
+//     one-term query at cosine ~0.02 to a long matching chunk, so at the DEFAULT floor
+//     nothing qualifies (NotFound, never a fallback to the unfloored list) and the
+//     rest of the test sets a floor on the hash embedder's own scale (hashFloor);
+//   - a preview cut by the candidate cap says truncated.
 func TestPg_Forget_QueryPreview(t *testing.T) {
 	g := newGate(t)
 	const snippetChars = 60
+	// hashFloor is a cosine floor on hashEmbedder's scale: above 0 (a row that shares
+	// no token with the query has cosine 0) and below a one-term query's cosine to
+	// the long matching chunks (~0.02).
+	const hashFloor = 0.01
 	svc := forget.New(g.mem.Eraser(), forget.Config{PreviewTTL: time.Minute, PolicyFingerprint: "gate",
-		Searcher: g.mem.QueryService, SnippetChars: snippetChars})
+		Searcher: g.mem.QueryService, SnippetChars: snippetChars, MinCosine: hashFloor})
 	agentSrv := &subnetwork.Server{Forgetter: svc}
 	aliceRPC := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-agent-id", "eng411d-alice"))
 	alice, bob := agentGateCtx("eng411d-alice"), agentGateCtx("eng411d-bob")
-	secret := g.tok("salary")
+	// The query term must not share a hash bucket with any token of the control text,
+	// or the control would have a (spurious) cosine to it under hashEmbedder; the
+	// term is chosen deterministically among a few candidates so it shares none.
+	ctrlText := paragraphs(g.tok("unrelated"), 1)
+	secret := ""
+	for i := 0; i < 32 && secret == ""; i++ {
+		cand := g.tok(fmt.Sprintf("salary%d", i))
+		if hashCosine(g.emb, cand, ctrlText) == 0 {
+			secret = cand
+		}
+	}
+	if secret == "" {
+		t.Fatal("no query term without a hash collision against the control text")
+	}
 
 	mine, mineChunks := g.ingest(alice, "eng411d-alice", "salary", paragraphs(secret, 4))
 	if len(mineChunks) < 2 {
@@ -1015,7 +1054,7 @@ func TestPg_Forget_QueryPreview(t *testing.T) {
 	fenced, _ := g.ingest(alice, "eng411d-alice", "carolsalary", "Carol fenced note. The "+secret+" figures are private to Carol.")
 	g.exec(`UPDATE documents SET tags = '{owner:eng411d-carol}' WHERE id = $1`, fenced)
 	g.exec(`UPDATE chunks SET metadata = jsonb_set(metadata, '{tags}', '["owner:eng411d-carol"]'::jsonb) WHERE document_id = $1`, fenced)
-	ctrl, _ := g.ingest(alice, "eng411d-alice", "unrelated", paragraphs(g.tok("unrelated"), 1))
+	ctrl, _ := g.ingest(alice, "eng411d-alice", "unrelated", ctrlText)
 	docs := func(id string) int { return g.n(`SELECT count(*) FROM documents WHERE id = $1`, id) }
 	docOf := func(chunk string) string {
 		var d string
@@ -1023,30 +1062,43 @@ func TestPg_Forget_QueryPreview(t *testing.T) {
 		return d
 	}
 
-	// Precondition: alice's own search reaches her document and bob's, never carol's.
-	hits, err := g.mem.QueryService.Search(alice, secret, "eng411d-alice")
+	// Precondition: alice's own search reaches her document, bob's and (the recall
+	// floor is 0) the boilerplate-sharing control, never carol's. The control's rows
+	// have no cosine to the query.
+	hits, err := g.mem.QueryService.SearchMatches(alice, secret, "eng411d-alice")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	seen := map[string]bool{}
 	for _, h := range hits {
-		seen[docOf(h.Document.ID)] = true
+		d := docOf(h.Document.ID)
+		seen[d] = true
+		if d == ctrl && h.RawScore > 0 {
+			t.Fatalf("control hit %s has cosine %g to the query; want none", h.Document.ID, h.RawScore)
+		}
 	}
-	if !seen[mine] || !seen[bobs] || seen[fenced] {
-		t.Fatalf("precondition: alice's search saw mine=%t bobs=%t fenced=%t", seen[mine], seen[bobs], seen[fenced])
+	if !seen[mine] || !seen[bobs] || !seen[ctrl] || seen[fenced] {
+		t.Fatalf("precondition: alice's search saw mine=%t bobs=%t control=%t fenced=%t", seen[mine], seen[bobs], seen[ctrl], seen[fenced])
+	}
+
+	// At the default floor (0.60, the production embedder's scale) no hash-embedder hit
+	// qualifies: NotFound, never the unfloored list.
+	defSrv := &subnetwork.Server{Forgetter: forget.New(g.mem.Eraser(), forget.Config{PolicyFingerprint: "gate", Searcher: g.mem.QueryService})}
+	if _, err := defSrv.PreviewForget(aliceRPC, &pb.PreviewForgetRequest{Query: secret}); status.Code(err) != codes.NotFound {
+		t.Fatalf("default floor on hash-embedder cosines: %v, want NotFound", err)
 	}
 
 	p, err := agentSrv.PreviewForget(aliceRPC, &pb.PreviewForgetRequest{Query: secret})
 	if err != nil {
 		t.Fatalf("PreviewForget(query): %v", err)
 	}
-	// The search is top-k with no relevance floor by default, so other documents alice
-	// wrote that merely resemble the query may be listed too (here the control, which
-	// shares the boilerplate) — the reason the preview names every candidate with a
-	// snippet and Forget runs only on its token. What must hold: alice's matching
-	// document ranks first, as one whole-document candidate; every candidate is a
-	// whole document alice wrote; bob's and carol's never appear.
+	// What must hold: alice's matching document is the ONLY candidate, as one
+	// whole-document candidate. The control (recalled, but with no cosine to the
+	// query) is below the floor; bob's and carol's never appear; not truncated.
 	cands := p.GetCandidates()
+	if len(cands) != 1 || p.GetTruncated() {
+		t.Fatalf("query preview = %+v truncated=%t; want exactly alice's matching document", cands, p.GetTruncated())
+	}
 	if len(cands) == 0 || cands[0].GetKind() != domain.ErasureTargetDocument || cands[0].GetId() != mine ||
 		cands[0].GetDocumentId() != mine || !slices.Contains(mineChunks, cands[0].GetVia()) {
 		t.Fatalf("query preview = %+v; want alice's whole document %s first", cands, mine)
@@ -1094,6 +1146,16 @@ func TestPg_Forget_QueryPreview(t *testing.T) {
 
 	// Written after the preview, matching the query: not part of the token.
 	late, _ := g.ingest(alice, "eng411d-alice", "late", "A later note about "+secret+".")
+
+	// The cap: two of alice's documents now match; with a cap of 1 the preview lists
+	// the top-ranked one and says truncated (its token is never used).
+	capSrv := &subnetwork.Server{Forgetter: forget.New(g.mem.Eraser(), forget.Config{PolicyFingerprint: "gate",
+		Searcher: g.mem.QueryService, MinCosine: hashFloor, MaxCandidates: 1})}
+	cp, err := capSrv.PreviewForget(aliceRPC, &pb.PreviewForgetRequest{Query: secret})
+	if err != nil || len(cp.GetCandidates()) != 1 || !cp.GetTruncated() ||
+		(cp.GetCandidates()[0].GetId() != mine && cp.GetCandidates()[0].GetId() != late) {
+		t.Fatalf("capped preview = %+v, %v; want one of alice's two matching documents, truncated", cp, err)
+	}
 	resp, err := agentSrv.Forget(aliceRPC, &pb.ForgetRequest{PreviewToken: p.GetPreviewToken()})
 	if err != nil {
 		t.Fatalf("Forget(token): %v", err)
@@ -1111,8 +1173,8 @@ func TestPg_Forget_QueryPreview(t *testing.T) {
 			t.Errorf("%s document was erased; only the previewed set may be", name)
 		}
 	}
-	if docs(late) != 1 || docs(bobs) != 1 || docs(fenced) != 1 {
-		t.Fatal("bob's, carol's and the late document must survive")
+	if docs(late) != 1 || docs(bobs) != 1 || docs(fenced) != 1 || docs(ctrl) != 1 {
+		t.Fatal("bob's, carol's, the control and the late document must survive")
 	}
 
 	off := &subnetwork.Server{Forgetter: forget.New(nil, forget.Config{Searcher: g.mem.QueryService})}

@@ -934,13 +934,23 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ENG-1948: the agent query form (PreviewForget.query, forget_memory `query`)
 	// resolves free text with the caller's own recall — mem.QueryService, the same
 	// searcher QueryMemory serves — so it sees exactly what that caller's search sees.
+	// ENG-1953: it runs that pass without spreading (QueryService.SearchMatches) so
+	// each hit keeps its cosine, floors hits on it (execution.erasure.preview_min_cosine)
+	// and caps the list (preview_max_candidates).
 	forgetSvc := forget.New(mem.Eraser(), forget.Config{
 		PreviewTTL: cfg.Execution.Erasure.PreviewTTL(),
 		PolicyFingerprint: fmt.Sprintf("agent_erase=%t;max_targets=%d",
 			cfg.Execution.Erasure.AgentEraseEnabled, cfg.Execution.Erasure.MaxTargets()),
-		Searcher:     mem.QueryService,
-		SnippetChars: cfg.Execution.Erasure.PreviewSnippet(),
+		Searcher:      mem.QueryService,
+		SnippetChars:  cfg.Execution.Erasure.PreviewSnippet(),
+		MinCosine:     cfg.Execution.Erasure.PreviewMinCos(),
+		MaxCandidates: cfg.Execution.Erasure.PreviewMaxCands(),
 	})
+	if cfg.Execution.Erasure.Enabled && cfg.Execution.Erasure.AgentEraseEnabled {
+		slog.Info("ENG-1953: forget query preview bounds",
+			"min_cosine", cfg.Execution.Erasure.PreviewMinCos(),
+			"max_candidates", cfg.Execution.Erasure.PreviewMaxCands())
+	}
 	// ADR-0137 S5: the one drainer of the erasure outbox (CAS deletes of erased evidence
 	// and source-document bodies; request completion; tombstone retention). Started only
 	// with erasure on — off, nothing writes the outbox.
@@ -4066,7 +4076,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// PreviewForgetRequest.query (the query form, resolved by the caller's own
 		// scoped recall) and ErasureCandidate.snippet (agent query previews only).
 		// The operator plane is unchanged: its previews stay ids/counts only.
-		operatorSvc.SetHandshake(KernelVersion, "0106", operatorCaps)
+		// 0107 (2026-11-17, additive; ENG-1953): agent-plane
+		// PreviewForgetResponse.truncated — a query preview cut by
+		// execution.erasure.preview_max_candidates says so. Operator plane unchanged.
+		operatorSvc.SetHandshake(KernelVersion, "0107", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

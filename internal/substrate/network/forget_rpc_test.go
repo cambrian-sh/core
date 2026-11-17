@@ -135,7 +135,7 @@ type scopeRecordingSearcher struct {
 	scoped   bool
 }
 
-func (s *scopeRecordingSearcher) Search(ctx context.Context, _, callerID string) ([]domain.SearchResult, error) {
+func (s *scopeRecordingSearcher) SearchMatches(ctx context.Context, _, callerID string) ([]domain.SearchResult, error) {
 	s.callerID = callerID
 	p, ok := domain.ScopeFromContext(ctx)
 	s.scoped = ok && p != nil && domain.PrincipalFromContext(ctx).ID == callerID
@@ -153,9 +153,9 @@ func TestForgetRPC_QueryForm(t *testing.T) {
 		chunkDoc:      map[string]domain.ErasureCandidate{"m1": mine, "m2": mine, "b1": bobs},
 	}
 	srch := &scopeRecordingSearcher{hits: []domain.SearchResult{
-		{Document: domain.Document{ID: "b1", Text: "bob wrote this"}},
-		{Document: domain.Document{ID: "m2", Text: "alice wrote this"}},
-		{Document: domain.Document{ID: "m1", Text: "alice wrote that too"}},
+		{Document: domain.Document{ID: "b1", Text: "bob wrote this"}, RawScore: 0.9},
+		{Document: domain.Document{ID: "m2", Text: "alice wrote this"}, RawScore: 0.8},
+		{Document: domain.Document{ID: "m1", Text: "alice wrote that too"}, RawScore: 0.7},
 	}}
 	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
 	s := &Server{Forgetter: forget.New(e, forget.Config{PolicyFingerprint: "t", Searcher: srch})}
@@ -193,5 +193,40 @@ func TestForgetRPC_QueryForm(t *testing.T) {
 	noSearch := &Server{Forgetter: forget.New(e, forget.Config{})}
 	if _, err := noSearch.PreviewForget(ctx, &pb.PreviewForgetRequest{Query: "x"}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("no searcher: %v", err)
+	}
+}
+
+// ENG-1953 (contract 0107): a query preview the candidate cap cut says so in
+// PreviewForgetResponse.truncated, and hits below the relevance floor name nothing.
+func TestForgetRPC_QueryPreviewTruncatedAndFloored(t *testing.T) {
+	one := domain.ErasureCandidate{Kind: domain.ErasureTargetDocument, ID: "one", DocumentID: "one", WrittenBy: "alice"}
+	two := domain.ErasureCandidate{Kind: domain.ErasureTargetDocument, ID: "two", DocumentID: "two", WrittenBy: "alice"}
+	low := domain.ErasureCandidate{Kind: domain.ErasureTargetDocument, ID: "low", DocumentID: "low", WrittenBy: "alice"}
+	raw := &chunkResolvingFake{
+		forgetRawFake: forgetRawFake{records: []domain.ErasureCandidate{one, two, low}},
+		chunkDoc:      map[string]domain.ErasureCandidate{"o1": one, "t1": two, "l1": low},
+	}
+	srch := &scopeRecordingSearcher{hits: []domain.SearchResult{
+		{Document: domain.Document{ID: "o1", Text: "one"}, RawScore: 0.9},
+		{Document: domain.Document{ID: "l1", Text: "boilerplate"}, RawScore: 0.3},
+		{Document: domain.Document{ID: "t1", Text: "two"}, RawScore: 0.8},
+	}}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
+	ctx := agentCall("alice")
+
+	capped := &Server{Forgetter: forget.New(e, forget.Config{Searcher: srch, MaxCandidates: 1})}
+	p, err := capped.PreviewForget(ctx, &pb.PreviewForgetRequest{Query: "q"})
+	if err != nil || len(p.GetCandidates()) != 1 || p.GetCandidates()[0].GetId() != "one" || !p.GetTruncated() {
+		t.Fatalf("capped preview = %+v, %v; want only \"one\", truncated", p, err)
+	}
+	full := &Server{Forgetter: forget.New(e, forget.Config{Searcher: srch})}
+	p, err = full.PreviewForget(ctx, &pb.PreviewForgetRequest{Query: "q"})
+	if err != nil || len(p.GetCandidates()) != 2 || p.GetTruncated() {
+		t.Fatalf("default preview = %+v, %v; want one+two (low is below the floor), not truncated", p, err)
+	}
+	for _, c := range p.GetCandidates() {
+		if c.GetId() == "low" {
+			t.Fatal("a hit below the relevance floor named its document")
+		}
 	}
 }

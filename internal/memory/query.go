@@ -1656,6 +1656,23 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 	return q.appendSubstrateCitations(ctx, query, callerID, results), nil
 }
 
+// SearchMatches is the single mnemonic_fact recall pass Search runs — same
+// query-prefixed embedding, dense + lexical RRF, fact lane, Stage A/B, anchors,
+// admit() with the caller's predicate from ctx and the relevance floor — WITHOUT the
+// associative spreading after assembly (and so without Hebbian reinforcement), the
+// agentic wrap or the ADR-0118 D5 substrate citations. The rows are the ones the
+// query MATCHED, and each dense hit keeps its cosine in RawScore: spreadAndRank
+// rebuilds every row from its activation energy and drops RawScore
+// (T-20261117-spreadandrank-drops-rawscore-so-workspace-min).
+//
+// Its caller is the forget query preview (internal/memory/forget, ENG-1953), which
+// floors hits on that cosine before naming records for deletion; a deletion preview
+// is a direct query, not an agent's grounding loop (like SearchSystem, single pass),
+// and must not reinforce edges among the very records it is about to erase.
+func (q *QueryService) SearchMatches(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicFact, false)
+}
+
 // SearchSystem is the operator-plane fact recall at ScopeSystem (ADR-0047 D13 /
 // Amendment A2). It seeds domain.ScopeSystem into ctx server-side, so the read
 // bypasses both scope filtering and the per-caller ACL — the operator sees all

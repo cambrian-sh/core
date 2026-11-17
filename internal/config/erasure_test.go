@@ -61,3 +61,31 @@ func TestErasureConfig_PreviewSnippet(t *testing.T) {
 		t.Fatalf("validate = %v", errs)
 	}
 }
+
+// ENG-1953: the query preview's relevance floor (a minimum cosine, default 0.60) and
+// candidate cap (default 20, never above max_targets_per_request) are validated.
+func TestErasureConfig_PreviewFloorAndCap(t *testing.T) {
+	var c ErasureConfig
+	if c.PreviewMinCos() != 0.60 || c.PreviewMaxCands() != 20 {
+		t.Fatalf("defaults = %g, %d; want 0.60, 20", c.PreviewMinCos(), c.PreviewMaxCands())
+	}
+	set := ErasureConfig{PreviewMinCosine: 0.4, PreviewMaxCandidates: 7}
+	if set.PreviewMinCos() != 0.4 || set.PreviewMaxCands() != 7 || len(set.validate()) != 0 {
+		t.Fatalf("set = %g, %d, %v", set.PreviewMinCos(), set.PreviewMaxCands(), set.validate())
+	}
+	for _, bad := range []struct {
+		c    ErasureConfig
+		want string
+	}{
+		{ErasureConfig{PreviewMinCosine: -0.1}, "preview_min_cosine"},
+		{ErasureConfig{PreviewMinCosine: 1.5}, "preview_min_cosine"},
+		{ErasureConfig{PreviewMaxCandidates: -1}, "preview_max_candidates"},
+		{ErasureConfig{PreviewMaxCandidates: 50, MaxTargetsPerRequest: 10}, "must not exceed max_targets_per_request"},
+		{ErasureConfig{MaxTargetsPerRequest: 5}, "must not exceed max_targets_per_request"}, // default cap 20 > 5
+	} {
+		errs := bad.c.validate()
+		if len(errs) != 1 || !strings.Contains(errs[0], bad.want) {
+			t.Fatalf("%+v: errs = %v, want one naming %q", bad.c, errs, bad.want)
+		}
+	}
+}

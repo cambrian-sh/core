@@ -1317,10 +1317,14 @@ func (x *PreviewForgetRequest) GetQuery() string {
 }
 
 type PreviewForgetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PreviewToken  string                 `protobuf:"bytes,1,opt,name=preview_token,json=previewToken,proto3" json:"preview_token,omitempty"`
-	Candidates    []*ErasureCandidate    `protobuf:"bytes,2,rep,name=candidates,proto3" json:"candidates,omitempty"`
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	PreviewToken string                 `protobuf:"bytes,1,opt,name=preview_token,json=previewToken,proto3" json:"preview_token,omitempty"`
+	Candidates   []*ErasureCandidate    `protobuf:"bytes,2,rep,name=candidates,proto3" json:"candidates,omitempty"`
+	ExpiresAt    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// Query previews only (contract 0107): more records cleared the relevance floor
+	// than execution.erasure.preview_max_candidates; candidates holds the top ones in
+	// rank order and the token covers only those. Narrow the query to reach the rest.
+	Truncated     bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1374,6 +1378,13 @@ func (x *PreviewForgetResponse) GetExpiresAt() *timestamppb.Timestamp {
 		return x.ExpiresAt
 	}
 	return nil
+}
+
+func (x *PreviewForgetResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
 }
 
 type ForgetRequest struct {
@@ -7879,14 +7890,15 @@ const file_cambrian_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"c\n" +
 	"\x14PreviewForgetRequest\x125\n" +
 	"\bselector\x18\x01 \x01(\v2\x19.cambrian.ErasureSelectorR\bselector\x12\x14\n" +
-	"\x05query\x18\x02 \x01(\tR\x05query\"\xb3\x01\n" +
+	"\x05query\x18\x02 \x01(\tR\x05query\"\xd1\x01\n" +
 	"\x15PreviewForgetResponse\x12#\n" +
 	"\rpreview_token\x18\x01 \x01(\tR\fpreviewToken\x12:\n" +
 	"\n" +
 	"candidates\x18\x02 \x03(\v2\x1a.cambrian.ErasureCandidateR\n" +
 	"candidates\x129\n" +
 	"\n" +
-	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\x8c\x01\n" +
+	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12\x1c\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\"\x8c\x01\n" +
 	"\rForgetRequest\x12#\n" +
 	"\rpreview_token\x18\x01 \x01(\tR\fpreviewToken\x125\n" +
 	"\bselector\x18\x02 \x01(\v2\x19.cambrian.ErasureSelectorR\bselector\x12\x1f\n" +

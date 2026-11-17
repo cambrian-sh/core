@@ -296,6 +296,10 @@ message PreviewForgetResponse {
   string preview_token = 1;
   repeated ErasureCandidate candidates = 2;
   google.protobuf.Timestamp expires_at = 3;
+  // Query previews only (contract 0107): more records cleared the relevance floor
+  // than execution.erasure.preview_max_candidates; candidates holds the top ones in
+  // rank order and the token covers only those. Narrow the query to reach the rest.
+  bool truncated = 4;
 }
 
 message ForgetRequest {

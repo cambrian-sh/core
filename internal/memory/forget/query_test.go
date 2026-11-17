@@ -50,15 +50,20 @@ type searcher struct {
 	calls    int
 }
 
-func (s *searcher) Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+func (s *searcher) SearchMatches(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
 	s.calls++
 	s.query, s.callerID = query, callerID
 	s.scope, _ = domain.ScopeFromContext(ctx)
 	return s.hits, s.err
 }
 
+// hit is a dense hit well above the default floor.
 func hit(id, text string) domain.SearchResult {
-	return domain.SearchResult{Document: domain.Document{ID: id, Text: text}}
+	return scored(id, text, 0.9)
+}
+
+func scored(id, text string, cosine float64) domain.SearchResult {
+	return domain.SearchResult{Document: domain.Document{ID: id, Text: text}, RawScore: cosine, Score: 0.016}
 }
 
 func docCand(id, writer string) domain.ErasureCandidate {
@@ -233,5 +238,105 @@ func TestForgetTool_QueryArgument(t *testing.T) {
 	}
 	if len(raw.erased) != 1 || !slices.Equal(raw.erased[0].Selector.DocumentIDs, []string{"docA"}) {
 		t.Fatalf("erased = %+v", raw.erased)
+	}
+}
+
+// ENG-1953: the relevance floor is a minimum COSINE (RawScore) applied to each hit
+// before hits widen to documents. A document qualifies when any of its hits passes (a2
+// below the floor, a1 above → docA listed via a1); a hit with no cosine (lexical-only
+// or injected, RawScore 0) never qualifies, however high its fused Score; the default
+// floor is DefaultMinCosine.
+func TestPreviewQuery_RelevanceFloorOnHitCosine(t *testing.T) {
+	raw := queryFixture()
+	noCosine := hit("c1", "lexical-only salary chunk")
+	noCosine.RawScore, noCosine.Score = 0, 2.0
+	srch := &searcher{hits: []domain.SearchResult{
+		scored("a2", "doc A boilerplate", forget.DefaultMinCosine-0.01),
+		noCosine,
+		scored("a1", "doc A salary passage", forget.DefaultMinCosine),
+	}}
+	p, err := newQueryService(raw, srch, 0).PreviewQuery(aliceScoped(), "salary", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Candidates) != 1 || p.Candidates[0].ID != "docA" || p.Candidates[0].Via != "a1" {
+		t.Fatalf("candidates = %+v; want only docA, named by its passing hit a1", p.Candidates)
+	}
+	if sn := p.Snippets[forget.SnippetKey(p.Candidates[0])]; sn != "doc A salary passage" {
+		t.Fatalf("snippet = %q; want the passing hit's text", sn)
+	}
+	if p.Truncated {
+		t.Fatal("one candidate under the cap is not truncated")
+	}
+
+	// Every hit below the floor: nothing to erase, never a fallback to the raw list.
+	srch.hits = []domain.SearchResult{scored("a1", "x", 0.2), noCosine}
+	if _, err := newQueryService(raw, srch, 0).PreviewQuery(aliceScoped(), "salary", "alice"); !errors.Is(err, domain.ErrNothingToErase) {
+		t.Fatalf("all below the floor: %v, want ErrNothingToErase", err)
+	}
+
+	// A configured floor replaces the default.
+	srch.hits = []domain.SearchResult{scored("a1", "x", 0.3)}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
+	low := forget.New(e, forget.Config{Searcher: srch, MinCosine: 0.25})
+	if p, err := low.PreviewQuery(aliceScoped(), "salary", "alice"); err != nil || len(p.Candidates) != 1 {
+		t.Fatalf("floor 0.25: %+v, %v", p.Candidates, err)
+	}
+}
+
+// ENG-1953: the cap applies after deduplication, in rank order, and says so; a list
+// that fits is not marked truncated; the token covers exactly the listed records.
+func TestPreviewQuery_CandidateCapTruncatesInRankOrder(t *testing.T) {
+	chunks := map[string]domain.ErasureCandidate{}
+	docs := map[string]domain.ErasureCandidate{}
+	var hits []domain.SearchResult
+	for _, d := range []string{"d1", "d2", "d3", "d4"} {
+		c := docCand(d, "alice")
+		docs[d] = c
+		for _, part := range []string{"-x", "-y"} { // two hits per document, adjacent in rank
+			chunks[d+part] = c
+			hits = append(hits, hit(d+part, d+" text"))
+		}
+	}
+	raw := &chunkEraser{chunks: chunks, docs: docs}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
+	srch := &searcher{hits: hits}
+
+	capped := forget.New(e, forget.Config{Searcher: srch, MaxCandidates: 3})
+	p, err := capped.PreviewQuery(aliceScoped(), "text", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range p.Candidates {
+		got = append(got, c.ID)
+	}
+	if !slices.Equal(got, []string{"d1", "d2", "d3"}) || !p.Truncated {
+		t.Fatalf("candidates = %v truncated=%t; want the top 3 distinct documents, truncated", got, p.Truncated)
+	}
+	if !slices.Equal(p.Selector.DocumentIDs, []string{"d1", "d2", "d3"}) || len(p.Snippets) != 3 {
+		t.Fatalf("selector = %+v snippets = %v; the token must cover only the listed records", p.Selector, p.Snippets)
+	}
+	if _, err := capped.Forget(aliceScoped(), forget.Request{PreviewToken: p.Token}); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.erased) != 1 || slices.Contains(raw.erased[0].Selector.DocumentIDs, "d4") {
+		t.Fatalf("erased = %+v; d4 was cut by the cap and must survive", raw.erased)
+	}
+
+	// Exactly at the cap (8 hits, 4 documents): not truncated. Default cap applies at 0.
+	exact := forget.New(e, forget.Config{Searcher: srch, MaxCandidates: 4})
+	if p, err := exact.PreviewQuery(aliceScoped(), "text", "alice"); err != nil || len(p.Candidates) != 4 || p.Truncated {
+		t.Fatalf("at the cap: %d candidates truncated=%t, %v", len(p.Candidates), p.Truncated, err)
+	}
+	if p, err := forget.New(e, forget.Config{Searcher: srch}).PreviewQuery(aliceScoped(), "text", "alice"); err != nil ||
+		len(p.Candidates) != 4 || p.Truncated || forget.DefaultMaxCandidates != 20 {
+		t.Fatalf("default cap: %d candidates truncated=%t, %v", len(p.Candidates), p.Truncated, err)
+	}
+
+	// Selector previews are unaffected by the cap and the floor.
+	sp, err := capped.Preview(aliceScoped(), domain.ErasureSelector{DocumentIDs: []string{"d1", "d2", "d3", "d4"}})
+	if err != nil || len(sp.Candidates) != 4 || sp.Truncated || sp.Snippets != nil {
+		t.Fatalf("selector preview = %+v, %v", sp, err)
 	}
 }

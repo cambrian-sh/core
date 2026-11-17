@@ -44,20 +44,40 @@ type Config struct {
 	// Now is the clock for preview expiry only (never an identifier); nil ⇒ time.Now.
 	Now func() time.Time
 	// Searcher resolves PreviewQuery's free text: the caller's own memory search, the
-	// one QueryMemory runs (memory.QueryService). nil ⇒ the query form answers
-	// ErrQueryUnavailable; the selector form is unaffected.
+	// pass QueryMemory runs (memory.QueryService.SearchMatches). nil ⇒ the query form
+	// answers ErrQueryUnavailable; the selector form is unaffected.
 	Searcher Searcher
 	// SnippetChars bounds each query-preview snippet in characters
 	// (execution.erasure.preview_snippet_chars); 0 ⇒ 200.
 	SnippetChars int
+	// MinCosine is the query preview's relevance floor (ENG-1953,
+	// execution.erasure.preview_min_cosine): a hit names a record only when its
+	// cosine similarity to the query (SearchResult.RawScore — the scale of the
+	// retrieval floors recall_similarity_floor and workspace_min_fact_cosine, NOT the
+	// fused/blended Score) is at least this. A hit with no cosine (RawScore <= 0:
+	// lexical-only, associatively injected) never qualifies. 0 ⇒ DefaultMinCosine.
+	MinCosine float64
+	// MaxCandidates caps a query preview's candidate list after deduplication, in
+	// rank order (execution.erasure.preview_max_candidates); a cut sets
+	// Preview.Truncated. 0 ⇒ DefaultMaxCandidates.
+	MaxCandidates int
 }
+
+// The query preview's defaults (ENG-1953; execution.erasure documents the same).
+const (
+	// DefaultMinCosine is workspace_min_fact_cosine's value: the kernel's existing
+	// "this memory is about the query" cosine threshold for the default embedder.
+	DefaultMinCosine = 0.60
+	// DefaultMaxCandidates bounds what an agent has to check before confirming.
+	DefaultMaxCandidates = 20
+)
 
 // Searcher is the slice of domain.MemorySearcher the query form uses: the caller-scoped
 // recall an agent's own QueryMemory runs. It honours the predicate on ctx exactly as
 // QueryMemory does, so the query form can never see more than a search by the same
 // caller would (AGENTS.md §2.4; §4.3 — no second retrieval pathway).
 type Searcher interface {
-	Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error)
+	SearchMatches(ctx context.Context, query, callerID string) ([]domain.SearchResult, error)
 }
 
 // ErrQueryUnavailable: the query form was asked for but no searcher is composed.
@@ -80,6 +100,10 @@ type Preview struct {
 	// excerpt of the caller's own text that matched. nil for selector previews, which
 	// stay content-free.
 	Snippets map[string]string
+	// Truncated (query previews only) reports that more records qualified than
+	// Config.MaxCandidates and the list was cut, in rank order; the caller should
+	// narrow the query (or name ids) to reach the rest.
+	Truncated bool
 }
 
 // SnippetKey is the Preview.Snippets key of a candidate.
@@ -123,6 +147,12 @@ func New(eraser domain.MemoryEraser, cfg Config) *Service {
 	if cfg.SnippetChars <= 0 {
 		cfg.SnippetChars = 200
 	}
+	if cfg.MinCosine <= 0 {
+		cfg.MinCosine = DefaultMinCosine
+	}
+	if cfg.MaxCandidates <= 0 {
+		cfg.MaxCandidates = DefaultMaxCandidates
+	}
 	return &Service{eraser: eraser, cfg: cfg, previews: map[string]preview{}}
 }
 
@@ -164,10 +194,14 @@ func (s *Service) Preview(ctx context.Context, sel domain.ErasureSelector) (Prev
 
 // PreviewQuery is the query form of Preview for an AGENT caller (ADR-0137 D2,
 // ENG-1948, owner decision 2026-11-17). The free text is resolved by the caller's own
-// memory search — Config.Searcher, the recall QueryMemory runs, under the principal and
-// predicate already on ctx — never by a model deciding what to delete. Then:
+// memory search — Config.Searcher, the recall pass QueryMemory runs, under the
+// principal and predicate already on ctx — never by a model deciding what to delete.
+// Then:
 //
-//   - every hit is named by its chunk id and resolved through the same chokepoint
+//   - the relevance floor (ENG-1953) drops every hit whose cosine to the query
+//     (RawScore) is below Config.MinCosine, or that has no cosine at all, BEFORE hits
+//     are mapped to records: a document qualifies when any one of its hits passes;
+//   - every remaining hit is named by its chunk id and resolved through the same chokepoint
 //     Resolve as the selector form (hidden = absent), so a hit in a stored document
 //     becomes that WHOLE DOCUMENT (ENG-1947); a chunk with no document stays a chunk;
 //   - candidates the caller did not write are OMITTED (agent erase is writer-only
@@ -175,7 +209,9 @@ func (s *Service) Preview(ctx context.Context, sel domain.ErasureSelector) (Prev
 //     actually erase, so its snippets only ever quote the caller's own text;
 //   - candidates are deduplicated (several hits in one document are one candidate)
 //     and kept in rank order, each with a snippet of its best-ranked hit, clipped to
-//     Config.SnippetChars.
+//     Config.SnippetChars;
+//   - the list is capped at Config.MaxCandidates in that rank order (Truncated set
+//     when the cap cut it).
 //
 // The token covers exactly the concrete ids listed; Forget re-authorizes them in full.
 // No candidate → domain.ErrNothingToErase. callerID is the agent id the search runs as.
@@ -195,7 +231,7 @@ func (s *Service) PreviewQuery(ctx context.Context, query, callerID string) (Pre
 	if writer == "" {
 		return Preview{}, ErrNoPrincipal
 	}
-	hits, err := s.cfg.Searcher.Search(ctx, query, callerID)
+	hits, err := s.cfg.Searcher.SearchMatches(ctx, query, callerID)
 	if err != nil {
 		return Preview{}, fmt.Errorf("forget preview: search: %w", err)
 	}
@@ -205,6 +241,14 @@ func (s *Service) PreviewQuery(ctx context.Context, query, callerID string) (Pre
 	for _, h := range hits {
 		id := h.Document.ID
 		if id == "" {
+			continue
+		}
+		// The floor, on the hit, before any widening to a document. Over-matching is
+		// the riskier failure for a deletion (owner decision 2026-11-17): a hit with no
+		// cosine — lexical-only, or injected associatively (KG/entity seeds) — earned
+		// its recall slot without resembling the query and does not qualify. A record
+		// missed this way can still be previewed by id.
+		if h.RawScore <= 0 || h.RawScore < s.cfg.MinCosine {
 			continue
 		}
 		if _, seen := rank[id]; seen {
@@ -241,10 +285,15 @@ func (s *Service) PreviewQuery(ctx context.Context, query, callerID string) (Pre
 		kept = append(kept, c)
 	}
 	sort.SliceStable(kept, func(i, j int) bool { return rank[kept[i].Via] < rank[kept[j].Via] })
+	truncated := len(kept) > s.cfg.MaxCandidates
+	if truncated {
+		kept = kept[:s.cfg.MaxCandidates]
+	}
 	p, err := s.issue(ctx, kept)
 	if err != nil {
 		return Preview{}, err
 	}
+	p.Truncated = truncated
 	p.Snippets = make(map[string]string, len(kept))
 	for _, c := range kept {
 		p.Snippets[SnippetKey(c)] = clip(text[c.Via], s.cfg.SnippetChars)

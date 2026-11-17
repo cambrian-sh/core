@@ -22,10 +22,11 @@ const ToolName = "forget_memory"
 // Always two calls: a call WITHOUT preview_token only previews and returns a token;
 // only a second call carrying that token erases, and it erases exactly the previewed
 // records. The preview names either ids, or a free-text `query` (ENG-1948) that the
-// kernel resolves with the caller's own memory search (Service.PreviewQuery): each hit
-// widens to its whole document, only what the caller wrote is listed, each with a
-// clipped snippet of the caller's own text. The kernel adds no LLM call to decide what
-// to delete (D9).
+// kernel resolves with the caller's own memory search (Service.PreviewQuery): only hits
+// that clear the relevance floor count (ENG-1953), each widens to its whole document,
+// only what the caller wrote is listed, each with a clipped snippet of the caller's own
+// text, at most execution.erasure.preview_max_candidates of them (`truncated` when
+// cut). The kernel adds no LLM call to decide what to delete (D9).
 //
 // Offered (KernelToolOffer) only when erasure is enabled AND agent erasure is on
 // (execution.erasure.enabled, agent_erase_enabled — both default off), so default agent
@@ -50,7 +51,7 @@ func (t *Tool) OfferedTo(domain.LeaseID) bool { return t.svc.Enabled() && t.agen
 const toolSchema = `{
   "type": "object",
   "properties": {
-    "query": {"type": "string", "description": "what to forget, in words (e.g. what the person said about their salary): your own memory is searched and every matching document you wrote is previewed as a whole document; use instead of ids"},
+    "query": {"type": "string", "description": "what to forget, in words (e.g. what the person said about their salary): your own memory is searched and each document you wrote that closely matches is previewed as a whole document; use instead of ids"},
     "document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents to forget (doc ids from memory results)"},
     "chunk_ids": {"type": "array", "items": {"type": "string"}, "description": "memory ids returned earlier"},
     "thread_ids": {"type": "array", "items": {"type": "string"}, "description": "ingest threads (the session id an ingest was made under)"},
@@ -67,7 +68,10 @@ func (t *Tool) Spec() domain.SystemTool {
 		Description: "Permanently erase memory you wrote, in two calls. First call with a query describing " +
 			"what to forget, or with the ids to forget (document_ids / chunk_ids / thread_ids): nothing is " +
 			"erased; you get the records that would be erased, with a short snippet for each when you used " +
-			"a query, and a preview_token. Erasure is by WHOLE DOCUMENT: if any passage of a document matches, " +
+			"a query, and a preview_token. A query lists only documents that closely match it, at most a fixed " +
+			"number of them; if the result says truncated, more matched than were listed — narrow the query " +
+			"(or name ids) to reach the rest. A document a query misses can still be named by id. " +
+			"Erasure is by WHOLE DOCUMENT: if any passage of a document matches, " +
 			"the entire document (every passage of it) is listed and will be erased. Check the list against " +
 			"what the person asked for; only if it matches, call again with just the preview_token to erase " +
 			"exactly those records. Irreversible. You can erase only what you wrote and can read.",
@@ -131,6 +135,7 @@ func (t *Tool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, er
 		return json.Marshal(map[string]any{
 			"erased":        false,
 			"would_erase":   cands,
+			"truncated":     p.Truncated,
 			"preview_token": p.Token,
 			"expires_at":    p.ExpiresAt.UTC().Format(time.RFC3339),
 			"next":          "nothing was erased; to erase exactly these records call forget_memory with only this preview_token",
