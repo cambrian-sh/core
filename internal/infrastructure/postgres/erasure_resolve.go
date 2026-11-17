@@ -213,6 +213,22 @@ func (s *PgErasureStore) CIDStillReferenced(ctx context.Context, cid string) (bo
 	return ok, nil
 }
 
+// VaultBodyStillReferenced implements domain.ErasureOutbox: a surviving run-ledger
+// entry still names the vault body (the table may be absent on a kernel without
+// the ledger: then nothing names it).
+func (s *PgErasureStore) VaultBodyStillReferenced(ctx context.Context, hash string) (bool, error) {
+	has, err := tableExists(ctx, s.l.k.pool, "ledger_entries")
+	if err != nil || !has {
+		return false, err
+	}
+	var ok bool
+	err = s.l.k.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ledger_entries WHERE body_hash = $1)`, hash).Scan(&ok)
+	if err != nil {
+		return false, mapError("VaultBodyStillReferenced", err)
+	}
+	return ok, nil
+}
+
 // MarkStepDone implements domain.ErasureOutbox (exactly once).
 func (s *PgErasureStore) MarkStepDone(ctx context.Context, id int64) (bool, error) {
 	tag, err := s.l.k.pool.Exec(ctx, `UPDATE memory_erasure_outbox SET processed_at = now()

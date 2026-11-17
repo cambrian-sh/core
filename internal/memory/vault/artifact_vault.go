@@ -57,10 +57,11 @@ func (v *ArtifactVault) Load(hash string) ([]byte, error) {
 }
 
 // Delete removes the bytes stored under hash. A missing file is not an error. The
-// vault is content-addressed and shared (artifacts and ledger bodies can name the
-// same bytes), so the caller decides that nothing references hash any more: the
-// ledger's retention purge checks its own rows and the artifact metadata first
-// (ADR-0145 D1). A hash that is not a plain hex name is refused, so no path can
+// vault is content-addressed and shared (two ledger entries — two owners' uploads
+// of the same bytes — can name one body), so the caller decides that nothing
+// references hash any more: the ledger's retention purge and the ADR-0137 erasure
+// worker check that no ledger_entries row still names it (since ADR-0157 D5 the
+// ledger is the vault's only registry). A hash that is not a plain hex name is refused, so no path can
 // escape the vault directory.
 func (v *ArtifactVault) Delete(hash string) error {
 	if hash == "" || strings.ContainsAny(hash, `/\.:`) {

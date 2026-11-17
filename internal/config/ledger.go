@@ -32,6 +32,51 @@ type LedgerConfig struct {
 	// explicit execution.ledger.page_bytes is migrated there on load.
 	// SweepIntervalMinutes is how often expired entries are purged. 0 ⇒ 60.
 	SweepIntervalMinutes int `json:"sweep_interval_minutes,omitempty"`
+	// Artifacts are the ADR-0157 D5 caps on files that leave an agent through the
+	// kernel (UploadArtifact, the scratch out/ collection, tool-written files).
+	Artifacts LedgerArtifactsConfig `json:"artifacts,omitzero"`
+}
+
+// LedgerArtifactsConfig is execution.ledger.artifacts (ADR-0157 D5.2). An
+// artifact entry is never truncated: a file over MaxFileBytes is refused by name.
+// Zero values take the defaults below, so no existing file needs new keys.
+type LedgerArtifactsConfig struct {
+	// MaxFileBytes caps one artifact. 0 ⇒ 100 MiB, the vault's hard ceiling
+	// (Q5: no streaming; a larger value is clamped to that ceiling).
+	MaxFileBytes int64 `json:"max_file_bytes,omitempty"`
+	// MaxCollectBytes caps what one instance's out/ collection records in total;
+	// files past it are left uncollected and named in the log. 0 ⇒ 256 MiB.
+	MaxCollectBytes int64 `json:"max_collect_bytes,omitempty"`
+	// MaxCollectFiles caps how many out/ files one collection records. 0 ⇒ 64.
+	MaxCollectFiles int `json:"max_collect_files,omitempty"`
+}
+
+// ArtifactVaultCeiling is the artifact vault's per-file hard limit
+// (vault.NewArtifactVault); no artifact cap may exceed it.
+const ArtifactVaultCeiling int64 = 100 << 20
+
+// FileCap is MaxFileBytes with its default applied, never above the vault ceiling.
+func (c LedgerArtifactsConfig) FileCap() int64 {
+	if c.MaxFileBytes > 0 && c.MaxFileBytes < ArtifactVaultCeiling {
+		return c.MaxFileBytes
+	}
+	return ArtifactVaultCeiling
+}
+
+// CollectBytesCap is MaxCollectBytes with its default applied.
+func (c LedgerArtifactsConfig) CollectBytesCap() int64 {
+	if c.MaxCollectBytes > 0 {
+		return c.MaxCollectBytes
+	}
+	return 256 << 20
+}
+
+// CollectFilesCap is MaxCollectFiles with its default applied.
+func (c LedgerArtifactsConfig) CollectFilesCap() int {
+	if c.MaxCollectFiles > 0 {
+		return c.MaxCollectFiles
+	}
+	return 64
 }
 
 // Retention is RetentionHours as a duration, with its default applied.
@@ -77,10 +122,17 @@ func (c LedgerConfig) validate() []string {
 		{"max_entry_bytes", c.MaxEntryBytes},
 		{"preview_chars", c.PreviewChars},
 		{"sweep_interval_minutes", c.SweepIntervalMinutes},
+		{"artifacts.max_collect_files", c.Artifacts.MaxCollectFiles},
 	} {
 		if f.v < 0 {
 			errs = append(errs, fmt.Sprintf("execution.ledger.%s must be >= 0 (got %d)", f.name, f.v))
 		}
+	}
+	if c.Artifacts.MaxFileBytes < 0 || c.Artifacts.MaxCollectBytes < 0 {
+		errs = append(errs, "execution.ledger.artifacts.max_file_bytes and max_collect_bytes must be >= 0")
+	}
+	if c.Artifacts.MaxFileBytes > ArtifactVaultCeiling {
+		errs = append(errs, fmt.Sprintf("execution.ledger.artifacts.max_file_bytes must be <= %d (the artifact vault ceiling; ADR-0157 Q5: no streaming)", ArtifactVaultCeiling))
 	}
 	return errs
 }

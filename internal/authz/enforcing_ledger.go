@@ -23,7 +23,7 @@ import (
 // required argument, never attached later (AGENTS.md §2.3), and it is the only
 // ledger type any reader is handed. Row filtering is TagPredicate.Allows over the
 // entry's kernel-derived tags — the same test the artifact read path applies
-// (ArtifactReadable), not a second policy (§2.5) — applied to the entry's own
+// (ClassifyArtifactWrite's read twin), not a second policy (§2.5) — applied to the entry's own
 // tags AND to the tags of every entry it was derived from
 // (domain.LedgerEntryReadable), so a step output is never easier to read than the
 // tool results it was built from (T-20261108-ledger-step-outputs-do-not-inherit-the).

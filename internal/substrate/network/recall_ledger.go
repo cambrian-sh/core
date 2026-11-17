@@ -96,6 +96,7 @@ func (s *Server) recordRecall(ctx context.Context, callerID, query string, resul
 	}
 	body := recallEntryBody{Query: query}
 	var sources [][]string
+	var refs []string
 	for _, r := range results {
 		if r.Document.ID == domain.SubstrateCitationsID {
 			continue
@@ -107,6 +108,7 @@ func (s *Server) recordRecall(ctx context.Context, callerID, query string, resul
 		doc, sec := recallSource(r.Document)
 		body.Hits = append(body.Hits, recallEntryHit{Text: text, Document: doc, Section: sec, ID: r.Document.ID})
 		sources = append(sources, append([]string{}, authz.DocTags(&r.Document)...))
+		refs = append(refs, recallRefs(r.Document)...)
 	}
 	if len(body.Hits) == 0 {
 		return ""
@@ -123,6 +125,7 @@ func (s *Server) recordRecall(ctx context.Context, callerID, query string, resul
 		ArgsJSON:              args,
 		Writer:                domain.AgentPrincipal(callerID),
 		SourceClassifications: sources,
+		SourceRefs:            refs,
 		ContentType:           "application/json",
 		Body:                  b,
 	})
@@ -131,4 +134,19 @@ func (s *Server) recordRecall(ctx context.Context, callerID, query string, resul
 		return ""
 	}
 	return e.ID
+}
+
+// recallRefs are the memory records a recalled chunk is: its own id, its
+// source document and its episode. They become the entry's SourceRefs, so an
+// ADR-0137 erase of any of them reaches the recall entry and everything derived
+// from it (ADR-0157 D5.6).
+func recallRefs(d domain.Document) []string {
+	refs := []string{d.ID}
+	if doc, ok := d.Metadata["document_id"].(string); ok && doc != "" {
+		refs = append(refs, doc)
+	}
+	if d.ExperienceID != "" {
+		refs = append(refs, d.ExperienceID)
+	}
+	return refs
 }

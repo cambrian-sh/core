@@ -48,6 +48,7 @@ func (m *memLedgerStore) Find(_ context.Context, q domain.LedgerQuery) ([]domain
 	var out []domain.LedgerEntry
 	for _, e := range m.rows {
 		if (q.RunID != "" && e.RunID != q.RunID) || (q.HasStep && e.StepIndex != q.StepIndex) ||
+			(q.SessionID != "" && e.SessionID != q.SessionID) || (q.TurnID != "" && e.TurnID != q.TurnID) ||
 			(q.Kind != "" && e.Kind != q.Kind) || (q.ToolName != "" && e.ToolName != q.ToolName) {
 			continue
 		}

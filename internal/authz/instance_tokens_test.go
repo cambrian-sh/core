@@ -150,3 +150,36 @@ func TestAgentCredentialVerifier_InstanceAndStoredPaths(t *testing.T) {
 		t.Fatalf("revoked instance token accepted: %v", err)
 	}
 }
+
+// ADR-0157 D5.2: the verifier stamps the instance a live per-instance token was
+// minted for on the context (the provenance of what the call writes); the
+// stored-secret path of an external agent stamps none.
+func TestAgentCredentialVerifier_StampsTheCallingInstance(t *testing.T) {
+	t.Parallel()
+	reg := authz.NewInstanceTokens()
+	stored := secretStore{authz.AgentTokenSecretName("external_agent"): "external-secret"}
+	v, err := authz.NewAgentCredentialVerifier(stored.resolve, reg,
+		func(_ context.Context, id string) bool { return id == "analyst_agent" }, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceOf := func(agent, token string) string {
+		ctx := metadata.NewIncomingContext(context.Background(),
+			metadata.Pairs("x-agent-id", agent, "authorization", "Bearer "+token))
+		out, err := v.Authenticate(ctx, "/cambrian.Orchestrator/UploadArtifact", nil)
+		if err != nil {
+			t.Fatalf("%s: %v", agent, err)
+		}
+		return domain.AgentInstanceFromContext(out)
+	}
+	tok, err := reg.Mint("analyst_agent", "inst-77")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := instanceOf("analyst_agent", tok); got != "inst-77" {
+		t.Fatalf("instance on ctx = %q, want inst-77", got)
+	}
+	if got := instanceOf("external_agent", "external-secret"); got != "" {
+		t.Fatalf("a stored-secret caller was given an instance %q", got)
+	}
+}

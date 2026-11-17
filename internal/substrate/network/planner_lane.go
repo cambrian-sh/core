@@ -531,8 +531,7 @@ func (s *Server) executePlanned(ctx context.Context, in *pb.Handoff, r plannerLa
 			MemoryRecorder:         s.MemoryAgent,
 			Surprise:               s.SurpriseOracle, // ADR-0049 A2.3: may be nil ⇒ surprise unknown (-1)
 			WorkspaceStage:         s.WorkspaceStage,
-			ArtifactLister:         s.ArtifactMeta, // ADR-0034: surface prior-step artifacts (scope-filtered)
-			Authz:                  s.Authz,        // ADR-0085: artifact discovery filter (may be nil)
+			Authz:                  s.Authz, // ADR-0085 / ADR-0157 D5: prior-step artifact discovery filter (may be nil)
 			LLMGateway:             s.LLMGateway,
 			Observer:               s.TelemetryObserver,
 			ContentStore:           s.planContentStore(),

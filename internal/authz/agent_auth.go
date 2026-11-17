@@ -179,26 +179,35 @@ func (v *AgentCredentialVerifier) Authenticate(ctx context.Context, fullMethod s
 		// the agent) and an x-agent-id with no token is the pre-ADR-0130 hole.
 		return ctx, errAgentUnauthenticated
 	}
-	if !v.verify(ctx, asserted, token) {
+	instance, ok := v.verify(ctx, asserted, token)
+	if !ok {
 		return ctx, errAgentUnauthenticated
 	}
-	return domain.WithPrincipal(ctx, domain.AgentPrincipal(asserted)), nil
+	ctx = domain.WithPrincipal(ctx, domain.AgentPrincipal(asserted))
+	// ADR-0157 D5.2: the instance the token was minted for is the provenance of
+	// what this call writes (UploadArtifact, out/ collection) — a kernel fact,
+	// never a request field. "" on the stored-secret path (external agents).
+	return domain.WithAgentInstance(ctx, instance), nil
 }
 
 // verify is the credential decision for one (asserted agent, presented token)
-// pair (ADR-0157 D4.5). Every refusal is the same answer to the caller.
-func (v *AgentCredentialVerifier) verify(ctx context.Context, asserted, token string) bool {
-	if id, ok := v.instances.Lookup(token); ok {
+// pair (ADR-0157 D4.5). Every refusal is the same answer to the caller. On
+// path (a) it also returns the instance the token belongs to.
+func (v *AgentCredentialVerifier) verify(ctx context.Context, asserted, token string) (instance string, ok bool) {
+	if id, found := v.instances.Lookup(token); found {
 		// (a) A live instance token decides by itself: it names one agent, and
 		// the header must name the same one. A token of another agent is refused
 		// here, never retried against the stored secret.
-		return id.AgentID == asserted
+		if id.AgentID != asserted {
+			return "", false
+		}
+		return id.InstanceID, true
 	}
 	// (b) The stored named secret — only for an agent the kernel does not spawn.
 	if v.kernelSpawned(ctx, asserted) {
-		return false
+		return "", false
 	}
-	return VerifyNamedSecret(v.resolve, AgentTokenSecretName(asserted), token)
+	return "", VerifyNamedSecret(v.resolve, AgentTokenSecretName(asserted), token)
 }
 
 // routablePeer reports whether the call came over the network from a

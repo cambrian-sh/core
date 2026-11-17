@@ -111,6 +111,10 @@ const (
 	// references the CID: the store is content-addressed, so identical bytes ingested by
 	// another document share it.
 	ErasureStepCASDelete = "cas_delete"
+	// ErasureStepVaultDelete deletes one artifact-vault body (by hash) of an erased
+	// run-ledger entry (ADR-0157 D5.6). The worker first checks that no surviving
+	// ledger entry names the same bytes.
+	ErasureStepVaultDelete = "vault_delete"
 )
 
 // ErasureSelector names what to erase: concrete ids only (ADR-0137 D2). There is no

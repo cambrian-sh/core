@@ -2,29 +2,37 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/ledger"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
-// ArtifactByteStore is the content-addressable byte store (ArtifactVault).
-type ArtifactByteStore interface {
-	Store(content []byte) (string, error)
-	Load(hash string) ([]byte, error)
-}
+// The artifact plane (REQ-SDK-007c) over the run ledger — ADR-0157 D5.2: the
+// ledger is the ONE artifact registry. UploadArtifact records a kind=artifact
+// entry through the ledger's classified writer (the vault keeps the bytes,
+// content-addressed and stored once); GetArtifact and ListStepArtifacts read
+// through the ENFORCED ledger reader under the caller's own predicate. The
+// retired bbolt metadata bucket keyed artifacts by content hash, so a second
+// upload of the same bytes overwrote the first owner's tags
+// (T-20261115-artifact-metadata-is-keyed-by-content-hash-so); a ledger entry's id
+// includes its provenance, so two owners' uploads of the same bytes are two
+// entries with their own tags.
+//
+// Wire contract (Q5: unary, no proto change): UploadArtifactResponse.hash and
+// GetArtifactRequest.hash carry the artifact REFERENCE — a ledger id (led_…) —
+// not a content hash. Bytes are capped by execution.ledger.artifacts.max_file_bytes
+// (≤ the vault's 100 MiB ceiling); streaming stays out until a model file needs more.
 
-// ArtifactMetaStore persists/reads artifact metadata records (incl. tags).
-type ArtifactMetaStore interface {
-	SaveArtifact(a domain.Artifact) error
-	GetArtifact(hash string) (*domain.Artifact, error)
-	ListStepArtifacts(sessionID string, stepIndex int) ([]domain.Artifact, error)
-}
+// artifactToolName is the ledger tool name of an UploadArtifact entry.
+const artifactToolName = "upload_artifact"
 
 // artifactPrincipal is the identity the artifact plane acts as. It comes from the
 // authenticated gRPC metadata, never from the request body (INV-5).
@@ -54,101 +62,142 @@ func callerAgentID(ctx context.Context) string {
 	return ""
 }
 
-// UploadArtifact derives the artifact's authoritative classification from the
-// decision point (the agent's operator-configured write classification, narrowed
-// only by req.Tags), stamps provenance, and stores bytes (CAS) + metadata. The
-// agent cannot choose its own classification — only narrow. ADR-0035 (C2) /
-// REQ-SDK-007c.
+// artifactProvenance is where an uploaded artifact comes from: the lease the
+// caller presented (x-lease-id), else the last lease the calling INSTANCE
+// presented on this plane (instanceWork) — never the request's session_id /
+// step_index, which an agent writes (INV-5). Without either it is attributed to
+// the caller alone (StepIndex -1).
+func (s *Server) artifactProvenance(ctx context.Context) domain.LedgerProvenance {
+	if lease := callerLeaseID(ctx, nil); lease != "" {
+		if _, known := s.resolveLeaseFor(ctx, lease); known {
+			return s.toolCallProvenance(ctx, lease)
+		}
+	}
+	if b, ok := s.instanceWork().lastFor(domain.AgentInstanceFromContext(ctx)); ok {
+		return s.provenanceOfBinding(ctx, b)
+	}
+	return domain.LedgerProvenance{StepIndex: -1, Owner: domain.ConversationOwnerFromContext(ctx),
+		ConversationID: domain.ConversationIDFromContext(ctx)}
+}
+
+// UploadArtifact records the bytes as a kind=artifact run-ledger entry. The
+// ledger writer derives the classification from the decision point (the agent's
+// operator-configured write classification, narrowed only by req.Tags; ADR-0035
+// C2), stamps the conversation owner (ADR-0142 D12), and attributes the entry to
+// the calling agent and its instance from the verified context (ADR-0157 D5.2).
+// The agent cannot choose its own classification — only narrow.
 func (s *Server) UploadArtifact(ctx context.Context, req *pb.UploadArtifactRequest) (*pb.UploadArtifactResponse, error) {
-	if s.ArtifactBytes == nil || s.ArtifactMeta == nil {
-		return nil, status.Error(codes.Unimplemented, "artifact storage not configured")
+	if !s.ledgerOn() {
+		return nil, status.Error(codes.Unimplemented, "artifact storage not configured (execution.ledger.enabled is off)")
 	}
 	// ADR-0142 D12: an artifact uploaded while working a person's conversation
 	// is private to that person (the owner comes from the lease, never the request).
 	ctx = s.withConversationOwner(ctx)
 	principal := artifactPrincipal(ctx)
-	tags, err := authz.ClassifyArtifactWrite(ctx, s.authorizer(), principal, req.GetTags())
-	if err != nil {
+	// A hint the decision point refuses (a coined or broadening tag) is refused
+	// HERE with InvalidArgument: the ledger writer would otherwise drop the hint and
+	// file the bytes under the writer's full — broader — classification, the
+	// opposite of what the agent asked for.
+	if _, err := authz.ClassifyArtifactWrite(ctx, s.authorizer(), principal, req.GetTags()); err != nil {
 		if errors.Is(err, authz.ErrWriteDenied) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-
-	hash, err := s.ArtifactBytes.Store(req.GetContent())
-	if err != nil {
-		return nil, status.Error(codes.Internal, "vault store: "+err.Error())
-	}
-	art := domain.Artifact{
-		Hash:            hash,
-		ContentType:     req.GetContentType(),
-		SizeBytes:       int64(len(req.GetContent())),
-		SessionID:       req.GetSessionId(),
-		StepIndex:       int(req.GetStepIndex()),
-		SemanticSummary: req.GetSemanticSummary(),
-		Tags:            tags,
-	}
-	if err := s.ArtifactMeta.SaveArtifact(art); err != nil {
+	args, _ := json.Marshal(map[string]string{"summary": req.GetSemanticSummary()})
+	ent, err := s.Ledger.Writer.Record(ctx, domain.LedgerRecord{
+		Kind:               domain.LedgerArtifact,
+		Provenance:         s.artifactProvenance(ctx),
+		ToolName:           artifactToolName,
+		ArgsJSON:           args,
+		Writer:             principal,
+		InstanceID:         domain.AgentInstanceFromContext(ctx),
+		ClassificationHint: req.GetTags(),
+		ContentType:        req.GetContentType(),
+		Body:               req.GetContent(),
+	})
+	switch {
+	case errors.Is(err, domain.ErrArtifactTooLarge):
+		return nil, status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, ledger.ErrUnclassifiable):
+		// The decision point refused the writer (or its hint) outright.
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	case err != nil:
 		return nil, status.Error(codes.Internal, "artifact record: "+err.Error())
 	}
-	return &pb.UploadArtifactResponse{Hash: hash, Tags: tags}, nil
+	return &pb.UploadArtifactResponse{Hash: ent.ID, Tags: ent.Tags}, nil
 }
 
-// GetArtifact returns artifact bytes only when the caller's predicate permits the
-// artifact's tags. A denied artifact is reported as found=false — indistinguishable
-// from absent, so the existence of out-of-reach data does not leak.
-func (s *Server) GetArtifact(ctx context.Context, req *pb.GetArtifactRequest) (*pb.GetArtifactResponse, error) {
-	if s.ArtifactBytes == nil || s.ArtifactMeta == nil {
-		return nil, status.Error(codes.Unimplemented, "artifact storage not configured")
-	}
+// artifactReadCtx puts the caller's read predicate on ctx for the enforced
+// ledger reader (AGENTS.md §2.4: a by-id read's only scope channel). nil ⇒ the
+// decision point denied the caller outright.
+func (s *Server) artifactReadCtx(ctx context.Context) (context.Context, error) {
 	principal := artifactPrincipal(ctx)
 	eff, dec := s.authorizer().ReadFilter(ctx, principal, artifactSurface)
 	if eff == nil {
 		return nil, status.Error(codes.PermissionDenied, dec.Explain())
 	}
-	art, err := s.ArtifactMeta.GetArtifact(req.GetHash())
+	return domain.WithScope(ctx, eff), nil
+}
+
+// GetArtifact returns an artifact's bytes only when the caller's predicate
+// permits the entry (its own tags and every classification it was derived
+// from). A denied artifact is reported as found=false — indistinguishable from
+// absent, so the existence of out-of-reach data does not leak.
+func (s *Server) GetArtifact(ctx context.Context, req *pb.GetArtifactRequest) (*pb.GetArtifactResponse, error) {
+	if !s.ledgerOn() {
+		return nil, status.Error(codes.Unimplemented, "artifact storage not configured (execution.ledger.enabled is off)")
+	}
+	rctx, err := s.artifactReadCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id := req.GetHash()
+	if !domain.IsLedgerID(id) {
+		return &pb.GetArtifactResponse{Found: false}, nil
+	}
+	e, err := s.Ledger.Reader.Get(rctx, id)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	if art == nil || !authz.ArtifactReadable(eff, *art) {
+	if e == nil || e.Kind != domain.LedgerArtifact {
 		return &pb.GetArtifactResponse{Found: false}, nil // fail-closed / not found
 	}
-	content, err := s.ArtifactBytes.Load(art.Hash)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "vault load: "+err.Error())
-	}
 	return &pb.GetArtifactResponse{
-		Content:     content,
-		ContentType: art.ContentType,
-		Tags:        art.Tags,
+		Content:     e.Body,
+		ContentType: e.ContentType,
+		Tags:        e.Tags,
 		Found:       true,
 	}, nil
 }
 
-// ListStepArtifacts returns the filtered metadata of artifacts for a session+step.
-// Out-of-reach artifacts are silently omitted.
+// ListStepArtifacts returns the artifact entries recorded under a task session
+// and step, scope-filtered for the caller by the enforced reader. Out-of-reach
+// artifacts are silently omitted.
 func (s *Server) ListStepArtifacts(ctx context.Context, req *pb.ListStepArtifactsRequest) (*pb.ListStepArtifactsResponse, error) {
-	if s.ArtifactMeta == nil {
-		return nil, status.Error(codes.Unimplemented, "artifact storage not configured")
+	if !s.ledgerOn() {
+		return nil, status.Error(codes.Unimplemented, "artifact storage not configured (execution.ledger.enabled is off)")
 	}
-	principal := artifactPrincipal(ctx)
-	eff, dec := s.authorizer().ReadFilter(ctx, principal, artifactSurface)
-	if eff == nil {
-		return nil, status.Error(codes.PermissionDenied, dec.Explain())
+	if req.GetSessionId() == "" {
+		return &pb.ListStepArtifactsResponse{}, nil
 	}
-	arts, err := s.ArtifactMeta.ListStepArtifacts(req.GetSessionId(), int(req.GetStepIndex()))
+	rctx, err := s.artifactReadCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.Ledger.Reader.Find(rctx, domain.LedgerQuery{SessionID: req.GetSessionId(),
+		StepIndex: int(req.GetStepIndex()), HasStep: true, Kind: domain.LedgerArtifact})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	visible := authz.FilterArtifacts(eff, arts)
-	out := make([]*pb.ArtifactMeta, 0, len(visible))
-	for _, a := range visible {
+	out := make([]*pb.ArtifactMeta, 0, len(rows))
+	for _, e := range rows {
 		out = append(out, &pb.ArtifactMeta{
-			Hash:            a.Hash,
-			ContentType:     a.ContentType,
-			SizeBytes:       a.SizeBytes,
-			Tags:            a.Tags,
-			SemanticSummary: a.SemanticSummary,
+			Hash:            e.ID,
+			ContentType:     e.ContentType,
+			SizeBytes:       e.SizeBytes,
+			Tags:            e.Tags,
+			SemanticSummary: e.Preview,
 		})
 	}
 	return &pb.ListStepArtifactsResponse{Artifacts: out}, nil

@@ -90,7 +90,13 @@ func callerAgentIdentity(ctx context.Context) (agentID string, isAgent bool) {
 //     over the wire — it sends a real session id (app.go SendFn / planSubmitter) — and the
 //     exemption keeps a lease a chat turn mints usable by the console that ordered it.
 func (s *Server) resolveLeaseFor(ctx context.Context, lease domain.LeaseID) (domain.LeaseBinding, bool) {
-	return resolveLeaseForCaller(ctx, s.leaseResolver(), lease)
+	b, known := resolveLeaseForCaller(ctx, s.leaseResolver(), lease)
+	if known {
+		// ADR-0157 D5.2: the lease a verified instance works under is the run
+		// provenance of what it hands back later (uploads, out/ at exit).
+		s.instanceWork().note(domain.AgentInstanceFromContext(ctx), b)
+	}
+	return b, known
 }
 
 // resolveLeaseForCaller is resolveLeaseFor over an explicit resolver, for components that

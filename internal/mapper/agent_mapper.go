@@ -255,42 +255,6 @@ func (m *AgentMapper) SessionToDomain(rec storage.SessionRecord) domain.Session 
 	}
 }
 
-// ArtifactToRecord converts a domain Artifact to a storage ArtifactRecord.
-func (m *AgentMapper) ArtifactToRecord(a domain.Artifact) storage.ArtifactRecord {
-	meta := a.Metadata
-	if meta == nil {
-		meta = make(map[string]string)
-	}
-	return storage.ArtifactRecord{
-		Hash:            a.Hash,
-		ContentType:     a.ContentType,
-		SizeBytes:       a.SizeBytes,
-		SessionID:       a.SessionID,
-		StepIndex:       a.StepIndex,
-		Metadata:        meta,
-		ParentHash:      a.ParentHash,
-		SemanticSummary: a.SemanticSummary,
-		CreatedAt:       a.CreatedAt.Format(time.RFC3339Nano),
-		Tags:            a.Tags,
-	}
-}
-
-// ArtifactToDomain converts a storage ArtifactRecord to a domain Artifact.
-func (m *AgentMapper) ArtifactToDomain(rec storage.ArtifactRecord) domain.Artifact {
-	return domain.Artifact{
-		Hash:            rec.Hash,
-		ContentType:     rec.ContentType,
-		SizeBytes:       rec.SizeBytes,
-		SessionID:       rec.SessionID,
-		StepIndex:       rec.StepIndex,
-		Metadata:        rec.Metadata,
-		ParentHash:      rec.ParentHash,
-		SemanticSummary: rec.SemanticSummary,
-		CreatedAt:       parseTime(rec.CreatedAt),
-		Tags:            rec.Tags,
-	}
-}
-
 // PlanEventToRecord converts a domain PlanEvent to a storage PlanEventRecord.
 func (m *AgentMapper) PlanEventToRecord(event domain.PlanEvent) storage.PlanEventRecord {
 	return storage.PlanEventRecord{

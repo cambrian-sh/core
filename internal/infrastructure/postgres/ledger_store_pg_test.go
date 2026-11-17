@@ -115,14 +115,16 @@ func TestPg_LedgerEnforcedCrossPrincipal(t *testing.T) {
 }
 
 // Retention: expired entries are purged with their vault bytes, unless another
-// entry or an artifact still names them; scratch goes at turn end.
+// live entry still names them; scratch goes at turn end.
 func TestPg_LedgerRetentionAndScratch(t *testing.T) {
 	st, v, ctx := newLedgerStore(t)
 	past := time.Now().Add(-time.Second)
 	later := time.Now().Add(time.Hour)
 	shared := "shared with an artifact"
 	sharedHash, _ := v.Store([]byte(shared))
-	st.ArtifactReferenced = func(h string) bool { return h == sharedHash }
+	// ADR-0157 D5: the ledger is the vault's only registry — the bytes stay while a
+	// live entry (another upload of the same bytes) still names them.
+	_ = st.Put(ctx, pgEntry("led_pgled_art_live", domain.LedgerArtifact, "pgled-run", "t2", 0, "", shared, later))
 
 	_ = st.Put(ctx, pgEntry("led_pgled_old", domain.LedgerToolResult, "pgled-run", "t1", 0, "", "old result", past))
 	_ = st.Put(ctx, pgEntry("led_pgled_art", domain.LedgerArtifact, "pgled-run", "t1", 0, "", shared, past))
@@ -144,7 +146,7 @@ func TestPg_LedgerRetentionAndScratch(t *testing.T) {
 		t.Fatalf("purge: %d %v", n, err)
 	}
 	if _, err := os.Stat(filepath.Join(v.VaultPath, sharedHash)); err != nil {
-		t.Fatalf("vault bytes an artifact still uses were deleted: %v", err)
+		t.Fatalf("vault bytes a live artifact entry still uses were deleted: %v", err)
 	}
 	oldHash := hashOf(t, "old result")
 	if _, err := os.Stat(filepath.Join(v.VaultPath, oldHash)); !os.IsNotExist(err) {

@@ -14,15 +14,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
-
-// ArtifactStepLister lists artifacts produced by a session+step (ADR-0034). Used to
-// surface prior-step artifacts into working_memory. Optional.
-type ArtifactStepLister interface {
-	ListStepArtifacts(sessionID string, stepIndex int) ([]domain.Artifact, error)
-}
 
 // (The former SessionCallerScopes seam is gone: composing a session's caller term
 // with anything else is the decision point's job, so the executor asks
@@ -184,14 +177,10 @@ type DAGExecutor struct {
 	CurrentRunID        domain.RunID
 	CheckpointFlushSecs int // periodic flush interval in seconds (0 = only on pause)
 
-	// ADR-0034 / REQ-SDK-007b: optional artifact discovery in working_memory.
-	// When both are set, prior-step artifacts are surfaced (scope-filtered) into
-	// the step's working memory as ContextRefs. Best-effort discovery — the
-	// authoritative gate remains GetArtifact (agent_scope). nil → disabled.
-	ArtifactLister ArtifactStepLister
-	// Authz is the decision point used to filter surfaced artifacts. nil ⇒ the
-	// discovery layer surfaces everything (the OSS default); GetArtifact remains
-	// the authoritative gate either way.
+	// Authz is the decision point whose read predicate filters the prior-step
+	// artifacts surfaced into working memory (REQ-SDK-007b; ADR-0157 D5: they are
+	// run-ledger artifact entries, read through LedgerReader). nil ⇒ the system
+	// scope (the OSS default); GetArtifact remains the authoritative gate.
 	Authz domain.Authorizer
 
 	// Ledger is the ADR-0145 D1 run ledger's writer (ledger_steps.go): every step
@@ -1173,19 +1162,8 @@ func (d *DAGExecutor) ExecuteFrom(
 				// authoritative gate. With no decision point wired this surfaces all
 				// (the OSS default); with one, it surfaces only what the principal on
 				// this context may see.
-				if d.ArtifactLister != nil && d.CurrentSessionID != "" {
-					eff := domain.ScopeSystem
-					if d.Authz != nil {
-						eff, _ = d.Authz.ReadFilter(cancelCtx,
-							domain.PrincipalFromContext(cancelCtx), domain.SurfaceFromContext(cancelCtx))
-					}
-					for _, dep := range plan.Steps[i].DependsOn {
-						arts, lerr := d.ArtifactLister.ListStepArtifacts(string(d.CurrentSessionID), dep)
-						if lerr == nil && len(arts) > 0 {
-							workingMemory = append(workingMemory,
-								authz.ArtifactContextRefs(eff, arts, fmt.Sprintf("step_%d", dep))...)
-						}
-					}
+				if d.LedgerReader != nil {
+					workingMemory = append(workingMemory, d.priorStepArtifactRefs(cancelCtx, plan.Steps[i].DependsOn)...)
 				}
 			}
 
@@ -1998,4 +1976,43 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// priorStepArtifactRefs surfaces the artifacts the given upstream steps produced
+// (run-ledger artifact entries of this run, ADR-0157 D5.2) into working memory
+// as discovery refs: the CID is the ledger id, which GetArtifact / ledger_get
+// read under the consumer's own scope. The entries are listed through the
+// ENFORCED reader under the principal's read predicate, so an artifact the
+// principal may not read is not even named. Best-effort: a failed lookup
+// surfaces nothing for that step.
+func (d *DAGExecutor) priorStepArtifactRefs(ctx context.Context, deps []int) []domain.ContextRef {
+	if len(deps) == 0 {
+		return nil
+	}
+	eff := domain.ScopeSystem
+	if d.Authz != nil {
+		eff, _ = d.Authz.ReadFilter(ctx, domain.PrincipalFromContext(ctx), domain.SurfaceFromContext(ctx))
+	}
+	if eff == nil {
+		return nil // denied outright: surface nothing (fail closed)
+	}
+	rctx := domain.WithScope(ctx, eff)
+	run := d.ledgerProvenance(ctx).RunID
+	if run == "" {
+		return nil
+	}
+	var out []domain.ContextRef
+	for _, dep := range deps {
+		rows, err := d.LedgerReader.Find(rctx, domain.LedgerQuery{RunID: run, StepIndex: dep, HasStep: true,
+			Kind: domain.LedgerArtifact})
+		if err != nil {
+			continue
+		}
+		for _, e := range rows {
+			labels := append([]string{fmt.Sprintf("step_%d", dep)}, e.Tags...)
+			out = append(out, domain.ContextRef{CID: domain.CID(e.ID), Type: "agent_artifact", Labels: labels,
+				Precision: 1.0, Snippet: e.Preview})
+		}
+	}
+	return out
 }

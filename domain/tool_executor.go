@@ -17,18 +17,6 @@ import (
 	"unicode/utf8"
 )
 
-// ArtifactByteWriter persists artifact bytes into the durable content-addressable
-// vault, returning the content hash. Satisfied by *vault.ArtifactVault.
-type ArtifactByteWriter interface {
-	Store(content []byte) (string, error)
-}
-
-// ArtifactRecorder persists an artifact's durable metadata record (retrievable
-// via GetArtifact, scope-governed). Satisfied by the agent repository decorator.
-type ArtifactRecorder interface {
-	SaveArtifact(a Artifact) error
-}
-
 // ToolOutputRecorder feeds a successful tool output into the memory layer. A MUTATION
 // output (ADR-0049 D1) is recorded as a `mnemonic_action` EVENT — what was done. A
 // READ output records nothing: the ADR-0048 D6 path that curated it as a fact through
@@ -304,12 +292,10 @@ type ToolExecutor struct {
 	// Artifact promotion (the durable home for files a confined tool writes). The
 	// handler offloads jail files to the GC'd ContentStore and surfaces them in the
 	// result "_artifacts"; without promotion they are unretrievable and eventually
-	// evicted. When wired, each is also stored in the durable vault + metadata
-	// (retrievable via GetArtifact, scope-governed) and materialized to disk.
-	ArtifactBytes     ArtifactByteWriter                                 // nil ⇒ no durable vault promotion
-	ArtifactMeta      ArtifactRecorder                                   // nil ⇒ no durable metadata record
-	ArtifactTags      func(ctx context.Context, agentID string) []string // kernel-derived write tags; nil ⇒ none
-	ArtifactOutputDir string                                             // "" ⇒ no on-disk materialization
+	// evicted. Each is recorded as a run-ledger artifact entry through Ledger
+	// (ADR-0157 D5.2: the ledger is the one artifact registry; retrievable via
+	// GetArtifact by its ledger id, classified at write) and materialized to disk.
+	ArtifactOutputDir string // "" ⇒ no on-disk materialization
 	// ToolOutput receives every non-denied tool output (ADR-0049 D1: a mutation
 	// becomes an action record). nil ⇒ nothing is recorded.
 	ToolOutput ToolOutputRecorder
@@ -568,19 +554,6 @@ func (e *ToolExecutor) priceFor(req ToolCallRequest) (ToolPricing, bool) {
 		return ToolPricing{}, false
 	}
 	return e.Pricing.PricingFor(req.ToolName)
-}
-
-// artifactSession returns the session an artifact produced by this call belongs to.
-//
-// The session is resolved server-side and carried on ctx (the transport derives it from the
-// caller's unforgeable lease). The lease is used only as a last-resort correlation key when
-// no session is in play — a tool call outside any session still produces a retrievable
-// artifact, just one scoped to that call.
-func artifactSession(ctx context.Context, req ToolCallRequest) string {
-	if sid, ok := SessionIDFromContext(ctx); ok && sid != "" {
-		return string(sid)
-	}
-	return string(req.SessionTokenID)
 }
 
 // budgetAccountFor keys a call's spend to its managed session (ADR-0043 D5).
@@ -1198,13 +1171,16 @@ type artifactRef struct {
 }
 
 // persistArtifacts moves a tool's swept files from the ephemeral (GC-eligible)
-// ContentStore into the DURABLE artifact system — the vault + a metadata record,
-// retrievable via GetArtifact and scope-governed — and materializes them to the
+// ContentStore into the DURABLE artifact registry — a kind=artifact run-ledger
+// entry each, classified at write by the ledger writer and retrievable via
+// GetArtifact by its ledger id (ADR-0157 D5.2) — and materializes them to the
 // operator output dir so a requested file actually lands on disk. Best-effort and
-// nil-safe: a missing dependency or a per-file error degrades silently (the tool
-// call already succeeded); it never fails the call.
+// nil-safe: a missing dependency or a per-file error degrades with a WARN (the
+// tool call already succeeded); it never fails the call. A system call records
+// nothing (no principal's run to attribute it to), as for every ledger write.
 func (e *ToolExecutor) persistArtifacts(ctx context.Context, req ToolCallRequest, result []byte) {
-	if e.ContentStore == nil || (e.ArtifactBytes == nil && e.ArtifactOutputDir == "") {
+	record := e.Ledger != nil && !req.System
+	if e.ContentStore == nil || (!record && e.ArtifactOutputDir == "") {
 		return
 	}
 	var obj map[string]json.RawMessage
@@ -1215,48 +1191,20 @@ func (e *ToolExecutor) persistArtifacts(ctx context.Context, req ToolCallRequest
 	if json.Unmarshal(obj["_artifacts"], &refs) != nil {
 		return
 	}
-	var tags []string
-	if e.ArtifactTags != nil {
-		tags = e.ArtifactTags(ctx, req.AgentID)
-	}
 	for _, r := range refs {
 		node, err := e.ContentStore.Get(ctx, CID(r.CID))
 		if err != nil || node == nil {
 			slog.Warn("tool artifact promote: content fetch failed", "tool", req.ToolName, "cid", r.CID, "err", err)
 			continue
 		}
-		// Durable vault + metadata record (survives content-store GC; retrievable
-		// via GetArtifact under the agent's kernel-derived write classification).
-		if e.ArtifactBytes != nil && e.ArtifactMeta != nil {
-			if hash, serr := e.ArtifactBytes.Store(node.Data); serr == nil {
-				if rerr := e.ArtifactMeta.SaveArtifact(Artifact{
-					Hash:        hash,
-					ContentType: contentTypeFor(r.Path),
-					SizeBytes:   int64(len(node.Data)),
-					// Phase 3: the artifact belongs to the TASK SESSION, resolved
-					// server-side from the caller's lease. It used to be stamped with the
-					// per-step lease itself, so ListStepArtifacts(sessionID) could never
-					// find it — the artifact was addressed by a key nothing would ever
-					// look it up by.
-					SessionID: string(artifactSession(ctx, req)),
-					Tags:      tags,
-				}); rerr != nil {
-					slog.Warn("tool artifact promote: metadata record failed", "tool", req.ToolName, "path", r.Path, "err", rerr)
-				}
-				// ADR-0145 D1: the file is an entry of the run's ledger too (kind
-				// artifact). Content-addressed, so the vault holds its bytes once.
-				if e.Ledger != nil && !req.System {
-					pathArg, _ := json.Marshal(map[string]string{"path": r.Path})
-					if _, lerr := e.Ledger.Record(ctx, LedgerRecord{
-						Kind: LedgerArtifact, Provenance: LedgerProvenanceFromContext(ctx),
-						ToolName: req.ToolName, ArgsJSON: pathArg, Writer: AgentPrincipal(req.AgentID),
-						ContentType: contentTypeFor(r.Path), Body: node.Data,
-					}); lerr != nil {
-						slog.Warn("ADR-0145: tool artifact not recorded to the ledger", "tool", req.ToolName, "path", r.Path, "err", lerr)
-					}
-				}
-			} else {
-				slog.Warn("tool artifact promote: vault store failed", "tool", req.ToolName, "path", r.Path, "err", serr)
+		if record {
+			pathArg, _ := json.Marshal(map[string]string{"path": r.Path})
+			if _, lerr := e.Ledger.Record(ctx, LedgerRecord{
+				Kind: LedgerArtifact, Provenance: LedgerProvenanceFromContext(ctx),
+				ToolName: req.ToolName, ArgsJSON: pathArg, Writer: AgentPrincipal(req.AgentID),
+				InstanceID: AgentInstanceFromContext(ctx), ContentType: contentTypeFor(r.Path), Body: node.Data,
+			}); lerr != nil {
+				slog.Warn("ADR-0157: tool artifact not recorded to the ledger", "tool", req.ToolName, "path", r.Path, "err", lerr)
 			}
 		}
 		// Materialize to the operator output dir so the user gets the actual file.

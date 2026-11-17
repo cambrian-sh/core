@@ -48,8 +48,7 @@ func privateServer(t *testing.T, on bool) (*Server, *SubstrateLLMGateway, *captu
 	s.PrivateByDefault = on
 	store := &captureStore{}
 	s.IngestionProcessor = writingProcessor{w: authz.NewEnforcingStoreWriter(store, domain.AllowAllAuthorizer{}, nil)}
-	s.ArtifactBytes = newFakeVault()
-	s.ArtifactMeta = newFakeMeta()
+	s.Ledger, _ = newArtifactLedger(domain.AllowAllAuthorizer{})
 	return s, gw, store
 }
 

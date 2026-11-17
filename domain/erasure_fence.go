@@ -99,6 +99,9 @@ type ErasureOutbox interface {
 	// (evidence content hash, a source-document body), so it must not be deleted: the
 	// store is content-addressed and identical bytes are shared.
 	CIDStillReferenced(ctx context.Context, cid string) (bool, error)
+	// VaultBodyStillReferenced reports whether a surviving run-ledger entry still
+	// names an artifact-vault body (ADR-0157 D5.6): the vault is content-addressed.
+	VaultBodyStillReferenced(ctx context.Context, hash string) (bool, error)
 	// MarkStepDone marks a row processed (false when another drainer already did).
 	MarkStepDone(ctx context.Context, id int64) (bool, error)
 	// MarkStepFailed records one failed attempt with an error CLASS (never content).
@@ -108,6 +111,12 @@ type ErasureOutbox interface {
 	CompleteRequests(ctx context.Context) (int, error)
 	// PruneTombstones deletes tombstone rows erased before cutoff, returning the count.
 	PruneTombstones(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// VaultEraser deletes one artifact-vault body by its hash (satisfied by
+// *vault.ArtifactVault). Deleting an absent hash is not an error.
+type VaultEraser interface {
+	Delete(hash string) error
 }
 
 // ContentEraser deletes one content-addressed blob by CID (the ADR-0137 D7 targeted

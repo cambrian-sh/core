@@ -28,6 +28,7 @@ type Recorder struct {
 	authorizer       domain.Authorizer
 	retention        time.Duration
 	maxEntryBytes    int
+	maxArtifactBytes int64
 	previewChars     int
 	privateByDefault bool
 	now              func() time.Time
@@ -39,7 +40,11 @@ var _ domain.LedgerWriter = (*Recorder)(nil)
 type RecorderConfig struct {
 	Retention     time.Duration
 	MaxEntryBytes int
-	PreviewChars  int
+	// MaxArtifactBytes caps one artifact entry (execution.ledger.artifacts.
+	// max_file_bytes, ADR-0157 D5.2). An artifact is never truncated: a larger
+	// one is refused with domain.ErrArtifactTooLarge. 0 ⇒ the 100 MiB vault ceiling.
+	MaxArtifactBytes int64
+	PreviewChars     int
 	// PrivateByDefault mirrors the kernel's ADR-0142 D12 switch: an entry written
 	// for a conversation owner is stamped owner:<owner>, like every other write
 	// made during that person's turn.
@@ -61,9 +66,12 @@ func NewRecorder(store domain.LedgerStore, authorizer domain.Authorizer, cfg Rec
 	if cfg.PreviewChars <= 0 {
 		cfg.PreviewChars = 300
 	}
+	if cfg.MaxArtifactBytes <= 0 {
+		cfg.MaxArtifactBytes = 100 << 20
+	}
 	return &Recorder{
 		store: store, authorizer: authorizer, retention: cfg.Retention,
-		maxEntryBytes: cfg.MaxEntryBytes, previewChars: cfg.PreviewChars,
+		maxEntryBytes: cfg.MaxEntryBytes, maxArtifactBytes: cfg.MaxArtifactBytes, previewChars: cfg.PreviewChars,
 		privateByDefault: cfg.PrivateByDefault, now: time.Now,
 	}
 }
@@ -79,6 +87,9 @@ func (r *Recorder) Record(ctx context.Context, rec domain.LedgerRecord) (domain.
 		return domain.LedgerEntry{}, fmt.Errorf("ledger record: invalid kind %q", rec.Kind)
 	}
 	p := rec.Provenance
+	if rec.Kind == domain.LedgerArtifact && int64(len(rec.Body)) > r.maxArtifactBytes {
+		return domain.LedgerEntry{}, fmt.Errorf("%w (%d > %d bytes)", domain.ErrArtifactTooLarge, len(rec.Body), r.maxArtifactBytes)
+	}
 	if r.privateByDefault && p.Owner != "" && domain.PrivateWriteOwnerFromContext(ctx) == "" {
 		// The DAG executor's context does not carry the D12 mark the tool path's
 		// lease resolution sets; the provenance's owner is the same kernel-held fact.
@@ -88,19 +99,28 @@ func (r *Recorder) Record(ctx context.Context, rec domain.LedgerRecord) (domain.
 	if err != nil {
 		return domain.LedgerEntry{}, err
 	}
-	sources := r.sourceTags(ctx, rec)
+	src := r.sources(ctx, rec)
 	sum := sha256.Sum256(rec.Body)
 	contentHash := hex.EncodeToString(sum[:])
 	args := domain.CanonicalJSON(rec.ArgsJSON)
 	body := rec.Body
 	truncated := false
-	if len(body) > r.maxEntryBytes {
+	// An artifact is kept whole (capped above); every other kind keeps its head.
+	if rec.Kind != domain.LedgerArtifact && len(body) > r.maxEntryBytes {
 		body = body[:r.maxEntryBytes]
 		truncated = true
 	}
 	now := r.now()
+	callKey := domain.LedgerCallKey(rec.Kind, rec.ToolName, args)
+	if rec.Kind == domain.LedgerArtifact {
+		// ADR-0157 D5.2 (T-20261115-artifact-metadata-is-keyed-by-content-hash-so):
+		// the same bytes written by two principals (or two instances) are two
+		// artifacts with their own classification, never one entry the second
+		// writer silently shares — so the writer is part of an artifact's identity.
+		callKey += "\x00" + rec.Writer.String() + "\x00" + rec.InstanceID
+	}
 	e := domain.LedgerEntry{
-		ID:             domain.LedgerEntryID(p, domain.LedgerCallKey(rec.Kind, rec.ToolName, args), contentHash),
+		ID:             domain.LedgerEntryID(p, callKey, contentHash),
 		Kind:           rec.Kind,
 		ConversationID: p.ConversationID,
 		TurnID:         p.TurnID,
@@ -110,8 +130,12 @@ func (r *Recorder) Record(ctx context.Context, rec domain.LedgerRecord) (domain.
 		Args:           args,
 		Writer:         rec.Writer.String(),
 		Owner:          p.Owner,
+		SessionID:      p.SessionID,
+		InstanceID:     rec.InstanceID,
+		DerivedFrom:    src.derived,
+		SourceRefs:     src.refs,
 		Tags:           tags,
-		SourceTags:     sources,
+		SourceTags:     src.tags,
 		ContentType:    rec.ContentType,
 		SizeBytes:      int64(len(rec.Body)),
 		Truncated:      truncated,
@@ -151,21 +175,35 @@ func (r *Recorder) classify(ctx context.Context, rec domain.LedgerRecord) ([]str
 	return nil, ErrUnclassifiable
 }
 
-// sourceTags is the classification a derived entry inherits
-// (T-20261108-ledger-step-outputs-do-not-inherit-the): for a step output or a
-// calculation, the tag sets of the tool results recorded under the same run and
-// step, and of every entry named in rec.DerivedFrom (the step's upstream inputs),
-// each with the sets IT was derived from — so inheritance is transitive along the
-// plan. Read on the RAW store: the writer is the kernel classifying, not a reader.
-// Deduplicated; nil for an entry derived from nothing (a tool result).
+// inheritance is what a derived entry carries forward from what it was built
+// from: their classifications (tags), their ids (derived) and the memory records
+// they quote (refs).
+type inheritance struct {
+	tags    [][]string
+	derived []string
+	refs    []string
+}
+
+// sources is the classification a derived entry inherits
+// (T-20261108-ledger-step-outputs-do-not-inherit-the): for a step output, a
+// calculation or an artifact, the tag sets of the tool results recorded under the
+// same run and step (an artifact outside a run: under the same turn, by the same
+// writer — ADR-0157 D5.2), and of every entry named in rec.DerivedFrom (the
+// step's upstream inputs), each with the sets IT was derived from — so
+// inheritance is transitive along the plan. The same walk yields the entry's
+// DerivedFrom ids and its SourceRefs (the memory records an ADR-0137 erase must
+// reach). Read on the RAW store: the writer is the kernel classifying, not a
+// reader. Deduplicated; empty for an entry derived from nothing.
 //
 // A lookup failure is logged and the entry is still written with what was found:
 // failing the write would lose the step's output, and the entries that could not
 // be read are absent from the run anyway.
-func (r *Recorder) sourceTags(ctx context.Context, rec domain.LedgerRecord) [][]string {
+func (r *Recorder) sources(ctx context.Context, rec domain.LedgerRecord) inheritance {
 	var srcs []domain.LedgerEntry
 	p := rec.Provenance
-	if (rec.Kind == domain.LedgerStepOutput || rec.Kind == domain.LedgerComputed) && p.RunID != "" && p.StepIndex >= 0 {
+	derivedKind := rec.Kind == domain.LedgerStepOutput || rec.Kind == domain.LedgerComputed || rec.Kind == domain.LedgerArtifact
+	switch {
+	case derivedKind && p.RunID != "" && p.StepIndex >= 0:
 		rows, err := r.store.Find(ctx, domain.LedgerQuery{RunID: p.RunID, StepIndex: p.StepIndex, HasStep: true,
 			Kind: domain.LedgerToolResult})
 		if err != nil {
@@ -173,6 +211,18 @@ func (r *Recorder) sourceTags(ctx context.Context, rec domain.LedgerRecord) [][]
 				"run", p.RunID, "step", p.StepIndex, "err", err)
 		}
 		srcs = append(srcs, rows...)
+	case rec.Kind == domain.LedgerArtifact && p.RunID == "" && p.TurnID != "":
+		rows, err := r.store.Find(ctx, domain.LedgerQuery{TurnID: p.TurnID, Kind: domain.LedgerToolResult})
+		if err != nil {
+			slog.Warn("ledger: the turn's tool results could not be read for classification inheritance",
+				"turn", p.TurnID, "err", err)
+		}
+		writer := rec.Writer.String()
+		for _, e := range rows {
+			if e.Writer == writer {
+				srcs = append(srcs, e)
+			}
+		}
 	}
 	for _, id := range rec.DerivedFrom {
 		if !domain.IsLedgerID(id) {
@@ -187,11 +237,8 @@ func (r *Recorder) sourceTags(ctx context.Context, rec domain.LedgerRecord) [][]
 			srcs = append(srcs, *e)
 		}
 	}
-	if len(srcs) == 0 && len(rec.SourceClassifications) == 0 {
-		return nil
-	}
+	var out inheritance
 	seen := map[string]bool{}
-	var out [][]string
 	add := func(tags []string) {
 		set := append([]string(nil), tags...)
 		sort.Strings(set)
@@ -200,17 +247,37 @@ func (r *Recorder) sourceTags(ctx context.Context, rec domain.LedgerRecord) [][]
 			return
 		}
 		seen[key] = true
-		out = append(out, set)
+		out.tags = append(out.tags, set)
+	}
+	seenID := map[string]bool{}
+	seenRef := map[string]bool{}
+	addRef := func(ref string) {
+		if ref != "" && !seenRef[ref] {
+			seenRef[ref] = true
+			out.refs = append(out.refs, ref)
+		}
 	}
 	for _, e := range srcs {
 		add(e.Tags)
 		for _, st := range e.SourceTags {
 			add(st)
 		}
+		if !seenID[e.ID] {
+			seenID[e.ID] = true
+			out.derived = append(out.derived, e.ID)
+		}
+		for _, ref := range e.SourceRefs {
+			addRef(ref)
+		}
 	}
 	// Classifications of content from outside the ledger (recalled chunks).
 	for _, st := range rec.SourceClassifications {
 		add(st)
 	}
+	for _, ref := range rec.SourceRefs {
+		addRef(ref)
+	}
+	sort.Strings(out.derived)
+	sort.Strings(out.refs)
 	return out
 }

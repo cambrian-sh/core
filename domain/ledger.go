@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +82,10 @@ type LedgerProvenance struct {
 	// Owner is the conversation owner the work is for (ADR-0142 act-for); "" when
 	// the work is for no person.
 	Owner string
+	// SessionID is the task session the lease was minted under (ADR-0157 D5:
+	// ListStepArtifacts addresses artifacts by session and step); "" outside a
+	// task session. Not part of the entry id (the run already is).
+	SessionID string
 }
 
 type ledgerProvenanceKey struct{}
@@ -125,6 +130,20 @@ type LedgerEntry struct {
 	Writer string `json:"writer,omitempty"`
 	// Owner is the conversation owner the work was for (ADR-0142).
 	Owner string `json:"owner,omitempty"`
+	// SessionID is the task session of the lease the entry was written under.
+	SessionID string `json:"session_id,omitempty"`
+	// InstanceID is the agent instance that wrote the entry (ADR-0157 D5.2: the
+	// verified per-instance token, or the instance whose out/ the kernel
+	// collected); "" when the writer is not a kernel-spawned instance.
+	InstanceID string `json:"instance_id,omitempty"`
+	// DerivedFrom are the ledger entries this one was built from (the record's
+	// DerivedFrom plus, for a derived kind, the step's or turn's tool results the
+	// writer inherited) — the provenance an artifact carries (ADR-0157 D5.2).
+	DerivedFrom []string `json:"derived_from,omitempty"`
+	// SourceRefs are the memory records (chunk, document, experience ids) the
+	// content was built from, transitively through DerivedFrom. The ADR-0137
+	// erase deletes every entry whose SourceRefs meet what it erases.
+	SourceRefs []string `json:"-"`
 	// Tags are the kernel-derived classification (ADR-0034/0035); the read gate.
 	Tags []string `json:"-"`
 	// SourceTags are the classifications of every entry this one was derived from
@@ -176,8 +195,16 @@ type LedgerRecord struct {
 	// LedgerEntry.SourceTags, so the entry is never easier to read than the most
 	// restrictive chunk in it.
 	SourceClassifications [][]string
-	ContentType           string
-	Body                  []byte
+	// SourceRefs are the memory records (chunk / document / experience ids) the
+	// content quotes (a recall's hits). They join LedgerEntry.SourceRefs, with
+	// those of every entry it was derived from, so an ADR-0137 erase of the
+	// records reaches the entry and everything built from it.
+	SourceRefs []string
+	// InstanceID is the writing agent instance, from the verified context or the
+	// instance the kernel collected out/ from; never from a payload.
+	InstanceID  string
+	ContentType string
+	Body        []byte
 }
 
 // LedgerEntryReadable is the ledger's one row test: the reader's predicate must
@@ -199,6 +226,8 @@ func LedgerEntryReadable(eff *TagPredicate, e LedgerEntry) bool {
 // least one of ConversationID, TurnID or RunID must be set (a query never spans
 // the whole ledger).
 type LedgerQuery struct {
+	// SessionID filters by the task session (ListStepArtifacts).
+	SessionID      string
 	ConversationID string
 	TurnID         string
 	RunID          string
@@ -215,13 +244,18 @@ type LedgerQuery struct {
 
 // Scoped reports whether q names a conversation, turn or run.
 func (q LedgerQuery) Scoped() bool {
-	return q.ConversationID != "" || q.TurnID != "" || q.RunID != ""
+	return q.ConversationID != "" || q.TurnID != "" || q.RunID != "" || q.SessionID != ""
 }
 
 // LedgerWriter records entries. The kernel's choke points hold this port only.
 type LedgerWriter interface {
 	Record(ctx context.Context, rec LedgerRecord) (LedgerEntry, error)
 }
+
+// ErrArtifactTooLarge refuses an artifact entry over the configured per-file cap
+// (execution.ledger.artifacts.max_file_bytes). An artifact is never truncated:
+// half a model file or a cut-off CSV is worse than a named refusal.
+var ErrArtifactTooLarge = errors.New("ledger: artifact exceeds execution.ledger.artifacts.max_file_bytes")
 
 // LedgerReader reads entries. Every implementation handed to a reader is
 // authz.EnforcingLedger: a nil entry means absent OR forbidden, by design.

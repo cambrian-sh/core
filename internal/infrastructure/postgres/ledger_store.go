@@ -30,13 +30,14 @@ type LedgerBodyStore interface {
 // store. It applies NO read enforcement — kernel.NewLedgerStack is the only place
 // it is constructed, and it hands readers authz.EnforcingLedger over it, never
 // this type (AGENTS.md §2.1/§2.2).
+//
+// Since ADR-0157 D5 it is also the ONE artifact registry: UploadArtifact, the
+// scratch out/ collection and tool-written files are kind=artifact entries, so
+// the vault holds no bytes that no ledger row names and the retention purge may
+// delete a body as soon as its last row goes.
 type PgLedgerStore struct {
 	pool   *pgxpool.Pool
 	bodies LedgerBodyStore
-	// ArtifactReferenced reports whether an artifact record names hash, so the
-	// retention purge never deletes vault bytes an artifact still uses. nil ⇒
-	// vault bytes are never deleted (the safe answer when the caller cannot tell).
-	ArtifactReferenced func(hash string) bool
 }
 
 var _ domain.LedgerStore = (*PgLedgerStore)(nil)
@@ -50,12 +51,13 @@ func NewPgLedgerStore(pool *pgxpool.Pool, bodies LedgerBodyStore) *PgLedgerStore
 // be decoded (scanLedgerEntry); no reader predicate is expected to hold it.
 const ledgerUnreadableSourceTag = "ledger:unreadable-source-classification"
 
-// Ready reports whether the 0034 table and the 0035 source_tags column exist.
+// Ready reports whether the 0034 table, the 0035 source_tags column and the 0053
+// artifact provenance columns exist.
 func (s *PgLedgerStore) Ready(ctx context.Context) bool {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
-WHERE table_name = 'ledger_entries' AND column_name = 'source_tags'`).Scan(&n)
-	return err == nil && n == 1
+WHERE table_name = 'ledger_entries' AND column_name IN ('source_tags', 'source_refs')`).Scan(&n)
+	return err == nil && n == 2
 }
 
 // ledgerSearchHead bounds the body text kept for ledger_find's text filter.
@@ -85,6 +87,8 @@ func (s *PgLedgerStore) Put(ctx context.Context, e domain.LedgerEntry) error {
 		sources = [][]string{}
 	}
 	sourcesJSON, _ := json.Marshal(sources)
+	derivedJSON, _ := json.Marshal(nonNil(e.DerivedFrom))
+	refsJSON, _ := json.Marshal(nonNil(e.SourceRefs))
 	var args []byte
 	if len(e.Args) > 0 && json.Valid(e.Args) {
 		args = e.Args
@@ -100,12 +104,13 @@ func (s *PgLedgerStore) Put(ctx context.Context, e domain.LedgerEntry) error {
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO ledger_entries (id, kind, conversation_id, turn_id, run_id, step_index, tool_name, args,
     writer, owner, tags, content_type, body_hash, size_bytes, truncated, preview, content_hash,
-    search_text, created_at, expires_at, source_tags)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+    search_text, created_at, expires_at, source_tags, session_id, instance_id, derived_from, source_refs)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 ON CONFLICT (id) DO NOTHING`,
 		e.ID, string(e.Kind), e.ConversationID, e.TurnID, e.RunID, e.StepIndex, e.ToolName, args,
 		e.Writer, e.Owner, tagsJSON, e.ContentType, hash, e.SizeBytes, e.Truncated, e.Preview, e.ContentHash,
-		sanitizeText(search), e.CreatedAt.UTC(), e.ExpiresAt.UTC(), sourcesJSON)
+		sanitizeText(search), e.CreatedAt.UTC(), e.ExpiresAt.UTC(), sourcesJSON,
+		e.SessionID, e.InstanceID, derivedJSON, refsJSON)
 	if err != nil {
 		return fmt.Errorf("ledger put: %w", err)
 	}
@@ -113,17 +118,21 @@ ON CONFLICT (id) DO NOTHING`,
 }
 
 const runLedgerCols = `id, kind, conversation_id, turn_id, run_id, step_index, tool_name, args, writer, owner,
-    tags, content_type, body_hash, size_bytes, truncated, preview, content_hash, created_at, expires_at, source_tags`
+    tags, content_type, body_hash, size_bytes, truncated, preview, content_hash, created_at, expires_at, source_tags,
+    session_id, instance_id, derived_from, source_refs`
 
 func scanLedgerEntry(row pgx.Row) (domain.LedgerEntry, error) {
 	var e domain.LedgerEntry
 	var kind string
-	var args, tags, sources []byte
+	var args, tags, sources, derived, refs []byte
 	if err := row.Scan(&e.ID, &kind, &e.ConversationID, &e.TurnID, &e.RunID, &e.StepIndex, &e.ToolName, &args,
 		&e.Writer, &e.Owner, &tags, &e.ContentType, &e.BodyHash, &e.SizeBytes, &e.Truncated, &e.Preview,
-		&e.ContentHash, &e.CreatedAt, &e.ExpiresAt, &sources); err != nil {
+		&e.ContentHash, &e.CreatedAt, &e.ExpiresAt, &sources,
+		&e.SessionID, &e.InstanceID, &derived, &refs); err != nil {
 		return e, err
 	}
+	_ = json.Unmarshal(derived, &e.DerivedFrom) // provenance only; never a read gate
+	_ = json.Unmarshal(refs, &e.SourceRefs)     // erase reach; never a read gate
 	e.Kind = domain.LedgerKind(kind)
 	if len(args) > 0 {
 		e.Args = json.RawMessage(args)
@@ -170,6 +179,9 @@ func (s *PgLedgerStore) Find(ctx context.Context, q domain.LedgerQuery) ([]domai
 	add := func(cond string, v any) {
 		args = append(args, v)
 		where = append(where, fmt.Sprintf(cond, len(args)))
+	}
+	if q.SessionID != "" {
+		add("session_id = $%d", q.SessionID)
 	}
 	if q.ConversationID != "" {
 		add("conversation_id = $%d", q.ConversationID)
@@ -235,7 +247,8 @@ func (s *PgLedgerStore) PurgeExpired(ctx context.Context, now time.Time) (int, e
 }
 
 // deleteReturning runs a DELETE ... RETURNING body_hash and then drops the vault
-// bytes no remaining entry and no artifact record names.
+// bytes no remaining entry names (the ledger is the vault's only registry since
+// ADR-0157 D5; the retired bbolt artifact records were imported into it).
 func (s *PgLedgerStore) deleteReturning(ctx context.Context, sql string, arg any) (int, error) {
 	rows, err := s.pool.Query(ctx, sql, arg)
 	if err != nil {
@@ -254,20 +267,73 @@ func (s *PgLedgerStore) deleteReturning(ctx context.Context, sql string, arg any
 	if err := rows.Err(); err != nil {
 		return n, fmt.Errorf("ledger delete: %w", err)
 	}
-	if s.ArtifactReferenced == nil {
-		return n, nil
-	}
 	for h := range hashes {
 		var still bool
 		if qerr := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ledger_entries WHERE body_hash = $1)`, h).Scan(&still); qerr != nil || still {
 			continue
 		}
-		if s.ArtifactReferenced(h) {
-			continue
-		}
 		if derr := s.bodies.Delete(h); derr != nil {
 			slog.Warn("ledger: vault body not deleted", "hash", h, "err", derr)
 		}
+	}
+	return n, nil
+}
+
+// LegacyArtifact is one record of the retired bbolt artifact bucket (ADR-0157
+// Q6), as ImportLegacyArtifacts needs it: its bytes are already in the vault.
+type LegacyArtifact struct {
+	Hash            string
+	ContentType     string
+	SizeBytes       int64
+	SessionID       string
+	StepIndex       int
+	SemanticSummary string
+	Tags            []string
+	CreatedAt       time.Time
+}
+
+// LegacyArtifactToolName is the tool name of an imported legacy artifact entry.
+const LegacyArtifactToolName = "legacy_upload_artifact"
+
+// ImportLegacyArtifacts records each retired bbolt artifact record as a
+// kind=artifact ledger entry (ADR-0157 Q6: import with their tags). The entry
+// keeps the record's own tags, session and step and names the vault bytes it
+// already had; its id is deterministic in (session, step, hash), so a re-run is a
+// no-op. Retention starts at import (now + retention): before the switch these
+// records never expired, after it they follow the ledger's policy. Returns the
+// entries written; it stops at the first error so the caller keeps the bucket.
+func (s *PgLedgerStore) ImportLegacyArtifacts(ctx context.Context, recs []LegacyArtifact, now time.Time, retention time.Duration) (int, error) {
+	n := 0
+	for _, r := range recs {
+		if r.Hash == "" {
+			continue
+		}
+		p := domain.LedgerProvenance{StepIndex: r.StepIndex, SessionID: r.SessionID}
+		args, _ := json.Marshal(map[string]string{"hash": r.Hash, "session": r.SessionID})
+		created := r.CreatedAt
+		if created.IsZero() {
+			created = now
+		}
+		e := domain.LedgerEntry{
+			ID:          domain.LedgerEntryID(p, domain.LedgerCallKey(domain.LedgerArtifact, LegacyArtifactToolName, args), r.Hash),
+			Kind:        domain.LedgerArtifact,
+			StepIndex:   r.StepIndex,
+			SessionID:   r.SessionID,
+			ToolName:    LegacyArtifactToolName,
+			Args:        args,
+			Tags:        r.Tags,
+			ContentType: r.ContentType,
+			BodyHash:    r.Hash,
+			SizeBytes:   r.SizeBytes,
+			Preview:     r.SemanticSummary,
+			ContentHash: r.Hash,
+			CreatedAt:   created,
+			ExpiresAt:   now.Add(retention),
+		}
+		if err := s.Put(ctx, e); err != nil {
+			return n, fmt.Errorf("import legacy artifact %s: %w", r.Hash, err)
+		}
+		n++
 	}
 	return n, nil
 }

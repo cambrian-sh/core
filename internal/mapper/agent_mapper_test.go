@@ -209,65 +209,6 @@ func TestTaskEventRoundTrip(t *testing.T) {
 	}
 }
 
-// TestArtifactRoundTrip verifies Artifact domain→record→domain.
-func TestArtifactRoundTrip(t *testing.T) {
-	now := time.Now().Truncate(time.Second)
-	original := domain.Artifact{
-		Hash:        "abc123def456",
-		ContentType: "text/csv",
-		SizeBytes:   2048,
-		SessionID:   "sess-001",
-		StepIndex:   2,
-		Metadata:    map[string]string{"name": "User Report", "purpose": "Generated user activity report"},
-		ParentHash:  "parent-hash",
-		CreatedAt:   now,
-	}
-
-	var m AgentMapper
-	rec := m.ArtifactToRecord(original)
-	restored := m.ArtifactToDomain(rec)
-
-	if restored.Hash != original.Hash {
-		t.Errorf("Hash: got %q, want %q", restored.Hash, original.Hash)
-	}
-	if restored.ContentType != original.ContentType {
-		t.Errorf("ContentType: got %q, want %q", restored.ContentType, original.ContentType)
-	}
-	if restored.SizeBytes != original.SizeBytes {
-		t.Errorf("SizeBytes: got %d, want %d", restored.SizeBytes, original.SizeBytes)
-	}
-	if restored.SessionID != original.SessionID {
-		t.Errorf("SessionID: got %q, want %q", restored.SessionID, original.SessionID)
-	}
-	if restored.StepIndex != original.StepIndex {
-		t.Errorf("StepIndex: got %d, want %d", restored.StepIndex, original.StepIndex)
-	}
-	if restored.ParentHash != original.ParentHash {
-		t.Errorf("ParentHash: got %q, want %q", restored.ParentHash, original.ParentHash)
-	}
-	if !restored.CreatedAt.Equal(original.CreatedAt) {
-		t.Errorf("CreatedAt: got %v, want %v", restored.CreatedAt, original.CreatedAt)
-	}
-	if restored.Metadata["name"] != original.Metadata["name"] {
-		t.Errorf("Metadata[name]: got %q, want %q", restored.Metadata["name"], original.Metadata["name"])
-	}
-}
-
-// TestArtifactRoundTrip_NilMetadata verifies nil Metadata produces empty map.
-func TestArtifactRoundTrip_NilMetadata(t *testing.T) {
-	original := domain.Artifact{
-		Hash:     "hash-1",
-		Metadata: nil,
-	}
-	var m AgentMapper
-	rec := m.ArtifactToRecord(original)
-	restored := m.ArtifactToDomain(rec)
-	if len(restored.Metadata) != 0 {
-		t.Errorf("Metadata: expected empty, got %v", restored.Metadata)
-	}
-	_ = rec
-}
-
 // A stored stamp that does not parse still yields the zero time (a read must not
 // fail over one bad stamp) but is no longer silent
 // (T-20261113-persisted-writes-and-builder-resolver-errors).

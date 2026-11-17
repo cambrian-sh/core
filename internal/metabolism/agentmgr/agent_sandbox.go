@@ -102,8 +102,11 @@ func NewAgentSandbox(o AgentSandboxOptions) *AgentSandbox {
 			sandbox.TierThirdParty: {OnUnavailable: onUnavail(o.ThirdPartyRefuse), Runner: runner,
 				ConfineFS: true, HideState: true, LowPrivilege: true, DenyNetwork: true},
 		},
-		WorkRoot:     workRoot,
-		WorkdirEnv:   map[string]string{"TEMP": "tmp", "TMP": "tmp", "TMPDIR": "tmp", "HOME": "home"},
+		WorkRoot: workRoot,
+		// CAMBRIAN_AGENT_OUT is the instance's out/ folder (ADR-0157 D5.1): what an
+		// agent writes there is collected into the run ledger when it exits.
+		WorkdirEnv: map[string]string{"TEMP": "tmp", "TMP": "tmp", "TMPDIR": "tmp", "HOME": "home",
+			AgentOutEnv: AgentOutDir},
 		BwrapPath:    o.BwrapPath,
 		DockerPath:   o.DockerPath,
 		CgroupParent: o.CgroupParent,
@@ -420,10 +423,18 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 		}
 		return nil, nil, nil, nil, fmt.Errorf("agent %s: sandboxed start: %w", def.ID, err)
 	}
+	// Teardown paths (EvictInstance, killAllInstances) hold the manager lock, so
+	// they only KILL the tree; the process's one Wait then runs cleanup, which
+	// collects out/ and releases the sandbox (scratch removal) — ADR-0157 D5.1:
+	// nothing in the scratch survives the instance except what the kernel took.
 	im.mu.Lock()
-	im.capCleanups[inst.ID] = l.Release
+	im.capCleanups[inst.ID] = func() { _ = l.Kill() }
 	im.mu.Unlock()
+	collectCtx := context.WithoutCancel(ctx) // outlives the boot request (AGENTS.md §2.7)
+	agentID, instanceID := def.ID, inst.ID
 	cleanup := func() {
+		_ = l.Kill() // normally already exited; the collection must see no writer
+		im.collectOutputs(collectCtx, agentID, instanceID, l.Workdir())
 		l.Release()
 		closeKernelSock()
 		_ = os.RemoveAll(sockDir)

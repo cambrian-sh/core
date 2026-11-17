@@ -40,12 +40,20 @@ func (s *Server) turnOfSession(ctx context.Context, sid domain.SessionID) (conv,
 // the lease was minted for, the conversation and turn that ordered it, and the
 // conversation owner (withCallerSession already seeded it on ctx).
 func (s *Server) toolCallProvenance(ctx context.Context, lease domain.LeaseID) domain.LedgerProvenance {
-	p := domain.LedgerProvenance{StepIndex: -1, Owner: domain.ConversationOwnerFromContext(ctx),
-		ConversationID: domain.ConversationIDFromContext(ctx)}
 	b, known := s.resolveLeaseFor(ctx, lease)
 	if !known {
-		return p
+		return domain.LedgerProvenance{StepIndex: -1, Owner: domain.ConversationOwnerFromContext(ctx),
+			ConversationID: domain.ConversationIDFromContext(ctx)}
 	}
+	return s.provenanceOfBinding(ctx, b)
+}
+
+// provenanceOfBinding is the ledger provenance of a resolved lease binding: its
+// run (under the plan generation's ledger run id) and step, its task session,
+// the conversation and turn that ordered it, and the conversation owner on ctx.
+func (s *Server) provenanceOfBinding(ctx context.Context, b domain.LeaseBinding) domain.LedgerProvenance {
+	p := domain.LedgerProvenance{StepIndex: -1, Owner: domain.ConversationOwnerFromContext(ctx),
+		ConversationID: domain.ConversationIDFromContext(ctx), SessionID: string(b.SessionID)}
 	// A replanned plan's steps record under their generation's run id
 	// (domain.LedgerRunID), so step indices never collide across replans.
 	p.RunID = domain.LedgerRunID(string(b.RunID), b.PlanGeneration)
@@ -65,6 +73,11 @@ func (s *Server) toolCallProvenance(ctx context.Context, lease domain.LeaseID) d
 			p.TurnID = turn
 		}
 	}
+	if p.Owner == "" && s.ConversationOwner != nil {
+		// A context with no owner on it (the out/ collection at exit) still
+		// stamps the person the lease worked for (ADR-0142 D12).
+		p.Owner = s.ConversationOwner(ctx, b)
+	}
 	return p
 }
 
@@ -74,7 +87,7 @@ func (s *Server) toolCallProvenance(ctx context.Context, lease domain.LeaseID) d
 // conversation link when the binding carries none, and the conversation owner.
 // StepIndex is -1; the DAG executor sets each step's.
 func (s *Server) runProvenance(ctx context.Context, meta map[string]string, run domain.RunID, sid domain.SessionID) domain.LedgerProvenance {
-	p := domain.LedgerProvenance{RunID: string(run), StepIndex: -1}
+	p := domain.LedgerProvenance{RunID: string(run), StepIndex: -1, SessionID: string(sid)}
 	if b, known := s.resolveBindingFromHandoff(ctx, meta); known {
 		p.ConversationID = b.ConversationID
 		p.TurnID = b.OriginMessageID

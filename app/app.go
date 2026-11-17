@@ -967,8 +967,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0137 S5: the one drainer of the erasure outbox (CAS deletes of erased evidence
 	// and source-document bodies; request completion; tombstone retention). Started only
 	// with erasure on — off, nothing writes the outbox.
+	// The artifact vault (content-addressed bytes of run-ledger entries and
+	// artifacts): the erasure worker deletes erased ledger entries' bodies from it
+	// (ADR-0157 D5.6), and the ledger and the artifact plane store into it.
+	vaultPath := filepath.Join(cfg.Storage.DataDir, "vault")
+	artifactVault := vault.NewArtifactVault(vaultPath)
 	if cfg.Execution.Erasure.Enabled {
 		ew := erasureworker.New(erasureStore, storeHandle.ContentEraser, erasureworker.Config{
+			Vault:              artifactVault,
 			Poll:               cfg.Execution.Erasure.WorkerPoll(),
 			MaxAttempts:        cfg.Execution.Erasure.WorkerAttempts(),
 			TombstoneRetention: cfg.Execution.Erasure.TombstoneRetention(),
@@ -1475,9 +1481,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 	}
 
-	// 9. ArtifactVault — content-addressable storage for agent outputs
-	vaultPath := filepath.Join(cfg.Storage.DataDir, "vault")
-	artifactVault := vault.NewArtifactVault(vaultPath)
+	// 9. ArtifactVault — built above, before the erasure worker (ADR-0157 D5.6).
 
 	// 10. Server assembly — the consumer, not a producer
 	// ADR-0032: ReactiveEngineArgs wires the premium ReactiveEngine with real deps.
@@ -2086,9 +2090,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Provider, which already applies the Langfuse trace wrapper — so GenWrapper is
 	// left nil to avoid double-tracing. (wrapGen is identity when GenWrapper is nil.)
 
-	// REQ-SDK-007c: wire artifact storage behind the decision point.
-	cambrianServer.ArtifactBytes = artifactVault
-	cambrianServer.ArtifactMeta = reg
+	// REQ-SDK-007c: the artifact RPCs are served by the run ledger (wireLedger,
+	// ADR-0157 D5) behind the decision point.
 	cambrianServer.Authz = authorizer
 
 	// ADR-0035 C2: memory.remember() write-back through the write chokepoint, with
@@ -2526,20 +2529,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		PreviewChars:    cfg.Execution.Content.Preview(),
 		PageBytes:       cfg.Execution.Content.Page(),
 		Overlay:         domain.NewRunGrantOverlay(), // ADR-0046 D6: skill-conferred run-scoped grants
-		// Promote files a confined tool writes into the DURABLE artifact system
-		// (vault + metadata, retrievable via GetArtifact, scope-governed) AND
-		// materialize them to data/outputs so a requested file lands on disk —
+		// Files a confined tool writes become run-ledger artifact entries (the
+		// ToolExecutor's Ledger, set by wireLedger; classified at write by the
+		// ledger writer, retrievable via GetArtifact — ADR-0157 D5.2) AND are
+		// materialized to data/outputs so a requested file lands on disk —
 		// instead of living only as a GC-eligible content-store CID.
-		ArtifactBytes: artifactVault,
-		ArtifactMeta:  reg,
-		ArtifactTags: func(ctx context.Context, agentID string) []string {
-			// A promoted artifact is a WRITE, so its classification is derived by the
-			// decision point exactly like a memory write — never chosen by the tool.
-			tags, _ := authorizer.ClassifyWrite(ctx, domain.AgentPrincipal(agentID), nil)
-			// ADR-0142 D12: a file a tool wrote in a person's conversation is
-			// private to that person, like every other chat-turn write.
-			return domain.StampPrivateOwner(ctx, tags)
-		},
 		ArtifactOutputDir: filepath.Join(cfg.Storage.DataDir, "outputs"),
 		// ADR-0049 D1: mutations become action records. (The ADR-0048 D6 read-output
 		// promotion and its 200-byte floor were deleted 2026-11-05 with the tier-2 judge.)

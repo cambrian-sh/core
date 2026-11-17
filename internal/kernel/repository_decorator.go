@@ -3,8 +3,10 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/mapper"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/storage"
@@ -15,6 +17,7 @@ import (
 // Compile-time interface assertions.
 var (
 	_ domain.AgentRegistry          = (*AgentRepoDecorator)(nil)
+	_ LegacyArtifactSource          = (*AgentRepoDecorator)(nil)
 	_ domain.AgentUpdater           = (*AgentRepoDecorator)(nil)
 	_ domain.AgentPruner            = (*AgentRepoDecorator)(nil)
 	_ aggregator.TaskEventReader    = (*AgentRepoDecorator)(nil)
@@ -52,33 +55,27 @@ func (d *AgentRepoDecorator) GetAgentByName(_ context.Context, name string) (*do
 	return &agent, nil
 }
 
-// SaveArtifact persists an artifact's metadata record (incl. ADR-0034 tags).
-func (d *AgentRepoDecorator) SaveArtifact(a domain.Artifact) error {
-	return d.store.SaveArtifactRecord(d.mapper.ArtifactToRecord(a))
-}
-
-// GetArtifact reads an artifact's metadata record by content hash (nil if absent).
-func (d *AgentRepoDecorator) GetArtifact(hash string) (*domain.Artifact, error) {
-	rec, err := d.store.GetArtifactRecord(hash)
-	if err != nil || rec == nil {
+// LegacyArtifacts lists the records of the retired bbolt artifact bucket for the
+// ADR-0157 Q6 import into the run ledger (nil when the bucket is gone). It
+// implements LegacyArtifactSource.
+func (d *AgentRepoDecorator) LegacyArtifacts() ([]postgres.LegacyArtifact, error) {
+	recs, err := d.store.ListLegacyArtifactRecords()
+	if err != nil || recs == nil {
 		return nil, err
 	}
-	a := d.mapper.ArtifactToDomain(*rec)
-	return &a, nil
-}
-
-// ListStepArtifacts returns all artifacts produced by a session+step.
-func (d *AgentRepoDecorator) ListStepArtifacts(sessionID string, stepIndex int) ([]domain.Artifact, error) {
-	recs, err := d.store.ListArtifactRecordsByStep(sessionID, stepIndex)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.Artifact, 0, len(recs))
-	for _, rec := range recs {
-		out = append(out, d.mapper.ArtifactToDomain(rec))
+	out := make([]postgres.LegacyArtifact, 0, len(recs))
+	for _, r := range recs {
+		created, _ := time.Parse(time.RFC3339Nano, r.CreatedAt) // zero ⇒ import time
+		out = append(out, postgres.LegacyArtifact{
+			Hash: r.Hash, ContentType: r.ContentType, SizeBytes: r.SizeBytes, SessionID: r.SessionID,
+			StepIndex: r.StepIndex, SemanticSummary: r.SemanticSummary, Tags: r.Tags, CreatedAt: created,
+		})
 	}
 	return out, nil
 }
+
+// DropLegacyArtifacts deletes the retired bucket after the Q6 import.
+func (d *AgentRepoDecorator) DropLegacyArtifacts() error { return d.store.DropLegacyArtifactBucket() }
 
 // HasAgent reports whether agentID is a registered agent. Used by the ADR-0034
 // ScopeResolver to distinguish an unprofiled registered agent (unrestricted) from

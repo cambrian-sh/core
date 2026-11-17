@@ -22,67 +22,59 @@ func (f *fakeArtCS) Get(_ context.Context, cid CID) (*ContextNode, error) {
 func (f *fakeArtCS) Has(context.Context, CID) (bool, error) { return false, nil }
 func (f *fakeArtCS) GC(context.Context, []CID) error        { return nil }
 
-type fakeArtVault struct {
-	calls     int
-	lastBytes []byte
+type fakeArtLedger struct{ recs []LedgerRecord }
+
+func (f *fakeArtLedger) Record(_ context.Context, rec LedgerRecord) (LedgerEntry, error) {
+	f.recs = append(f.recs, rec)
+	return LedgerEntry{ID: "led_art", Kind: rec.Kind}, nil
 }
 
-func (f *fakeArtVault) Store(content []byte) (string, error) {
-	f.calls++
-	f.lastBytes = content
-	return "vaulthash", nil
-}
-
-type fakeArtRecorder struct{ saved []Artifact }
-
-func (f *fakeArtRecorder) SaveArtifact(a Artifact) error {
-	f.saved = append(f.saved, a)
-	return nil
-}
-
-// A confined tool's swept file (surfaced in result "_artifacts") is promoted into
-// the durable vault + metadata record AND materialized to the output dir — so it
-// survives content-store GC, is retrievable via GetArtifact, and lands on disk.
-func TestToolExecutor_persistArtifacts_PromotesAndMaterializes(t *testing.T) {
+// A confined tool's swept file (surfaced in result "_artifacts") is recorded as a
+// run-ledger artifact entry — the one artifact registry (ADR-0157 D5.2), so it
+// survives content-store GC and is retrievable via GetArtifact by its ledger id —
+// with the writer and the calling instance from the verified context, AND
+// materialized to the output dir.
+func TestToolExecutor_persistArtifacts_RecordsToLedgerAndMaterializes(t *testing.T) {
 	t.Parallel()
 	const cid = "cid-cambrian"
 	content := []byte("hello cambrian summary")
 	cs := &fakeArtCS{data: map[string][]byte{cid: content}}
-	vault := &fakeArtVault{}
-	rec := &fakeArtRecorder{}
+	led := &fakeArtLedger{}
 	outDir := t.TempDir()
 
-	e := &ToolExecutor{
-		ContentStore:      cs,
-		ArtifactBytes:     vault,
-		ArtifactMeta:      rec,
-		ArtifactTags:      func(context.Context, string) []string { return []string{"public_kb"} },
-		ArtifactOutputDir: outDir,
-	}
+	e := &ToolExecutor{ContentStore: cs, Ledger: led, ArtifactOutputDir: outDir}
 	result := []byte(`{"written":"cambrian1.txt","_artifacts":[{"path":"cambrian1.txt","cid":"cid-cambrian","bytes":22}]}`)
 
-	e.persistArtifacts(context.Background(),
-		ToolCallRequest{AgentID: "analyst_agent", ToolName: "write_file", SessionTokenID: "sess-1"}, result)
+	ctx := WithAgentInstance(context.Background(), "inst-7")
+	e.persistArtifacts(ctx, ToolCallRequest{AgentID: "analyst_agent", ToolName: "write_file", SessionTokenID: "sess-1"}, result)
 
-	// Durable vault + metadata.
-	if vault.calls != 1 {
-		t.Fatalf("expected vault.Store called once, got %d", vault.calls)
+	if len(led.recs) != 1 {
+		t.Fatalf("expected one ledger record, got %d", len(led.recs))
 	}
-	if len(rec.saved) != 1 {
-		t.Fatalf("expected one SaveArtifact, got %d", len(rec.saved))
+	r := led.recs[0]
+	if r.Kind != LedgerArtifact || string(r.Body) != string(content) || r.Writer != AgentPrincipal("analyst_agent") ||
+		r.InstanceID != "inst-7" || r.ToolName != "write_file" {
+		t.Errorf("artifact record not stamped correctly: %+v", r)
 	}
-	a := rec.saved[0]
-	if a.Hash != "vaulthash" || a.SessionID != "sess-1" || len(a.Tags) != 1 || a.Tags[0] != "public_kb" {
-		t.Errorf("artifact metadata not stamped correctly: %+v", a)
+	if r.ContentType != "text/plain; charset=utf-8" {
+		t.Errorf("expected text/plain content type for .txt, got %q", r.ContentType)
 	}
-	if a.ContentType != "text/plain; charset=utf-8" {
-		t.Errorf("expected text/plain content type for .txt, got %q", a.ContentType)
-	}
-
-	// Materialized to disk at the requested path.
 	got, err := os.ReadFile(filepath.Join(outDir, "cambrian1.txt"))
 	if err != nil || string(got) != string(content) {
 		t.Errorf("expected materialized file %q, got %q err=%v", content, got, err)
+	}
+}
+
+// A system call (no principal's run) records nothing, but still materializes.
+func TestToolExecutor_persistArtifacts_SystemCallNotRecorded(t *testing.T) {
+	t.Parallel()
+	cs := &fakeArtCS{data: map[string][]byte{"c": []byte("x")}}
+	led := &fakeArtLedger{}
+	e := &ToolExecutor{ContentStore: cs, Ledger: led}
+	e.persistArtifacts(context.Background(), ToolCallRequest{ToolName: "write_file", System: true},
+		[]byte(`{"_artifacts":[{"path":"x.txt","cid":"c","bytes":1}]}`))
+	if len(led.recs) != 0 {
+		t.Fatalf("a system call recorded %d artifact entries", len(led.recs))
 	}
 }
 

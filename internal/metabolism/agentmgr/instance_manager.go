@@ -83,6 +83,9 @@ type InstanceManager struct {
 	// the Job Object handle, which reaps the whole process tree via
 	// kill-on-close). Keyed by instance ID; invoked on eviction.
 	capCleanups map[string]func()
+	// outputs collects an exited sandboxed instance's out/ into the run ledger
+	// (ADR-0157 D5.1, agent_outputs.go). nil ⇒ out/ goes with the scratch.
+	outputs domain.AgentOutputCollector
 	// containment is execution.agents.sandbox (containment.go); its zero value
 	// refuses third-party agents (fail closed).
 	containment AgentContainment

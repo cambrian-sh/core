@@ -54,6 +54,10 @@ var taskEventBucket = []byte("task_events")
 var checkpointBucket = []byte("checkpoints")
 var sessionBucket = []byte("sessions")
 var runBucket = []byte("runs")
+
+// artifactBucket is the RETIRED pre-ADR-0157 artifact metadata bucket. It is no
+// longer created; a store that still has it is imported into the run ledger once
+// (ADR-0157 Q6, kernel.importLegacyArtifacts) and the bucket dropped.
 var artifactBucket = []byte("artifacts")
 var watchConfigBucket = []byte("watch_configs")
 
@@ -191,7 +195,7 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 func createBuckets(tx *bbolt.Tx) error {
 	for _, name := range [][]byte{
 		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket, runBucket,
-		artifactBucket, planEventBucket, retrievalSessionBucket,
+		planEventBucket, retrievalSessionBucket,
 		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
 		// REACT-01 (ADR-0061): durable reactive-execution buckets. The journal is
 		// the A2 per-stream parent; the legacy flat bucket is never created, only
@@ -1181,60 +1185,38 @@ func (b *BBoltAdapter) DeleteAgentRecord(id string) error {
 	})
 }
 
-// SaveArtifactRecord persists an ArtifactRecord (metadata + tags) to the
-// artifacts bucket, keyed by content hash. ADR-0034 / REQ-SDK-007c.
-func (b *BBoltAdapter) SaveArtifactRecord(rec ArtifactRecord) error {
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("artifact marshal: %w", err)
-	}
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(artifactBucket)
-		if bucket == nil {
-			return fmt.Errorf("artifacts bucket not found")
-		}
-		return bucket.Put([]byte(rec.Hash), data)
-	})
-}
-
-// GetArtifactRecord reads an ArtifactRecord by content hash.
-func (b *BBoltAdapter) GetArtifactRecord(hash string) (*ArtifactRecord, error) {
-	var rec *ArtifactRecord
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(artifactBucket)
-		if bucket == nil {
-			return nil
-		}
-		data := bucket.Get([]byte(hash))
-		if data == nil {
-			return nil
-		}
-		rec = &ArtifactRecord{}
-		return json.Unmarshal(data, rec)
-	})
-	return rec, err
-}
-
-// ListArtifactRecordsByStep returns all artifacts produced by a given session+step.
-func (b *BBoltAdapter) ListArtifactRecordsByStep(sessionID string, stepIndex int) ([]ArtifactRecord, error) {
+// ListLegacyArtifactRecords returns every record of the retired artifacts bucket
+// (ADR-0157 Q6), nil when the bucket does not exist. A malformed record fails the
+// listing: the bucket must not be dropped with an unimported record in it.
+func (b *BBoltAdapter) ListLegacyArtifactRecords() ([]ArtifactRecord, error) {
 	var recs []ArtifactRecord
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(artifactBucket)
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(_, v []byte) error {
+		recs = []ArtifactRecord{}
+		return bucket.ForEach(func(k, v []byte) error {
 			var rec ArtifactRecord
 			if err := json.Unmarshal(v, &rec); err != nil {
-				return nil // skip malformed
+				return fmt.Errorf("legacy artifact record %q: %w", k, err)
 			}
-			if rec.SessionID == sessionID && rec.StepIndex == stepIndex {
-				recs = append(recs, rec)
-			}
+			recs = append(recs, rec)
 			return nil
 		})
 	})
 	return recs, err
+}
+
+// DropLegacyArtifactBucket deletes the retired artifacts bucket (ADR-0157 Q6),
+// after its records were imported into the run ledger. Absent is not an error.
+func (b *BBoltAdapter) DropLegacyArtifactBucket() error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		if tx.Bucket(artifactBucket) == nil {
+			return nil
+		}
+		return tx.DeleteBucket(artifactBucket)
+	})
 }
 
 // SaveSessionRecord persists a SessionRecord to the sessions bucket.

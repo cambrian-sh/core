@@ -109,6 +109,7 @@ const (
 	eraseEvents           = "events"
 	eraseObservations     = "observations"
 	eraseLinks            = "links"
+	eraseLedgerEntries    = "ledger_entries"
 )
 
 // erasureTarget is one tombstone row (content-free).
@@ -122,6 +123,12 @@ type erasureRun struct {
 	counts  map[string]int
 	targets []erasureTarget
 	cids    map[string]bool
+	// bodies are artifact-vault hashes of erased ledger entries (ADR-0157 D5.6);
+	// the worker deletes each once no surviving ledger row names it.
+	bodies map[string]bool
+	// ledgerChecked/hasLedger cache whether ledger_entries exists (a kernel
+	// with the ledger off may never have migrated past 0034… it always has).
+	ledgerChecked, hasLedger bool
 }
 
 func (r *erasureRun) exec(ctx context.Context, store, sql string, args ...any) error {
@@ -165,7 +172,7 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 		return rec, tx.Commit(ctx)
 	}
 
-	run := &erasureRun{tx: tx, counts: map[string]int{}, cids: map[string]bool{}}
+	run := &erasureRun{tx: tx, counts: map[string]int{}, cids: map[string]bool{}, bodies: map[string]bool{}}
 	matched, err := s.eraseTx(ctx, run, req.Selector)
 	if err != nil {
 		return domain.ErasureReceipt{}, err
@@ -183,8 +190,13 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 		cids = append(cids, c)
 	}
 	sort.Strings(cids)
+	bodies := make([]string, 0, len(run.bodies))
+	for h := range run.bodies {
+		bodies = append(bodies, h)
+	}
+	sort.Strings(bodies)
 	status := domain.ErasureStatusComplete
-	if len(cids) > 0 {
+	if len(cids)+len(bodies) > 0 {
 		status = domain.ErasureStatusPendingAsync
 	}
 	cj, _ := json.Marshal(run.counts) // map[string]int always marshals
@@ -220,13 +232,19 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 			return domain.ErasureReceipt{}, mapError("Erase: outbox", err)
 		}
 	}
+	for _, h := range bodies {
+		if _, err := tx.Exec(ctx, `INSERT INTO memory_erasure_outbox (request_id, step, ref)
+			VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, id, domain.ErasureStepVaultDelete, h); err != nil {
+			return domain.ErasureReceipt{}, mapError("Erase: outbox", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return domain.ErasureReceipt{}, err
 	}
 	rec := domain.ErasureReceipt{
 		RequestID: id, Principal: req.Principal, PrincipalKind: req.PrincipalKind, Reason: req.Reason,
 		SelectorKinds: req.Selector.Kinds(), Status: status, ErasedAt: erasedAt.UTC(),
-		Counts: run.counts, Targets: len(seen), PendingSteps: len(cids),
+		Counts: run.counts, Targets: len(seen), PendingSteps: len(cids) + len(bodies),
 	}
 	if deadline != nil {
 		rec.AsyncDeadline = deadline.UTC()
@@ -443,6 +461,17 @@ func (s *PgErasureStore) eraseDocuments(ctx context.Context, run *erasureRun, do
 		run.target(domain.ErasureTargetEvidence, ev, evidenceDoc[ev], "")
 	}
 
+	// ADR-0157 D5.6: run-ledger entries that quote these documents (a recall's
+	// hits name chunk and document ids) and everything derived from them. The
+	// chunk ids are read before the cascade deletes the chunks.
+	docChunks, err := collectIDs(ctx, tx, `SELECT id FROM `+TableChunks+` WHERE document_id = ANY($1)`, docs)
+	if err != nil {
+		return false, fmt.Errorf("erase: document chunks: %w", err)
+	}
+	if err := s.eraseLedger(ctx, run, append(append([]string{}, docs...), docChunks...)); err != nil {
+		return false, err
+	}
+
 	// D4.3–5: the ADR-0138 cascade (fact items by evidence or source_document value,
 	// markers, journal, triplets, PageRank, edges, sections, chunks incl. the entity stub).
 	counts, err := s.l.retireDocumentsTx(ctx, run.tx, docs)
@@ -567,6 +596,9 @@ func (s *PgErasureStore) eraseExperiences(ctx context.Context, run *erasureRun, 
 			return false, err
 		}
 	}
+	if err := s.eraseLedger(ctx, run, found); err != nil {
+		return false, err
+	}
 	for _, e := range found {
 		run.target(domain.ErasureTargetExperience, e, "", "")
 	}
@@ -584,6 +616,9 @@ func (s *PgErasureStore) eraseChunks(ctx context.Context, run *erasureRun, chunk
 		domain.KnowledgeErasure{ValuePredicate: domain.FactPredSourceChunk, ValueTexts: chunkIDs}); err != nil {
 		return err
 	}
+	if err := s.eraseLedger(ctx, run, chunkIDs); err != nil {
+		return err
+	}
 	for _, st := range []struct{ store, sql string }{
 		{cascadeTriplets, `DELETE FROM chunk_triplets WHERE chunk_id = ANY($1)`},
 		{cascadePageRank, `DELETE FROM chunk_pagerank WHERE chunk_id = ANY($1)`},
@@ -592,6 +627,49 @@ func (s *PgErasureStore) eraseChunks(ctx context.Context, run *erasureRun, chunk
 	} {
 		if err := run.exec(ctx, st.store, st.sql, chunkIDs); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// eraseLedger deletes the run-ledger entries whose source_refs meet refs (memory
+// record ids: chunks, documents, experiences) — ADR-0157 D5.6, the ADR-0137
+// cascade's ledger step. source_refs is transitive (the writer carries a source's
+// refs into every entry derived from it: a step output, an artifact built from a
+// recall), so one indexed match (GIN, ?|) reaches the whole derivation chain. Each
+// erased entry's vault body is queued (vault_delete) for the worker, which deletes
+// it only when no surviving entry names the same bytes. A kernel without the
+// ledger table skips the step.
+//
+// Not reached (recorded in the ADR-0137 inventory): ledger entries that quote
+// memory without naming it — a tool result of an external tool that returned
+// memory text, a model's step output that paraphrases a recall it did not
+// inherit — expire with execution.ledger.retention_hours.
+func (s *PgErasureStore) eraseLedger(ctx context.Context, run *erasureRun, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	if !run.ledgerChecked {
+		ok, err := tableExists(ctx, run.tx, "ledger_entries")
+		if err != nil {
+			return err
+		}
+		run.ledgerChecked, run.hasLedger = true, ok
+	}
+	if !run.hasLedger {
+		return nil
+	}
+	hashes, err := collectIDs(ctx, run.tx,
+		`DELETE FROM ledger_entries WHERE source_refs ?| $1::text[] RETURNING body_hash`, refs)
+	if err != nil {
+		return fmt.Errorf("erase %s: %w", eraseLedgerEntries, err)
+	}
+	if len(hashes) > 0 {
+		run.counts[eraseLedgerEntries] += len(hashes)
+	}
+	for _, h := range hashes {
+		if h != "" {
+			run.bodies[h] = true
 		}
 	}
 	return nil

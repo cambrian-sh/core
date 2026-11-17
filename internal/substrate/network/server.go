@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -161,10 +162,13 @@ type Server struct {
 	// contract 0099. ADR-0032 / ADR-0057.
 	WatchHandler domain.WatchConfigHandler
 
-	// REQ-SDK-007c: artifact storage, gated by the decision point. Both nil → the
-	// artifact RPCs return Unimplemented.
-	ArtifactBytes ArtifactByteStore // CAS byte store (ArtifactVault)
-	ArtifactMeta  ArtifactMetaStore // metadata + tags persistence
+	// REQ-SDK-007c: the artifact RPCs are served by the run ledger (Ledger below,
+	// ADR-0157 D5.2); with the ledger off they return Unimplemented.
+
+	// instWork remembers the last lease each kernel-spawned instance presented,
+	// the run provenance of its uploads and of its out/ at exit (instance_work.go).
+	instWorkOnce sync.Once
+	instWork     *instanceWorkLog
 
 	// Ledger is the ADR-0145 D1 run ledger (kernel.LedgerStack), nil when
 	// execution.ledger.enabled is off. On: the DAG executor records every step

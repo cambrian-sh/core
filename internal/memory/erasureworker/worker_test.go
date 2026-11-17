@@ -38,6 +38,9 @@ func (f *fakeOutbox) PendingSteps(_ context.Context, limit, maxAttempts int) ([]
 func (f *fakeOutbox) CIDStillReferenced(_ context.Context, cid string) (bool, error) {
 	return f.shared[cid], nil
 }
+func (f *fakeOutbox) VaultBodyStillReferenced(_ context.Context, hash string) (bool, error) {
+	return f.shared[hash], nil
+}
 func (f *fakeOutbox) MarkStepDone(_ context.Context, id int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -179,4 +182,40 @@ func TestStartStop_DrainsOnStartAndStopsClean(t *testing.T) {
 	w.Stop()
 	w.Stop()                                                // idempotent
 	New(ob, cas, Config{}, nil).Start(context.Background()) // Poll 0: no goroutine
+}
+
+type fakeVault struct {
+	mu      sync.Mutex
+	deleted []string
+}
+
+func (f *fakeVault) Delete(hash string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, hash)
+	return nil
+}
+
+// ADR-0157 D5.6: a vault_delete step deletes an erased ledger entry's vault body
+// unless a surviving ledger entry still names the same bytes; without a vault the
+// step stays pending.
+func TestRunOnce_VaultDeleteRespectsSurvivingEntries(t *testing.T) {
+	ob := newOutbox(
+		domain.ErasureOutboxRow{ID: 1, RequestID: "r", Step: domain.ErasureStepVaultDelete, Ref: "body-a"},
+		domain.ErasureOutboxRow{ID: 2, RequestID: "r", Step: domain.ErasureStepVaultDelete, Ref: "body-shared"},
+	)
+	ob.shared["body-shared"] = true
+	v := &fakeVault{}
+	st := New(ob, &fakeCAS{}, Config{Poll: time.Hour, Vault: v}, nil).RunOnce(context.Background())
+	if st.Done != 1 || st.Shared != 1 || st.Failed != 0 {
+		t.Fatalf("stats = %+v", st)
+	}
+	if len(v.deleted) != 1 || v.deleted[0] != "body-a" {
+		t.Fatalf("deleted = %v, want only the unshared body", v.deleted)
+	}
+	noVault := newOutbox(domain.ErasureOutboxRow{ID: 3, Step: domain.ErasureStepVaultDelete, Ref: "b"})
+	New(noVault, &fakeCAS{}, Config{Poll: time.Hour}, nil).RunOnce(context.Background())
+	if noVault.done[3] || noVault.failed[3] != "no_vault" {
+		t.Fatal("no vault must leave the step pending")
+	}
 }

@@ -28,6 +28,10 @@ type Config struct {
 	TombstoneRetention time.Duration
 	// Batch is the steps drained per pass (0 ⇒ 100).
 	Batch int
+	// Vault deletes the artifact-vault bodies of erased run-ledger entries
+	// (vault_delete steps, ADR-0157 D5.6). nil ⇒ those steps stay pending, never
+	// silently marked done.
+	Vault domain.VaultEraser
 }
 
 // Worker is the ONE owner of the erasure outbox drain: started by Start(ctx), drained
@@ -128,6 +132,23 @@ func (w *Worker) RunOnce(ctx context.Context) Stats {
 // references it; errClass is "" on success, else a content-free error class.
 func (w *Worker) run(ctx context.Context, r domain.ErasureOutboxRow) (shared bool, errClass string) {
 	switch r.Step {
+	case domain.ErasureStepVaultDelete:
+		if w.cfg.Vault == nil {
+			return false, "no_vault"
+		}
+		inUse, err := w.outbox.VaultBodyStillReferenced(ctx, r.Ref)
+		if err != nil {
+			return false, "refcount_failed"
+		}
+		if inUse {
+			// Content-addressed: a surviving ledger entry (another owner's upload of
+			// the same bytes, an unrelated entry) still names the body.
+			return true, ""
+		}
+		if err := w.cfg.Vault.Delete(r.Ref); err != nil {
+			return false, "vault_delete_failed"
+		}
+		return false, ""
 	case domain.ErasureStepCASDelete:
 		if w.cas == nil {
 			return false, "no_content_store"

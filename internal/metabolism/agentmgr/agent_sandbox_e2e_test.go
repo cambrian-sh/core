@@ -75,6 +75,11 @@ func runProbeAgent() {
 		rep.Scratch = "denied: " + err.Error()
 	}
 	rep.Cwd, _ = os.Getwd()
+	// ADR-0157 D5.1: a file left in out/ is what the kernel collects at exit.
+	if out := os.Getenv(AgentOutEnv); out != "" {
+		_ = os.MkdirAll(filepath.Join(out, "sub"), 0o700)
+		_ = os.WriteFile(filepath.Join(out, "sub", "result.txt"), []byte("probe result"), 0o600)
+	}
 	b, _ := json.Marshal(rep)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(sock), "probe.json"), b, 0o600); err != nil {
 		os.Exit(4)
