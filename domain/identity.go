@@ -132,7 +132,11 @@ type Entity struct {
 	// FirstSeenEvidence is the delivery that first caused this handle to exist.
 	// Empty for an entity minted by an operator or a background pass.
 	FirstSeenEvidence EvidenceID
-	CreatedAt         time.Time
+	// FirstSeenClassification is the row classification of the row that minted
+	// the entity (ADR-0158 D1, D4): a mint by a restricted row is fenced like the
+	// row. nil ≡ empty. Write-once, like FirstSeenEvidence.
+	FirstSeenClassification []string
+	CreatedAt               time.Time
 }
 
 // Link is one ASSERTION about two typed refs. Not a fact: every field except the
@@ -176,6 +180,11 @@ type Link struct {
 	// "@r<rev>" suffix (amendment S1), so a mapping-revision bump re-derives the same
 	// link as a no-op instead of duplicating the whole graph.
 	SourceRef string
+	// Classification is the link's own row classification (ADR-0158 D1): tags
+	// that can only NARROW who sees the link, on top of what its evidence allows.
+	// nil ≡ empty. Write-once with the row; a confirmation inherits the
+	// candidate's, as it inherits its evidence.
+	Classification []string
 }
 
 // LinkQuery filters a LinksFor read. Every field's zero value means "no filter", so the

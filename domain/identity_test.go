@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -297,7 +298,7 @@ func TestCanonicalizeLink(t *testing.T) {
 	if swapped.FromRef != EntityRef("customer/A") || swapped.ToRef != EntityRef("customer/Z") {
 		t.Fatalf("identity endpoints not canonically ordered: %s → %s", swapped.FromRef, swapped.ToRef)
 	}
-	if already := CanonicalizeLink(swapped); already != swapped {
+	if already := CanonicalizeLink(swapped); !reflect.DeepEqual(already, swapped) {
 		t.Fatalf("canonicalisation is not idempotent")
 	}
 	// Direction is the MEANING in the other families; swapping "A subsidiary_of B"
@@ -308,7 +309,7 @@ func TestCanonicalizeLink(t *testing.T) {
 		ToRef:    EntityRef("company/A"),
 		Relation: "subsidiary_of",
 	}
-	if got := CanonicalizeLink(rel); got != rel {
+	if got := CanonicalizeLink(rel); !reflect.DeepEqual(got, rel) {
 		t.Fatalf("a relation link was reordered: %+v", got)
 	}
 }

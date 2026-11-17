@@ -57,7 +57,7 @@ func confirmationSourceRef(linkID string) string { return "confirm:" + linkID }
 
 const linkColumns = `id, namespace_id, family, from_ref, to_ref, relation, state, mechanism,
 	producer, confidence, evidence_id, asserted_by, asserted_at, recorded_at,
-	valid_from, valid_to, retracted_at, source_ref`
+	valid_from, valid_to, retracted_at, source_ref, classification`
 
 // PutLink appends one assertion, idempotent on links_dedup.
 //
@@ -110,17 +110,25 @@ func (s *PgLinkStore) PutLink(ctx context.Context, l domain.Link) (bool, error) 
 
 // insertLink appends one assertion, idempotent on links_dedup; created=false on a
 // replay. declVersion is the declarations version it was validated against.
+//
+// The row classification (ADR-0158 D1) is validated here, the one insert every
+// link write reaches, and is write-once like the row: a replay that lands on
+// links_dedup keeps the first row's classification.
 func insertLink(ctx context.Context, tx pgx.Tx, l domain.Link, declVersion int64) (bool, error) {
+	rowTags, err := domain.NormalizeRowClassification(l.Classification)
+	if err != nil {
+		return false, err
+	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO links (id, namespace_id, family, from_ref, to_ref, relation, state,
 			mechanism, producer, confidence, evidence_id, asserted_by, asserted_at,
-			valid_from, valid_to, source_ref, decl_version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			valid_from, valid_to, source_ref, decl_version, classification)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT ON CONSTRAINT links_dedup DO NOTHING`,
 		l.ID, l.NamespaceID, l.Family, l.FromRef, l.ToRef, l.Relation, l.State,
 		l.Mechanism, l.Producer, l.Confidence, nullableEvidence(l.EvidenceID), l.AssertedBy,
 		l.AssertedAt.UTC(), utcOrNil(l.ValidFrom), utcOrNil(l.ValidTo), l.SourceRef,
-		declVersionOrNil(declVersion))
+		declVersionOrNil(declVersion), rowClassificationArg(rowTags))
 	if err != nil {
 		return false, err
 	}
@@ -232,6 +240,10 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 		ValidFrom:   src.ValidFrom,
 		ValidTo:     src.ValidTo,
 		SourceRef:   confirmationSourceRef(linkID),
+		// The confirmation inherits the candidate's row classification as it
+		// inherits its evidence (ADR-0158 D1): endorsing a restricted assertion
+		// must not publish it wider than the assertion itself.
+		Classification: src.Classification,
 	}
 	reg := s.relations.RelationsFor(namespace)
 	if err := reg.ValidateLink(confirmed); err != nil {
@@ -510,10 +522,11 @@ func scanLink(row pgx.Row, leading ...any) (domain.Link, error) {
 	dest := append(leading, &l.ID, &l.NamespaceID, &l.Family, &l.FromRef, &l.ToRef, &l.Relation,
 		&l.State, &l.Mechanism, &l.Producer, &l.Confidence, &evidenceID, &l.AssertedBy,
 		&l.AssertedAt, &l.RecordedAt, &l.ValidFrom, &l.ValidTo, &l.RetractedAt,
-		&l.SourceRef)
+		&l.SourceRef, &l.Classification)
 	if err := row.Scan(dest...); err != nil {
 		return domain.Link{}, err
 	}
+	l.Classification = rowClassificationRead(l.Classification)
 	if evidenceID != nil {
 		l.EvidenceID = domain.EvidenceID(*evidenceID)
 	}

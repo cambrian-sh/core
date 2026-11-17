@@ -39,7 +39,7 @@ func NewPgEntityStore(pool *pgxpool.Pool, kinds domain.KindSource) *PgEntityStor
 
 var _ domain.EntityStore = (*PgEntityStore)(nil)
 
-const entityColumns = `id, namespace_id, kind, first_seen_evidence, created_at`
+const entityColumns = `id, namespace_id, kind, first_seen_evidence, created_at, first_seen_classification`
 
 // EnsureEntity mints the handle if absent, idempotent on the id. The kind is derived
 // from the id's prefix stem when the caller left it empty — a producer holding
@@ -61,6 +61,12 @@ func (s *PgEntityStore) EnsureEntity(ctx context.Context, e domain.Entity) (bool
 	if err := domain.ValidateEntityKind(kind); err != nil {
 		return false, err
 	}
+	// The minting row's classification (ADR-0158 D1, D4), write-once with the row:
+	// a later mint of the same id by a differently classified row is a no-op.
+	firstSeenTags, err := domain.NormalizeRowClassification(e.FirstSeenClassification)
+	if err != nil {
+		return false, fmt.Errorf("entity mint: %w", err)
+	}
 	ns := e.NamespaceID
 	ns = orDefaultNamespace(ns)
 	var firstSeen *string
@@ -75,12 +81,12 @@ func (s *PgEntityStore) EnsureEntity(ctx context.Context, e domain.Entity) (bool
 	// whose classes this insert changes. Recompute it in the same transaction.
 	// Only a created row matters: first_seen_evidence is never updated.
 	created := false
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
-			INSERT INTO entities (id, namespace_id, kind, first_seen_evidence)
-			VALUES ($1,$2,$3,$4)
+			INSERT INTO entities (id, namespace_id, kind, first_seen_evidence, first_seen_classification)
+			VALUES ($1,$2,$3,$4,$5)
 			ON CONFLICT (namespace_id, id) DO NOTHING`,
-			e.ID, ns, kind, firstSeen)
+			e.ID, ns, kind, firstSeen, rowClassificationArg(firstSeenTags))
 		if err != nil {
 			return err
 		}
@@ -163,9 +169,10 @@ func (s *PgEntityStore) ResolveEntityByLocal(ctx context.Context, namespace, loc
 func scanEntity(row pgx.Row) (domain.Entity, error) {
 	var e domain.Entity
 	var firstSeen *string
-	if err := row.Scan(&e.ID, &e.NamespaceID, &e.Kind, &firstSeen, &e.CreatedAt); err != nil {
+	if err := row.Scan(&e.ID, &e.NamespaceID, &e.Kind, &firstSeen, &e.CreatedAt, &e.FirstSeenClassification); err != nil {
 		return domain.Entity{}, err
 	}
+	e.FirstSeenClassification = rowClassificationRead(e.FirstSeenClassification)
 	if firstSeen != nil {
 		e.FirstSeenEvidence = domain.EvidenceID(*firstSeen)
 	}

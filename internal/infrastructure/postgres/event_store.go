@@ -47,6 +47,10 @@ func (s *PgEventStore) RecordEvent(ctx context.Context, ev domain.Event) (domain
 	if err := checkTimeBasis(ev.TimeBasis); err != nil {
 		return "", false, fmt.Errorf("event record: %w", err)
 	}
+	rowTags, err := domain.NormalizeRowClassification(ev.Classification)
+	if err != nil {
+		return "", false, fmt.Errorf("event record: %w", err)
+	}
 	// A DECLARED event type (KindSpec.EventTypes) must carry its declared roles;
 	// an undeclared type passes (ADR-0110 D2 monotonic adoption). The refusal
 	// names the constraint and wraps domain.ErrKindRefused.
@@ -73,12 +77,12 @@ func (s *PgEventStore) RecordEvent(ctx context.Context, ev domain.Event) (domain
 
 	var gotID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO events (id, namespace_id, event_type, occurred_at, evidence_id, source_ref, time_basis, decl_version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		INSERT INTO events (id, namespace_id, event_type, occurred_at, evidence_id, source_ref, time_basis, decl_version, classification)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (namespace_id, source_ref) WHERE source_ref <> '' DO NOTHING
 		RETURNING id`,
 		string(id), ns, ev.Type, ev.OccurredAt.UTC(), evidenceID, ev.SourceRef, ev.TimeBasis,
-		declVersionOrNil(reg.Version()),
+		declVersionOrNil(reg.Version()), rowClassificationArg(rowTags),
 	).Scan(&gotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := tx.QueryRow(ctx,
@@ -116,6 +120,10 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 		return false, fmt.Errorf("observation record: entity_id, predicate and occurred_at are required")
 	}
 	if err := checkTimeBasis(ob.TimeBasis); err != nil {
+		return false, fmt.Errorf("observation record: %w", err)
+	}
+	rowTags, err := domain.NormalizeRowClassification(ob.Classification)
+	if err != nil {
 		return false, fmt.Errorf("observation record: %w", err)
 	}
 	// An observation about an object of a declared kind (its entity's id stem
@@ -165,13 +173,13 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO observations (namespace_id, entity_id, predicate, value_type,
 			value_date, value_number, value_text, value_entity_id,
-			location, occurred_at, confidence, evidence_id, source_ref, time_basis, decl_version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			location, occurred_at, confidence, evidence_id, source_ref, time_basis, decl_version, classification)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (namespace_id, source_ref, occurred_at) WHERE source_ref <> '' DO NOTHING`,
 		ns, ob.EntityID, ob.Predicate, ob.Value.Type,
 		date, num, text, ent,
 		ob.Location, ob.OccurredAt.UTC(), conf, evidenceID, ob.SourceRef, ob.TimeBasis,
-		declVersionOrNil(reg.Version()))
+		declVersionOrNil(reg.Version()), rowClassificationArg(rowTags))
 	if err != nil {
 		return false, err
 	}
@@ -189,7 +197,7 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 
 const observationColumns = `namespace_id, entity_id, predicate, value_type,
 	value_date, value_number, value_text, value_entity_id,
-	location, occurred_at, confidence, evidence_id, source_ref, time_basis`
+	location, occurred_at, confidence, evidence_id, source_ref, time_basis, classification`
 
 // notRetired is the predicate every counted read of a typed row carries
 // (ADR-0147 D6): the row's source_ref has no live retirement. alias is the
@@ -209,6 +217,25 @@ func latestRevision(alias string) string {
 	return ` AND NOT EXISTS (SELECT 1 FROM evidence nv WHERE nv.revises_id = ` + alias + `.evidence_id)`
 }
 
+// rowClassificationArg is a normalized row classification as the NOT NULL
+// TEXT[] column takes it: nil (empty, ADR-0158 D1) becomes '{}', never SQL NULL.
+func rowClassificationArg(tags []string) []string {
+	if tags == nil {
+		return []string{}
+	}
+	return tags
+}
+
+// rowClassificationRead maps a stored row classification back to the domain's
+// form: an empty array reads as nil, so an unclassified row compares equal to one
+// built without the field.
+func rowClassificationRead(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	return tags
+}
+
 // checkTimeBasis refuses a time basis the domain does not name, so a typo in a
 // writer cannot mint a third clock nobody reads.
 func checkTimeBasis(b string) error {
@@ -226,9 +253,11 @@ func scanObservation(row pgx.Row) (*domain.Observation, error) {
 	var text, ent, evidenceID *string
 	if err := row.Scan(&ob.NamespaceID, &ob.EntityID, &ob.Predicate, &ob.Value.Type,
 		&date, &num, &text, &ent,
-		&ob.Location, &ob.OccurredAt, &ob.Confidence, &evidenceID, &ob.SourceRef, &ob.TimeBasis); err != nil {
+		&ob.Location, &ob.OccurredAt, &ob.Confidence, &evidenceID, &ob.SourceRef, &ob.TimeBasis,
+		&ob.Classification); err != nil {
 		return nil, err
 	}
+	ob.Classification = rowClassificationRead(ob.Classification)
 	switch {
 	case date != nil:
 		ob.Value.Date = *date
@@ -361,7 +390,7 @@ func (s *PgEventStore) EventsForEntities(ctx context.Context, namespace string, 
 // never scan different columns.
 func eventColumnsOn(alias string) string {
 	return alias + ".id, " + alias + ".namespace_id, " + alias + ".event_type, " + alias + ".occurred_at, " +
-		alias + ".evidence_id, " + alias + ".source_ref, " + alias + ".time_basis"
+		alias + ".evidence_id, " + alias + ".source_ref, " + alias + ".time_basis, " + alias + ".classification"
 }
 
 // scanTypedEvent scans eventColumnsOn, after any leading columns the caller selected
@@ -370,10 +399,12 @@ func scanTypedEvent(rows pgx.Rows, lead ...any) (domain.Event, error) {
 	var ev domain.Event
 	var id string
 	var evidenceID *string
-	dest := append(lead, &id, &ev.NamespaceID, &ev.Type, &ev.OccurredAt, &evidenceID, &ev.SourceRef, &ev.TimeBasis)
+	dest := append(lead, &id, &ev.NamespaceID, &ev.Type, &ev.OccurredAt, &evidenceID, &ev.SourceRef, &ev.TimeBasis,
+		&ev.Classification)
 	if err := rows.Scan(dest...); err != nil {
 		return domain.Event{}, err
 	}
+	ev.Classification = rowClassificationRead(ev.Classification)
 	ev.ID = domain.EventID(id)
 	if evidenceID != nil {
 		ev.EvidenceID = domain.EvidenceID(*evidenceID)

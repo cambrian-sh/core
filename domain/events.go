@@ -24,6 +24,10 @@ type Event struct {
 	// TimeBasis says which clock OccurredAt came from (ADR-0147 D8):
 	// TimeBasisEvent, TimeBasisReceived, or "" when the writer did not say.
 	TimeBasis string
+	// Classification is the row's own classification (ADR-0158 D1): tags that
+	// can only NARROW who sees the row, on top of what its evidence allows.
+	// nil ≡ empty. Write-once with the row; see NormalizeRowClassification.
+	Classification []string
 }
 
 // EventID identifies one event.
@@ -54,6 +58,10 @@ type Observation struct {
 	// TimeBasis says which clock OccurredAt came from (ADR-0147 D8):
 	// TimeBasisEvent, TimeBasisReceived, or "" when the writer did not say.
 	TimeBasis string
+	// Classification is the row's own classification (ADR-0158 D1): tags that
+	// can only NARROW who sees the row, on top of what its evidence allows.
+	// nil ≡ empty. Write-once with the row; see NormalizeRowClassification.
+	Classification []string
 }
 
 // Time bases (ADR-0147 D8). Which clock a typed row's occurred_at is.
