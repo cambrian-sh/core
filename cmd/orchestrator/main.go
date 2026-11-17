@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 
@@ -19,47 +18,14 @@ var version = "dev"
 // `app` package so a downstream (premium) binary can reuse the same bootstrap and
 // inject proprietary components via app.Options. ADR-0057 (Model C).
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version") {
-		fmt.Println("cambrian-core", version)
-		return
-	}
-	// PLAT-02 / ADR-0064: `migrate [up|status]` DB migration subcommand.
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		if err := app.RunMigrate(context.Background(), os.Args[2:]); err != nil {
-			slog.Error("❌ migrate failed", "err", err)
-			os.Exit(1)
-		}
-		return
-	}
-	// ADR-0122: the binary is its own installer and lifecycle manager. `setup`
-	// bootstraps dependencies + config + migrations, then starts and
-	// health-verifies the kernel; `status`/`stop` manage the detached kernel a
-	// setup run left behind.
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "setup":
-			os.Exit(app.RunSetup(context.Background(), os.Args[2:]))
-		case "status":
-			os.Exit(app.RunStatus(context.Background()))
-		case "stop":
-			os.Exit(app.RunStop(context.Background()))
-		// ADR-0126 E5: inbound-MCP client-token lifecycle (offline) and the
-		// stdio bridge relaying a local MCP client to the kernel's endpoint.
-		case "mcp":
-			os.Exit(app.RunMCP(context.Background(), os.Args[2:]))
-		// ADR-0142 D3: offline principal-registry administration (pre-provision an
-		// OIDC subject, local accounts, suspend/activate).
-		case "principal":
-			os.Exit(app.RunPrincipal(context.Background(), os.Args[2:]))
-		// ADR-0101 D8: list and clear config.db overrides offline (the store
-		// beats every config file, so an override is why a file edit "didn't take").
-		case "config":
-			os.Exit(app.RunConfig(context.Background(), os.Args[2:]))
-		// ENG-681: deployment-owned backup, verify, rotation, restore and the
-		// weekly restore drill (internal/backup; docs/backup-and-restore.md).
-		case "backup":
-			os.Exit(app.RunBackup(context.Background(), os.Args[2:]))
-		}
+	// Offline subcommands (version, migrate, setup, status, stop, mcp, principal,
+	// config, backup) run before app.Run, which boots the full kernel. The table
+	// and dispatch live in app/subcommands.go, shared with the premium binary; an
+	// unrecognised non-flag first argument is a usage error (exit 2), never a
+	// kernel boot (ENG-1527).
+	cmds := app.Subcommands(app.SubcommandSpec{Binary: "cambrian-core", Version: version})
+	if code, handled := app.DispatchSubcommand(context.Background(), os.Args[1:], cmds, os.Stderr); handled {
+		os.Exit(code)
 	}
 	if err := app.Run(context.Background(), app.DefaultOptions()); err != nil {
 		var cfgErr *config.ConfigError
