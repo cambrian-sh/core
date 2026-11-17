@@ -261,7 +261,9 @@ func (s *AgentSandbox) admitDeclared(agentID string, decl []domain.SandboxPath) 
 
 // runtimePrefix is the directory an interpreter needs read: a virtualenv's root
 // for <venv>/bin/python or <venv>\Scripts\python.exe, else the executable's
-// own directory.
+// own directory. A "venv root" that would cover the sandbox's private /tmp
+// (/tmp/bin/python -> /tmp, /bin/python -> /) is never bound: the executable's
+// own directory is, so the agent still starts (ENG-1969).
 func runtimePrefix(exe string) string {
 	if exe == "" {
 		return ""
@@ -278,7 +280,9 @@ func runtimePrefix(exe string) string {
 	dir := filepath.Dir(abs)
 	switch strings.ToLower(filepath.Base(dir)) {
 	case "bin", "scripts":
-		return filepath.Dir(dir)
+		if root := filepath.Dir(dir); !sandbox.CoversPrivateTmp(root) {
+			return root
+		}
 	}
 	return dir
 }

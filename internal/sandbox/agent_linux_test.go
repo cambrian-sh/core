@@ -65,6 +65,43 @@ func TestBwrapArgsForAnAgent(t *testing.T) {
 	idx("--bind", sock, sock)
 }
 
+// ENG-1969: bwrapArgs never lays a bind over the agent's private /tmp — not
+// /tmp, not / (beyond the base read-only root), not the /tmp/work mount point —
+// while a directory below /tmp (an interpreter in /tmp/bin) is still bound.
+func TestBwrapArgsNeverBindOverThePrivateTmp(t *testing.T) {
+	root := t.TempDir()
+	interp := filepath.Join(root, "bin")
+	if err := os.MkdirAll(interp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := agentPolicy(t, filepath.Join(root, "kernel"))
+	spec := agentSpec(p, TierFirstParty, "", Bind{Path: "/tmp"}, Bind{Path: "/"}, Bind{Path: "/tmp/work", Write: true},
+		Bind{Path: interp})
+	a := bwrapArgs("bwrap", p, spec, p.Tiers[TierFirstParty], filepath.Join(root, "work"), "", true)
+	roots := 0
+	for i := 0; i+2 < len(a); i++ {
+		if a[i] != "--ro-bind" && a[i] != "--bind" {
+			continue
+		}
+		switch a[i+2] {
+		case "/":
+			roots++
+		case "/tmp":
+			t.Fatalf("argv binds over the private /tmp: %v", a[i:i+3])
+		case "/tmp/work":
+			if a[i+1] != filepath.Join(root, "work") {
+				t.Fatalf("argv binds %s at the workdir mount point: %v", a[i+1], a)
+			}
+		}
+	}
+	if roots != 1 || a[1] != "--ro-bind" || a[2] != "/" {
+		t.Fatalf("only the base read-only root may be bound at /: %v", a)
+	}
+	if !slices.Contains(a, interp) {
+		t.Fatalf("a directory below /tmp must still be bound: %v", a)
+	}
+}
+
 // End to end through StartCmd under bubblewrap: the agent cannot read the
 // kernel's config.db, its key file, the journal or the vault, nor another
 // instance's scratch; a path outside the hide-list stays readable.
@@ -110,6 +147,10 @@ func TestBwrapAgentCannotReadKernelState(t *testing.T) {
 		paths = append(paths, f)
 	}
 	c := fixture(t, "read", paths...)
+	if CoversPrivateTmp(filepath.Dir(exe)) {
+		exe = copyExecutable(t, exe) // ENG-1969: never bound over the private /tmp
+		c.Path = exe
+	}
 	spec := agentSpec(p, TierFirstParty, sock, Bind{Path: filepath.Dir(exe)})
 	var stdout io.ReadCloser
 	l, rep, err := StartCmd(context.Background(), spec, c, func(cmd *exec.Cmd) error {

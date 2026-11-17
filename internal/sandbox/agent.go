@@ -114,6 +114,14 @@ func StartCmd(ctx context.Context, spec Spec, c Command, prepare func(*exec.Cmd)
 	if rep.Refused {
 		return nil, rep, &RefusedError{Report: rep}
 	}
+	if kept, skipped := privateTmpSafe(spec.Agent.Binds); len(skipped) > 0 {
+		a := *spec.Agent // the caller's spec is not changed
+		a.Binds = kept
+		spec.Agent = &a
+		for _, s := range skipped {
+			rep.Notes = append(rep.Notes, "bind "+s+" skipped: it would cover the agent's private /tmp")
+		}
+	}
 	workdir, err := prepareWorkdir(p, spec)
 	if err != nil {
 		return nil, rep, fmt.Errorf("sandbox: workdir for %s: %w", spec.ServerID, err)
@@ -144,6 +152,38 @@ func StartCmd(ctx context.Context, spec Spec, c Command, prepare func(*exec.Cmd)
 		return nil, rep, err
 	}
 	return l, rep, nil
+}
+
+// CoversPrivateTmp reports whether a bind at path would cover the agent's
+// private /tmp: "/", "/tmp" or "/tmp/work", in slash form (ENG-1969).
+// Bubblewrap mounts a fresh tmpfs at /tmp and the instance's workdir at
+// /tmp/work inside it; a read-only bind of /tmp (or of /) laid over that makes
+// the workdir mount fail and the agent never starts, and would show the host's
+// /tmp to the agent besides. Docker's --tmpfs /tmp clashes the same way. Such a
+// bind is never made; a caller that needs something under it binds that
+// subdirectory instead (agentmgr binds an interpreter's own directory).
+func CoversPrivateTmp(path string) bool {
+	if path == "" {
+		return false
+	}
+	switch filepath.ToSlash(filepath.Clean(path)) {
+	case "/", "/tmp", "/tmp/work":
+		return true
+	}
+	return false
+}
+
+// privateTmpSafe splits binds into those an agent may get and the paths of
+// those that would cover its private /tmp (CoversPrivateTmp).
+func privateTmpSafe(binds []Bind) (kept []Bind, skipped []string) {
+	for _, b := range binds {
+		if CoversPrivateTmp(b.Path) {
+			skipped = append(skipped, b.Path)
+			continue
+		}
+		kept = append(kept, b)
+	}
+	return kept, skipped
 }
 
 // within reports whether path is dir or lies under it (both cleaned, absolute).

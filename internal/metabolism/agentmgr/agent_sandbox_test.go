@@ -185,6 +185,43 @@ func TestSandboxLaunch_SpecFromTierAndAllowlist(t *testing.T) {
 	}
 }
 
+// ENG-1969: an interpreter in /tmp/bin (or /bin) has its own directory bound,
+// never /tmp or /, which would cover the sandbox's private /tmp; a real venv
+// root is bound as before.
+func TestRuntimePrefixAndBindsNeverCoverThePrivateTmp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("slash paths: the private /tmp is a bubblewrap/docker property")
+	}
+	for exe, want := range map[string]string{
+		"/tmp/bin/python":      "/tmp/bin",
+		"/bin/python":          "/bin",
+		"/opt/venv/bin/python": "/opt/venv",
+		"/tmp/tb/am.test":      "/tmp/tb",
+		"/usr/local/bin/node":  "/usr/local",
+	} {
+		if got := runtimePrefix(exe); got != want {
+			t.Errorf("runtimePrefix(%q) = %q, want %q", exe, got, want)
+		}
+	}
+	sb, _ := testAgentSandbox(t, nil)
+	im := NewInstanceManager("/tmp/bin/python", "127.0.0.1:1")
+	im.SetAgentContainment(AgentContainment{Sandbox: sb})
+	binds, err := im.agentBinds(context.Background(), pythonDef(), "/tmp/bin/python")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, b := range binds {
+		if sandbox.CoversPrivateTmp(b.Path) {
+			t.Fatalf("bind %s covers the private /tmp: %+v", b.Path, binds)
+		}
+		paths = append(paths, b.Path)
+	}
+	if !slices.Contains(paths, "/tmp/bin") {
+		t.Fatalf("the interpreter's own directory is not bound: %v", paths)
+	}
+}
+
 // The tiers want D1 everywhere; the hide-list is the kernel dir + state +
 // operator additions + the agent work root, and never only the additions.
 func TestNewAgentSandbox_PolicyAndHideList(t *testing.T) {

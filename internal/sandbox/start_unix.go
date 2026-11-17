@@ -204,7 +204,10 @@ func bwrapArgs(bw string, p *Policy, spec Spec, tp TierPolicy, workdir, dir stri
 	var after []Bind
 	if spec.Agent != nil {
 		var before []Bind
-		before, after, _ = splitBinds(spec.Agent.Binds, p.HidePaths)
+		// StartCmd already dropped (and reported) a bind over the private /tmp;
+		// dropped here too so no caller can lay one over it (ENG-1969).
+		binds, _ := privateTmpSafe(spec.Agent.Binds)
+		before, after, _ = splitBinds(binds, p.HidePaths)
 		a = appendBinds(a, before)
 	}
 	var hiddenDirs []string

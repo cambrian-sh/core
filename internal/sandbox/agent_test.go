@@ -121,9 +121,15 @@ func TestStartCmd_CallerPipesWaitAndRelease(t *testing.T) {
 	codeDir := t.TempDir()
 	c := fixture(t, "env")
 	c.Dir = codeDir
+	if CoversPrivateTmp(filepath.Dir(c.Path)) {
+		// A test binary directly in /tmp (or /) cannot be shown at its own
+		// directory (ENG-1969); show a copy from a subdirectory instead.
+		c.Path = copyExecutable(t, c.Path)
+	}
 	// The fixture binary and the code dir are shown at their own paths, as
 	// agentmgr shows an agent's code and runtime (bubblewrap's /tmp is private).
-	spec := agentSpec(p, TierFirstParty, sockDir, Bind{Path: filepath.Dir(c.Path)}, Bind{Path: codeDir})
+	// A bind of / is never made over the private /tmp: dropped and reported.
+	spec := agentSpec(p, TierFirstParty, sockDir, Bind{Path: filepath.Dir(c.Path)}, Bind{Path: codeDir}, Bind{Path: "/"})
 	var stdout io.ReadCloser
 	l, rep, err := StartCmd(context.Background(), spec, c, func(cmd *exec.Cmd) error {
 		var perr error
@@ -132,6 +138,12 @@ func TestStartCmd_CallerPipesWaitAndRelease(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("start: %v (report %+v)", err, rep)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, ";"), "bind / skipped") {
+		t.Errorf("the dropped / bind is not reported: %v", rep.Notes)
+	}
+	if len(spec.Agent.Binds) != 3 {
+		t.Errorf("StartCmd changed the caller's binds: %+v", spec.Agent.Binds)
 	}
 	out, _ := io.ReadAll(stdout)
 	_ = l.Cmd.Wait()
@@ -239,4 +251,38 @@ func TestDockerAgentRunnerNeedsLinux(t *testing.T) {
 	if !strings.Contains(capab.unusable, "needs a Linux host") {
 		t.Fatalf("unusable = %q", capab.unusable)
 	}
+}
+
+// ENG-1969: a bind over the agent's private /tmp ("/", "/tmp", "/tmp/work") is
+// never made; anything below /tmp other than the workdir mount is fine.
+func TestCoversPrivateTmp(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/": true, "/tmp": true, "/tmp/": true, "/tmp/work": true, "/tmp/../tmp": true,
+		"/tmp/bin": false, "/tmp/work/x": false, "/usr": false, "/tmpx": false, "": false,
+	} {
+		if got := CoversPrivateTmp(p); got != want {
+			t.Errorf("CoversPrivateTmp(%q) = %v, want %v", p, got, want)
+		}
+	}
+	kept, skipped := privateTmpSafe([]Bind{{Path: "/tmp"}, {Path: "/opt/venv"}, {Path: "/", Write: true}, {Path: "/tmp/bin"}})
+	if len(kept) != 2 || kept[0].Path != "/opt/venv" || kept[1].Path != "/tmp/bin" || len(skipped) != 2 {
+		t.Fatalf("kept %+v skipped %v", kept, skipped)
+	}
+}
+
+// copyExecutable copies the test binary into a fresh subdirectory.
+func copyExecutable(t *testing.T, src string) string {
+	t.Helper()
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "bin", filepath.Base(src))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dst
 }
