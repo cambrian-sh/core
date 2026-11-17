@@ -85,14 +85,15 @@ func (r *Reader) Get(ctx context.Context, scope *domain.TagPredicate, namespace,
 }
 
 // readObjectRow reads the object row: each declared property's value and
-// provenance where visible, the handle's meta where the minting evidence is
-// readable. known: the caller may read the minting evidence. conflicted: the
+// provenance where visible, the handle's meta where the mint is readable.
+// known: the caller may read the mint — its evidence narrowed by the minting
+// row's classification (the typed-row fence, ADR-0158 D4). conflicted: the
 // visible properties whose provenance records a conflict.
 func readObjectRow(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, spec domain.KindSpec, props []prop,
 	ns, entityID string, view *domain.ObjectView) (known bool, conflicted map[string]int, err error) {
 	b := &sqlb{scope: scope, rt: allRowTagged}
 	cols := []string{"o.decl_version", "o.updated_at",
-		"(TRUE" + b.evidenceVisible("en.first_seen_evidence") + ")"}
+		"(TRUE" + b.typedRowVisible("en.first_seen_evidence", "en.first_seen_classification") + ")"}
 	for _, p := range props {
 		vis := b.visible("o", p)
 		cols = append(cols, "CASE WHEN "+vis+" THEN o."+ident(p.valueCol())+" END",

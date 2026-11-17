@@ -186,23 +186,25 @@ func (p *PgQueryPlane) identityClosure(ctx context.Context, entityID string, dep
 // The basis is the evidence that MINTED the entity — the record whose arrival
 // disclosed that the thing exists. A caller who can read that record already
 // knows, and withholding the handle from them would refuse an answer they are
-// entitled to. A caller who cannot read it learns nothing here.
+// entitled to. A caller who cannot read it learns nothing here. The mint is a
+// typed row like any other (ADR-0158 D4): firstSeenTags is the minting row's
+// classification (entities.first_seen_classification), and it can only narrow —
+// a caller who may read the evidence but not the row a mapping restricted does
+// not learn the handle from the mint.
 //
 // Fail closed on an unresolvable or absent id, as everywhere else on this plane.
 // An entity with no recorded first-seen evidence is not thereby public; it is
 // simply not disclosed by this route, and the caller may still reach it through
 // a row they can read (see the gate in entityOp).
-func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.TagPredicate, firstSeen string) (bool, error) {
+func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.TagPredicate, firstSeen string, firstSeenTags []string) (bool, error) {
 	if scope.Unfiltered() {
 		return true, nil
 	}
 	if firstSeen == "" {
 		return false, nil
 	}
-	// The minting evidence only: the mint carries no row classification yet
-	// (entities.first_seen_classification is ADR-0158 stage 5).
 	kept, err := guardNodes(ctx, p, scope, []string{firstSeen},
-		func(id string) []guardRef { return []guardRef{{evidence: id}} })
+		func(id string) []guardRef { return []guardRef{{evidence: id, rowTags: firstSeenTags}} })
 	return len(kept) == 1, err
 }
 
@@ -280,6 +282,7 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 		subject["entity_kind"] = kind
 	}
 	var firstSeen string
+	var firstSeenTags []string
 	if p.entities != nil {
 		e, found, err := p.entities.GetEntity(ctx, defaultNamespace, q.EntityID)
 		if err != nil {
@@ -287,6 +290,7 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 		}
 		if found {
 			firstSeen = string(e.FirstSeenEvidence)
+			firstSeenTags = e.FirstSeenClassification
 			subject["minted"] = true
 			subject["entity_kind"] = e.Kind
 			subject["namespace_id"] = e.NamespaceID
@@ -309,7 +313,7 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 	// minted from a record a reader cannot see and then cited by records they
 	// can; refusing those would over-refuse in the name of a rule about
 	// under-refusing.
-	subjectVisible, err := p.mayKnowEntityExists(ctx, scope, firstSeen)
+	subjectVisible, err := p.mayKnowEntityExists(ctx, scope, firstSeen, firstSeenTags)
 	if err != nil {
 		return nil, err
 	}

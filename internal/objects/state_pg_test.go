@@ -155,9 +155,11 @@ func classKey(tags, parties, rowTags []string) string {
 }
 
 // expectedClasses is a row's vis_classes as the rule defines it, from an
-// independently computed state and the entity's minted evidence (nil = none):
-// every declared property's classified value's triple, and the minted pair.
-func expectedClasses(spec domain.KindSpec, st objects.State, minted *[2][]string) []string {
+// independently computed state and the entity's mint (nil = none): every
+// declared property's classified value's triple, and the minted triple (the
+// minting evidence's classification and parties, and the minting row's
+// classification, ADR-0158 D4).
+func expectedClasses(spec domain.KindSpec, st objects.State, minted *[3][]string) []string {
 	m := map[string]bool{}
 	for p := range spec.Predicates {
 		if v, ok := st.Props[p]; ok && v.Tags != nil {
@@ -165,7 +167,7 @@ func expectedClasses(spec domain.KindSpec, st objects.State, minted *[2][]string
 		}
 	}
 	if minted != nil {
-		m[pairKey(minted[0], minted[1])] = true
+		m[classKey(minted[0], minted[1], minted[2])] = true
 	}
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -213,19 +215,19 @@ func (e *env) classesOf(t interface {
 	return out
 }
 
-// mintedPair is the (classification, parties) of the evidence that minted
-// entity, read independently; nil when it was not minted with evidence.
-func (e *env) mintedPair(t interface{ Fatalf(string, ...any) }, entity string) *[2][]string {
-	var tags, parties []string
-	err := e.pool.QueryRow(e.ctx, `SELECT ev.classification, ev.parties FROM entities en, evidence ev
-		WHERE en.id = $1 AND en.namespace_id = $2 AND ev.id = en.first_seen_evidence`, entity, e.ns).Scan(&tags, &parties)
+// mintedPair is the (classification, parties, first_seen_classification) of
+// entity's mint, read independently; nil when it was not minted with evidence.
+func (e *env) mintedPair(t interface{ Fatalf(string, ...any) }, entity string) *[3][]string {
+	var tags, parties, rowTags []string
+	err := e.pool.QueryRow(e.ctx, `SELECT ev.classification, ev.parties, en.first_seen_classification FROM entities en, evidence ev
+		WHERE en.id = $1 AND en.namespace_id = $2 AND ev.id = en.first_seen_evidence`, entity, e.ns).Scan(&tags, &parties, &rowTags)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		t.Fatalf("minted %s: %v", entity, err)
 	}
-	return &[2][]string{tags, parties}
+	return &[3][]string{tags, parties, rowTags}
 }
 
 var base = time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)
@@ -665,7 +667,10 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 				}
 			case 5: // mint the entity, often AFTER its row exists (the ingress order)
 				ev := rapid.SampledFrom(append(append([]string{}, evs...), "")).Draw(rt, "mev")
-				if _, err := mint.EnsureEntity(e.ctx, domain.Entity{ID: entity, NamespaceID: e.ns, FirstSeenEvidence: domain.EvidenceID(ev)}); err != nil {
+				// ADR-0158 D4: the minting row's classification, mostly none.
+				mintTags := rapid.SampledFrom([][]string{nil, nil, {"hr"}}).Draw(rt, "minttags")
+				if _, err := mint.EnsureEntity(e.ctx, domain.Entity{ID: entity, NamespaceID: e.ns, FirstSeenEvidence: domain.EvidenceID(ev),
+					FirstSeenClassification: mintTags}); err != nil {
 					rt.Fatal(err)
 				}
 			case 6: // erase the entity's items

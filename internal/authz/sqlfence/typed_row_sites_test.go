@@ -15,19 +15,21 @@ import (
 // TestEvidenceExistsNeverFencesATypedRow lists every production use of the
 // evidence-only fence — EvidenceExists and the two wrappers that pass a column
 // through to it (postgres sqlArgs.viaEvidence, objects sqlb.evidenceVisible) —
-// with the reference column it is given (ADR-0158 D2, stage 3).
+// with the reference column it is given (ADR-0158 D2, stage 3; D4, stage 5).
 //
 // A typed row (events, observations, links) carries its own row classification,
 // and EvidenceExists ignores it: fencing such a row with it shows the row to a
 // reader its mapping restricted. Typed rows use TypedRowExists (or the wrappers
-// viaTypedRow / the objects equivalent), which can only narrow. Every entry left
-// here is a ref that is NOT a typed row — an entity's minting evidence
-// (first_seen_evidence: ADR-0158 stage 5 classifies the mint), the evidence
-// outbox — or the objects link filter, gated as its comment says.
+// viaTypedRow / the objects equivalent), which can only narrow. So does an
+// entity's mint (en.first_seen_evidence with en.first_seen_classification, D4):
+// no first-seen read may use the evidence-only fence. Every entry left here is
+// a ref that is NOT a typed row — the evidence outbox — or the objects link
+// filter, gated as its comment says, or a wrapper's pass-through.
 //
 // If this test fails because you added an EvidenceExists call: if the column
-// belongs to events, observations or links, use TypedRowExists instead; if it
-// truly is not a typed row, add the line with a comment saying what it fences.
+// belongs to events, observations, links or an entity's first-seen evidence,
+// use TypedRowExists instead; if it truly is not a typed row, add the line with
+// a comment saying what it fences.
 func TestEvidenceExistsNeverFencesATypedRow(t *testing.T) {
 	want := []string{
 		// The wrappers themselves (pass-through of their refCol parameter).
@@ -37,16 +39,6 @@ func TestEvidenceExistsNeverFencesATypedRow(t *testing.T) {
 		// evidence_outbox (aliased o): an outbox row has no row classification.
 		`internal/infrastructure/postgres/query_plane_catalog.go: viaEvidence("o.evidence_id")`,
 		`internal/infrastructure/postgres/query_plane_catalog.go: viaEvidence("o.evidence_id")`,
-
-		// Entity first-seen (ADR-0158 D4, stage 5 moves these to
-		// entities.first_seen_classification).
-		`internal/infrastructure/postgres/identity_scan_source.go: viaEvidence("en.first_seen_evidence")`,
-		`internal/infrastructure/postgres/identity_scan_source.go: viaEvidence("en.first_seen_evidence")`,
-		`internal/infrastructure/postgres/identity_scan_source.go: viaEvidence("en.first_seen_evidence")`,
-		`internal/infrastructure/postgres/identity_scan_source.go: viaEvidence("en.first_seen_evidence")`,
-		`internal/infrastructure/postgres/query_plane_listing.go: viaEvidence("en.first_seen_evidence")`,
-		`internal/objects/get.go: evidenceVisible("en.first_seen_evidence")`,
-		`internal/ontology/violations.go: EvidenceExists("en.first_seen_evidence")`,
 
 		// Objects list/group link filters (ADR-0158 stage 4, D3 site 38): the
 		// evidence-only fence is rendered ONLY when the request's snapshot holds

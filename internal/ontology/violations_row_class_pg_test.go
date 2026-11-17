@@ -43,6 +43,18 @@ func TestPg_Violations_RowClassificationNarrowsTheReport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// ADR-0158 stage 5 (D3 site 50): order/7 is minted by a restricted row and
+	// order/8 by an unrestricted one; neither holds a link. The required-link
+	// rule names an entity only to a reader who may know it exists.
+	for _, m := range []struct {
+		id   string
+		tags []string
+	}{{"order/7", hr}, {"order/8", nil}} {
+		if _, err := entities.EnsureEntity(ctx, domain.Entity{ID: m.id, NamespaceID: ns, FirstSeenEvidence: ev,
+			FirstSeenClassification: m.tags}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	links := postgres.NewPgLinkStore(pool, o)
 	put := func(from, to string, class []string) {
 		t.Helper()
@@ -104,18 +116,21 @@ func TestPg_Violations_RowClassificationNarrowsTheReport(t *testing.T) {
 
 	wantGranted := map[string][]string{
 		// Link rules report the link id: one each, present only for this reader.
-		domain.ViolationFromKind:    granted[domain.ViolationFromKind],
-		domain.ViolationCardinality: granted[domain.ViolationCardinality],
-		domain.ViolationRange:       {"sensor/1", "sensor/2"},
-		domain.ViolationType:        {"order/1"},
+		domain.ViolationFromKind:     granted[domain.ViolationFromKind],
+		domain.ViolationCardinality:  granted[domain.ViolationCardinality],
+		domain.ViolationRequiredLink: {"order/7", "order/8"},
+		domain.ViolationRange:        {"sensor/1", "sensor/2"},
+		domain.ViolationType:         {"order/1"},
 	}
 	if len(granted[domain.ViolationFromKind]) != 1 || len(granted[domain.ViolationCardinality]) != 1 ||
 		!reflect.DeepEqual(granted, wantGranted) {
 		t.Errorf("granted report = %v, want %v", granted, wantGranted)
 	}
 	// hr closed: nothing built on a restricted row; sensor/1's current value is the
-	// visible one (20, in bounds); order/5 holds no link this reader may read.
-	wantClosed := map[string][]string{domain.ViolationRequiredLink: {"order/5"}}
+	// visible one (20, in bounds); order/5 holds no link this reader may read;
+	// order/7, minted by a restricted row, does not exist for it, while order/8
+	// (R = ∅) reads as before.
+	wantClosed := map[string][]string{domain.ViolationRequiredLink: {"order/5", "order/8"}}
 	if !reflect.DeepEqual(closed, wantClosed) {
 		t.Errorf("hr-closed report = %v, want %v", closed, wantClosed)
 	}

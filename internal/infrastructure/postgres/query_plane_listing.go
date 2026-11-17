@@ -25,7 +25,9 @@ import (
 //   - events:   through evidence_id narrowed by the row classification
 //     (sqlfence.TypedRowExists, ADR-0158 D2) and never a retired
 //     row (ADR-0147 D6);
-//   - entities: through first_seen_evidence, as the identity scans read them.
+//   - entities: through first_seen_evidence narrowed by first_seen_classification
+//     (the minting row's classification, ADR-0158 D4), as the identity scans
+//     read them.
 //
 // Every listing is paged in id order with an exclusive id cursor, and confined to
 // one namespace (an empty one is refused).
@@ -126,7 +128,8 @@ func (c pgCatalog) Events(ctx context.Context, f domain.EventListFilter) (domain
 	return out, nil
 }
 
-// EntityHandles — ENFORCED through each handle's first-seen evidence.
+// EntityHandles — ENFORCED through each handle's first-seen evidence and the
+// minting row's classification (the typed-row fence, ADR-0158 D4).
 func (c pgCatalog) EntityHandles(ctx context.Context, f domain.EntityHandleFilter) (domain.EntityHandlePage, error) {
 	var out domain.EntityHandlePage
 	if err := c.checkListing(f.Namespace); err != nil {
@@ -136,7 +139,7 @@ func (c pgCatalog) EntityHandles(ctx context.Context, f domain.EntityHandleFilte
 	a := &sqlArgs{}
 	q := `SELECT en.id, en.kind FROM entities en
 		WHERE en.namespace_id=` + a.add(f.Namespace) + ` AND en.id > ` + a.add(f.AfterID) +
-		a.viaEvidence(c.scope, "en.first_seen_evidence") +
+		a.viaTypedRow(c.scope, "en.first_seen_evidence", "en.first_seen_classification") +
 		` ORDER BY en.id LIMIT ` + a.add(limit)
 	rows, err := c.plane.pool.Query(ctx, q, a.args...)
 	if err != nil {

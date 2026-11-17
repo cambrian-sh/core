@@ -86,8 +86,10 @@ func (s *PgIdentityScanSource) AliasObservations(ctx context.Context, scope *dom
 }
 
 // EntitiesSince implements domain.IdentityScanSource. An entity is fenced by the
-// evidence that minted it (the query plane's mayKnowEntityExists rule): a handle
-// with no first-seen evidence is visible only to ScopeMaintenance.
+// evidence that minted it AND the minting row's classification
+// (entities.first_seen_classification, the typed-row fence of ADR-0158 D4; the
+// query plane's mayKnowEntityExists rule): a handle with no first-seen evidence
+// is visible only to ScopeMaintenance.
 func (s *PgIdentityScanSource) EntitiesSince(ctx context.Context, scope *domain.TagPredicate, namespace string, after domain.IdentityScanPosition, limit int) ([]domain.IdentityEntityRow, error) {
 	if err := s.check(scope, namespace); err != nil {
 		return nil, err
@@ -97,7 +99,7 @@ func (s *PgIdentityScanSource) EntitiesSince(ctx context.Context, scope *domain.
 		 FROM entities en
 		 WHERE en.namespace_id=` + a.add(namespace) + `::text
 		   AND (en.created_at, en.id) > (` + a.add(after.At) + `::timestamptz, ` + a.add(after.ID) + `::text)` +
-		a.viaEvidence(scope, "en.first_seen_evidence") + `
+		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 		 ORDER BY en.created_at, en.id
 		 LIMIT ` + a.add(limit) + `::int`
 	return s.entities(ctx, "entities", q, a.args)
@@ -109,7 +111,8 @@ func (s *PgIdentityScanSource) EntitiesSince(ctx context.Context, scope *domain.
 // The evidence row itself is fenced, so a party is only ever read off evidence the
 // scope may see; and the observation and event routes count only rows the scope
 // may see (the typed-row fence, ADR-0158 D2), so a row its mapping restricted
-// lends its evidence's parties to no reader it is hidden from.
+// lends its evidence's parties to no reader it is hidden from. The mint route is
+// fenced the same way by the minting row's classification (ADR-0158 D4).
 func (s *PgIdentityScanSource) PartiesForEntity(ctx context.Context, scope *domain.TagPredicate, namespace, entityID string, limit int) ([]domain.IdentityPartyRow, error) {
 	if err := s.check(scope, namespace); err != nil {
 		return nil, err
@@ -118,7 +121,8 @@ func (s *PgIdentityScanSource) PartiesForEntity(ctx context.Context, scope *doma
 	ns, ent := a.add(namespace), a.add(entityID)
 	q := `WITH ev AS (
 			SELECT en.first_seen_evidence AS id FROM entities en
-			  WHERE en.namespace_id=` + ns + `::text AND en.id=` + ent + `::text AND en.first_seen_evidence IS NOT NULL
+			  WHERE en.namespace_id=` + ns + `::text AND en.id=` + ent + `::text AND en.first_seen_evidence IS NOT NULL` +
+		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 			UNION
 			SELECT o.evidence_id FROM observations o
 			  WHERE o.namespace_id=` + ns + `::text AND o.entity_id=` + ent + `::text AND o.evidence_id IS NOT NULL` + notRetired("o") +
@@ -154,8 +158,9 @@ const identityPartyEvidenceScanLimit = 500
 // EntitiesWithParty implements domain.IdentityScanSource: the mirror of
 // PartiesForEntity, walked from the party. The candidate evidence rows are fenced
 // before they are joined, an observation or event route counts only a row the
-// scope may see (ADR-0158 D2), and the entities returned are fenced by their own
-// first-seen evidence like every other entity read here.
+// scope may see (ADR-0158 D2; the mint route by first_seen_classification, D4),
+// and the entities returned are fenced by their own first-seen evidence and
+// first-seen classification like every other entity read here.
 func (s *PgIdentityScanSource) EntitiesWithParty(ctx context.Context, scope *domain.TagPredicate, namespace, party, kind string, limit int) ([]domain.IdentityEntityRow, error) {
 	if err := s.check(scope, namespace); err != nil {
 		return nil, err
@@ -170,7 +175,8 @@ func (s *PgIdentityScanSource) EntitiesWithParty(ctx context.Context, scope *dom
 		), ent AS (
 			SELECT en.id AS entity_id FROM entities en
 			  JOIN ev ON ev.id = en.first_seen_evidence
-			  WHERE en.namespace_id=` + ns + `::text
+			  WHERE en.namespace_id=` + ns + `::text` +
+		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 			UNION
 			SELECT o.entity_id FROM observations o
 			  JOIN ev ON ev.id = o.evidence_id
@@ -187,7 +193,7 @@ func (s *PgIdentityScanSource) EntitiesWithParty(ctx context.Context, scope *dom
 		FROM entities en
 		JOIN ent ON ent.entity_id = en.id
 		WHERE en.namespace_id=` + ns + `::text AND en.kind=` + a.add(kind) + `::text` +
-		a.viaEvidence(scope, "en.first_seen_evidence") + `
+		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 		ORDER BY en.created_at, en.id
 		LIMIT ` + a.add(limit) + `::int`
 	return s.entities(ctx, "entities by party", q, a.args)
@@ -357,7 +363,7 @@ func (s *PgIdentityScanSource) EntityExists(ctx context.Context, scope *domain.T
 	a := &sqlArgs{}
 	q := `SELECT EXISTS (SELECT 1 FROM entities en
 		 WHERE en.namespace_id=` + a.add(namespace) + `::text AND en.id=` + a.add(id) + `::text` +
-		a.viaEvidence(scope, "en.first_seen_evidence") + `)`
+		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `)`
 	var exists bool
 	if err := s.pool.QueryRow(ctx, q, a.args...).Scan(&exists); err != nil {
 		return false, identityScanErr("entity exists", err)
@@ -376,7 +382,7 @@ func (s *PgIdentityScanSource) EntitiesByLocal(ctx context.Context, scope *domai
 	a := &sqlArgs{}
 	q := `SELECT en.id FROM entities en
 		 WHERE en.namespace_id=` + a.add(namespace) + `::text AND en.id LIKE ` + a.add("%/"+escapeLikeLiteral(local)) + `::text ESCAPE '\'` +
-		a.viaEvidence(scope, "en.first_seen_evidence") + `
+		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 		 ORDER BY en.id
 		 LIMIT ` + a.add(limit) + `::int`
 	rows, err := s.pool.Query(ctx, q, a.args...)

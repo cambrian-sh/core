@@ -228,10 +228,11 @@ func (r *report) cardinality(subject, verb string) {
 }
 
 // requiredLink reports entities of fromKind holding no readable confirmed link
-// of the verb.
+// of the verb. The entity is fenced by its mint: the minting evidence narrowed
+// by the minting row's classification (ADR-0158 D4).
 func (r *report) requiredLink(subject, verb, fromKind string) {
 	args := []any{r.ns, verb, fromKind, domain.RefPrefixEntity}
-	fe, eargs := sqlfence.EvidenceExists(r.scope, "en.first_seen_evidence", len(args))
+	fe, eargs := sqlfence.TypedRowExists(r.scope, "en.first_seen_evidence", "en.first_seen_classification", len(args))
 	args = append(args, eargs...)
 	fl, largs := sqlfence.TypedRowExists(r.scope, "l.evidence_id", "l.classification", len(args))
 	args = append(args, largs...)

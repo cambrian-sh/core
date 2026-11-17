@@ -141,8 +141,9 @@ func canonical(tags, parties, rowTags []string) classTriple {
 //     exactly the companions upsertRow writes; a value with no classification
 //     (Tags nil, a NULL tags column) is never a class, as it is visible to no
 //     filtered caller;
-//   - the (classification, parties, '{}') of the evidence that minted the
-//     entity (its row classification is ADR-0158 stage 5's), read
+//   - the (classification, parties, first_seen_classification) of the mint:
+//     the minting evidence's classification and parties and the minting row's
+//     own classification (ADR-0158 D4; empty for an unclassified mint), read
 //     with the existence rule's own join (entities.first_seen_evidence). That row
 //     is written by the entity mint, which calls the maintainer when it creates
 //     one (PgEntityStore.EnsureEntity), and neither it nor the evidence row is
@@ -169,12 +170,13 @@ func rowClasses(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, ns, entity
 			add(v.Tags, v.Parties, v.RowTags)
 		}
 	}
-	var tags, parties []string
-	err := tx.QueryRow(ctx, `SELECT e.classification, e.parties FROM entities en JOIN evidence e ON e.id = en.first_seen_evidence
-		WHERE en.id = $1 AND en.namespace_id = $2`, entity, ns).Scan(&tags, &parties)
+	var tags, parties, mintTags []string
+	err := tx.QueryRow(ctx, `SELECT e.classification, e.parties, en.first_seen_classification
+		FROM entities en JOIN evidence e ON e.id = en.first_seen_evidence
+		WHERE en.id = $1 AND en.namespace_id = $2`, entity, ns).Scan(&tags, &parties, &mintTags)
 	switch {
 	case err == nil:
-		add(tags, parties, nil)
+		add(tags, parties, mintTags)
 	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, err
 	}

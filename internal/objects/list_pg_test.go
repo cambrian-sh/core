@@ -145,6 +145,7 @@ type refWorld struct {
 	states  map[string]objects.State // entity -> state (from ALL of history)
 	kinds   map[string]string        // entity -> kind
 	minted  map[string]string        // entity -> first_seen evidence ("" = none)
+	mintR   map[string][]string      // entity -> first_seen_classification (ADR-0158 D4)
 	evRows  map[string]evidenceRow
 	links   []refLink
 	itemTag map[string][]string // item id -> classification
@@ -225,8 +226,13 @@ func (w refWorld) exists(p *domain.TagPredicate, kind, entity string) bool {
 	if p.Unfiltered() {
 		return true
 	}
+	// The mint is a typed row (ADR-0158 D4): its evidence AND the minting
+	// row's classification.
 	if ev := w.minted[entity]; ev != "" && w.evidenceVisible(p, ev) {
-		return true
+		r := w.evRows[ev]
+		if typedVisible(p, r.tags, nonNilS(r.parties), w.mintR[entity]) {
+			return true
+		}
 	}
 	for prop := range lpSpec(kind).Predicates {
 		if _, ok := w.value(p, entity, prop); ok {
@@ -515,7 +521,7 @@ func renderGroups(gs []domain.ObjectGroup) []string {
 
 // readWorld computes the reference from ALL of history with independent reads.
 func (e *lpEnv) readWorld(t *rapid.T, ev map[string]evidenceRow) refWorld {
-	w := refWorld{states: map[string]objects.State{}, kinds: map[string]string{}, minted: map[string]string{},
+	w := refWorld{states: map[string]objects.State{}, kinds: map[string]string{}, minted: map[string]string{}, mintR: map[string][]string{},
 		evRows: ev, itemTag: map[string][]string{}}
 	cands := map[string][]objects.Candidate{}
 	rs, err := e.pool.Query(e.ctx, `
@@ -579,16 +585,18 @@ func (e *lpEnv) readWorld(t *rapid.T, ev map[string]evidenceRow) refWorld {
 		w.kinds[entity] = stem
 		w.states[entity] = objects.Current(lpSpec(stem), cs)
 	}
-	rs, err = e.pool.Query(e.ctx, `SELECT id, COALESCE(first_seen_evidence, '') FROM entities WHERE namespace_id = $1`, e.ns)
+	rs, err = e.pool.Query(e.ctx, `SELECT id, COALESCE(first_seen_evidence, ''), first_seen_classification FROM entities WHERE namespace_id = $1`, e.ns)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rs.Next() {
 		var id, evid string
-		if err := rs.Scan(&id, &evid); err != nil {
+		var mintR []string
+		if err := rs.Scan(&id, &evid, &mintR); err != nil {
 			t.Fatal(err)
 		}
 		w.minted[id] = evid
+		w.mintR[id] = mintR
 	}
 	rs.Close()
 	rs, err = e.pool.Query(e.ctx, `SELECT from_ref, to_ref, relation, family, COALESCE(evidence_id,''), state = 'confirmed', retracted_at IS NOT NULL, classification
@@ -696,10 +704,12 @@ func (e *lpEnv) writeHistory(t *rapid.T, round int, evIDs []string, rowTagged bo
 				Classification: drawRowTags("lrt")}); err != nil {
 				t.Fatal(err)
 			}
-		case 7: // mint an entity handle with (or without) first-seen evidence
+		case 7: // mint an entity handle with (or without) first-seen evidence and
+			// (when rowTagged) the minting row's classification (ADR-0158 D4)
 			id := rapid.SampledFrom(append(append([]string{}, lpOrders...), lpCusts...)).Draw(t, "mint")
 			ev := rapid.SampledFrom(evOrNone).Draw(t, "mev")
-			if _, err := e.entities.EnsureEntity(e.ctx, domain.Entity{ID: id, NamespaceID: e.ns, FirstSeenEvidence: domain.EvidenceID(ev)}); err != nil {
+			if _, err := e.entities.EnsureEntity(e.ctx, domain.Entity{ID: id, NamespaceID: e.ns, FirstSeenEvidence: domain.EvidenceID(ev),
+				FirstSeenClassification: drawRowTags("mrt")}); err != nil {
 				t.Fatal(err)
 			}
 		case 8: // retire an earlier observation

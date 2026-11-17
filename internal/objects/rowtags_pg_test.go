@@ -262,3 +262,78 @@ func TestPg_RowFormat3RebuildTouchesOnlyRowClassifiedRows(t *testing.T) {
 		}
 	}
 }
+
+// ADR-0158 stage 5 (D4 b, sites 39 and 46): an entity minted by a row a mapping
+// restricted is, for a reader the tag restricts, exactly an id that never
+// existed — in ListObjects existence (the minted class triple carries the
+// minting row's classification) and in GetObject (known uses the typed-row
+// fence) — while a reader it does not restrict sees the handle. Never wider: a
+// row tag on the mint cannot hand north an entity minted from south evidence.
+func TestPg_RowRestrictedMintIsAbsentForRestrictedReaders(t *testing.T) {
+	e := newLPEnv(t, "lptest-mintrow")
+	e.seedEvidence("mr-")
+	const hidden, plain, widen = "lporder/m1", "lporder/m2", "lporder/m3"
+	// Each order first holds a value only a cleared reader may see (restricted
+	// evidence), so its object row exists and only the mint can reveal it to
+	// south — the ingress order: rows, then the link batch's mint.
+	for i, id := range []string{hidden, plain, widen} {
+		e.mustObserveR(id, "total", num(5), 0, "mr-restr", fmt.Sprintf("mr:r%d", i))
+	}
+	for _, m := range []struct {
+		id   string
+		tags []string
+	}{{hidden, []string{"cls:restricted"}}, {plain, nil}, {widen, []string{"r:north"}}} {
+		if created, err := e.entities.EnsureEntity(e.ctx, domain.Entity{ID: m.id, NamespaceID: e.ns, FirstSeenEvidence: "mr-south",
+			FirstSeenClassification: m.tags}); err != nil || !created {
+			t.Fatalf("mint %s: created=%v err=%v", m.id, created, err)
+		}
+	}
+	if got := e.classesOf(t, lpOrder, hidden); strings.Join(got, " ") != "[cls:restricted,r:south]|[]|[] [r:south]|[]|[cls:restricted]" {
+		t.Fatalf("restricted mint classes: %v", got)
+	}
+	if got := e.classesOf(t, lpOrder, plain); strings.Join(got, " ") != "[cls:restricted,r:south]|[]|[] [r:south]|[]|[]" {
+		t.Fatalf("unrestricted mint classes (byte-identical to stage 4): %v", got)
+	}
+
+	// south: the restricted mint is absent, exactly like a never-minted id; the
+	// unrestricted one (R = ∅) is there as before.
+	if got := ids(e.list(t, southOnly, domain.ObjectsQuery{Kind: lpOrder}).Rows); fmt.Sprint(got) != "[lporder/m2 lporder/m3]" {
+		t.Fatalf("south list: %v", got)
+	}
+	for _, id := range []string{hidden, "lporder/never"} {
+		if _, err := e.reader.Get(e.ctx, southOnly, e.ns, id); err != domain.ErrObjectNotFound {
+			t.Fatalf("south GetObject %s: %v, want not found", id, err)
+		}
+	}
+	if v, err := e.reader.Get(e.ctx, southOnly, e.ns, plain); err != nil || v.FirstSeenEvidence != "mr-south" || v.CreatedAt == nil {
+		t.Fatalf("south GetObject of the unrestricted mint: %+v %v", v, err)
+	}
+
+	// cleared: every mint, with its handle meta.
+	cleared := &domain.TagPredicate{AnyOfClauses: [][]string{{"r:south", "r:global"}}}
+	if got := ids(e.list(t, cleared, domain.ObjectsQuery{Kind: lpOrder}).Rows); fmt.Sprint(got) != "[lporder/m1 lporder/m2 lporder/m3]" {
+		t.Fatalf("cleared list: %v", got)
+	}
+	if v, err := e.reader.Get(e.ctx, cleared, e.ns, hidden); err != nil || v.FirstSeenEvidence != "mr-south" || v.CreatedAt == nil {
+		t.Fatalf("cleared GetObject of the restricted mint: %+v %v", v, err)
+	}
+
+	// never wider: r:north on a south mint gives north nothing.
+	if r := e.list(t, northOnly, domain.ObjectsQuery{Kind: lpOrder}); len(r.Rows) != 0 {
+		t.Fatalf("north list: %v", ids(r.Rows))
+	}
+	if _, err := e.reader.Get(e.ctx, northOnly, e.ns, widen); err != domain.ErrObjectNotFound {
+		t.Fatalf("north GetObject %s: %v, want not found", widen, err)
+	}
+
+	// A readable value reveals the restricted-mint entity legitimately (the
+	// other ADR-0128 D12 branch), without disclosing the handle meta.
+	e.mustObserveR(hidden, "status", txt("open"), 0, "mr-south", "mr:1")
+	v, err := e.reader.Get(e.ctx, southOnly, e.ns, hidden)
+	if err != nil || propNames(v.Properties) != "[status]" || v.FirstSeenEvidence != "" || v.CreatedAt != nil {
+		t.Fatalf("south GetObject after a readable value: %+v %v", v, err)
+	}
+	if got := ids(e.list(t, southOnly, domain.ObjectsQuery{Kind: lpOrder}).Rows); fmt.Sprint(got) != "[lporder/m1 lporder/m2 lporder/m3]" {
+		t.Fatalf("south list after a readable value: %v", got)
+	}
+}
