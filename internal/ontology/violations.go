@@ -200,7 +200,7 @@ const confirmed = `l.namespace_id = $1 AND l.relation = $2 AND l.state = 'confir
 // endpoint reports confirmed links whose col is not an entity ref of kind.
 func (r *report) endpoint(rule, subject, verb, col, kind string) {
 	args := []any{r.ns, verb, domain.RefPrefixEntity + kind + "/"}
-	fence, fargs := sqlfence.EvidenceExists(r.scope, "l.evidence_id", len(args))
+	fence, fargs := sqlfence.TypedRowExists(r.scope, "l.evidence_id", "l.classification", len(args))
 	args = append(args, fargs...)
 	r.query(rule, subject, `
 		SELECT l.id, l.`+col+` FROM links l
@@ -213,9 +213,9 @@ func (r *report) endpoint(rule, subject, verb, col, kind string) {
 // cardinality-one verb from the same endpoint (once per pair).
 func (r *report) cardinality(subject, verb string) {
 	args := []any{r.ns, verb}
-	fa, aargs := sqlfence.EvidenceExists(r.scope, "l.evidence_id", len(args))
+	fa, aargs := sqlfence.TypedRowExists(r.scope, "l.evidence_id", "l.classification", len(args))
 	args = append(args, aargs...)
-	fb, bargs := sqlfence.EvidenceExists(r.scope, "b.evidence_id", len(args))
+	fb, bargs := sqlfence.TypedRowExists(r.scope, "b.evidence_id", "b.classification", len(args))
 	args = append(args, bargs...)
 	r.query(domain.ViolationCardinality, subject, `
 		SELECT l.id, b.id FROM links l
@@ -233,7 +233,7 @@ func (r *report) requiredLink(subject, verb, fromKind string) {
 	args := []any{r.ns, verb, fromKind, domain.RefPrefixEntity}
 	fe, eargs := sqlfence.EvidenceExists(r.scope, "en.first_seen_evidence", len(args))
 	args = append(args, eargs...)
-	fl, largs := sqlfence.EvidenceExists(r.scope, "l.evidence_id", len(args))
+	fl, largs := sqlfence.TypedRowExists(r.scope, "l.evidence_id", "l.classification", len(args))
 	args = append(args, largs...)
 	r.query(domain.ViolationRequiredLink, subject, `
 		SELECT en.id, ''::text FROM entities en
@@ -271,7 +271,7 @@ func (r *report) observationRules(subject string, prefixes []string, p string, v
 // validated, and reported, under that kind.
 func (r *report) observations(rule, subject string, prefixes []string, predicate, cond, other string, detail func(string) string, extra ...any) {
 	args := append([]any{r.ns, predicate, prefixes}, extra...)
-	fence, fargs := sqlfence.EvidenceExists(r.scope, "o.evidence_id", len(args))
+	fence, fargs := sqlfence.TypedRowExists(r.scope, "o.evidence_id", "o.classification", len(args))
 	args = append(args, fargs...)
 	r.query(rule, subject, `
 		SELECT cur.entity_id, `+other+` FROM (
@@ -292,7 +292,7 @@ func (r *report) typeMismatch(subject, prefix, predicate, valueType string) {
 		return fmt.Sprintf("a %s value, declared %s (kept in history, not projected)", found, valueType)
 	}
 	args := []any{r.ns, prefix, predicate, valueType}
-	fence, fargs := sqlfence.EvidenceExists(r.scope, "o.evidence_id", len(args))
+	fence, fargs := sqlfence.TypedRowExists(r.scope, "o.evidence_id", "o.classification", len(args))
 	args = append(args, fargs...)
 	r.query(domain.ViolationType, subject, `
 		SELECT entity_id, value_type FROM (

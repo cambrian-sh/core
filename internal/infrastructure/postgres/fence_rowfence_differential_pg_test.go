@@ -142,7 +142,14 @@ func TestPg_RowfenceDifferential(t *testing.T) {
 		if err != nil {
 			t.Fatalf("legacy: %v", err)
 		}
-		got, err := guardNodes(ctx, plane, scope, nodes, of)
+		// The evidence alone (no row tags): exactly the pre-move loop.
+		got, err := guardNodes(ctx, plane, scope, nodes, func(n rfNode) []guardRef {
+			refs := make([]guardRef, len(n.evs))
+			for i, id := range n.evs {
+				refs[i] = guardRef{evidence: id}
+			}
+			return refs
+		})
 		if err != nil {
 			t.Fatalf("guardNodes: %v", err)
 		}
@@ -176,6 +183,21 @@ func TestPg_RowfenceDifferential(t *testing.T) {
 			}
 			return cs, true
 		})
+		// Stage 3: guardNodes itself, given each node's row tags, admits exactly
+		// what FilterRows over TypedRow admits (the walks' accessor).
+		gotTyped, err := guardNodes(ctx, plane, scope, nodes, func(n rfNode) []guardRef {
+			refs := make([]guardRef, len(n.evs))
+			for i, id := range n.evs {
+				refs[i] = guardRef{evidence: id, rowTags: n.row}
+			}
+			return refs
+		})
+		if err != nil {
+			t.Fatalf("guardNodes typed: %v", err)
+		}
+		if len(gotTyped) != len(typed) || (len(typed) > 0 && !reflect.DeepEqual(gotTyped, typed)) {
+			t.Fatalf("guardNodes with row tags diverged from FilterRows(TypedRow) for %+v:\n got  %v\n want %v", scope, gotTyped, typed)
+		}
 		inGuard := map[int]bool{}
 		for _, n := range got {
 			inGuard[n.n] = true

@@ -26,7 +26,7 @@ func TestPageVisible_UnfilteredReadsOnePage(t *testing.T) {
 				t.Fatalf("duplicate keys reached the store: %v", keys)
 			}
 			return map[string][]int{"a": {1, 2, 3}, "b": {4}}, nil
-		}, func(int) []string { return []string{"ev"} })
+		}, func(int) []guardRef { return []guardRef{{evidence: "ev"}} })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestPageVisible_UnfilteredReadsOnePage(t *testing.T) {
 // database for; it admits every node and keeps the walk's order.
 func TestGuardNodes_UnfilteredAdmitsAndPreservesOrder(t *testing.T) {
 	got, err := guardNodes(context.Background(), nil, domain.ScopeMaintenance,
-		[]string{"c", "a", "b"}, func(s string) []string { return []string{s} })
+		[]string{"c", "a", "b"}, func(s string) []guardRef { return []guardRef{{evidence: s}} })
 	if err != nil || fmt.Sprint(got) != "[c a b]" {
 		t.Fatalf("got %v %v", got, err)
 	}

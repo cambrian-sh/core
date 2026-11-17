@@ -120,7 +120,7 @@ func (p *PgQueryPlane) identityClosure(ctx context.Context, entityID string, dep
 					State:  domain.LinkStateConfirmed,
 					Limit:  n, Offset: offset,
 				})
-			}, linkEvidence)
+			}, linkRefs)
 		if err != nil {
 			return closureResult{}, err
 		}
@@ -199,8 +199,10 @@ func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.Ta
 	if firstSeen == "" {
 		return false, nil
 	}
+	// The minting evidence only: the mint carries no row classification yet
+	// (entities.first_seen_classification is ADR-0158 stage 5).
 	kept, err := guardNodes(ctx, p, scope, []string{firstSeen},
-		func(id string) []string { return []string{id} })
+		func(id string) []guardRef { return []guardRef{{evidence: id}} })
 	return len(kept) == 1, err
 }
 
@@ -218,10 +220,14 @@ func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.Ta
 // ConfirmLink row inherits its candidate's evidence, so a confirmed candidate
 // stays visible to whoever could read the candidate.)
 func (p *PgQueryPlane) filterLinks(ctx context.Context, scope *domain.TagPredicate, links []domain.Link) ([]domain.Link, error) {
-	return guardNodes(ctx, p, scope, links, linkEvidence)
+	return guardNodes(ctx, p, scope, links, linkRefs)
 }
 
-func linkEvidence(l domain.Link) []string { return []string{string(l.EvidenceID)} }
+// linkRefs is what a link stands on: its evidence and its own row
+// classification (ADR-0158 D2).
+func linkRefs(l domain.Link) []guardRef {
+	return []guardRef{{evidence: string(l.EvidenceID), rowTags: l.Classification}}
+}
 
 // linkRow renders one assertion for the wire. `row` discriminates the shapes an
 // `entity` answer mixes, so a consumer never has to guess from key presence.
@@ -395,7 +401,7 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 			return p.links.LinksForRefs(ctx, defaultNamespace, keys, domain.LinkQuery{
 				State: domain.LinkStateConfirmed, Limit: n, Offset: offset,
 			})
-		}, linkEvidence)
+		}, linkRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +423,7 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 				Family: domain.LinkFamilyLineage, State: domain.LinkStateConfirmed,
 				IncludeIncoming: true, Limit: n, Offset: offset,
 			})
-		}, linkEvidence)
+		}, linkRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +447,7 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 		cands, err := pageVisible(ctx, p, scope, []string{subjectRef}, limit,
 			func(keys []string, offset, n int) (map[string][]domain.Link, error) {
 				return p.links.CandidatesForRefs(ctx, defaultNamespace, keys, offset, n)
-			}, linkEvidence)
+			}, linkRefs)
 		if err != nil {
 			return nil, err
 		}

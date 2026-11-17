@@ -110,7 +110,7 @@ func (p *PgQueryPlane) why(ctx context.Context, q domain.KnowledgeQuery,
 						Family: domain.LinkFamilyLineage, State: state,
 						IncludeIncoming: true, Limit: n, Offset: offset,
 					})
-				}, linkEvidence)
+				}, linkRefs)
 			if err != nil {
 				return nil, err
 			}

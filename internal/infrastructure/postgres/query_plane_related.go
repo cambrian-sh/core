@@ -34,7 +34,7 @@ import (
 //
 // FENCE. df is a COUNT, and a count over rows the caller cannot read would
 // leak them (ADR-0128 D12), so df and the candidate set are fenced in SQL with
-// sqlfence.EvidenceExists — the one SQL rendering of the row test, the aggregate
+// sqlfence.TypedRowExists — the one SQL rendering of the row test, the aggregate
 // shape's precedent ("summed rows cannot be post-filtered"). Every emitted row
 // then still passes guardNodes on its own events' evidence, the walk's one node
 // guard. Retired rows (ADR-0147) are skipped everywhere a row is counted.
@@ -43,11 +43,14 @@ import (
 type relatedRow struct {
 	fromRef, toRef         string
 	fromEvidence, evidence string
-	eventType              string
-	occurredAt             time.Time
-	sharedEntity           string
-	sharedRole             string
-	score                  float64
+	// fromRowTags / rowTags are the two events' own row classifications
+	// (ADR-0158 D1), read with them so the node guard needs no extra statement.
+	fromRowTags, rowTags []string
+	eventType            string
+	occurredAt           time.Time
+	sharedEntity         string
+	sharedRole           string
+	score                float64
 }
 
 func (h relatedRow) row(hop int) domain.QueryRow {
@@ -111,11 +114,11 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 		return nil, nil, nil
 	}
 	args := []any{ids, defaultNamespace, cp.window.Seconds(), cp.roles, domain.CorrelationHubThreshold}
-	// The counted events are aliased oe, not e: sqlfence.EvidenceExists' EXISTS
+	// The counted events are aliased oe, not e: sqlfence.TypedRowExists' EXISTS
 	// names the evidence table e, and would shadow an events alias of that name.
-	dfFence, dfArgs := sqlfence.EvidenceExists(scope, "oe.evidence_id", len(args))
+	dfFence, dfArgs := sqlfence.TypedRowExists(scope, "oe.evidence_id", "oe.classification", len(args))
 	args = append(args, dfArgs...)
-	candFence, candArgs := sqlfence.EvidenceExists(scope, "e2.evidence_id", len(args))
+	candFence, candArgs := sqlfence.TypedRowExists(scope, "e2.evidence_id", "e2.classification", len(args))
 	args = append(args, candArgs...)
 	rows, err := p.pool.Query(ctx, `
 		WITH a AS (
@@ -134,10 +137,10 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 			GROUP BY a.aid, a.x
 		)
 		SELECT a.aid, a.at1, a.aev, a.x, a.role1, d.df,
-		       c.id, c.event_type, c.occurred_at, c.evidence_id
+		       c.id, c.event_type, c.occurred_at, c.evidence_id, c.classification
 		FROM a JOIN d ON d.aid = a.aid AND d.x = a.x
 		LEFT JOIN LATERAL (
-			SELECT DISTINCT e2.id, e2.event_type, e2.occurred_at, e2.evidence_id
+			SELECT DISTINCT e2.id, e2.event_type, e2.occurred_at, e2.evidence_id, e2.classification
 			FROM event_roles r2
 			JOIN events e2 ON e2.id = r2.event_id AND e2.namespace_id = $2
 			WHERE d.df <= $5 AND r2.entity_id = a.x AND r2.event_id <> a.aid
@@ -159,6 +162,7 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 		anchor, anchorEv string
 		at1              time.Time
 		id, typ, ev      string
+		rowTags          []string
 		at               time.Time
 		xs               map[string]shared
 	}
@@ -172,7 +176,8 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 		var at1 time.Time
 		var cat *time.Time
 		var df int
-		if err := rows.Scan(&aid, &at1, &aev, &x, &role1, &df, &cid, &ctyp, &cat, &cev); err != nil {
+		var crow []string
+		if err := rows.Scan(&aid, &at1, &aev, &x, &role1, &df, &cid, &ctyp, &cat, &cev, &crow); err != nil {
 			return nil, nil, err
 		}
 		anchor := domain.RefPrefixEvent + aid
@@ -199,6 +204,7 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 			if cev != nil {
 				c.ev = *cev
 			}
+			c.rowTags = rowClassificationRead(crow)
 			cands[key] = c
 			order = append(order, key)
 		}
@@ -225,13 +231,15 @@ func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagP
 		}
 		all = append(all, relatedRow{
 			fromRef: c.anchor, toRef: domain.RefPrefixEvent + c.id,
-			fromEvidence: c.anchorEv, evidence: c.ev, eventType: c.typ, occurredAt: c.at,
+			fromEvidence: c.anchorEv, evidence: c.ev, rowTags: c.rowTags, eventType: c.typ, occurredAt: c.at,
 			sharedEntity: best, sharedRole: c.xs[best].role, score: score,
 		})
 	}
 	// The near end was decided by why's gate; the far end is decided here, on
 	// its own evidence, by the walk's one node guard.
-	kept, err := guardNodes(ctx, p, scope, all, func(h relatedRow) []string { return []string{h.evidence} })
+	kept, err := guardNodes(ctx, p, scope, all, func(h relatedRow) []guardRef {
+		return []guardRef{{evidence: h.evidence, rowTags: h.rowTags}}
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -257,18 +265,18 @@ func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.Ta
 	}
 	args := []any{ids, defaultNamespace, cp.window.Seconds(), cp.roles,
 		domain.CorrelationHubThreshold, domain.CorrelationMaxPerEvent, limit}
-	fence, fenceArgs := sqlfence.EvidenceExists(scope, "oe.evidence_id", len(args)) // oe: see relatedFromEvents
+	fence, fenceArgs := sqlfence.TypedRowExists(scope, "oe.evidence_id", "oe.classification", len(args)) // oe: see relatedFromEvents
 	args = append(args, fenceArgs...)
 	// df for a pair's anchor is the windowed count of the entity's visible
 	// events up to that anchor: a RANGE window over occurred_at.
 	rows, err := p.pool.Query(ctx, `
 		WITH ev AS (
 			SELECT r.entity_id AS x, oe.id, oe.event_type, oe.occurred_at, oe.evidence_id,
-			       array_agg(DISTINCT r.role ORDER BY r.role) AS roles
+			       oe.classification, array_agg(DISTINCT r.role ORDER BY r.role) AS roles
 			FROM event_roles r
 			JOIN events oe ON oe.id = r.event_id AND oe.namespace_id = $2
 			WHERE r.entity_id = ANY($1)`+notRetired("oe")+latestRevision("oe")+fence+`
-			GROUP BY r.entity_id, oe.id, oe.event_type, oe.occurred_at, oe.evidence_id
+			GROUP BY r.entity_id, oe.id, oe.event_type, oe.occurred_at, oe.evidence_id, oe.classification
 		), w AS (
 			SELECT ev.*, count(*) OVER (PARTITION BY x ORDER BY occurred_at
 			       RANGE BETWEEN make_interval(secs => $3::float8) PRECEDING AND CURRENT ROW) AS df
@@ -276,12 +284,13 @@ func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.Ta
 		), hubs AS (
 			SELECT x, max(df) AS df FROM w GROUP BY x HAVING max(df) > $5
 		), pairs AS (
-			SELECT w1.x, w1.id AS from_id, w1.evidence_id AS from_ev, w1.occurred_at AS at1,
+			SELECT w1.x, w1.id AS from_id, w1.evidence_id AS from_ev, w1.classification AS from_row,
+			       w1.occurred_at AS at1,
 			       w1.df, w1.roles AS roles1, c.id AS to_id, c.event_type, c.occurred_at,
-			       c.evidence_id AS to_ev
+			       c.evidence_id AS to_ev, c.classification AS to_row
 			FROM w w1
 			JOIN LATERAL (
-				SELECT w2.id, w2.event_type, w2.occurred_at, w2.evidence_id FROM w w2
+				SELECT w2.id, w2.event_type, w2.occurred_at, w2.evidence_id, w2.classification FROM w w2
 				WHERE w2.x = w1.x
 				  AND (w2.occurred_at < w1.occurred_at
 				       OR (w2.occurred_at = w1.occurred_at AND w2.id < w1.id))
@@ -300,10 +309,10 @@ func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.Ta
 			FROM ranked
 		)
 		SELECT 'pair', x, from_id, from_ev, to_id, event_type, occurred_at, to_ev,
-		       roles1, score::float8, df::int
+		       roles1, score::float8, df::int, from_row, to_row
 		FROM top WHERE rn <= $7
 		UNION ALL
-		SELECT 'hub', x, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, df::int FROM hubs
+		SELECT 'hub', x, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, df::int, NULL, NULL FROM hubs
 		ORDER BY 1, 2, 10 DESC NULLS LAST, 7 DESC NULLS LAST, 3, 5`, args...)
 	if err != nil {
 		return nil, nil, err
@@ -319,7 +328,9 @@ func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.Ta
 		var roles []string
 		var score *float64
 		var df int
-		if err := rows.Scan(&kind, &x, &fromID, &fromEv, &toID, &typ, &at, &toEv, &roles, &score, &df); err != nil {
+		var fromRow, toRow []string
+		if err := rows.Scan(&kind, &x, &fromID, &fromEv, &toID, &typ, &at, &toEv, &roles, &score, &df,
+			&fromRow, &toRow); err != nil {
 			return nil, nil, err
 		}
 		ref := domain.RefPrefixEntity + x
@@ -330,6 +341,7 @@ func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.Ta
 		h := relatedRow{
 			fromRef: domain.RefPrefixEvent + *fromID, toRef: domain.RefPrefixEvent + *toID,
 			occurredAt: *at, sharedEntity: x, sharedRole: firstRole(roles, cp.roles), score: *score,
+			fromRowTags: rowClassificationRead(fromRow), rowTags: rowClassificationRead(toRow),
 		}
 		if fromEv != nil {
 			h.fromEvidence = *fromEv
@@ -347,8 +359,8 @@ func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.Ta
 	}
 	// A pair is a claim about BOTH events, so a caller who may not read one of
 	// them may not be told the other stands next to it.
-	kept, err := guardNodes(ctx, p, scope, all, func(h relatedRow) []string {
-		return []string{h.fromEvidence, h.evidence}
+	kept, err := guardNodes(ctx, p, scope, all, func(h relatedRow) []guardRef {
+		return []guardRef{{evidence: h.fromEvidence, rowTags: h.fromRowTags}, {evidence: h.evidence, rowTags: h.rowTags}}
 	})
 	if err != nil {
 		return nil, nil, err
@@ -428,7 +440,7 @@ func (p *PgQueryPlane) readableEventRefs(ctx context.Context, scope *domain.TagP
 	}
 	rows, err := p.pool.Query(ctx,
 		// Retired rows (ADR-0147) do not count: a retired event is not stood on.
-		`SELECT id, evidence_id FROM events WHERE id = ANY($1) AND namespace_id = $2`+notRetired("events"),
+		`SELECT id, evidence_id, classification FROM events WHERE id = ANY($1) AND namespace_id = $2`+notRetired("events"),
 		ids, defaultNamespace)
 	if err != nil {
 		return nil, err
@@ -437,11 +449,12 @@ func (p *PgQueryPlane) readableEventRefs(ctx context.Context, scope *domain.TagP
 	for rows.Next() {
 		var id string
 		var evID *string
-		if err := rows.Scan(&id, &evID); err != nil {
+		var rowTags []string
+		if err := rows.Scan(&id, &evID, &rowTags); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		ev := domain.Event{ID: domain.EventID(id)}
+		ev := domain.Event{ID: domain.EventID(id), Classification: rowClassificationRead(rowTags)}
 		if evID != nil {
 			ev.EvidenceID = domain.EvidenceID(*evID)
 		}

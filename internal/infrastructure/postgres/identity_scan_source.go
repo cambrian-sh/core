@@ -19,8 +19,9 @@ import (
 //
 // Every query renders the same two rules the query plane does, through the same
 // helpers: notRetired (ADR-0147 D6) on every typed-row read, and the sqlfence
-// access predicate (sqlArgs.viaEvidence / evidenceRow) on every row, keyed by the
-// evidence it rests on. Neither is optional and neither is the caller's to apply.
+// access predicate on every row, keyed by the evidence it rests on: viaTypedRow
+// for a typed row (its own row classification can only narrow, ADR-0158 D2),
+// viaEvidence for an entity's minting evidence, evidenceRow for evidence itself. Neither is optional and neither is the caller's to apply.
 type PgIdentityScanSource struct {
 	pool *pgxpool.Pool
 }
@@ -70,7 +71,7 @@ func (s *PgIdentityScanSource) AliasObservations(ctx context.Context, scope *dom
 		   AND o.predicate = ANY(` + a.add(predicates) + `::text[])
 		   AND o.value_text IS NOT NULL
 		   AND o.id > ` + a.add(afterID) + `::bigint` +
-		notRetired("o") + a.viaEvidence(scope, "o.evidence_id") + `
+		notRetired("o") + a.viaTypedRow(scope, "o.evidence_id", "o.classification") + `
 		 ORDER BY o.id
 		 LIMIT ` + a.add(limit) + `::int`
 	rows, err := s.pool.Query(ctx, q, a.args...)
@@ -106,7 +107,9 @@ func (s *PgIdentityScanSource) EntitiesSince(ctx context.Context, scope *domain.
 // evidence row from a handle and all three count: it was minted by that delivery,
 // an observation about it cites it, or it played a role in an event citing it.
 // The evidence row itself is fenced, so a party is only ever read off evidence the
-// scope may see.
+// scope may see; and the observation and event routes count only rows the scope
+// may see (the typed-row fence, ADR-0158 D2), so a row its mapping restricted
+// lends its evidence's parties to no reader it is hidden from.
 func (s *PgIdentityScanSource) PartiesForEntity(ctx context.Context, scope *domain.TagPredicate, namespace, entityID string, limit int) ([]domain.IdentityPartyRow, error) {
 	if err := s.check(scope, namespace); err != nil {
 		return nil, err
@@ -118,11 +121,13 @@ func (s *PgIdentityScanSource) PartiesForEntity(ctx context.Context, scope *doma
 			  WHERE en.namespace_id=` + ns + `::text AND en.id=` + ent + `::text AND en.first_seen_evidence IS NOT NULL
 			UNION
 			SELECT o.evidence_id FROM observations o
-			  WHERE o.namespace_id=` + ns + `::text AND o.entity_id=` + ent + `::text AND o.evidence_id IS NOT NULL` + notRetired("o") + `
+			  WHERE o.namespace_id=` + ns + `::text AND o.entity_id=` + ent + `::text AND o.evidence_id IS NOT NULL` + notRetired("o") +
+		a.viaTypedRow(scope, "o.evidence_id", "o.classification") + `
 			UNION
 			SELECT x.evidence_id FROM events x
 			  JOIN event_roles r ON r.event_id = x.id
-			  WHERE x.namespace_id=` + ns + `::text AND r.entity_id=` + ent + `::text AND x.evidence_id IS NOT NULL` + notRetired("x") + `
+			  WHERE x.namespace_id=` + ns + `::text AND r.entity_id=` + ent + `::text AND x.evidence_id IS NOT NULL` + notRetired("x") +
+		a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
 		)
 		SELECT DISTINCT p.party, e.id
 		FROM evidence e
@@ -148,7 +153,8 @@ const identityPartyEvidenceScanLimit = 500
 
 // EntitiesWithParty implements domain.IdentityScanSource: the mirror of
 // PartiesForEntity, walked from the party. The candidate evidence rows are fenced
-// before they are joined, and the entities returned are fenced by their own
+// before they are joined, an observation or event route counts only a row the
+// scope may see (ADR-0158 D2), and the entities returned are fenced by their own
 // first-seen evidence like every other entity read here.
 func (s *PgIdentityScanSource) EntitiesWithParty(ctx context.Context, scope *domain.TagPredicate, namespace, party, kind string, limit int) ([]domain.IdentityEntityRow, error) {
 	if err := s.check(scope, namespace); err != nil {
@@ -168,12 +174,14 @@ func (s *PgIdentityScanSource) EntitiesWithParty(ctx context.Context, scope *dom
 			UNION
 			SELECT o.entity_id FROM observations o
 			  JOIN ev ON ev.id = o.evidence_id
-			  WHERE o.namespace_id=` + ns + `::text` + notRetired("o") + `
+			  WHERE o.namespace_id=` + ns + `::text` + notRetired("o") +
+		a.viaTypedRow(scope, "o.evidence_id", "o.classification") + `
 			UNION
 			SELECT r.entity_id FROM event_roles r
 			  JOIN events x ON x.id = r.event_id
 			  JOIN ev ON ev.id = x.evidence_id
-			  WHERE x.namespace_id=` + ns + `::text` + notRetired("x") + `
+			  WHERE x.namespace_id=` + ns + `::text` + notRetired("x") +
+		a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
 		)
 		SELECT en.id, en.kind, en.created_at, COALESCE(en.first_seen_evidence, '')
 		FROM entities en
@@ -211,7 +219,7 @@ func (s *PgIdentityScanSource) EventsSince(ctx context.Context, scope *domain.Ta
 		 FROM events x
 		 WHERE x.namespace_id=` + a.add(namespace) + `::text
 		   AND (x.occurred_at, x.id) > (` + a.add(after.At) + `::timestamptz, ` + a.add(after.ID) + `::text)` +
-		notRetired("x") + a.viaEvidence(scope, "x.evidence_id") + `
+		notRetired("x") + a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
 		 ORDER BY x.occurred_at, x.id
 		 LIMIT ` + a.add(limit) + `::int`
 	return s.events(ctx, "events", q, a.args)
@@ -228,7 +236,7 @@ func (s *PgIdentityScanSource) RoleEntities(ctx context.Context, scope *domain.T
 	q := `SELECT r.entity_id FROM event_roles r
 		 JOIN events x ON x.id = r.event_id
 		 WHERE x.namespace_id=` + a.add(namespace) + `::text AND r.event_id=` + a.add(eventID) + `::text` +
-		notRetired("x") + a.viaEvidence(scope, "x.evidence_id") + `
+		notRetired("x") + a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
 		 ORDER BY r.role, r.entity_id
 		 LIMIT ` + a.add(limit) + `::int`
 	rows, err := s.pool.Query(ctx, q, a.args...)
@@ -257,7 +265,7 @@ func (s *PgIdentityScanSource) PriorEventsSharingEntity(ctx context.Context, sco
 		   AND r.entity_id = ANY(` + a.add(entities) + `::text[])
 		   AND x.occurred_at >= ` + a.add(since) + `::timestamptz
 		   AND (x.occurred_at, x.id) < (` + a.add(before.At) + `::timestamptz, ` + a.add(before.ID) + `::text)` +
-		notRetired("x") + a.viaEvidence(scope, "x.evidence_id") + `
+		notRetired("x") + a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
 		 ORDER BY x.occurred_at DESC, x.id DESC
 		 LIMIT ` + a.add(limit) + `::int`
 	return s.events(ctx, "prior events", q, a.args)
@@ -295,7 +303,7 @@ func (s *PgIdentityScanSource) ConfirmedIdentityLinks(ctx context.Context, scope
 		 FROM links l
 		 WHERE l.namespace_id=` + a.add(namespace) + `::text AND l.family=` + a.add(domain.LinkFamilyIdentity) + `::text
 		   AND l.state=` + a.add(domain.LinkStateConfirmed) + `::text AND l.retracted_at IS NULL` +
-		a.viaEvidence(scope, "l.evidence_id") + `
+		a.viaTypedRow(scope, "l.evidence_id", "l.classification") + `
 		 ORDER BY l.id
 		 LIMIT ` + a.add(limit) + `::int`
 	return s.links(ctx, "confirmed identity links", q, a.args)
@@ -315,7 +323,7 @@ func (s *PgIdentityScanSource) CandidateLinksSince(ctx context.Context, scope *d
 		   AND l.retracted_at IS NULL
 		   AND l.mechanism = ANY(` + a.add(mechanisms) + `::text[])
 		   AND (l.recorded_at, l.id) > (` + a.add(after.At) + `::timestamptz, ` + a.add(after.ID) + `::text)` +
-		a.viaEvidence(scope, "l.evidence_id") + `
+		a.viaTypedRow(scope, "l.evidence_id", "l.classification") + `
 		 ORDER BY l.recorded_at, l.id
 		 LIMIT ` + a.add(limit) + `::int`
 	return s.links(ctx, "candidate links", q, a.args)

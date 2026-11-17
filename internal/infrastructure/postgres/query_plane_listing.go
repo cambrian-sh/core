@@ -22,7 +22,8 @@ import (
 //   - links:    filtered on each link's OWN evidence (filterLinks, the entity op's
 //     and the review inbox's rule); an assertion without evidence survives only
 //     an unfiltered scope;
-//   - events:   through evidence_id (sqlfence.EvidenceExists) and never a retired
+//   - events:   through evidence_id narrowed by the row classification
+//     (sqlfence.TypedRowExists, ADR-0158 D2) and never a retired
 //     row (ADR-0147 D6);
 //   - entities: through first_seen_evidence, as the identity scans read them.
 //
@@ -104,7 +105,7 @@ func (c pgCatalog) Events(ctx context.Context, f domain.EventListFilter) (domain
 	if f.SourceRefPrefix != "" {
 		q += ` AND x.source_ref LIKE ` + a.add(likePrefix(f.SourceRefPrefix)) + ` ESCAPE '\'`
 	}
-	q += notRetired("x") + latestRevision("x") + a.viaEvidence(c.scope, "x.evidence_id") +
+	q += notRetired("x") + latestRevision("x") + a.viaTypedRow(c.scope, "x.evidence_id", "x.classification") +
 		` ORDER BY x.id LIMIT ` + a.add(limit)
 	rows, err := c.plane.pool.Query(ctx, q, a.args...)
 	if err != nil {

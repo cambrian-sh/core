@@ -28,19 +28,25 @@ import (
 // mirror), owner fence and party scoping included (ADR-0121), never a second
 // rendering of the policy (AGENTS §2.5).
 //
-// A node names the evidence it stands on, and is admitted only if it names at
-// least one and the scope may read EVERY one (a hop between two events is a
-// claim about both). Fail closed: an empty or unresolvable evidence id hides
-// the node, for a plain Bypass too — only ScopeMaintenance (Unfiltered) admits
-// everything, as everywhere else on this plane. Order is preserved.
+// A node names the rows it stands on (guardRef: each row's evidence id and the
+// row's own classification), and is admitted only if it names at least one and
+// the scope may read EVERY one (a hop between two events is a claim about both).
+// A typed row (event, observation, link) is read through rowfence.TypedRow —
+// fence(E) AND fence(E ∪ R), ADR-0158 D2 — so a row classification can only hide
+// a node the evidence alone would show, and an empty one changes nothing. Fail
+// closed: an empty or unresolvable evidence id hides the node, for a plain
+// Bypass too — only ScopeMaintenance (Unfiltered) admits everything, as
+// everywhere else on this plane. Order is preserved.
 func guardNodes[T any](ctx context.Context, p *PgQueryPlane, scope *domain.TagPredicate,
-	nodes []T, evidenceOf func(T) []string) ([]T, error) {
+	nodes []T, refsOf func(T) []guardRef) ([]T, error) {
 	if scope.Unfiltered() || len(nodes) == 0 {
 		return nodes, nil
 	}
 	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {
-		ids = append(ids, evidenceOf(n)...)
+		for _, r := range refsOf(n) {
+			ids = append(ids, r.evidence)
+		}
 	}
 	tags, err := p.evidenceTags(ctx, ids)
 	if err != nil {
@@ -49,17 +55,26 @@ func guardNodes[T any](ctx context.Context, p *PgQueryPlane, scope *domain.TagPr
 	// The row decision itself is the authz-owned rowfence (AGENTS §2.5, ENG-1492);
 	// this walk only says what each node stands on.
 	return rowfence.FilterRows(scope, nodes, func(n T) ([]rowfence.Classification, bool) {
-		ev := evidenceOf(n)
-		cs := make([]rowfence.Classification, 0, len(ev))
-		for _, id := range ev {
-			t, resolvable := tags[id]
+		refs := refsOf(n)
+		cs := make([]rowfence.Classification, 0, len(refs))
+		for _, r := range refs {
+			t, resolvable := tags[r.evidence]
 			if !resolvable {
 				return nil, false
 			}
-			cs = append(cs, rowfence.Classification{Tags: t.tags, Parties: t.parties})
+			cs = append(cs, rowfence.TypedRow(rowfence.Classification{Tags: t.tags, Parties: t.parties}, r.rowTags)...)
 		}
 		return cs, true
 	}), nil
+}
+
+// guardRef is one row a walk node stands on: the evidence the row reaches its
+// base classification and parties through, and the row's own classification
+// (ADR-0158 D1; nil for a row that carries none, e.g. an entity's minting
+// evidence until ADR-0158 stage 5 classifies the mint).
+type guardRef struct {
+	evidence string
+	rowTags  []string
 }
 
 // walkMaxPages bounds filter-before-limit paging in the walk shapes: a lane
@@ -85,7 +100,7 @@ type keyedNode[T any] struct {
 func pageVisible[T any](ctx context.Context, p *PgQueryPlane, scope *domain.TagPredicate,
 	keys []string, want int,
 	fetch func(keys []string, offset, n int) (map[string][]T, error),
-	evidenceOf func(T) []string) (map[string][]T, error) {
+	refsOf func(T) []guardRef) (map[string][]T, error) {
 	out := map[string][]T{}
 	if want <= 0 {
 		return out, nil
@@ -110,7 +125,7 @@ func pageVisible[T any](ctx context.Context, p *PgQueryPlane, scope *domain.TagP
 			}
 		}
 		kept, err := guardNodes(ctx, p, scope, batch,
-			func(x keyedNode[T]) []string { return evidenceOf(x.node) })
+			func(x keyedNode[T]) []guardRef { return refsOf(x.node) })
 		if err != nil {
 			return nil, err
 		}

@@ -24,13 +24,14 @@ import (
 // no predicate at all, and the operator review inbox listed every candidate. Each
 // of those returned names derived from someone's owner:X evidence. The fix is not
 // a second copy of the fence in premium (AGENTS.md §2.5): it is these reads, here,
-// built on the same sqlfence.EvidenceExists / sqlfence.TextArray renderings the
+// built on the same sqlfence.TypedRowExists / sqlfence.TextArray renderings the
 // aggregate shape and the item stores already use.
 //
 // How each table reaches scope — the same as the AST shapes:
 //   - evidence:              its own classification + parties (sqlfence.Evidence)
-//   - observations, events,
-//     evidence_outbox:       through evidence_id (sqlfence.EvidenceExists)
+//   - observations, events:  through evidence_id, narrowed by their own row
+//     classification (sqlfence.TypedRowExists, ADR-0158 D2)
+//   - evidence_outbox:       through evidence_id (sqlfence.EvidenceExists)
 //   - event_roles:           through its event
 //   - knowledge_items:       its own classification (sqlfence.TextArray)
 //   - resolutions:           through the item it resolves to; a resolution with
@@ -96,9 +97,21 @@ func (a *sqlArgs) inNamespace(col string) string {
 	return " AND " + col + " = " + a.add(defaultNamespace)
 }
 
-// viaEvidence fences a row that references evidence through refCol.
+// viaEvidence fences a row that references evidence through refCol and carries
+// no row classification of its own (the evidence outbox; an entity's minting
+// evidence until ADR-0158 stage 5). A typed row uses viaTypedRow.
 func (a *sqlArgs) viaEvidence(scope *domain.TagPredicate, refCol string) string {
 	cond, extra := sqlfence.EvidenceExists(scope, refCol, len(a.args))
+	a.args = append(a.args, extra...)
+	return cond
+}
+
+// viaTypedRow fences a typed row (event, observation, link) that references
+// evidence through refCol and carries its own row classification in rowCol:
+// fence(E) AND fence(E ∪ R) (sqlfence.TypedRowExists, ADR-0158 D2), so the row's
+// tags can only hide it, never widen it, and an empty R reads as viaEvidence.
+func (a *sqlArgs) viaTypedRow(scope *domain.TagPredicate, refCol, rowCol string) string {
+	cond, extra := sqlfence.TypedRowExists(scope, refCol, rowCol, len(a.args))
 	a.args = append(a.args, extra...)
 	return cond
 }
@@ -177,11 +190,11 @@ func (c pgCatalog) Overview(ctx context.Context) (domain.SubstrateOverview, erro
 		}},
 		{&out.EventCount, func(a *sqlArgs) string {
 			return `SELECT count(*) FROM events WHERE TRUE` + a.inNamespace("events.namespace_id") +
-				a.viaEvidence(scope, "events.evidence_id") + notRetired("events") + latestRevision("events")
+				a.viaTypedRow(scope, "events.evidence_id", "events.classification") + notRetired("events") + latestRevision("events")
 		}},
 		{&out.ObservationCount, func(a *sqlArgs) string {
 			return `SELECT count(*) FROM observations WHERE TRUE` + a.inNamespace("observations.namespace_id") +
-				a.viaEvidence(scope, "observations.evidence_id") + notRetired("observations")
+				a.viaTypedRow(scope, "observations.evidence_id", "observations.classification") + notRetired("observations")
 		}},
 		{&out.KnowledgeItemCount, func(a *sqlArgs) string {
 			return `SELECT count(*) FROM knowledge_items ki WHERE TRUE` + a.item(scope, "ki")
@@ -193,7 +206,7 @@ func (c pgCatalog) Overview(ctx context.Context) (domain.SubstrateOverview, erro
 		{&out.EntityCount, func(a *sqlArgs) string {
 			return `SELECT count(DISTINCT entity_id) FROM observations WHERE TRUE` +
 				a.inNamespace("observations.namespace_id") +
-				a.viaEvidence(scope, "observations.evidence_id") + notRetired("observations")
+				a.viaTypedRow(scope, "observations.evidence_id", "observations.classification") + notRetired("observations")
 		}},
 		{&out.ActorCount, func(a *sqlArgs) string {
 			return `SELECT count(DISTINCT r.actor) FROM resolutions r
@@ -231,9 +244,9 @@ func (c pgCatalog) Overview(ctx context.Context) (domain.SubstrateOverview, erro
 	// Retired rows (ADR-0147 D6) are left out of every count and window here:
 	// a superseded mapping revision must not double what the overview reports.
 	obsCond := a.inNamespace("observations.namespace_id") +
-		a.viaEvidence(scope, "observations.evidence_id") + notRetired("observations")
+		a.viaTypedRow(scope, "observations.evidence_id", "observations.classification") + notRetired("observations")
 	evCond := a.inNamespace("events.namespace_id") +
-		a.viaEvidence(scope, "events.evidence_id") + notRetired("events")
+		a.viaTypedRow(scope, "events.evidence_id", "events.classification") + notRetired("events")
 	var earliest, latest *time.Time
 	if err := pool.QueryRow(ctx, `
 		SELECT min(occurred_at), max(occurred_at) FROM (
@@ -322,7 +335,7 @@ func (c pgCatalog) Entities(ctx context.Context, f domain.EntityFilter) ([]domai
 			FROM events ev JOIN event_roles er ON er.event_id = ev.id
 			WHERE ev.event_type = `+a.add(f.EventType)+idFilter("er.entity_id")+
 			a.inNamespace("ev.namespace_id")+
-			a.viaEvidence(scope, "ev.evidence_id")+notRetired("ev")+latestRevision("ev")+`
+			a.viaTypedRow(scope, "ev.evidence_id", "ev.classification")+notRetired("ev")+latestRevision("ev")+`
 			GROUP BY er.entity_id`)
 	} else {
 		pred := ""
@@ -332,7 +345,7 @@ func (c pgCatalog) Entities(ctx context.Context, f domain.EntityFilter) ([]domai
 		parts = append(parts, `SELECT o.entity_id, max(o.occurred_at) AS last_seen
 			FROM observations o WHERE TRUE`+pred+idFilter("o.entity_id")+
 			a.inNamespace("o.namespace_id")+
-			a.viaEvidence(scope, "o.evidence_id")+notRetired("o")+`
+			a.viaTypedRow(scope, "o.evidence_id", "o.classification")+notRetired("o")+`
 			GROUP BY o.entity_id`)
 		if f.IncludeResolutions && f.Predicate == "" {
 			parts = append(parts, `SELECT r.entity_id, max(r.system_from) AS last_seen
@@ -375,7 +388,7 @@ func (c pgCatalog) Entities(ctx context.Context, f domain.EntityFilter) ([]domai
 		SELECT o.entity_id, count(*), array_agg(DISTINCT o.predicate)
 		FROM observations o WHERE o.entity_id = ANY(`+a.add(ids)+`)`+
 		a.inNamespace("o.namespace_id")+
-		a.viaEvidence(scope, "o.evidence_id")+notRetired("o")+`
+		a.viaTypedRow(scope, "o.evidence_id", "o.classification")+notRetired("o")+`
 		GROUP BY o.entity_id`, a.args...)
 	if err != nil {
 		return nil, fmt.Errorf("substrate catalog: entity predicates: %w", err)
@@ -434,7 +447,7 @@ func (c pgCatalog) Predicates(ctx context.Context, limit int) ([]string, error) 
 	return c.distinctNames(ctx, "predicates", func(a *sqlArgs) string {
 		return `SELECT DISTINCT o.predicate FROM observations o WHERE TRUE` +
 			a.inNamespace("o.namespace_id") +
-			a.viaEvidence(c.scope, "o.evidence_id") + notRetired("o")
+			a.viaTypedRow(c.scope, "o.evidence_id", "o.classification") + notRetired("o")
 	}, limit)
 }
 
@@ -443,7 +456,7 @@ func (c pgCatalog) EventTypes(ctx context.Context, limit int) ([]string, error) 
 	return c.distinctNames(ctx, "event types", func(a *sqlArgs) string {
 		return `SELECT DISTINCT ev.event_type FROM events ev WHERE ev.event_type <> ''` +
 			a.inNamespace("ev.namespace_id") +
-			a.viaEvidence(c.scope, "ev.evidence_id") + notRetired("ev")
+			a.viaTypedRow(c.scope, "ev.evidence_id", "ev.classification") + notRetired("ev")
 	}, limit)
 }
 

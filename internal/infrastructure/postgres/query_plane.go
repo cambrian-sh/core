@@ -323,7 +323,7 @@ func (p *PgQueryPlane) point(ctx context.Context, q domain.KnowledgeQuery, scope
 		return []domain.QueryRow{obsRow(ob)}, nil
 	}
 	args := []any{defaultNamespace, q.EntityID, q.Predicate}
-	scopeCond, extra := sqlfence.EvidenceExists(scope, "observations.evidence_id", len(args))
+	scopeCond, extra := sqlfence.TypedRowExists(scope, "observations.evidence_id", "observations.classification", len(args))
 	args = append(args, extra...)
 	ob, err := scanObservation(p.pool.QueryRow(ctx, `
 		SELECT `+observationColumns+` FROM observations
@@ -395,14 +395,15 @@ func (p *PgQueryPlane) markRetired(ctx context.Context, q domain.KnowledgeQuery,
 }
 
 // history — ENFORCED in SQL via each observation's evidence classification
-// (sqlfence.EvidenceExists, point's rendering), and the LIMIT applies AFTER the fence:
+// (sqlfence.TypedRowExists, point's rendering; the row's own classification
+// can only narrow, ADR-0158 D2), and the LIMIT applies AFTER the fence:
 // the page is the first `limit` rows the caller may read, oldest first, and
 // the range is never loaded whole only to be cut in Go
 // (T-20261112-substrate-query-shapes-apply-limit-before-the). Retired rows
 // (ADR-0147) are excluded as in EventStore.History.
 func (p *PgQueryPlane) history(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
 	args := []any{defaultNamespace, q.EntityID, q.Predicate, q.From.UTC(), q.To.UTC()}
-	scopeCond, extra := sqlfence.EvidenceExists(scope, "observations.evidence_id", len(args))
+	scopeCond, extra := sqlfence.TypedRowExists(scope, "observations.evidence_id", "observations.classification", len(args))
 	args = append(args, extra...)
 	args = append(args, limit)
 	sqlRows, err := p.pool.Query(ctx, `
@@ -833,7 +834,7 @@ func (p *PgQueryPlane) aggregate(ctx context.Context, q domain.KnowledgeQuery, s
 	scopeCond := ""
 	if !scope.Unfiltered() {
 		var extra []any
-		scopeCond, extra = sqlfence.EvidenceExists(scope, "observations.evidence_id", len(args))
+		scopeCond, extra = sqlfence.TypedRowExists(scope, "observations.evidence_id", "observations.classification", len(args))
 		args = append(args, extra...)
 	}
 	var value *float64
@@ -852,18 +853,23 @@ func (p *PgQueryPlane) aggregate(ctx context.Context, q domain.KnowledgeQuery, s
 	return []domain.QueryRow{row}, nil
 }
 
-// filterEvents keeps events whose evidence classification passes the scope,
+// filterEvents keeps events whose evidence classification — narrowed by the
+// event's own row classification (ADR-0158 D2) — passes the scope,
 // resolving provenance in one batch (fail closed on unresolvable evidence).
 func (p *PgQueryPlane) filterEvents(ctx context.Context, scope *domain.TagPredicate, evs []domain.Event) ([]domain.Event, error) {
 	// AllowsRow (inside guardNodes): an event reaches scope through its
 	// evidence, which carries parties as well as tags (ADR-0121).
-	return guardNodes(ctx, p, scope, evs, eventEvidence)
+	return guardNodes(ctx, p, scope, evs, eventRefs)
 }
 
-func eventEvidence(ev domain.Event) []string { return []string{string(ev.EvidenceID)} }
+// eventRefs is what an event stands on: its evidence and its own row
+// classification (ADR-0158 D2).
+func eventRefs(ev domain.Event) []guardRef {
+	return []guardRef{{evidence: string(ev.EvidenceID), rowTags: ev.Classification}}
+}
 
 // eventsFor — ENFORCED in SQL via each event's evidence classification
-// (sqlfence.EvidenceExists, the rendering point/aggregate use), with the LIMIT AFTER
+// (sqlfence.TypedRowExists, the rendering point/aggregate use), with the LIMIT AFTER
 // the fence: the page is the first `limit` events the caller may read, oldest
 // first, and the range is never loaded whole only to be cut in Go
 // (T-20261112-substrate-query-shapes-apply-limit-before-the). The event
@@ -871,9 +877,9 @@ func eventEvidence(ev domain.Event) []string { return []string{string(ev.Evidenc
 // excluded (notRetired, ADR-0147) — and the page's roles load in one statement.
 func (p *PgQueryPlane) eventsFor(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
 	args := []any{defaultNamespace, q.From.UTC(), q.To.UTC(), q.EntityID}
-	// The events are aliased ev, not e: sqlfence.EvidenceExists' EXISTS names the
+	// The events are aliased ev, not e: sqlfence.TypedRowExists' EXISTS names the
 	// evidence table e and would shadow an events alias of that name.
-	scopeCond, extra := sqlfence.EvidenceExists(scope, "ev.evidence_id", len(args))
+	scopeCond, extra := sqlfence.TypedRowExists(scope, "ev.evidence_id", "ev.classification", len(args))
 	args = append(args, extra...)
 	args = append(args, limit)
 	sqlRows, err := p.pool.Query(ctx, `
@@ -950,7 +956,7 @@ func (p *PgQueryPlane) traverse(ctx context.Context, q domain.KnowledgeQuery, sc
 			}
 		}
 		kept, err := guardNodes(ctx, p, scope, batch,
-			func(x keyedNode[domain.Event]) []string { return eventEvidence(x.node) })
+			func(x keyedNode[domain.Event]) []guardRef { return eventRefs(x.node) })
 		if err != nil {
 			return nil, err
 		}
