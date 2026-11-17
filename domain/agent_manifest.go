@@ -42,4 +42,19 @@ type AgentManifest struct {
 	// never streams twice (ADR-0139 amendment 2026-11-06). Published on the A2A
 	// card's Cambrian extension.
 	StreamsOutput bool `json:"streams_output,omitempty"`
+	// SandboxPaths are the paths this agent needs beyond its code and runtime
+	// when it runs confined (ADR-0157 D1.2): model caches, data it reads. Each
+	// is shown at its own path, read-only unless Write. The operator's
+	// execution.agents.sandbox.allowlist_cap caps them: a path the cap does not
+	// admit, or one inside the kernel's own state, refuses the boot with the
+	// path named. Read only when execution.agents.sandbox.enabled.
+	SandboxPaths []SandboxPath `json:"sandbox_paths,omitempty"`
+}
+
+// SandboxPath is one declared path of an agent's confinement allowlist.
+type SandboxPath struct {
+	// Path is absolute, or starts with ~/ (the kernel user's home directory).
+	Path string `json:"path"`
+	// Write makes the path writable for the agent (a model cache it fills).
+	Write bool `json:"write,omitempty"`
 }

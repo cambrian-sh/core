@@ -498,6 +498,8 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	// ADR-0139 D8: the sandbox work root, hidden paths and catalog file.
 	anchorSandboxPaths(cfg, configPath)
+	// ADR-0157 D1: the kernel-state paths confined agents never see.
+	anchorAgentSandboxPaths(cfg, configPath, baseDir)
 
 	// Capture the store handle so the force-quit signal handler can close it
 	// before os.Exit(1), preventing bbolt corruption on double-SIGTERM.

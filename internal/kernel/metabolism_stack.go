@@ -126,10 +126,12 @@ func NewMetabolismStack(
 	manager.SetAgentContainment(agentmgr.AgentContainment{
 		ThirdPartyDegrade:  !agentSandbox.Refuses(),
 		ThirdPartyMemoryMB: agentSandbox.Memory(),
+		Sandbox:            agentSandboxFromConfig(cfg),
 	})
 	slog.Info("ADR-0139 D8: agent containment by trust tier",
 		"third_party_on_unavailable", map[bool]string{true: "refuse", false: "degrade"}[agentSandbox.Refuses()],
-		"third_party_memory_mb", agentSandbox.Memory())
+		"third_party_memory_mb", agentSandbox.Memory(),
+		"sandbox_enabled", cfg.Execution.Agents.Sandbox.Enabled)
 	// T-20261102-kg-extractor-cold-start-drops-the-first-kg: how long a spawned
 	// agent may take to open its socket before its boot fails.
 	manager.SetAgentBootTimeout(time.Duration(cfg.Execution.Agents.AgentBootTimeoutMs) * time.Millisecond)
@@ -276,4 +278,38 @@ func (s *MetabolismStack) EnqueueVerification() executer.EnqueueVerification {
 // newly-registered or changed agents for profile seeding.
 func (s *MetabolismStack) ProfileSeedEnqueuer() func(domain.AgentDefinition) {
 	return s.ProfileSeeder.Enqueue
+}
+
+// agentSandboxFromConfig is execution.agents.sandbox as the instance manager
+// applies it: nil when disabled (the launch is unchanged), else the ADR-0157 S1
+// agent sandbox. The kernel-state and runtime paths were resolved by the
+// composition root (app.anchorAgentSandboxPaths); the host tool locations
+// (bwrap, docker, the cgroup parent) are mcp.sandbox's, one fact per host.
+func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
+	sb := cfg.Execution.Agents.Sandbox
+	if !sb.Enabled {
+		return nil
+	}
+	s := agentmgr.NewAgentSandbox(agentmgr.AgentSandboxOptions{
+		Runner:           sb.RunnerOrDefault(),
+		WorkRoot:         sb.WorkRoot,
+		FirstPartyRefuse: sb.FirstParty.Refuses(),
+		ThirdPartyRefuse: sb.ThirdParty.Refuses(),
+		HidePaths:        sb.HidePaths,
+		KernelStatePaths: sb.KernelStatePaths,
+		KernelDir:        sb.KernelDir,
+		RuntimeReadPaths: sb.RuntimeReadPaths,
+		AllowlistCap:     sb.AllowlistCap,
+		DockerImage:      sb.DockerImage,
+		DockerUser:       sb.DockerUser,
+		BwrapPath:        cfg.MCP.Sandbox.BwrapPath,
+		DockerPath:       cfg.MCP.Sandbox.DockerPath,
+		CgroupParent:     cfg.MCP.Sandbox.CgroupParent,
+	})
+	p := s.Policy()
+	slog.Info("ADR-0157 S1: agents launch through the sandbox (D1 confinement, every tier)",
+		"runner", sb.RunnerOrDefault(), "work_root", p.WorkRoot, "hidden", p.HidePaths,
+		"first_party_on_unavailable", map[bool]string{true: "refuse", false: "degrade"}[sb.FirstParty.Refuses()],
+		"allowlist_cap", sb.AllowlistCap)
+	return s
 }

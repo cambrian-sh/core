@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -80,6 +81,9 @@ type InstanceManager struct {
 	// containment is execution.agents.sandbox (containment.go); its zero value
 	// refuses third-party agents (fail closed).
 	containment AgentContainment
+	// reported records the agent ids whose ADR-0157 containment report was
+	// already logged at INFO/WARN (agent_sandbox.go reportContainment).
+	reported sync.Map
 }
 
 // SetEnvPassthrough configures the operator-declared agent env allowlist extras
@@ -307,7 +311,12 @@ const maxSocketPathLen = 107
 // truncated only if the budget demands it -- with a short digest appended so two
 // long ids that share a prefix cannot collide onto one socket.
 func socketPath(agentID, instanceID string) string {
-	dir := os.TempDir()
+	return socketPathIn(os.TempDir(), agentID, instanceID)
+}
+
+// socketPathIn is socketPath under dir: the OS temp directory, or an
+// instance's socket directory when agents are sandboxed (ADR-0157 D2.6).
+func socketPathIn(dir, agentID, instanceID string) string {
 	shortInstance := instanceID
 	if len(shortInstance) > 8 {
 		shortInstance = strings.ReplaceAll(shortInstance, "-", "")[:8]
@@ -337,7 +346,7 @@ func socketPath(agentID, instanceID string) string {
 // streamID is only used when def.Trait == TraitDaemon; it is ignored otherwise.
 // An empty streamID omits the --stream-id flag even for daemon agents. ADR-0033.
 func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *domain.Instance, streamID string) (*exec.Cmd, error) {
-	sockPath := socketPath(def.ID, inst.ID)
+	sockPath := im.agentSocketPath(def.ID, inst.ID)
 	var cmd *exec.Cmd
 	switch def.Runtime {
 	case domain.RuntimePython:
@@ -623,7 +632,7 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	if err != nil {
 		return nil, err
 	}
-	inst.SocketPath = socketPath(def.ID, inst.ID)
+	inst.SocketPath = im.agentSocketPath(def.ID, inst.ID)
 
 	token, err := generateAuthToken()
 	if err != nil {
@@ -633,37 +642,47 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	cmd.Args = append(cmd.Args, "--auth-token", token)
 
 	cmd.Dir = def.Dir
-	configureSysProcAttr(cmd)
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe error: %v", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stderr pipe error: %v", err)
-	}
-	// SEC-01 / lifetime: bind the child's life to ours before it exists, so a hard kill
-	// of the kernel cannot leave it running.
-	containLifetime(cmd)
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	// SEC-01: cap the agent's memory after start (Windows Job Object / Unix
-	// RLIMIT_AS). A failure here is non-fatal — the agent still runs uncapped and
-	// the error is logged rather than aborting boot.
-	if cleanup, capErr := applyResourceCaps(cmd, memMB); capErr != nil {
-		if agentTrustTier(def) == agentTierThirdParty {
-			// A third-party agent's memory cap is a containment control, not
-			// best-effort: no cap, no agent.
-			_ = cmd.Process.Kill()
-			return nil, fmt.Errorf("agent %s (third-party): memory cap not applied: %w", def.ID, capErr)
+	var stdout, stderr io.ReadCloser
+	var onExit func()
+	if im.containment.Sandbox != nil {
+		// ADR-0157 S1: the same argv/env, launched through internal/sandbox.
+		if cmd, stdout, stderr, onExit, err = im.startSandboxed(ctx, def, inst, cmd, memMB); err != nil {
+			return nil, err
 		}
-		slog.Warn("SEC-01: failed to apply agent resource caps", "agent_id", def.ID, "err", capErr)
-	} else if cleanup != nil {
-		im.mu.Lock()
-		im.capCleanups[inst.ID] = cleanup
-		im.mu.Unlock()
+	} else {
+		configureSysProcAttr(cmd)
+
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stdout pipe error: %v", err)
+		}
+		stderr, err = cmd.StderrPipe()
+		if err != nil {
+			return nil, fmt.Errorf("stderr pipe error: %v", err)
+		}
+		// SEC-01 / lifetime: bind the child's life to ours before it exists, so a hard kill
+		// of the kernel cannot leave it running.
+		containLifetime(cmd)
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+		// SEC-01: cap the agent's memory after start (Windows Job Object / Unix
+		// RLIMIT_AS). A failure here is non-fatal — the agent still runs uncapped and
+		// the error is logged rather than aborting boot.
+		if cleanup, capErr := applyResourceCaps(cmd, memMB); capErr != nil {
+			if agentTrustTier(def) == agentTierThirdParty {
+				// A third-party agent's memory cap is a containment control, not
+				// best-effort: no cap, no agent.
+				_ = cmd.Process.Kill()
+				return nil, fmt.Errorf("agent %s (third-party): memory cap not applied: %w", def.ID, capErr)
+			}
+			slog.Warn("SEC-01: failed to apply agent resource caps", "agent_id", def.ID, "err", capErr)
+		} else if cleanup != nil {
+			im.mu.Lock()
+			im.capCleanups[inst.ID] = cleanup
+			im.mu.Unlock()
+		}
 	}
 	go forwardPipe(ctx, stdout, def.ID, false)
 	go forwardPipe(ctx, stderr, def.ID, true)
@@ -671,7 +690,7 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	// Phase 1: wait for the UDS socket (fast inode-level check) — or for the boot
 	// timeout, the caller's ctx, or the child EXITING, whichever comes first
 	// (process_exit.go).
-	exit := im.watchExit(inst.ID, cmd)
+	exit := im.watchExitThen(inst.ID, cmd, onExit)
 	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "agent "+def.ID, im.bootTimeout); err != nil {
 		im.forgetExit(inst.ID)
 		return nil, err
@@ -721,7 +740,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	if err != nil {
 		return nil, err
 	}
-	inst.SocketPath = socketPath(def.ID, inst.ID)
+	inst.SocketPath = im.agentSocketPath(def.ID, inst.ID)
 
 	// Append --daemon-params JSON before token injection.
 	if len(params) > 0 {
@@ -740,33 +759,43 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	inst.AuthToken = token
 	cmd.Args = append(cmd.Args, "--auth-token", token)
 	cmd.Dir = def.Dir
-	configureSysProcAttr(cmd)
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("daemon stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("daemon stderr pipe: %w", err)
-	}
-	// SEC-01 / lifetime: bind the child's life to ours before it exists, so a hard kill
-	// of the kernel cannot leave it running.
-	containLifetime(cmd)
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	// SEC-01: daemons are the longest-lived, most-exposed agents — cap first.
-	if cleanup, capErr := applyResourceCaps(cmd, memMB); capErr != nil {
-		if agentTrustTier(def) == agentTierThirdParty {
-			_ = cmd.Process.Kill()
-			return nil, fmt.Errorf("daemon %s (third-party): memory cap not applied: %w", def.ID, capErr)
+	var stdout, stderr io.ReadCloser
+	var onExit func()
+	if im.containment.Sandbox != nil {
+		// ADR-0157 S1: the same argv/env, launched through internal/sandbox.
+		if cmd, stdout, stderr, onExit, err = im.startSandboxed(ctx, def, inst, cmd, memMB); err != nil {
+			return nil, err
 		}
-		slog.Warn("SEC-01: failed to apply daemon resource caps", "agent_id", def.ID, "err", capErr)
-	} else if cleanup != nil {
-		im.mu.Lock()
-		im.capCleanups[inst.ID] = cleanup
-		im.mu.Unlock()
+	} else {
+		configureSysProcAttr(cmd)
+
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("daemon stdout pipe: %w", err)
+		}
+		stderr, err = cmd.StderrPipe()
+		if err != nil {
+			return nil, fmt.Errorf("daemon stderr pipe: %w", err)
+		}
+		// SEC-01 / lifetime: bind the child's life to ours before it exists, so a hard kill
+		// of the kernel cannot leave it running.
+		containLifetime(cmd)
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+		// SEC-01: daemons are the longest-lived, most-exposed agents — cap first.
+		if cleanup, capErr := applyResourceCaps(cmd, memMB); capErr != nil {
+			if agentTrustTier(def) == agentTierThirdParty {
+				_ = cmd.Process.Kill()
+				return nil, fmt.Errorf("daemon %s (third-party): memory cap not applied: %w", def.ID, capErr)
+			}
+			slog.Warn("SEC-01: failed to apply daemon resource caps", "agent_id", def.ID, "err", capErr)
+		} else if cleanup != nil {
+			im.mu.Lock()
+			im.capCleanups[inst.ID] = cleanup
+			im.mu.Unlock()
+		}
 	}
 	go forwardPipe(ctx, stdout, def.ID, false)
 	go forwardPipe(ctx, stderr, def.ID, true)
@@ -774,7 +803,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	// Wait for the socket file — or for the child exiting first (process_exit.go).
 	// The crash watcher in daemon_spawner.go consumes the SAME exit, so the
 	// child is waited on exactly once.
-	exit := im.watchExit(inst.ID, cmd)
+	exit := im.watchExitThen(inst.ID, cmd, onExit)
 	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "daemon "+def.ID, im.bootTimeout); err != nil {
 		im.forgetExit(inst.ID)
 		return nil, err

@@ -27,12 +27,25 @@ type processExit struct {
 
 // watchExit starts the child's Wait goroutine and registers it under instanceID.
 func (im *InstanceManager) watchExit(instanceID string, cmd *exec.Cmd) *processExit {
+	return im.watchExitThen(instanceID, cmd, nil)
+}
+
+// watchExitThen is watchExit with a cleanup that runs after Wait returns and
+// BEFORE done closes, so an observer of the exit also sees it cleaned up. A
+// sandboxed agent's cleanup releases its sandbox (job object / cgroup /
+// container) and removes its scratch and socket directories (ADR-0157 D1.2:
+// deleted at exit). The goroutine is the one Wait goroutine every child
+// already has; nothing new is owned.
+func (im *InstanceManager) watchExitThen(instanceID string, cmd *exec.Cmd, after func()) *processExit {
 	pe := &processExit{done: make(chan struct{})}
 	im.mu.Lock()
 	im.exits[instanceID] = pe
 	im.mu.Unlock()
 	go func() {
 		pe.err = cmd.Wait()
+		if after != nil {
+			after()
+		}
 		close(pe.done)
 	}()
 	return pe

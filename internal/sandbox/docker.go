@@ -99,6 +99,9 @@ func imageFor(p *Policy, spec Spec, c Command) string {
 
 func dockerCapability(ctx context.Context, p *Policy, spec Spec, c Command) capability {
 	capab := capability{runner: RunnerDocker}
+	if spec.Agent != nil {
+		return dockerAgentCapability(ctx, p, spec, c)
+	}
 	if _, why := dockerReachable(ctx, p.DockerPath); why != "" {
 		capab.unusable = why
 		return capab
@@ -122,16 +125,19 @@ func dockerCapability(ctx context.Context, p *Policy, spec Spec, c Command) capa
 	return capab
 }
 
-func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, workdir string) (*Process, error) {
+func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Command, workdir string, start starter) error {
+	if spec.Agent != nil {
+		return startDockerAgent(ctx, p, spec, tp, c, workdir, start)
+	}
 	bin, why := dockerReachable(ctx, p.DockerPath)
 	if why != "" {
-		return nil, fmt.Errorf("sandbox: %s", why)
+		return fmt.Errorf("sandbox: %s", why)
 	}
 	image := imageFor(p, spec, c)
 	// Directories are created on the host; the process sees /work paths.
 	inner, err := workdirEnv(p, nil, true, workdir, containerWork, "/")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var rnd [4]byte
 	_, _ = rand.Read(rnd[:])
@@ -184,7 +190,7 @@ func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, rep R
 	cmd := exec.Command(bin, args...) //nolint:gosec // configured docker CLI and operator-configured command
 	cmd.Env = cliEnv
 	post := func() (osHandle, error) { return &containerHandle{bin: bin, name: name, cmd: cmd}, nil }
-	return launch(cmd, post, rep, tp)
+	return start(cmd, post)
 }
 
 // stripExt drops a Windows launcher extension: "npx.cmd" runs as "npx" in the image.

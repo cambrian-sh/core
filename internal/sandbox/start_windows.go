@@ -43,6 +43,8 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		},
 		missing: map[Control]string{
 			ControlNetwork: "no native egress control on Windows (AppContainer/WFP not built); declare egress or use runner docker",
+			// ADR-0157 D2.4: a low-integrity token denies writes up, never reads.
+			ControlHideState: "Windows low integrity confines writes only: reads of configs/, the key file and the data directories are NOT confined (the AppContainer-class runner is ADR-0157 S5)",
 		},
 	}
 	if tp.ConfineFS {
@@ -54,24 +56,29 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 	return c
 }
 
-func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, workdir string) (*Process, error) {
+func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string, start starter) error {
 	lowIL := tp.ConfineFS || tp.LowPrivilege
 	env, err := workdirEnv(p, c.Env, tp.ConfineFS, workdir, workdir, `\`)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if lowIL {
-		if err := labelLowIntegrity(workdir); err != nil {
-			return nil, fmt.Errorf("sandbox: label workdir low-integrity: %w", err)
+		for _, dir := range lowWritable(workdir, spec) {
+			if err := labelLowIntegrity(dir); err != nil {
+				return fmt.Errorf("sandbox: label %s low-integrity: %w", dir, err)
+			}
 		}
 	}
 	job, err := newJob(tp, tp.ConfineFS)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: job object: %w", err)
+		return fmt.Errorf("sandbox: job object: %w", err)
 	}
 	cmd := exec.Command(c.Path, c.Args...) //nolint:gosec // operator-configured command
 	cmd.Env = env
 	cmd.Dir = workdir
+	if c.Dir != "" {
+		cmd.Dir = c.Dir
+	}
 	attr := &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP,
 		HideWindow:    true,
@@ -81,7 +88,7 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, wor
 		tok, err = lowIntegrityToken()
 		if err != nil {
 			_ = windows.CloseHandle(job)
-			return nil, fmt.Errorf("sandbox: low-integrity token: %w", err)
+			return fmt.Errorf("sandbox: low-integrity token: %w", err)
 		}
 		attr.Token = syscall.Token(tok)
 	}
@@ -111,14 +118,33 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, wor
 		}
 		return h, nil
 	}
-	proc, err := launch(cmd, post, rep, tp)
+	err = start(cmd, post)
 	if tok != 0 {
 		_ = tok.Close() // the process holds its own copy once created
 	}
 	if err != nil {
 		_ = windows.CloseHandle(job)
 	}
-	return proc, err
+	return err
+}
+
+// lowWritable lists the directories a low-integrity process must be able to
+// write: its workdir and, for an agent (ADR-0157 D1/D2.6), its socket directory
+// and every path its manifest declared writable and the operator admitted.
+func lowWritable(workdir string, spec Spec) []string {
+	dirs := []string{workdir}
+	if spec.Agent == nil {
+		return dirs
+	}
+	if spec.Agent.SocketDir != "" {
+		dirs = append(dirs, spec.Agent.SocketDir)
+	}
+	for _, b := range spec.Agent.Binds {
+		if b.Write {
+			dirs = append(dirs, b.Path)
+		}
+	}
+	return dirs
 }
 
 // jobHandle owns the job and its limit watcher. kill terminates every process

@@ -85,6 +85,10 @@ const (
 	ControlFSConfine    Control = "fs_confine"    // writes only under the workdir / declared root
 	ControlNetwork      Control = "network"       // egress off unless declared
 	ControlLowPrivilege Control = "low_privilege" // a lower-privilege identity than the kernel's
+	// ControlHideState: the kernel's own state (Policy.HidePaths: configs/, the
+	// key file, data directories, the journal, the vault, other instances' work
+	// directories) cannot be READ (ADR-0157 D1). Wanted by the agent tiers only.
+	ControlHideState Control = "hide_state"
 )
 
 // on_unavailable values.
@@ -117,6 +121,9 @@ type TierPolicy struct {
 	ConfineFS    bool
 	DenyNetwork  bool
 	LowPrivilege bool
+	// HideState wants Policy.HidePaths unreadable (ADR-0157 D1). The MCP tiers
+	// leave it off: their reports are unchanged by it.
+	HideState bool
 	// Limits. 0 disables that one limit (and the control is then not wanted).
 	MemoryMB        int
 	MaxProcesses    int
@@ -240,6 +247,9 @@ type Spec struct {
 	TierSource string
 	Server     ServerSpec
 	Policy     *Policy
+	// Agent is set for a kernel-spawned agent launched through StartCmd
+	// (ADR-0157 S1); nil for an MCP server.
+	Agent *AgentSpec
 }
 
 // Resolved reports whether the spec came through Policy.Resolve.
@@ -315,6 +325,7 @@ func (s Spec) effective() (Spec, *Policy) {
 	p := DefaultPolicy()
 	r := p.Resolve(s.ServerID, "", "", false, s.Server)
 	r.TierSource = "unresolved"
+	r.Agent = s.Agent
 	return r, p
 }
 
@@ -368,6 +379,9 @@ func (tp TierPolicy) wanted() []Control {
 	}
 	if tp.LowPrivilege {
 		w = append(w, ControlLowPrivilege)
+	}
+	if tp.HideState {
+		w = append(w, ControlHideState)
 	}
 	return w
 }

@@ -55,6 +55,14 @@ type ManifestRecord struct {
 	// so the gateway forwards none for it (ADR-0139 amendment 2026-11-06). Read
 	// from a profile's `streams_output` or an AGENT_MANIFEST's key.
 	StreamsOutput bool `json:"streams_output,omitempty"`
+	// SandboxPaths: the agent's declared confinement allowlist (ADR-0157 D1.2).
+	SandboxPaths []SandboxPathRecord `json:"sandbox_paths,omitempty"`
+}
+
+// SandboxPathRecord is one declared sandbox path (domain.SandboxPath).
+type SandboxPathRecord struct {
+	Path  string `json:"path"`
+	Write bool   `json:"write,omitempty"`
 }
 
 // TaskEventRecord is the raw JSON shape stored in the bbolt task_events bucket.

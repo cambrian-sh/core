@@ -81,6 +81,7 @@ func (m *AgentMapper) ManifestToDomain(rec storage.ManifestRecord) domain.AgentM
 		Skills:           rec.Skills,
 		Examples:         rec.Examples,
 		StreamsOutput:    rec.StreamsOutput,
+		SandboxPaths:     sandboxPathsToDomain(rec.SandboxPaths), // ADR-0157 D1.2
 	}
 }
 
@@ -104,7 +105,30 @@ func (m *AgentMapper) ManifestToRecord(man domain.AgentManifest) storage.Manifes
 		Skills:           man.Skills,
 		Examples:         man.Examples,
 		StreamsOutput:    man.StreamsOutput,
+		SandboxPaths:     sandboxPathsToRecord(man.SandboxPaths), // ADR-0157 D1.2
 	}
+}
+
+func sandboxPathsToDomain(in []storage.SandboxPathRecord) []domain.SandboxPath {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]domain.SandboxPath, len(in))
+	for i, p := range in {
+		out[i] = domain.SandboxPath{Path: p.Path, Write: p.Write}
+	}
+	return out
+}
+
+func sandboxPathsToRecord(in []domain.SandboxPath) []storage.SandboxPathRecord {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]storage.SandboxPathRecord, len(in))
+	for i, p := range in {
+		out[i] = storage.SandboxPathRecord{Path: p.Path, Write: p.Write}
+	}
+	return out
 }
 
 // TaskEventToDomain converts a storage task event DTO to a domain task event.

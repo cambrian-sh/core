@@ -67,12 +67,17 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 				delete(c.missing, ControlProcesses)
 			}
 		}
+		c.enforced[ControlHideState] = "bwrap"
 		if tp.ConfineFS {
 			c.notes = append(c.notes, "fs: root read-only, writes only to the workdir (seen at "+bwrapWork+")"+rootNote(spec)+"; hide_paths masked")
 		}
 	} else {
 		c.missing[ControlFSConfine] = bwWhy
 		c.missing[ControlNetwork] = bwWhy
+		c.missing[ControlHideState] = bwWhy
+	}
+	if spec.Agent != nil && tp.HideState && runtime.GOOS == "linux" {
+		c.notes = append(c.notes, "fs: landlock and seccomp are not applied (bubblewrap mount namespace only)")
 	}
 	if os.Geteuid() == 0 {
 		if why := traversableByOthers(p.WorkRoot); why != "" {
@@ -99,7 +104,7 @@ func wantsBwrap(spec Spec, tp TierPolicy) bool {
 	return tp.ConfineFS || (tp.DenyNetwork && spec.Server.Network != NetworkEgress)
 }
 
-func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, workdir string) (*Process, error) {
+func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string, start starter) error {
 	bw, _ := bwrapUsable(p.BwrapPath)
 	useBwrap := bw != "" && wantsBwrap(spec, tp)
 	// Inside bubblewrap the workdir is mounted at bwrapWork, inside the
@@ -112,11 +117,11 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, wor
 	}
 	env, err := workdirEnv(p, c.Env, tp.ConfineFS, workdir, inner, "/")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	path, err := lookPathIn(c.Path, env)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if useBwrap {
 		if rel, ok := strings.CutPrefix(path, workdir+"/"); ok {
@@ -128,6 +133,9 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, wor
 	if dropUID {
 		_ = os.Chown(workdir, 65534, 65534)
 		chownTree(workdir, 65534, 65534)
+		if spec.Agent != nil && spec.Agent.SocketDir != "" {
+			_ = os.Chown(spec.Agent.SocketDir, 65534, 65534)
+		}
 	}
 
 	// sh -c 'ulimit …; exec "$@"' sh <path> <args…>
@@ -147,11 +155,14 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, wor
 	script := strings.Join(append(lim, `exec "$@"`), "; ")
 	argv := append([]string{"/bin/sh", "-c", script, "sh", path}, c.Args...)
 	if useBwrap {
-		argv = append(bwrapArgs(bw, p, spec, tp, workdir, unprivNS), argv...)
+		argv = append(bwrapArgs(bw, p, spec, tp, workdir, c.Dir, unprivNS), argv...)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // operator-configured command
 	cmd.Env = env
 	cmd.Dir = workdir
+	if c.Dir != "" && !useBwrap {
+		cmd.Dir = c.Dir // inside bubblewrap the directory is set by --chdir
+	}
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	setPdeathsig(attr)
 	if dropUID {
@@ -159,7 +170,7 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, wor
 	}
 	cg, cgErr := newCgroup(p.CgroupParent, spec.ServerID, tp)
 	if cgErr != nil {
-		return nil, fmt.Errorf("sandbox: cgroup: %w", cgErr)
+		return fmt.Errorf("sandbox: cgroup: %w", cgErr)
 	}
 	if cg != nil {
 		cg.attach(attr)
@@ -171,19 +182,29 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, rep Report, c Command, wor
 		}
 		return &groupHandle{pid: cmd.Process.Pid, cg: cg}, nil
 	}
-	proc, err := launch(cmd, post, rep, tp)
+	err = start(cmd, post)
 	if err != nil && cg != nil {
 		cg.closeFD()
 		cg.remove()
 	}
-	return proc, err
+	return err
 }
 
 // bwrapWork is where a bubblewrap sandbox sees its workdir.
 const bwrapWork = "/tmp/work"
 
-func bwrapArgs(bw string, p *Policy, spec Spec, tp TierPolicy, workdir string, userNS bool) []string {
+func bwrapArgs(bw string, p *Policy, spec Spec, tp TierPolicy, workdir, dir string, userNS bool) []string {
 	a := []string{bw, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"}
+	// ADR-0157 D1: an agent's binds outside the hide-list go first, so a hidden
+	// path inside one stays masked; binds inside a hidden path (its code in the
+	// kernel directory) go after the hides and re-expose only that subtree.
+	var after []Bind
+	if spec.Agent != nil {
+		var before []Bind
+		before, after, _ = splitBinds(spec.Agent.Binds, p.HidePaths)
+		a = appendBinds(a, before)
+	}
+	var hiddenDirs []string
 	for _, h := range p.HidePaths {
 		if h == "" {
 			continue
@@ -191,18 +212,37 @@ func bwrapArgs(bw string, p *Policy, spec Spec, tp TierPolicy, workdir string, u
 		if fi, err := os.Stat(h); err == nil {
 			if fi.IsDir() {
 				a = append(a, "--tmpfs", h)
+				hiddenDirs = append(hiddenDirs, h)
 			} else {
 				a = append(a, "--ro-bind", "/dev/null", h)
 			}
 		}
 	}
+	a = appendBinds(a, after)
 	a = append(a, "--bind", workdir, bwrapWork)
+	if spec.Agent != nil && spec.Agent.SocketDir != "" {
+		// D2.6: the socket directory at its own path, so the --socket the kernel
+		// passed and dials names the same file inside and outside.
+		a = append(a, "--bind", spec.Agent.SocketDir, spec.Agent.SocketDir)
+	}
 	if spec.Server.Root != "" {
 		if _, err := os.Stat(spec.Server.Root); err == nil {
 			a = append(a, "--bind", spec.Server.Root, spec.Server.Root)
 		}
 	}
-	a = append(a, "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session", "--chdir", bwrapWork)
+	if spec.Agent != nil {
+		// An agent's hidden directories are empty AND read-only (ADR-0157 D1):
+		// a write there must fail, not land in a throwaway tmpfs. Remounted
+		// last, after the binds that re-expose subtrees inside them were made.
+		for _, h := range hiddenDirs {
+			a = append(a, "--remount-ro", h)
+		}
+	}
+	chdir := bwrapWork
+	if dir != "" {
+		chdir = dir
+	}
+	a = append(a, "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session", "--chdir", chdir)
 	if userNS {
 		a = append(a, "--unshare-user")
 	}
@@ -210,6 +250,18 @@ func bwrapArgs(bw string, p *Policy, spec Spec, tp TierPolicy, workdir string, u
 		a = append(a, "--unshare-net")
 	}
 	return append(a, "--")
+}
+
+// appendBinds adds bubblewrap binds, each at its own path.
+func appendBinds(a []string, binds []Bind) []string {
+	for _, b := range binds {
+		if b.Write {
+			a = append(a, "--bind", b.Path, b.Path)
+		} else {
+			a = append(a, "--ro-bind", b.Path, b.Path)
+		}
+	}
+	return a
 }
 
 // groupHandle kills the process group (or the cgroup) and removes the cgroup.

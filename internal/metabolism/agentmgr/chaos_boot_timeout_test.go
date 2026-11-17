@@ -46,6 +46,12 @@ func TestMain(m *testing.M) {
 		time.Sleep(10 * time.Minute)
 		return
 	}
+	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "probe" {
+		// ADR-0157 S1 e2e: a confined agent that reports what it could reach
+		// (agent_sandbox_e2e_test.go).
+		runProbeAgent()
+		return
+	}
 	os.Exit(m.Run())
 }
 

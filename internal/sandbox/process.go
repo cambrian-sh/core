@@ -29,6 +29,9 @@ type Command struct {
 	// only ones a container runner forwards: the host's OS essentials (PATH,
 	// SYSTEMROOT…) mean nothing inside a Linux image.
 	Forward []string
+	// Dir is the process's working directory as it sees it; "" ⇒ its workdir
+	// (an MCP server). An agent runs in its own code directory (StartCmd).
+	Dir string
 }
 
 // ErrOutputCap is returned by Read when one stdout message exceeds the cap.
@@ -260,13 +263,12 @@ func Start(ctx context.Context, spec Spec, c Command) (*Process, Report, error) 
 		return nil, rep, fmt.Errorf("sandbox: workdir for %s: %w", spec.ServerID, err)
 	}
 	var proc *Process
-	switch runner {
-	case RunnerDocker:
-		proc, err = startDocker(ctx, p, spec, tp, rep, c, workdir)
-	default:
-		proc, err = startNative(p, spec, tp, rep, c, workdir)
+	start := func(cmd *exec.Cmd, post func() (osHandle, error)) error {
+		var lerr error
+		proc, lerr = launch(cmd, post, rep, tp)
+		return lerr
 	}
-	if err != nil {
+	if err := runnerStart(ctx, runner, p, spec, tp, c, workdir, start); err != nil {
 		return nil, rep, err
 	}
 	if rep.Degraded() {
@@ -274,6 +276,21 @@ func Start(ctx context.Context, spec Spec, c Command) (*Process, Report, error) 
 			"tier", spec.Tier, "missing", strings.Join(rep.Missing, "; "))
 	}
 	return proc, rep, nil
+}
+
+// starter starts a command a runner built and runs the runner's post-start
+// step (job assignment and resume on Windows, the cgroup fd on Linux). The
+// stdio launch (launch, for MCP servers) and the detached launch (StartCmd,
+// for agents) are the two starters; every runner builds its command once, for
+// both (ADR-0157 D2: one sandbox, never a second one for agents).
+type starter func(cmd *exec.Cmd, post func() (osHandle, error)) error
+
+// runnerStart builds c under the chosen runner and hands it to start.
+func runnerStart(ctx context.Context, runner string, p *Policy, spec Spec, tp TierPolicy, c Command, workdir string, start starter) error {
+	if runner == RunnerDocker {
+		return startDocker(ctx, p, spec, tp, c, workdir, start)
+	}
+	return startNative(p, spec, tp, c, workdir, start)
 }
 
 // launch starts cmd with pipe stdio and the supervising goroutines. post runs

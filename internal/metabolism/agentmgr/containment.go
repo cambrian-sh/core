@@ -28,6 +28,10 @@ type AgentContainment struct {
 	ThirdPartyDegrade bool
 	// ThirdPartyMemoryMB is the third-party memory cap; 0 ⇒ 2048.
 	ThirdPartyMemoryMB int
+	// Sandbox, when non-nil (execution.agents.sandbox.enabled), launches every
+	// agent of every tier through internal/sandbox with ADR-0157 D1
+	// confinement (agent_sandbox.go). nil keeps the launch exactly as before.
+	Sandbox *AgentSandbox
 }
 
 func (c AgentContainment) thirdPartyMemoryMB() int {
@@ -60,7 +64,14 @@ func agentTrustTier(def *domain.AgentDefinition) string {
 // deliver today (stages S2/S3 of the ticket build them): write confinement,
 // network denial, a low-privilege identity — and the memory cap where this OS
 // has no resource caps (process_caps_other.go).
-func thirdPartyMissing() []string {
+func (im *InstanceManager) thirdPartyMissing() []string {
+	if im.containment.Sandbox != nil {
+		// ADR-0157 S1: write confinement, a low-privilege identity and hidden
+		// kernel state are the sandbox's to enforce or report (its plan refuses
+		// or degrades by the same on_unavailable); the agents' kernel-only
+		// network is stage S2 and not built.
+		return []string{"network (kernel-only agent network: ADR-0157 S2, not built)"}
+	}
 	missing := []string{"fs_confine", "network", "low_privilege"}
 	if goruntime.GOOS != "windows" && goruntime.GOOS != "linux" {
 		missing = append(missing, "memory")
@@ -78,7 +89,7 @@ func (im *InstanceManager) admitLaunch(ctx context.Context, def *domain.AgentDef
 	if agentTrustTier(def) != agentTierThirdParty {
 		return im.spawnMemLimitMB(ctx, def), nil
 	}
-	missing := thirdPartyMissing()
+	missing := im.thirdPartyMissing()
 	if !im.containment.ThirdPartyDegrade {
 		return 0, fmt.Errorf("agent %s is third-party (ADR-0139 D8) and its containment is unavailable on the agent launch path (missing: %s); not started. "+
 			"Set execution.agents.sandbox.third_party.on_unavailable to \"degrade\" to run it with the env allowlist and the tier memory cap only",

@@ -85,6 +85,14 @@ func runFixture(mode string, args []string) int {
 		}
 		fmt.Printf("net=%v\n", err == nil)
 		_, _ = io.Copy(io.Discard, os.Stdin)
+	case "read": // try to read each args path; one "path=ok|denied" line each
+		for _, p := range args {
+			if _, err := os.ReadFile(p); err == nil {
+				fmt.Printf("%s=ok\n", p)
+			} else {
+				fmt.Printf("%s=denied\n", p)
+			}
+		}
 	case "write": // try to write inside the workdir and at args[0]
 		in := os.WriteFile("inside.txt", []byte("ok"), 0o600)
 		out := os.WriteFile(args[0], []byte("escaped"), 0o600)

@@ -198,7 +198,13 @@ Ticket `T-20261105-agent-stack-v2-worker-agent-runtime-plus`, part B.
 4. **Trust tier** is stored on the definition for the agent card and the console, and read
    at launch (ADR-0139 D8 stage 1, `execution.agents.sandbox`): first-party agents launch
    as before (env allowlist + SEC-01 cap); a `third-party` profile is refused unless
-   `execution.agents.sandbox.third_party.on_unavailable` is `degrade`.
+   `execution.agents.sandbox.third_party.on_unavailable` is `degrade`. With
+   `execution.agents.sandbox.enabled` (ADR-0157 S1, default off) every profile agent, of
+   every tier, runs through the kernel's sandbox without sight of the kernel's own state
+   (config, key file, data directories) and with a private scratch directory; where the
+   platform cannot hide reads (Windows) the boot log says so. Profiles have no
+   `sandbox_paths` key yet: `worker_agent.py` needs only the agents, prompts and skills
+   directories, which the kernel shows every agent.
 
 Only profiles get allowlist grants. A `tool_allowlist` in an ordinary agent's own
 `AGENT_MANIFEST` is not turned into grants: that would be a self-asserted privilege.
