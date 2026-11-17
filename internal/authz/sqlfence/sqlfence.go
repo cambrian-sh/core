@@ -19,6 +19,12 @@
 //   - with a valid own-rows term (ADR-0146, TagPredicate.OwnRowTerm):
 //     (main) OR (own_row AND ownrows), Check's disjunction term for term.
 //
+// A typed row that carries its own row classification R (ADR-0158 D2: events,
+// observations, links, object values derived from them) is fenced by the same
+// decision twice, AND-ed: over its base classification E, and over E || R with
+// the same parties (Shape.WithRowTags, TypedRowExists) — CheckRow(E,P) AND
+// CheckRow(E∪R,P). Narrow-only by construction; identical to today for R = ∅.
+//
 // A Shape only says how a table carries its tags. The differences between the
 // shapes are deliberate and each is a parameter with its reason (see Shape):
 // the table layout (TEXT[] vs jsonb), whether the row carries parties, how a nil
@@ -70,6 +76,13 @@ type Shape struct {
 	// NULL column would pass a predicate with no tag terms (owner fence only:
 	// unnest(NULL) is empty). ScopeMaintenance still sees it (no fence at all).
 	present bool
+	// rowTags names the row's OWN classification column (ADR-0158 D2): the tags a
+	// typed row (event, observation, link, an object-table value derived from
+	// one) carries beside the classification it stands on through col. Non-empty:
+	// the fence is fence(col) AND (cardinality(rowTags) = 0 OR fence(col ||
+	// rowTags)), both with the same parties — CheckRow(E,P) AND CheckRow(E∪R,P),
+	// narrow-only by construction. Set it only through WithRowTags.
+	rowTags string
 }
 
 // Evidence is the evidence table's shape: TEXT[] alias.classification plus the
@@ -149,6 +162,50 @@ func FenceClass(alias string) Shape {
 	return ObjectProperty(alias+".tags", alias+".parties")
 }
 
+// WithRowTags returns s fencing a row that carries its own classification in
+// rowCol (TEXT[]) beside the classification s already reads (ADR-0158 D2):
+//
+//	visible = fence(col) AND (cardinality(rowCol) = 0 OR fence(col || rowCol))
+//
+// with both fences over the same parties column. The first conjunct is s's
+// fence exactly as before, so the result can only REMOVE rows: tags that are
+// added cannot widen access, although required and any-of terms are monotone in
+// the tag set — which is why a plain fence over (col || rowCol) would not do
+// (ADR-0158 alternative 1). The second conjunct is the same terms (Shape.terms,
+// own-rows disjunction included) over the concatenated array, so no term logic
+// is restated; for an empty row classification it is skipped by the
+// cardinality test and the fence reads exactly as today. A NULL rowCol reads
+// as empty (`x || NULL` is x in Postgres, so the second fence equals the first).
+//
+// TEXT[] shapes only: no jsonb-tagged table carries typed rows, and a jsonb
+// concatenation would not be a tag array. A jsonb shape panics (a programming
+// error, caught by the first test that renders it).
+func (s Shape) WithRowTags(rowCol string) Shape {
+	if s.jsonb {
+		panic("sqlfence: WithRowTags on a jsonb shape (row classification is TEXT[] only)")
+	}
+	s.rowTags = rowCol
+	return s
+}
+
+// ObjectExtraRowTags is ObjectExtra for an entry that also carries the row
+// classification of the row its value came from under "row_tags" (ADR-0158 D2,
+// object tables): an absent or non-array "row_tags" is no row classification,
+// and the fence is then ObjectExtra's exactly in what it admits.
+func ObjectExtraRowTags(entry string) Shape {
+	rowTags := "ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(" + entry + "->'row_tags') = 'array' THEN " + entry + "->'row_tags' ELSE '[]'::jsonb END))"
+	return ObjectExtra(entry).WithRowTags(rowTags)
+}
+
+// FenceClassRowTags is FenceClass over a dictionary row that is a canonical
+// (tags, parties, row_tags) triple (ADR-0158 D2, object_fence_classes): the
+// fence a property value passes depends on its three companions alone, through
+// set operations only, so — as for pairs — the ids whose triple passes are
+// exactly the triples a property carrying them would pass.
+func FenceClassRowTags(alias string) Shape {
+	return FenceClass(alias).WithRowTags(alias + ".row_tags")
+}
+
 // Expr renders the fence as one boolean SQL expression with $n placeholders
 // numbered from startIdx+1, and its args: "TRUE" and nil when there is no fence.
 // For a reader that needs the fence as a value (a CASE WHEN, an OR of fences)
@@ -190,8 +247,30 @@ func (s Shape) Goqu(scope *domain.TagPredicate) []goqu.Expression {
 // an EXISTS against the evidence row aliased e. "" for ScopeMaintenance. The query
 // plane's point, history, aggregate, events and related shapes and the catalog all
 // use it, so they can never disagree.
+//
+// For a TYPED row (events, observations, links), which carries its own row
+// classification, use TypedRowExists (ADR-0158 D2): EvidenceExists ignores the
+// row's tags and would show a row a mapping restricted.
 func EvidenceExists(scope *domain.TagPredicate, refCol string, startIdx int) (string, []any) {
-	conds, args := Evidence("e").Where(scope, startIdx)
+	return evidenceExists(Evidence("e"), scope, refCol, startIdx)
+}
+
+// TypedRowExists renders "may this reader see the typed row whose evidence is
+// refCol and whose own classification is rowCol" (ADR-0158 D2): the
+// EvidenceExists EXISTS with the evidence shape WithRowTags(rowCol), i.e.
+// fence(E) AND (cardinality(R) = 0 OR fence(E || R, E.parties)). It can only
+// hide rows EvidenceExists shows, and for a row whose classification is empty
+// it admits exactly what EvidenceExists admits. "" for ScopeMaintenance.
+// rowCol is a column of the OUTER row (e.g. "o.classification"); the EXISTS
+// correlates on it.
+func TypedRowExists(scope *domain.TagPredicate, refCol, rowCol string, startIdx int) (string, []any) {
+	return evidenceExists(Evidence("e").WithRowTags(rowCol), scope, refCol, startIdx)
+}
+
+// evidenceExists is the EXISTS against the evidence row aliased e, fenced by
+// shape (Evidence("e"), possibly with row tags).
+func evidenceExists(shape Shape, scope *domain.TagPredicate, refCol string, startIdx int) (string, []any) {
+	conds, args := shape.Where(scope, startIdx)
 	if conds == "" {
 		return "", nil
 	}
@@ -222,15 +301,32 @@ func (s Shape) fence(scope *domain.TagPredicate) []expr {
 	if s.present {
 		present = []expr{leaf(s.col + " IS NOT NULL")}
 	}
+	out := append(present, s.decide(scope)...)
+	if s.rowTags == "" {
+		return out
+	}
+	// ADR-0158 D2: the same decision again over the concatenated classification,
+	// AND-ed (see WithRowTags). Parties stay s.parties: a row classification adds
+	// no parties.
+	narrowed := s
+	narrowed.col = "(" + s.col + " || " + s.rowTags + ")"
+	narrowed.rowTags = ""
+	return append(out, or(leaf("cardinality("+s.rowTags+") = 0"), and(narrowed.decide(scope)...)))
+}
+
+// decide is the predicate's decision over s.col as ANDed terms: the main terms,
+// or with a valid own-rows term (ADR-0146) the disjunction (main) OR (own_row
+// AND ownrows). Never empty.
+func (s Shape) decide(scope *domain.TagPredicate) []expr {
 	main := s.terms(scope)
 	own := scope.OwnRowTerm()
 	if own == nil {
-		return append(present, main...)
+		return main
 	}
 	// own_row: the row carries owner:<the reader's single owner>; the own-rows
 	// predicate's owner fence (held = that owner) supplies "and no other owner tag".
 	ownRow := append([]expr{s.containsOne(domain.OwnerTag(scope.Owners[0]))}, s.terms(own)...)
-	return append(present, or(and(main...), and(ownRow...)))
+	return []expr{or(and(main...), and(ownRow...))}
 }
 
 // terms renders one predicate's own terms (never its OwnRows). Never empty: the

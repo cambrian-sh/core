@@ -68,3 +68,26 @@ func FilterRows[T any](scope *domain.TagPredicate, rows []T, classOf func(T) ([]
 	}
 	return kept
 }
+
+// TypedRow is the classifications a TYPED row stands on (ADR-0158 D2): the
+// classification e it reaches through its evidence, and — when the row carries
+// its own row classification — e again with the row's tags added:
+//
+//	[e]                                         when row is empty
+//	[e, {Tags: e.Tags ∪ row, Parties: e.Parties}] otherwise
+//
+// FilterRows admits a row only if scope reads every classification, so this is
+// CheckRow(E,P) AND CheckRow(E∪R,P): narrow-only by construction (the first
+// classification is today's rule), identical to today for an empty row
+// classification, and no policy is restated here. Parties stay the evidence's:
+// a row classification adds no parties. The union is a fresh slice; e.Tags is
+// never written.
+func TypedRow(e Classification, row []string) []Classification {
+	if len(row) == 0 {
+		return []Classification{e}
+	}
+	tags := make([]string, 0, len(e.Tags)+len(row))
+	tags = append(tags, e.Tags...)
+	tags = append(tags, row...)
+	return []Classification{e, {Tags: tags, Parties: e.Parties}}
+}

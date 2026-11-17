@@ -136,3 +136,83 @@ func TestFence_ObjectExtraIsPerEntryAndFailsClosed(t *testing.T) {
 	}()
 	ObjectExtra("x.value").Expr(nil, 0)
 }
+
+// ADR-0158 D2: a row-tags shape is the base fence, unchanged and first, AND-ed
+// with the cardinality short-circuit over the same terms on the concatenation.
+func TestFence_WithRowTagsIsBaseAndNarrowed(t *testing.T) {
+	preds := []*domain.TagPredicate{
+		domain.ScopeSystem,
+		{Owners: []string{"alice"}, RequiredTags: []string{"sales"}, ForbiddenTags: []string{"hr"},
+			AnyOfClauses: [][]string{{"a"}}, PartyScopedTags: []string{"deal:x"}, PartyIdentities: []string{"p"}},
+		{Owners: []string{"alice"}, AnyOfClauses: [][]string{{"sales"}},
+			OwnRows: &domain.TagPredicate{Owners: []string{"alice"}}},
+	}
+	for _, p := range preds {
+		base, baseArgs := Evidence("e").Expr(p, 3)
+		typed, typedArgs := Evidence("e").WithRowTags("o.classification").Expr(p, 3)
+		if !strings.HasPrefix(typed, base[:len(base)-1]+" AND (cardinality(o.classification) = 0 OR (") {
+			t.Errorf("%+v: typed fence must start with the base fence and the short-circuit:\nbase:  %s\ntyped: %s", *p, base, typed)
+		}
+		if !strings.Contains(typed, "(e.classification || o.classification)") {
+			t.Errorf("%+v: second fence must read the concatenation: %s", *p, typed)
+		}
+		if strings.Contains(typed, "(e.parties || ") {
+			t.Errorf("%+v: a row classification adds no parties: %s", *p, typed)
+		}
+		if len(typedArgs) != 2*len(baseArgs) {
+			t.Errorf("%+v: the second fence binds the same args again: %d vs %d", *p, len(typedArgs), len(baseArgs))
+		}
+	}
+	if body, args := Evidence("e").WithRowTags("o.classification").Expr(domain.ScopeMaintenance, 0); body != "TRUE" || args != nil {
+		t.Errorf("maintenance must render no fence: %q %v", body, args)
+	}
+}
+
+// TypedRowExists is EvidenceExists with the row-tags shape: same EXISTS frame,
+// "" for maintenance, a nil predicate panics as on the evidence plane.
+func TestFence_TypedRowExists(t *testing.T) {
+	p := &domain.TagPredicate{ForbiddenTags: []string{"hr"}}
+	ev, _ := EvidenceExists(p, "o.evidence_id", 1)
+	tr, args := TypedRowExists(p, "o.evidence_id", "o.classification", 1)
+	if !strings.HasPrefix(tr, ev[:len(ev)-1]) || !strings.HasSuffix(tr, ")") {
+		t.Errorf("TypedRowExists must extend EvidenceExists' terms in place:\nev: %s\ntr: %s", ev, tr)
+	}
+	if !strings.Contains(tr, "cardinality(o.classification) = 0") || len(args) != 4 {
+		t.Errorf("unexpected rendering: %s %v", tr, args)
+	}
+	if sql, _ := TypedRowExists(domain.ScopeMaintenance, "o.evidence_id", "o.classification", 0); sql != "" {
+		t.Errorf("maintenance must render nothing: %q", sql)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a nil predicate must panic, as for EvidenceExists")
+		}
+	}()
+	TypedRowExists(nil, "o.evidence_id", "o.classification", 0)
+}
+
+func TestFence_WithRowTagsRefusesJSONB(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("WithRowTags on a jsonb shape must panic")
+		}
+	}()
+	JSONBTags("c").WithRowTags("c.row_tags")
+}
+
+func TestFence_ObjectRowTagVariants(t *testing.T) {
+	p := &domain.TagPredicate{ForbiddenTags: []string{"hr"}}
+	fc, _ := FenceClassRowTags("c").Expr(p, 0)
+	if !strings.Contains(fc, "cardinality(c.row_tags) = 0") || !strings.Contains(fc, "(c.tags || c.row_tags)") ||
+		!strings.Contains(fc, "c.tags IS NOT NULL") {
+		t.Errorf("FenceClassRowTags: %s", fc)
+	}
+	ex, _ := ObjectExtraRowTags("x.value").Expr(p, 0)
+	if !strings.Contains(ex, "x.value->'row_tags'") {
+		t.Errorf("ObjectExtraRowTags must read the entry's row_tags: %s", ex)
+	}
+	base, _ := ObjectExtra("x.value").Expr(p, 0)
+	if !strings.HasPrefix(ex, base[:len(base)-1]+" AND ") {
+		t.Errorf("ObjectExtraRowTags must keep ObjectExtra's fence first:\nbase: %s\nrow:  %s", base, ex)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/rowfence"
 )
 
 // Differential guard for ENG-1492 (AGENTS.md §2.5): the query plane's two
@@ -58,10 +59,12 @@ func legacyGuardNodes[T any](ctx context.Context, p *PgQueryPlane, scope *domain
 	return kept, nil
 }
 
-// rfNode is a walk node standing on the evidence ids it names.
+// rfNode is a walk node standing on the evidence ids it names, with its own row
+// classification (ADR-0158; ignored by the legacy/guardNodes comparison).
 type rfNode struct {
 	n   int
 	evs []string
+	row []string
 }
 
 func TestPg_RowfenceDifferential(t *testing.T) {
@@ -120,7 +123,7 @@ func TestPg_RowfenceDifferential(t *testing.T) {
 	plane := NewPgQueryPlane(pool, NewPgEventStore(pool, nil), NewPgKnowledgeStore(pool, nil), evs, nil,
 		NewPgEntityStore(pool, nil), nil)
 
-	var admitted, denied int
+	var admitted, denied, typedRestricted int
 	check := func(t *rapid.T, scope *domain.TagPredicate) {
 		nNodes := rapid.IntRange(0, 12).Draw(t, "nodes")
 		nodes := make([]rfNode, nNodes)
@@ -129,6 +132,9 @@ func TestPg_RowfenceDifferential(t *testing.T) {
 			k := rapid.IntRange(0, 3).Draw(t, fmt.Sprintf("node%d:evs", i))
 			for e := 0; e < k; e++ {
 				nodes[i].evs = append(nodes[i].evs, rapid.SampledFrom(pool2).Draw(t, fmt.Sprintf("node%d:ev%d", i, e)))
+			}
+			if rapid.Bool().Draw(t, fmt.Sprintf("node%d:has-row", i)) {
+				nodes[i].row = subset(t, typedRowTags, fmt.Sprintf("node%d:row", i))
 			}
 		}
 		of := func(n rfNode) []string { return n.evs }
@@ -145,6 +151,66 @@ func TestPg_RowfenceDifferential(t *testing.T) {
 		}
 		admitted += len(got)
 		denied += len(nodes) - len(got)
+
+		// ADR-0158 D2 (stage 2): the same nodes with their row classification,
+		// through rowfence.TypedRow on the same real evidence (the accessor the
+		// walks take in stage 3): CheckRow(E,P) && CheckRow(E∪R,P) for every
+		// evidence the node stands on, never wider than guardNodes, and identical
+		// to it for R = ∅.
+		var all []string
+		for _, n := range nodes {
+			all = append(all, n.evs...)
+		}
+		evTags, err := plane.evidenceTags(ctx, all)
+		if err != nil {
+			t.Fatalf("evidenceTags: %v", err)
+		}
+		typed := rowfence.FilterRows(scope, nodes, func(n rfNode) ([]rowfence.Classification, bool) {
+			var cs []rowfence.Classification
+			for _, id := range n.evs {
+				e, ok := evTags[id]
+				if !ok {
+					return nil, false
+				}
+				cs = append(cs, rowfence.TypedRow(rowfence.Classification{Tags: e.tags, Parties: e.parties}, n.row)...)
+			}
+			return cs, true
+		})
+		inGuard := map[int]bool{}
+		for _, n := range got {
+			inGuard[n.n] = true
+		}
+		inTyped := map[int]bool{}
+		for _, n := range typed {
+			inTyped[n.n] = true
+		}
+		for _, n := range nodes {
+			want := scope.Unfiltered()
+			if !want && scope != nil && len(n.evs) > 0 {
+				want = true
+				for _, id := range n.evs {
+					e, ok := evTags[id]
+					_, a := scope.CheckRow(e.tags, e.parties)
+					_, b := scope.CheckRow(append(append([]string{}, e.tags...), n.row...), e.parties)
+					if !ok || !a || !b {
+						want = false
+						break
+					}
+				}
+			}
+			if inTyped[n.n] != want {
+				t.Fatalf("TypedRow diverged from CheckRow(E,P) && CheckRow(E∪R,P) for %+v on node %+v: got %v", scope, n, inTyped[n.n])
+			}
+			if inTyped[n.n] && !inGuard[n.n] {
+				t.Fatalf("TypedRow WIDENED node %+v for %+v", n, scope)
+			}
+			if len(n.row) == 0 && inTyped[n.n] != inGuard[n.n] {
+				t.Fatalf("R = ∅ changed node %+v for %+v", n, scope)
+			}
+			if inGuard[n.n] && !inTyped[n.n] {
+				typedRestricted++
+			}
+		}
 
 		// evidenceRow: one inspection, judged before by AllowsRow on the stored row.
 		id := rapid.SampledFrom(ids).Draw(t, "inspect")
@@ -168,8 +234,8 @@ func TestPg_RowfenceDifferential(t *testing.T) {
 	// nil is not drawn by drawPredicate; both forms must deny every row for it.
 	rapid.Check(t, func(t *rapid.T) { check(t, nil) })
 
-	if admitted == 0 || denied == 0 {
-		t.Fatalf("vacuous differential: admitted=%d denied=%d", admitted, denied)
+	if admitted == 0 || denied == 0 || typedRestricted == 0 {
+		t.Fatalf("vacuous differential: admitted=%d denied=%d restricted-by-row-tags=%d", admitted, denied, typedRestricted)
 	}
-	t.Logf("rowfence differential: %d nodes admitted, %d denied, identical in both forms", admitted, denied)
+	t.Logf("rowfence differential: %d nodes admitted, %d denied, identical in both forms; row tags hid %d more", admitted, denied, typedRestricted)
 }

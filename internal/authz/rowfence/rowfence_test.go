@@ -129,3 +129,70 @@ func TestFilterRows_NoAliasingAndNoAccessorWhenUnfiltered(t *testing.T) {
 		t.Fatalf("empty input: %v", out)
 	}
 }
+
+// TypedRow (ADR-0158 D2): one classification for an empty row classification,
+// otherwise the evidence's and the union, parties unchanged, input not aliased.
+func TestTypedRow_Shape(t *testing.T) {
+	e := Classification{Tags: []string{"internal"}, Parties: []string{"p1"}}
+	for _, row := range [][]string{nil, {}} {
+		if got := TypedRow(e, row); !reflect.DeepEqual(got, []Classification{e}) {
+			t.Errorf("empty row classification %#v: got %#v, want only e", row, got)
+		}
+	}
+	tags := make([]string, 1, 4) // spare capacity: an append on e.Tags would write into it
+	tags[0] = "internal"
+	e.Tags = tags
+	got := TypedRow(e, []string{"hr"})
+	want := []Classification{e, {Tags: []string{"internal", "hr"}, Parties: []string{"p1"}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+	if got := TypedRow(e, []string{"pay"}); got[1].Tags[1] != "pay" || want[1].Tags[1] != "hr" {
+		t.Fatalf("TypedRow must not alias e.Tags: %#v / %#v", got, want)
+	}
+}
+
+// Through FilterRows, TypedRow is CheckRow(E,P) && CheckRow(E∪R,P): a closed tag
+// in R hides the row from a reader it is forbidden to; a party-scoped tag in R
+// admits only the evidence's parties; an open tag that satisfies an any-of
+// clause never widens (the row stays hidden when E alone fails).
+func TestTypedRow_NarrowOnlyThroughFilterRows(t *testing.T) {
+	type typed struct {
+		name string
+		e    Classification
+		r    []string
+	}
+	of := func(x typed) ([]Classification, bool) { return TypedRow(x.e, x.r), true }
+	rows := []typed{
+		{"plain", Classification{Tags: []string{"internal"}}, nil},
+		{"closed", Classification{Tags: []string{"internal"}}, []string{"hr"}},
+		{"party-mine", Classification{Tags: []string{"internal"}, Parties: []string{"p1"}}, []string{"deal:x"}},
+		{"party-other", Classification{Tags: []string{"internal"}, Parties: []string{"p2"}}, []string{"deal:x"}},
+		{"would-widen", Classification{Tags: []string{"internal"}}, []string{"finance"}},
+	}
+	cases := []struct {
+		name string
+		p    *domain.TagPredicate
+		want []string
+	}{
+		{"forbids hr", &domain.TagPredicate{ForbiddenTags: []string{"hr"}, PartyScopedTags: []string{"deal:x"}, PartyIdentities: []string{"p1"}},
+			[]string{"plain", "party-mine", "would-widen"}},
+		{"any-of finance cannot be satisfied by R", &domain.TagPredicate{AnyOfClauses: [][]string{{"finance"}}}, []string{}},
+		{"maintenance", domain.ScopeMaintenance, []string{"plain", "closed", "party-mine", "party-other", "would-widen"}},
+	}
+	for _, c := range cases {
+		got := []string{}
+		for _, x := range FilterRows(c.p, rows, of) {
+			got = append(got, x.name)
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+		// Never wider than the evidence alone.
+		for _, x := range FilterRows(c.p, rows, of) {
+			if !c.p.Unfiltered() && !Readable(c.p, x.e) {
+				t.Errorf("%s: %s admitted though its evidence is not readable", c.name, x.name)
+			}
+		}
+	}
+}
