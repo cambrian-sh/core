@@ -103,6 +103,16 @@ const (
 	RunnerDocker = "docker"
 )
 
+// Mechanisms a Report names that callers act on.
+const (
+	// MechanismAppContainer: the Windows AppContainer-class runner (ADR-0157
+	// S5). Its process has no loopback network: an agent under it reaches the
+	// kernel only through the unix kernel socket in its socket directory.
+	MechanismAppContainer = "appcontainer"
+	// MechanismSeatbelt: the macOS Seatbelt (sandbox-exec) runner (ADR-0157 S5).
+	MechanismSeatbelt = "seatbelt"
+)
+
 // Network declarations.
 const (
 	NetworkNone   = "none"   // no egress (the default for a server that declares nothing)
@@ -392,8 +402,8 @@ type Report struct {
 	Tier       Tier
 	TierSource string
 	Runner     string
-	// Mechanisms name what enforced it: job_object, low_integrity, ulimit,
-	// bwrap, cgroup, uid, docker, process_group.
+	// Mechanisms name what enforced it: job_object, low_integrity,
+	// appcontainer, seatbelt, ulimit, bwrap, cgroup, uid, docker, process_group.
 	Mechanisms []string
 	Enforced   []Control
 	// Missing are wanted controls this platform could not enforce,

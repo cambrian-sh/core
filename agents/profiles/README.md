@@ -203,10 +203,12 @@ Ticket `T-20261105-agent-stack-v2-worker-agent-runtime-plus`, part B.
    `execution.agents.sandbox.third_party.on_unavailable` is `degrade`. With
    `execution.agents.sandbox.enabled` (ADR-0157 S1, default off) every profile agent, of
    every tier, runs through the kernel's sandbox without sight of the kernel's own state
-   (config, key file, data directories) and with a private scratch directory; where the
-   platform cannot hide reads (Windows) the boot log says so. Profiles have no
-   `sandbox_paths` key yet: `worker_agent.py` needs only the agents, prompts and skills
-   directories, which the kernel shows every agent.
+   (config, key file, data directories) and with a private scratch directory. On Windows
+   that is an AppContainer (ADR-0157 S5): the interpreter must be one the kernel can grant
+   (a user-owned install or venv; an Administrators-owned `C:\PythonXY` falls back to low
+   integrity, where reads are not hidden, and the boot log says so and names the fix). The
+   starter profiles need no `sandbox_paths`: `worker_agent.py` needs only the agents,
+   prompts and skills directories, which the kernel shows every agent.
 
 Only profiles get allowlist grants. A `tool_allowlist` in an ordinary agent's own
 `AGENT_MANIFEST` is not turned into grants: that would be a self-asserted privilege.

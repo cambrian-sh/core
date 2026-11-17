@@ -33,8 +33,10 @@ import (
 type AgentSandboxConfig struct {
 	// Enabled launches agents through the sandbox (ADR-0157 S1). Default false.
 	Enabled bool `json:"enabled,omitempty"`
-	// Runner: "native" (default; Linux bubblewrap, Windows Job Object + low
-	// integrity) or "docker" (Linux hosts: one container per agent instance).
+	// Runner: "native" (default; Linux bubblewrap, Windows Job Object + an
+	// AppContainer token — low integrity when a runtime path cannot be granted —,
+	// macOS a Seatbelt profile; ADR-0157 S5) or "docker" (Linux hosts: one
+	// container per agent instance).
 	Runner string `json:"runner,omitempty"`
 	// WorkRoot holds every instance's scratch and socket directory; relative
 	// paths resolve against the config directory. "" ⇒ <user cache>/cambrian/agents.
@@ -55,9 +57,11 @@ type AgentSandboxConfig struct {
 	DockerUser string `json:"docker_user,omitempty"`
 	// Network is the agents' network policy when enabled (ADR-0157 D3, Q3):
 	// "per_tier" (default; "" means it) — third-party agents are kernel-only
-	// (no network namespace / --network none; they reach the kernel through a
-	// unix socket in their socket directory), first-party and system agents keep
-	// the normal network; "kernel_only_all" — every agent is kernel-only, for
+	// (no network namespace / --network none / no AppContainer network
+	// capability / a Seatbelt network deny; they reach the kernel through a unix
+	// socket in their socket directory), first-party and system agents keep
+	// the normal network (on Windows without loopback: the AppContainer reaches
+	// the kernel through the socket too); "kernel_only_all" — every agent is kernel-only, for
 	// sovereign and defence installs (first-party agents then reach the outside
 	// only through kernel-mediated tools).
 	Network string `json:"network,omitempty"`

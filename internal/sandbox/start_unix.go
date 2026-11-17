@@ -36,7 +36,9 @@ import (
 //   - low_privilege: only when the kernel runs as root, the process (or bwrap)
 //     runs as nobody (65534). A non-root kernel has no lower identity to drop
 //     to; that tier needs runner docker.
-//   - macOS / BSD: the sh ulimit limits and the process group only.
+//   - macOS / BSD: the sh ulimit limits and the process group; on macOS an
+//     AGENT additionally runs under a generated Seatbelt profile (sandbox-exec,
+//     seatbelt.go; ADR-0157 S5) for fs_confine, hide_state and network.
 func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 	c := capability{
 		runner: RunnerNative,
@@ -82,6 +84,19 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 	if spec.Agent != nil && tp.HideState && runtime.GOOS == "linux" {
 		c.notes = append(c.notes, "fs: landlock and seccomp are not applied (bubblewrap mount namespace only)")
 	}
+	if useSeatbelt(spec, tp) {
+		// ADR-0157 S5 (D2.3): the Seatbelt profile (seatbelt.go) enforces the D1
+		// shape on macOS, and the network for a kernel-only tier.
+		for _, ctl := range []Control{ControlFSConfine, ControlNetwork, ControlHideState} {
+			c.enforced[ctl] = MechanismSeatbelt
+			delete(c.missing, ctl)
+		}
+		c.notes = append(c.notes, "fs: Seatbelt (sandbox-exec): root readable, hide_paths denied, writes only to the workdir, the socket directory and declared writable paths",
+			"seatbelt: the profile is unit-tested but has not yet run in a live macOS e2e (ADR-0157 S5 follow-up)")
+		if tp.DenyNetwork {
+			c.notes = append(c.notes, "network: kernel-only (Seatbelt denies the network but the unix sockets in the socket directory)")
+		}
+	}
 	if os.Geteuid() == 0 {
 		if why := traversableByOthers(p.WorkRoot); why != "" {
 			c.missing[ControlLowPrivilege] = "uid 65534 could not reach its workdir: " + why +
@@ -93,6 +108,72 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		c.missing[ControlLowPrivilege] = "the kernel is not root, so there is no lower uid to switch to; use runner docker"
 	}
 	return c
+}
+
+var seatbeltMemo struct {
+	once sync.Once
+	path string
+}
+
+// seatbeltExec is sandbox-exec's path on macOS ("" elsewhere or when absent).
+func seatbeltExec() string {
+	seatbeltMemo.once.Do(func() {
+		if runtime.GOOS != "darwin" {
+			return
+		}
+		if p, err := exec.LookPath("sandbox-exec"); err == nil {
+			seatbeltMemo.path = p
+		} else if _, err := os.Stat("/usr/bin/sandbox-exec"); err == nil {
+			seatbeltMemo.path = "/usr/bin/sandbox-exec"
+		}
+	})
+	return seatbeltMemo.path
+}
+
+// useSeatbelt: an agent on macOS whose tier wants a control the profile gives
+// (ADR-0157 S5). MCP servers keep the ulimit-only runner there for now.
+func useSeatbelt(spec Spec, tp TierPolicy) bool {
+	return spec.Agent != nil && seatbeltExec() != "" &&
+		(tp.ConfineFS || tp.HideState || (tp.DenyNetwork && spec.Server.Network != NetworkEgress))
+}
+
+// seatbeltInputFor is the profile input for a launch, every path resolved on
+// the host (Seatbelt matches resolved paths: /var is /private/var on macOS).
+func seatbeltInputFor(p *Policy, spec Spec, tp TierPolicy, workdir string) seatbeltInput {
+	canon := func(s string) string {
+		if r, err := filepath.EvalSymlinks(s); err == nil {
+			return r
+		}
+		return filepath.Clean(s)
+	}
+	in := seatbeltInput{Workdir: canon(workdir), HideFiles: map[string]bool{},
+		DenyNetwork: tp.DenyNetwork && spec.Server.Network != NetworkEgress}
+	if spec.Server.Root != "" {
+		in.Root = canon(spec.Server.Root)
+	}
+	for _, h := range p.HidePaths {
+		if h == "" {
+			continue
+		}
+		ch := canon(h)
+		in.Hide = append(in.Hide, ch)
+		if fi, err := os.Stat(h); err == nil && !fi.IsDir() {
+			in.HideFiles[ch] = true
+		}
+	}
+	if spec.Agent != nil {
+		if spec.Agent.SocketDir != "" {
+			in.SocketDir = canon(spec.Agent.SocketDir)
+		}
+		for _, b := range spec.Agent.Binds {
+			if b.Path == "" {
+				continue
+			}
+			b.Path = canon(b.Path)
+			in.Binds = append(in.Binds, b)
+		}
+	}
+	return in
 }
 
 func rootNote(spec Spec) string {
@@ -159,6 +240,11 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 	argv := append([]string{"/bin/sh", "-c", script, "sh", path}, c.Args...)
 	if useBwrap {
 		argv = append(bwrapArgs(bw, p, spec, tp, workdir, c.Dir, unprivNS), argv...)
+	}
+	if useSeatbelt(spec, tp) {
+		// ADR-0157 S5: sandbox-exec applies the profile, then execs the sh
+		// wrapper, which applies the limits and execs the agent.
+		argv = append([]string{seatbeltExec(), "-p", seatbeltProfile(seatbeltInputFor(p, spec, tp, workdir))}, argv...)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // operator-configured command
 	cmd.Env = env

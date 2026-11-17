@@ -3,6 +3,7 @@ package agentmgr
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -126,6 +127,7 @@ func TestE2E_SandboxedAgentBootsConfined(t *testing.T) {
 	})
 	im := NewInstanceManager("", "127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
+	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetManifestResolver(func(context.Context, string) *domain.AgentManifest {
 		return &domain.AgentManifest{SandboxPaths: []domain.SandboxPath{{Path: cache, Write: true}}}
 	})
@@ -170,9 +172,24 @@ func TestE2E_SandboxedAgentBootsConfined(t *testing.T) {
 		t.Errorf("the declared writable cache is not writable: %v", rep.Write)
 	}
 	switch {
+	case runtime.GOOS == "windows" && slices.Contains(planAgent(sb).Mechanisms, sandbox.MechanismAppContainer):
+		// ADR-0157 S5: the AppContainer hides the kernel's state. It reads only
+		// system directories and granted paths, so the unrelated "visible"
+		// file is unreadable too (stricter than Linux's read-only root).
+		for name, f := range files {
+			if rep.Read[f] != "denied" {
+				t.Errorf("%s (%s): read %s from the AppContainer, want denied", name, f, rep.Read[f])
+			}
+		}
+		if rep.Write[confDir] != "denied" {
+			t.Errorf("the agent wrote into configs/: %v", rep.Write)
+		}
+		if plan := planAgent(sb); !slices.Contains(plan.Enforced, sandbox.ControlHideState) || plan.Degraded() {
+			t.Errorf("Windows AppContainer report must enforce hide_state: %s", plan.Summary())
+		}
 	case runtime.GOOS == "windows":
-		// Low integrity: writes up are denied; reads are not confined, and the
-		// report must say so.
+		// The low-integrity fallback: writes up are denied; reads are not
+		// confined, and the report must say so.
 		if rep.Write[confDir] != "denied" {
 			t.Errorf("a low-integrity agent wrote into configs/: %v", rep.Write)
 		}
@@ -302,3 +319,9 @@ func planAgent(sb *AgentSandbox) sandbox.Report {
 	return sandbox.Plan(context.Background(), sandbox.Spec{ServerID: "plan", Tier: sandbox.TierFirstParty,
 		Policy: sb.Policy(), Agent: &sandbox.AgentSpec{}}, sandbox.Command{Path: "x"})
 }
+
+// listenKernelSocketForTest stands in for the app's kernel socket opener
+// (agentSocketServer.Open): an instance that reaches the kernel only through
+// its unix socket — a kernel-only tier, or any agent in the Windows
+// AppContainer, which has no loopback (ADR-0157 S5) — needs one to start.
+func listenKernelSocketForTest(path string) (io.Closer, error) { return net.Listen("unix", path) }

@@ -126,6 +126,7 @@ func TestE2E_ProfileAgentDeclaredPathInsideTheCapBoots(t *testing.T) {
 	})
 	im := NewInstanceManager("", "127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
+	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetManifestResolver(resolve)
 	im.SetEnvExtras([]string{"AGENTMGR_CHAOS_HELPER=probe",
 		"AGENTMGR_PROBE_WRITE=" + strings.Join([]string{cache, ro}, string(os.PathListSeparator))})
@@ -192,6 +193,7 @@ func TestE2E_ProfileAgentDeclaredPathRefusedAtBoot(t *testing.T) {
 				KernelStatePaths: []string{filepath.Join(root, "data")}, AllowlistCap: []string{capRoot}})
 			im := NewInstanceManager("", "127.0.0.1:1")
 			im.SetAgentContainment(AgentContainment{Sandbox: sb})
+			im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 			im.SetManifestResolver(resolve)
 			exe, _ := os.Executable()
 			def.Runtime, def.ExecPath, def.Dir = domain.RuntimeBinary, exe, filepath.Dir(exe)

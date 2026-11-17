@@ -84,7 +84,8 @@ func (im *InstanceManager) thirdPartyMissing() []string {
 // with the tier memory cap: D1 confinement, the low-privilege identity and the
 // kernel-only network (D3) are the sandbox plan's to enforce, and the plan
 // refuses — or, with degrade, starts and reports — over exactly the controls
-// the runner lacks on this host (Windows: network and hidden reads until S5).
+// the runner lacks on this host (Windows: none in the AppContainer, ADR-0157
+// S5; network and hidden reads when it falls back to low integrity).
 func (im *InstanceManager) admitLaunch(ctx context.Context, def *domain.AgentDefinition) (memMB int, err error) {
 	if agentTrustTier(def) != agentTierThirdParty {
 		return im.spawnMemLimitMB(ctx, def), nil

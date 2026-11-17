@@ -42,12 +42,23 @@ type AgentSpec struct {
 	DockerUser string
 	// Ephemeral removes the instance's workdir (its scratch) on Release (D1.2).
 	Ephemeral bool
+	// Identity is the agent's stable id (ServerID is per instance). Runners
+	// whose grants outlive one instance scope a declared path to it: the
+	// Windows AppContainer grants a Private bind to this agent's own
+	// capability, never to every agent (ADR-0157 S5). "" means ServerID.
+	Identity string
 }
 
 // Bind is one path an agent sees at its own path: read-only unless Write.
 type Bind struct {
 	Path  string
 	Write bool
+	// Private marks a manifest-declared path: only this agent may reach it.
+	// Kernel-known runtime paths (code, interpreter, agents/, prompts/,
+	// skills/) are shared by every agent. Bubblewrap and docker show each
+	// instance only its own binds anyway; the Windows AppContainer runner,
+	// whose grants are ACEs on the path, needs the distinction.
+	Private bool
 }
 
 // Launched is one agent process started by StartCmd.

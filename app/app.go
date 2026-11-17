@@ -1098,6 +1098,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0157 S2: kernel-only (network-denied) sandboxed instances reach the
 	// same gRPC plane through a unix socket in their own socket directory;
 	// served from the moment the gRPC server starts (agent_kernel_socket.go).
+	// S5: on Windows every agent in the AppContainer does (it has no loopback).
 	agentSockets := newAgentSocketServer()
 	agentTr.KernelSocket = agentSockets.Open
 	meta.Manager.InstanceManager.SetAgentTransport(agentTr)

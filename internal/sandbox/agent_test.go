@@ -71,14 +71,11 @@ func TestHideStateWantedByAgentTiersOnly(t *testing.T) {
 		}
 	}
 	if runtime.GOOS == "windows" {
-		// D2.4/D2.5: the honest note — low integrity confines writes only.
-		if !slices.ContainsFunc(rep.Missing, func(s string) bool {
-			return strings.HasPrefix(s, "hide_state:") && strings.Contains(s, "NOT confined")
-		}) {
-			t.Fatalf("Windows must report reads NOT confined: %+v", rep.Missing)
-		}
-		if !rep.Degraded() || rep.Refused {
-			t.Fatalf("first-party degrades on Windows: %+v", rep)
+		// ADR-0157 S5 (D2.4): an agent runs in the AppContainer, which hides
+		// the kernel's state; the report says so, with the mechanism.
+		if !slices.Contains(rep.Enforced, ControlHideState) || !slices.Contains(rep.Mechanisms, MechanismAppContainer) ||
+			rep.Degraded() || rep.Refused {
+			t.Fatalf("Windows agent report must enforce hide_state through the AppContainer: %s", rep.Summary())
 		}
 	}
 }

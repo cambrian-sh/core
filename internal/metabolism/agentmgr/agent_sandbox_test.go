@@ -148,7 +148,7 @@ func TestSandboxLaunch_SpecFromTierAndAllowlist(t *testing.T) {
 			t.Fatal(err)
 		}
 		cmd.Dir = tc.def.Dir
-		spec, c, err := im.sandboxLaunch(context.Background(), tc.def, inst, cmd, 1536)
+		spec, c, kernelSock, err := im.sandboxLaunch(context.Background(), tc.def, inst, cmd, 1536)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,11 +165,14 @@ func TestSandboxLaunch_SpecFromTierAndAllowlist(t *testing.T) {
 				t.Errorf("%s: binds %v lack %s", tc.def.ID, paths, want)
 			}
 		}
-		if spec.Agent.Binds[len(spec.Agent.Binds)-1] != (sandbox.Bind{Path: cache, Write: true}) {
+		if spec.Agent.Binds[len(spec.Agent.Binds)-1] != (sandbox.Bind{Path: cache, Write: true, Private: true}) || spec.Agent.Identity != tc.def.ID {
 			t.Errorf("%s: the declared cache is not writable: %+v", tc.def.ID, spec.Agent.Binds)
 		}
 		wantArgs := cmd.Args[1:]
-		if tc.tier == sandbox.TierThirdParty && runtime.GOOS != "windows" {
+		if runtime.GOOS != "windows" && kernelSock != (tc.tier == sandbox.TierThirdParty) {
+			t.Errorf("%s: kernel socket transport = %v", tc.def.ID, kernelSock)
+		}
+		if kernelSock {
 			// ADR-0157 S2: a kernel-only instance dials its kernel socket; only
 			// the --substrate-addr VALUE changes.
 			wantArgs = slices.Clone(wantArgs)
@@ -315,9 +318,8 @@ func TestKernelOnlyCommand(t *testing.T) {
 // A kernel-only instance without a kernel socket opener is not started, and
 // leaves no socket directory behind.
 func TestStartSandboxed_KernelOnlyNeedsTheKernelSocket(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows agents keep TCP until the AppContainer runner (S5)")
-	}
+	// Windows (ADR-0157 S5): the AppContainer has no loopback, so every tier
+	// there needs the kernel socket too.
 	sb, _ := testAgentSandbox(t, func(o *AgentSandboxOptions) { o.KernelOnlyAll = true })
 	im := NewInstanceManager("/bin/sh", "127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})

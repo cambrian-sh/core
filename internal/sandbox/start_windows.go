@@ -5,6 +5,7 @@ package sandbox
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -26,12 +27,20 @@ import (
 //     process. The server's workdir is labelled low so it is the one place it
 //     can write. READS are not confined (no-read-up is not the default label
 //     policy), and the identity is the same user SID at a lower integrity.
-//   - NOT available natively: network egress control. AppContainer (whose
-//     network is denied unless it holds internetClient) needs per-runtime ACL
-//     grants for node/python/npm caches and a custom CreateProcess path;
-//     Windows Filtering Platform needs admin. Both are deferred
-//     (T-20261106-windows-appcontainer-runner-for-native-network); a third-party
-//     server that must have no network uses runner docker.
+//   - AppContainer (agents, ADR-0157 S5; appcontainer_windows.go): an agent
+//     whose tier wants hidden state or a denied network runs under a lowbox
+//     token instead of the plain low-integrity one. It reads system
+//     directories and the paths the kernel granted it, nothing else — the D1
+//     hide-list is unreadable, checked by AccessCheck — and has no network
+//     unless its tier keeps one. When a grant is impossible (an interpreter
+//     owned by Administrators) the agent falls back to the low-integrity token
+//     and the report names hide_state and network missing, with the reason.
+//   - NOT available natively for MCP servers: network egress control. They
+//     keep the low-integrity token until the AppContainer runner is opted in
+//     for them (T-20261106-windows-appcontainer-runner-for-native-network:
+//     npx/uvx need their runtime and caches granted); Windows Filtering
+//     Platform needs admin. A third-party server that must have no network
+//     uses runner docker.
 func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 	c := capability{
 		runner: RunnerNative,
@@ -52,6 +61,13 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		// Windows does not have yet; the tier's on_unavailable decides.
 		c.missing[ControlNetwork] = "no native network control on Windows for agents: the kernel-only agent network needs the AppContainer runner (ADR-0157 S5)"
 	}
+	if wantsAppContainer(spec, tp) {
+		ac, pl := appContainerFor(p, spec, tp, true)
+		ac.close()
+		if applyAppContainer(&c, tp, pl) {
+			return c
+		}
+	}
 	if tp.ConfineFS {
 		c.notes = append(c.notes, "fs: writes confined to the workdir by integrity level; reads are not confined")
 		if spec.Server.Root != "" {
@@ -61,16 +77,64 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 	return c
 }
 
+// applyAppContainer folds what the AppContainer can deliver into c. It returns
+// true when the agent will run in it; false when the runner falls back to the
+// low-integrity token (the reason is noted and named in the missing controls).
+func applyAppContainer(c *capability, tp TierPolicy, pl acPlan) bool {
+	c.notes = append(c.notes, pl.notes...)
+	if !pl.ok {
+		c.notes = append(c.notes, "appcontainer: unusable, fell back to low integrity: "+pl.why)
+		c.missing[ControlHideState] += "; the AppContainer runner is unusable here: " + pl.why
+		return false
+	}
+	c.enforced[ControlFSConfine] = MechanismAppContainer
+	c.enforced[ControlLowPrivilege] = MechanismAppContainer
+	c.enforced[ControlNetwork] = MechanismAppContainer
+	delete(c.missing, ControlNetwork)
+	if len(pl.readable) == 0 {
+		c.enforced[ControlHideState] = MechanismAppContainer
+		delete(c.missing, ControlHideState)
+	} else {
+		c.missing[ControlHideState] = "the agent container can still read " + strings.Join(pl.readable, ", ") +
+			" (an ancestor grants ALL APPLICATION PACKAGES or a cambrian capability; move the kernel's state out of it)"
+	}
+	c.notes = append(c.notes, "fs: AppContainer: the agent reads system directories and its granted paths only "+
+		"(stricter than the Linux read-only root); hide_paths checked unreadable by AccessCheck; writes only to the workdir, socket directory and declared writable paths")
+	if tp.DenyNetwork {
+		c.notes = append(c.notes, "network: kernel-only (an AppContainer without network capabilities; the kernel is reached through the unix socket in the socket directory)")
+	} else {
+		c.notes = append(c.notes, "network: internet and private-network capabilities; loopback is blocked for every AppContainer, so the kernel is reached through the unix socket in the socket directory")
+	}
+	return true
+}
+
 func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string, start starter) error {
 	lowIL := tp.ConfineFS || tp.LowPrivilege
 	env, err := workdirEnv(p, c.Env, tp.ConfineFS, workdir, workdir, `\`)
 	if err != nil {
 		return err
 	}
+	// ADR-0157 S5: the agent's AppContainer, when its tier wants one and the
+	// grants succeed (the plan made the same decision and reported it).
+	var ac *appContainer
+	if lowIL && wantsAppContainer(spec, tp) {
+		var pl acPlan
+		if ac, pl = appContainerFor(p, spec, tp, false); !pl.ok {
+			ac = nil
+		}
+	}
+	defer ac.close() // the process holds its own copy of the token once created
 	if lowIL {
 		for _, dir := range lowWritable(workdir, spec) {
 			if err := labelLowIntegrity(dir); err != nil {
 				return fmt.Errorf("sandbox: label %s low-integrity: %w", dir, err)
+			}
+		}
+	}
+	if ac != nil {
+		for _, dir := range instanceDirs(workdir, spec) {
+			if err := ac.grantInstanceDir(dir); err != nil {
+				return fmt.Errorf("sandbox: grant the agent container %s: %w", dir, err)
 			}
 		}
 	}
@@ -89,7 +153,10 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 		HideWindow:    true,
 	}
 	var tok windows.Token
-	if lowIL {
+	switch {
+	case ac != nil:
+		attr.Token = syscall.Token(ac.token)
+	case lowIL:
 		tok, err = lowIntegrityToken()
 		if err != nil {
 			_ = windows.CloseHandle(job)
@@ -131,6 +198,16 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 		_ = windows.CloseHandle(job)
 	}
 	return err
+}
+
+// instanceDirs are an agent instance's own directories: its workdir (scratch)
+// and its socket directory.
+func instanceDirs(workdir string, spec Spec) []string {
+	dirs := []string{workdir}
+	if spec.Agent != nil && spec.Agent.SocketDir != "" {
+		dirs = append(dirs, spec.Agent.SocketDir)
+	}
+	return dirs
 }
 
 // lowWritable lists the directories a low-integrity process must be able to

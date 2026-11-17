@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/sandbox"
 )
 
 // ADR-0157 S1 e2e, second half: the SHIPPED agents work under confinement —
@@ -37,11 +39,12 @@ func TestE2E_ShippedAgentsServeUnderConfinement(t *testing.T) {
 		KernelStatePaths: []string{filepath.Join(kernel, "configs")},
 		RuntimeReadPaths: []string{filepath.Join(kernel, "agents"), filepath.Join(kernel, "prompts"), filepath.Join(kernel, "skills")},
 	})
-	if !bwrapHere() {
+	if !slices.Contains(planAgent(sb).Enforced, sandbox.ControlHideState) {
 		t.Log("note: no read confinement on this host; the agents still run through the sandbox")
 	}
 	im := NewInstanceManager(py, "127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
+	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetAgentBootTimeout(60 * time.Second)
 	for _, def := range []*domain.AgentDefinition{
 		{ID: "chat_agent", Runtime: domain.RuntimePython, ExecPath: "chat_agent.py", Dir: filepath.Join(kernel, "agents")},

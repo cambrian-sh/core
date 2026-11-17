@@ -47,6 +47,7 @@ func TestE2E_OutCollectedBeforeTheScratchIsRemoved(t *testing.T) {
 	sb := NewAgentSandbox(AgentSandboxOptions{WorkRoot: workRoot, KernelDir: filepath.Join(root, "kernel")})
 	im := NewInstanceManager("", "127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
+	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	col := &recordingCollector{files: map[string]string{}}
 	im.SetOutputCollector(col)
 	im.SetEnvExtras([]string{"AGENTMGR_CHAOS_HELPER=probe"})

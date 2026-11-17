@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
@@ -165,13 +166,24 @@ func (s *AgentSandbox) kernelSocketPath(instanceID string) string {
 	return filepath.Join(s.socketDir(instanceID), kernelSocketName)
 }
 
-// kernelOnly reports whether an agent of this tier reaches the kernel through
-// the kernel socket instead of TCP (ADR-0157 D3): its tier denies the network,
-// and the OS can pass a unix socket into the sandbox. Windows keeps TCP: it has
-// no native network control for agents yet (the AppContainer runner is S5), so
-// the network is reported MISSING there and the tier's on_unavailable decides.
+// kernelOnly reports whether an agent of this tier is kernel-only by policy on
+// a Unix host (ADR-0157 D3): its tier denies the network, and bubblewrap,
+// docker or Seatbelt pass the unix kernel socket into the sandbox.
 func (s *AgentSandbox) kernelOnly(t sandbox.Tier) bool {
 	return s.policy.Tiers[t].DenyNetwork && goruntime.GOOS != "windows"
+}
+
+// kernelSocketTransport reports whether this instance reaches the kernel
+// through its kernel socket instead of TCP. Unix: when its tier is kernel-only
+// (ADR-0157 S2). Windows: when it runs in the AppContainer (S5), whatever its
+// tier, because an AppContainer cannot reach loopback at all; an agent that
+// falls back to the low-integrity token keeps TCP, and its report names the
+// network missing.
+func (s *AgentSandbox) kernelSocketTransport(ctx context.Context, spec sandbox.Spec, c sandbox.Command) bool {
+	if goruntime.GOOS != "windows" {
+		return s.kernelOnly(spec.Tier)
+	}
+	return slices.Contains(sandbox.Plan(ctx, spec, c).Mechanisms, sandbox.MechanismAppContainer)
 }
 
 // KernelOnlyTiers names the tiers whose agents are kernel-only (boot log).
@@ -254,7 +266,9 @@ func (s *AgentSandbox) admitDeclared(agentID string, decl []domain.SandboxPath) 
 			return nil, fmt.Errorf("agent %s declares sandbox path '%s', which execution.agents.sandbox.allowlist_cap does not admit; not started: %w",
 				agentID, d.Path, ErrSandboxPathRefused)
 		}
-		out = append(out, sandbox.Bind{Path: p, Write: d.Write})
+		// Private: only this agent may reach a path it declared (the Windows
+		// AppContainer scopes the grant to the agent's own capability).
+		out = append(out, sandbox.Bind{Path: p, Write: d.Write, Private: true})
 	}
 	return out, nil
 }
@@ -287,6 +301,43 @@ func runtimePrefix(exe string) string {
 	return dir
 }
 
+// runtimePaths are the directories an interpreter needs read: its prefix
+// (runtimePrefix) and, for a virtualenv, the base installation its pyvenv.cfg
+// names ("home = <dir>"). Under bubblewrap the base is visible through the
+// read-only root anyway; the Windows AppContainer reads only what is granted,
+// and a venv's python.exe loads python3XX.dll from the base (ADR-0157 S5).
+func runtimePaths(exe string) []string {
+	prefix := runtimePrefix(exe)
+	if prefix == "" {
+		return nil
+	}
+	out := []string{prefix}
+	raw, err := os.ReadFile(filepath.Join(prefix, "pyvenv.cfg"))
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != "home" {
+			continue
+		}
+		home := strings.TrimSpace(v)
+		if !filepath.IsAbs(home) {
+			break
+		}
+		// home is the directory holding the base interpreter: its bin/ or
+		// Scripts\ parent on those layouts, the installation root otherwise.
+		if b := strings.ToLower(filepath.Base(home)); b == "bin" || b == "scripts" {
+			home = filepath.Dir(home)
+		}
+		if !sandbox.CoversPrivateTmp(home) {
+			out = append(out, home)
+		}
+		break
+	}
+	return out
+}
+
 // agentBinds is everything an instance is shown at its own path: kernel-known
 // read-only paths first, then the declared ones.
 func (im *InstanceManager) agentBinds(ctx context.Context, def *domain.AgentDefinition, interp string) ([]sandbox.Bind, error) {
@@ -307,7 +358,7 @@ func (im *InstanceManager) agentBinds(ctx context.Context, def *domain.AgentDefi
 			ro = append(ro, abs)
 		}
 	}
-	ro = append(ro, runtimePrefix(interp))
+	ro = append(ro, runtimePaths(interp)...)
 	ro = append(ro, sb.runtimeRead...)
 	if im.agentTLSCA != "" {
 		ro = append(ro, im.agentTLSCA)
@@ -343,12 +394,15 @@ func forwardNames(env []string) []string {
 // from the kernel's view of the agent, the binds (code, runtime, kernel-known
 // read paths, admitted manifest paths), the per-instance socket directory, and
 // buildAgentCmd's argv and env unchanged.
+//
+// kernelSock reports whether the instance reaches the kernel through its
+// kernel socket (kernelSocketTransport); the command then already dials it.
 func (im *InstanceManager) sandboxLaunch(ctx context.Context, def *domain.AgentDefinition, inst *domain.Instance,
-	desc *exec.Cmd, memMB int) (sandbox.Spec, sandbox.Command, error) {
+	desc *exec.Cmd, memMB int) (spec sandbox.Spec, c sandbox.Command, kernelSock bool, err error) {
 	sb := im.containment.Sandbox
 	binds, err := im.agentBinds(ctx, def, desc.Path)
 	if err != nil {
-		return sandbox.Spec{}, sandbox.Command{}, err
+		return sandbox.Spec{}, sandbox.Command{}, false, err
 	}
 	dir := desc.Dir
 	if dir != "" {
@@ -356,20 +410,20 @@ func (im *InstanceManager) sandboxLaunch(ctx context.Context, def *domain.AgentD
 			dir = abs
 		}
 	}
-	spec := sandbox.Spec{
+	spec = sandbox.Spec{
 		ServerID:   def.ID + "-" + shortInstance(inst.ID),
 		Tier:       sandboxTier(def),
 		TierSource: "agent:" + agentTrustTier(def),
 		Server:     sandbox.ServerSpec{MemoryMB: memMB, Image: sb.dockerImage},
 		Policy:     sb.policy,
 		Agent: &sandbox.AgentSpec{SocketDir: sb.socketDir(inst.ID), Binds: binds, DockerUser: sb.dockerUser,
-			Ephemeral: true},
+			Ephemeral: true, Identity: def.ID},
 	}
-	c := sandbox.Command{Path: desc.Path, Args: desc.Args[1:], Env: desc.Env, Dir: dir, Forward: forwardNames(desc.Env)}
-	if sb.kernelOnly(spec.Tier) {
+	c = sandbox.Command{Path: desc.Path, Args: desc.Args[1:], Env: desc.Env, Dir: dir, Forward: forwardNames(desc.Env)}
+	if kernelSock = sb.kernelSocketTransport(ctx, spec, c); kernelSock {
 		c = im.kernelOnlyCommand(c, sb.kernelSocketPath(inst.ID))
 	}
-	return spec, c, nil
+	return spec, c, kernelSock, nil
 }
 
 // startSandboxed launches the command buildAgentCmd described through
@@ -377,7 +431,7 @@ func (im *InstanceManager) sandboxLaunch(ctx context.Context, def *domain.AgentD
 // its stdout/stderr pipes, and the cleanup to run once it has exited.
 func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.AgentDefinition, inst *domain.Instance,
 	desc *exec.Cmd, memMB int) (*exec.Cmd, io.ReadCloser, io.ReadCloser, func(), error) {
-	spec, c, err := im.sandboxLaunch(ctx, def, inst, desc, memMB)
+	spec, c, useKernelSock, err := im.sandboxLaunch(ctx, def, inst, desc, memMB)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -387,12 +441,13 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	}
 	// ADR-0157 S2: a kernel-only instance has no network; the kernel serves its
 	// agent plane on a unix socket in the instance's socket directory, which the
-	// sandbox already shows at its own path (bwrap bind, docker -v).
+	// sandbox already shows at its own path (bwrap bind, docker -v, Seatbelt
+	// allow, the AppContainer's grant on the directory — S5).
 	var kernelSock io.Closer
-	if sb := im.containment.Sandbox; sb.kernelOnly(spec.Tier) {
+	if sb := im.containment.Sandbox; useKernelSock {
 		if im.kernelSocket == nil {
 			_ = os.RemoveAll(sockDir)
-			return nil, nil, nil, nil, fmt.Errorf("agent %s (%s) is kernel-only (ADR-0157 D3) but the kernel has no agent socket to give it; not started",
+			return nil, nil, nil, nil, fmt.Errorf("agent %s (%s) reaches the kernel only through its unix socket (a kernel-only network, ADR-0157 D3, or an AppContainer without loopback, S5) but the kernel has no agent socket to give it; not started",
 				def.ID, agentTrustTier(def))
 		}
 		if kernelSock, err = im.kernelSocket(sb.kernelSocketPath(inst.ID)); err != nil {
