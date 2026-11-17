@@ -52,6 +52,12 @@ func TestMain(m *testing.M) {
 		runProbeAgent()
 		return
 	}
+	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "token" {
+		// ADR-0157 S3: an agent that reports how its credential arrived
+		// (instance_token_test.go).
+		runTokenProbeAgent()
+		return
+	}
 	os.Exit(m.Run())
 }
 

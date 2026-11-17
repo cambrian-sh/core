@@ -2,9 +2,7 @@ package agentmgr
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/procenv"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -56,9 +55,11 @@ type InstanceManager struct {
 	// hold, which makes a config knob depend on .env — extras flow
 	// config → agent with the kernel's env not involved at all.
 	envExtras []string
-	// agentCredential resolves an agent's ADR-0130 plane credential at spawn
-	// (agent_credential_env.go). nil ⇒ agents spawn without one.
-	agentCredential func(agentID string) (string, bool)
+	// tokens is the in-memory registry of live per-instance agent-plane tokens
+	// (ADR-0157 D4; agent_credential_env.go). Built by NewInstanceManager and
+	// never replaced: every spawn mints into it, every teardown revokes from it,
+	// and the agent-plane verifier and FindInstanceByToken read it.
+	tokens *authz.InstanceTokens
 	// agentTLSCA / agentTLSServerName are the TLS facts a spawned agent needs to
 	// reach a pure-TLS kernel (ADR-0130 D4; SetAgentTransport). Empty ⇒ the
 	// agent dials plaintext, which is right on loopback.
@@ -167,6 +168,7 @@ func NewInstanceManager(pythonPath, substrateAddr string) *InstanceManager {
 		cmds:          make(map[string]*exec.Cmd),
 		exits:         make(map[string]*processExit),
 		capCleanups:   make(map[string]func()),
+		tokens:        authz.NewInstanceTokens(),
 		runtimeExes:   map[domain.AgentRuntime]string{domain.RuntimePython: pythonPath},
 		substrateAddr: substrateAddr,
 	}
@@ -244,6 +246,9 @@ func (im *InstanceManager) EvictInstance(instanceID string) {
 	if !ok {
 		return
 	}
+	// ADR-0157 D4.2: the token dies with the instance, before the kill, so no
+	// RPC is admitted on it while the process is being reaped.
+	im.tokens.Revoke(instanceID)
 	if cmd, hasCMD := im.cmds[instanceID]; hasCMD && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
@@ -276,6 +281,7 @@ func (im *InstanceManager) killAllInstances() {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 	for id, inst := range im.instances {
+		im.tokens.Revoke(id) // ADR-0157 D4.2
 		if cmd, hasCMD := im.cmds[id]; hasCMD && cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
@@ -397,10 +403,10 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 	// agent has none. argv, not env, for the same reason as --agent-id below: the
 	// SEC-01 deny-by-default environment stays closed.
 	cmd.Args = append(cmd.Args, def.LaunchArgs...)
-	// ADR-0130 D1: the agent's own plane credential, the one credential the
-	// SEC-01 environment admits (agent_credential_env.go).
-	cmd.Env = append(cmd.Env, im.agentCredentialEnv(def.ID)...)
-	// ADR-0130 D4: and how to reach a TLS-only kernel (agent_credential_env.go).
+	// The agent's own plane credential (ADR-0130 D1) is NOT added here: it is a
+	// per-instance token minted by the boot path at spawn (ADR-0157 D4,
+	// mintInstanceCredential), so building a command never issues a credential.
+	// ADR-0130 D4: how to reach a TLS-only kernel (agent_credential_env.go).
 	cmd.Env = append(cmd.Env, im.agentTransportEnv()...)
 
 	// ADR-0033: daemon-specific flags.
@@ -509,6 +515,7 @@ func (im *InstanceManager) ReleaseInstance(instanceID string) {
 		return
 	}
 	if inst.Mode == domain.ModeJIT {
+		im.tokens.Revoke(instanceID) // ADR-0157 D4.2
 		if cmd, hasCMD := im.cmds[instanceID]; hasCMD && cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
@@ -531,16 +538,28 @@ func (im *InstanceManager) ReleaseInstance(instanceID string) {
 	}
 }
 
-// FindInstanceByToken finds an Instance with the given auth token.
+// FindInstanceByToken finds the live Instance a per-instance token was minted
+// for (the SignalStream gate, Watcher.ValidateToken). It answers from the SAME
+// registry the agent-plane verifier reads (ADR-0157 D4.3), so a revoked token
+// fails both checks at once. An unknown, revoked or empty token is nil.
+//
+// The token registry is the authority, not the instance map: a token is live
+// exactly while its process is (minted before the start, revoked at exit or
+// teardown). An instance still booting — started, but not yet registered while
+// the boot waits for its socket and health probe — is answered from the
+// token's identity, because a daemon may open its SignalStream and emit its
+// first signal inside that window; requiring the map entry dropped it.
 func (im *InstanceManager) FindInstanceByToken(token string) *domain.Instance {
+	id, ok := im.tokens.Lookup(token)
+	if !ok {
+		return nil
+	}
 	im.mu.Lock()
 	defer im.mu.Unlock()
-	for _, inst := range im.instances {
-		if inst.AuthToken == token && token != "" {
-			return inst
-		}
+	if inst, ok := im.instances[id.InstanceID]; ok && inst.AgentID == id.AgentID {
+		return inst
 	}
-	return nil
+	return &domain.Instance{ID: id.InstanceID, AgentID: id.AgentID}
 }
 
 // EvictAgent kills all instances of an agent.
@@ -549,6 +568,7 @@ func (im *InstanceManager) EvictAgent(agentID string) {
 	defer im.mu.Unlock()
 	ids := append([]string{}, im.agentIndex[agentID]...)
 	for _, id := range ids {
+		im.tokens.Revoke(id) // ADR-0157 D4.2: every instance of the agent
 		if cmd, hasCMD := im.cmds[id]; hasCMD && cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
@@ -572,6 +592,7 @@ func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	for id := range im.instances {
+		im.tokens.Revoke(id) // ADR-0157 D4.2
 		cmd, hasCMD := im.cmds[id]
 		if !hasCMD || cmd.Process == nil {
 			continue
@@ -638,12 +659,20 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	}
 	inst.SocketPath = im.agentSocketPath(def.ID, inst.ID)
 
-	token, err := generateAuthToken()
+	// ADR-0157 D4: a fresh per-instance token, in the environment only. It is
+	// revoked if this boot fails, and otherwise when the process exits or the
+	// instance is torn down.
+	credEnv, err := im.mintInstanceCredential(def.ID, inst.ID)
 	if err != nil {
-		return nil, fmt.Errorf("token generation failed: %w", err)
+		return nil, err
 	}
-	inst.AuthToken = token
-	cmd.Args = append(cmd.Args, "--auth-token", token)
+	booted := false
+	defer func() {
+		if !booted {
+			im.tokens.Revoke(inst.ID)
+		}
+	}()
+	cmd.Env = append(cmd.Env, credEnv...)
 
 	cmd.Dir = def.Dir
 
@@ -716,6 +745,7 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 		im.agentIndex[def.ID] = append(im.agentIndex[def.ID], inst.ID)
 	}
 	im.mu.Unlock()
+	booted = true
 	return inst, nil
 }
 
@@ -746,7 +776,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	}
 	inst.SocketPath = im.agentSocketPath(def.ID, inst.ID)
 
-	// Append --daemon-params JSON before token injection.
+	// Per-daemon launch data rides argv (SEC-01); the credential does not.
 	if len(params) > 0 {
 		paramsBytes, jsonErr := json.Marshal(params)
 		if jsonErr == nil {
@@ -756,12 +786,19 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 		}
 	}
 
-	token, err := generateAuthToken()
+	// ADR-0157 D4: the daemon instance's own token, env only; revoked on a
+	// failed boot, at exit and at teardown.
+	credEnv, err := im.mintInstanceCredential(def.ID, inst.ID)
 	if err != nil {
-		return nil, fmt.Errorf("daemon token generation failed: %w", err)
+		return nil, err
 	}
-	inst.AuthToken = token
-	cmd.Args = append(cmd.Args, "--auth-token", token)
+	booted := false
+	defer func() {
+		if !booted {
+			im.tokens.Revoke(inst.ID)
+		}
+	}()
+	cmd.Env = append(cmd.Env, credEnv...)
 	cmd.Dir = def.Dir
 
 	var stdout, stderr io.ReadCloser
@@ -821,6 +858,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	im.instances[inst.ID] = inst
 	im.agentIndex[def.ID] = append(im.agentIndex[def.ID], inst.ID)
 	im.mu.Unlock()
+	booted = true
 
 	return inst, nil
 }
@@ -863,15 +901,6 @@ func waitHealthy(ctx context.Context, socketPath string, timeout time.Duration) 
 		case <-time.After(pollInterval):
 		}
 	}
-}
-
-// generateAuthToken produces a random hex token for Instance authentication.
-func generateAuthToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }
 
 // unlinkSocket removes a socket file if it exists.

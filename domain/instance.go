@@ -18,7 +18,9 @@ type Instance struct {
 	AgentID    string
 	SocketPath string
 	Mode       InstanceMode
-	AuthToken  string
+	// No credential lives here: the instance's agent-plane token is held only
+	// by the kernel's token registry (authz.InstanceTokens, ADR-0157 D4), so
+	// there is one copy to revoke.
 }
 
 // NewInstance creates a tracked Instance with a unique UUID.

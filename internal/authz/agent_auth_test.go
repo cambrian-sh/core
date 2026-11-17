@@ -54,7 +54,7 @@ func (r *recordingOrchestrator) SignalStream(ss pb.Orchestrator_SignalStreamServ
 // chain app.go installs: surface stamp, agent credential, operator bearer.
 func startAgentPlane(t *testing.T, store secretStore, waived bool) (pb.OrchestratorClient, *recordingOrchestrator) {
 	t.Helper()
-	verifier := authz.NewAgentCredentialVerifier(store.resolve, waived)
+	verifier := newTestVerifier(t, store.resolve, waived)
 	idp := identity.NewChain(identity.NewLocalAccounts(identity.NewMemRegistry(), identity.NewMemRegistry()), nil)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(
@@ -97,7 +97,7 @@ func wantCode(t *testing.T, err error, want codes.Code, what string) {
 // descriptor, so a new RPC cannot be added to the proto without being covered.
 func TestAgentAuth_Gate1_NoCredentialIsUnauthenticatedOnEveryAgentRPC(t *testing.T) {
 	t.Parallel()
-	verifier := authz.NewAgentCredentialVerifier(secretStore{}.resolve, false)
+	verifier := newTestVerifier(t, secretStore{}.resolve, false)
 	covered := 0
 	for _, m := range pb.Orchestrator_ServiceDesc.Methods {
 		full := "/" + pb.Orchestrator_ServiceDesc.ServiceName + "/" + m.MethodName
@@ -231,7 +231,7 @@ func TestAgentAuth_DeclaredPremiumServiceIsAgentPlane(t *testing.T) {
 	t.Parallel()
 	agentPlane := map[string]bool{"cambrian.premium.substrate.SubstrateRetrieval": true}
 	store := secretStore{authz.AgentTokenSecretName("analyst_agent"): "tok"}
-	verifier := authz.NewAgentCredentialVerifier(store.resolve, false)
+	verifier := newTestVerifier(t, store.resolve, false)
 	const method = "/cambrian.premium.substrate.SubstrateRetrieval/Query"
 
 	if _, err := verifier.Authenticate(context.Background(), method, agentPlane); status.Code(err) != codes.Unauthenticated {
@@ -274,4 +274,17 @@ func TestVerifyNamedSecret_FailsClosedOnEveryAbsence(t *testing.T) {
 			t.Errorf("%s: VerifyNamedSecret = %v, want %v", c.name, got, c.want)
 		}
 	}
+}
+
+// newTestVerifier builds the production verifier with an empty instance-token
+// registry and a predicate under which no agent is kernel-spawned, so the
+// ADR-0130 stored-secret gates above keep exercising path (b) unchanged.
+func newTestVerifier(t *testing.T, resolve func(string) (string, bool), waived bool) *authz.AgentCredentialVerifier {
+	t.Helper()
+	v, err := authz.NewAgentCredentialVerifier(resolve, authz.NewInstanceTokens(),
+		func(context.Context, string) bool { return false }, waived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }

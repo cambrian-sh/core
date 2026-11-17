@@ -18,7 +18,11 @@ import (
 // benchmark harness relies on; a caller from a routable address must present the
 // per-agent credential even with the flag set.
 func TestInsecureLocalhost_WaiverIsLoopbackOnly(t *testing.T) {
-	v := NewAgentCredentialVerifier(func(string) (string, bool) { return "", false }, true)
+	v, err := NewAgentCredentialVerifier(func(string) (string, bool) { return "", false }, NewInstanceTokens(),
+		func(context.Context, string) bool { return false }, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const method = agentServicePrefix + "Execute"
 	call := func(addr string) (context.Context, error) {
 		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-agent-id", "bench-agent"))

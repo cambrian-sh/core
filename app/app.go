@@ -610,8 +610,11 @@ func Run(ctx context.Context, opts Options) error {
 	k.ConfigProvenance = prov
 	k.ConfigStore = cfgStore
 	k.ConfigPath = configPath
-	// ADR-0130 D1: every registered agent has a credential before the first
-	// spawn. Guarded against the typed-nil trap (see setNamedSecretSource).
+	// ADR-0130 D1 / ADR-0157 D4.5: registered agents the kernel does NOT spawn
+	// (remote A2A agents) get a stored credential; kernel-spawned agents
+	// authenticate with per-instance tokens only, and their stored secrets are
+	// retired (deleted) here — the Q4 migration. Guarded against the typed-nil
+	// trap (see setNamedSecretSource).
 	if cfgStore != nil {
 		ensureAgentCredentials(rootCtx, cfgStore, k.Registry)
 	}
@@ -1070,10 +1073,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	meta.VerificationWorker.EventBus = eventBus // ADR-0047 D3: VerifierRoundEvent → operator feed
 	// ADR-0033: crash detection publishes DaemonCrashedEvent to this bus.
 	meta.Manager.EventBus = eventBus
-	// ADR-0130 D1: each spawned agent receives ITS credential in its process
-	// environment (CAMBRIAN_AGENT_TOKEN + CAMBRIAN_AGENT_ID), resolved per
-	// spawn through the late-bound named-secret seam.
-	meta.Manager.InstanceManager.SetAgentCredentialSource(agentCredentialEnv)
+	// ADR-0130 D1 / ADR-0157 D4: each spawned agent receives ITS credential in
+	// its process environment (CAMBRIAN_AGENT_TOKEN + CAMBRIAN_AGENT_ID) — a
+	// per-instance token the InstanceManager mints at the spawn itself, so no
+	// credential source is wired here.
 	// ADR-0130 D4: and HOW to reach the plane — the bound address and, on a
 	// pure-TLS routable bind, the TLS root — resolved from the same listener
 	// policy that binds it (agent_transport.go). Without this a TLS-only
@@ -3124,26 +3127,37 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// and the secret store is attached to the process by Run.
 	importMachineOwners(ctx, k.Principals, k.Config.Server.MCP.Clients, resolveNamedSecret)
 
-	// ADR-0130 D1/D2: agent-plane client authentication. Every Orchestrator RPC
-	// (and every premium service declared agent-facing) requires the per-agent
-	// named secret `agent:<id>:token` as a bearer, with x-agent-id as the
-	// assertion it must match — UNLESS server.insecure_localhost=true, which
-	// waives it along with the transport refusal it already waives (the
-	// benchmark harness runs under that flag). Constructor-injected; nothing
-	// attaches it later (AGENTS.md §2.3).
-	agentAuth := authz.NewAgentCredentialVerifier(resolveNamedSecret, k.Config.Server.InsecureLocalhost)
+	// ADR-0130 D1/D2 + ADR-0157 D4: agent-plane client authentication. Every
+	// Orchestrator RPC (and every premium service declared agent-facing)
+	// requires a bearer with x-agent-id as the assertion it must match: a
+	// kernel-spawned agent presents the per-instance token minted at its spawn
+	// (the InstanceManager's registry — the same one SignalStream checks); an
+	// external agent presents its stored named secret `agent:<id>:token`, which
+	// a kernel-spawned agent may not use. server.insecure_localhost=true waives
+	// the check for loopback callers (the benchmark harness runs under it).
+	// Constructor-injected; nothing attaches it later (AGENTS.md §2.3).
+	agentAuth, err := authz.NewAgentCredentialVerifier(resolveNamedSecret,
+		k.Server.Manager.InstanceManager.Tokens(), kernelSpawnedAgent(k.Registry),
+		k.Config.Server.InsecureLocalhost)
+	if err != nil {
+		// Fail the boot rather than serve an agent plane with no credential check.
+		g.Go(func() error { return fmt.Errorf("ADR-0157: agent-plane verifier: %w", err) })
+		return
+	}
 	switch {
 	case agentAuth.Waived():
 		slog.Warn("ADR-0130: agent-plane authentication DISABLED by server.insecure_localhost=true",
 			"effect", "x-agent-id is trusted as the principal; any process reaching the port can act as any agent")
 	case k.ConfigStore == nil:
-		slog.Warn("ADR-0130: agent plane requires per-agent credentials but the config store is off — "+
-			"no agent can authenticate", "fix",
-			"enable the ADR-0101 store (CAMBRIAN_CONFIG_STORE) so `setup`/boot can mint agent:<id>:token, "+
+		slog.Warn("ADR-0157: agent plane requires credentials; kernel-spawned agents use per-instance tokens, "+
+			"but the config store is off so no EXTERNAL agent can authenticate", "fix",
+			"enable the ADR-0101 store (CAMBRIAN_CONFIG_STORE) to issue agent:<id>:token for external agents, "+
 				"or set server.insecure_localhost=true on a trusted host")
 	default:
-		slog.Info("ADR-0130: agent plane requires per-agent credentials",
-			"secret", "agent:<id>:token", "header", "authorization: Bearer + x-agent-id")
+		slog.Info("ADR-0157: agent plane requires credentials",
+			"kernel_spawned", "per-instance token (env CAMBRIAN_AGENT_TOKEN, minted at each spawn)",
+			"external", "stored secret agent:<id>:token",
+			"header", "authorization: Bearer + x-agent-id")
 	}
 
 	// Per-principal token bucket on both gRPC planes

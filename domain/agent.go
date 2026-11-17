@@ -22,6 +22,22 @@ func IsJSRuntime(r AgentRuntime) bool {
 	return r == RuntimeBun || r == RuntimeNode
 }
 
+// SpawnedByKernel reports whether the kernel starts this agent as its own OS
+// process (a python, binary, bun or node runtime). Such an agent authenticates
+// ONLY with the per-instance token minted at each spawn; the stored named
+// secret is refused for it (ADR-0157 D4.5). A remote A2A agent, a model
+// generator (TraitModel) and a declared-only wasm agent are not spawned.
+func (a AgentDefinition) SpawnedByKernel() bool {
+	if a.Trait == TraitModel {
+		return false
+	}
+	switch a.Runtime {
+	case RuntimePython, RuntimeBinary, RuntimeBun, RuntimeNode:
+		return true
+	}
+	return false
+}
+
 type AgentTrait string
 
 const (

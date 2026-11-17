@@ -12,26 +12,24 @@ import (
 	"github.com/cambrian-sh/core/internal/authz"
 )
 
-// Agent credential provisioning (ADR-0130 D1, the "first-boot flow must mint
-// them" consequence).
+// Stored agent credentials (ADR-0130 D1, narrowed by ADR-0157 D4.5).
 //
-// Every agent the kernel spawns authenticates to the agent plane with the
-// named secret `agent:<id>:token` (authz.AgentTokenSecretName). Three parties
-// touch that secret and all three go through this file or the seam it uses:
+// Two credential kinds authenticate on the agent plane:
 //
-//   - `cambrian-orchestrator setup` (ADR-0122) mints a secret for every agent
-//     it materialised, so a fresh install's agents can authenticate on the
-//     first boot (setupAgentCredentials, app/setup_agent_credentials.go);
-//   - the kernel mints any that are still missing at boot (ensureAgentCredentials
-//     from Run) — an agent dropped into agents_dir after setup, or a store
-//     that was reset, must not leave that agent permanently refused;
-//   - the agent manager reads the value at spawn and places it in the agent's
-//     process environment as CAMBRIAN_AGENT_TOKEN (agentCredentialEnv), the
-//     one credential SEC-01's deny-by-default environment lets through.
+//   - every agent the KERNEL spawns presents a per-instance token minted at its
+//     spawn and held only in kernel memory (authz.InstanceTokens, owned by the
+//     agent manager). It has NO stored secret: the verifier refuses the stored
+//     path for it, nothing mints one for it, and the boot retires any that an
+//     older kernel or `setup` left behind (retireKernelSpawnedAgentCredentials,
+//     the ADR-0157 Q4 migration);
+//   - an agent the kernel does NOT spawn — a registered remote (A2A) agent, or
+//     an external SDK agent started by hand — authenticates with the named
+//     secret `agent:<id>:token` (authz.AgentTokenSecretName). Boot mints it for
+//     registered agents of that kind that have none; an operator stores one for
+//     an unregistered external agent through the named-secret seam.
 //
-// The value never leaves the store except into the spawned process's
-// environment and the wire. Nothing logs it; the boot line names the agents,
-// not the secrets.
+// No value ever leaves the store except onto the wire. Nothing logs it; the boot
+// lines name agents, not secrets.
 
 // agentTokenBytes is the credential's entropy: 32 bytes, hex-encoded, the same
 // size the MCP endpoint's client tokens are issued at.
@@ -46,12 +44,13 @@ func mintAgentToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// agentCredentialStore is what minting needs from the ADR-0101 store: presence
-// (never a read-back) and an encrypted write. *storage.BoltConfigStore
-// satisfies it through config.SecretStore.
+// agentCredentialStore is what minting and retiring need from the ADR-0101
+// store: presence (never a read-back), an encrypted write and a delete.
+// *storage.BoltConfigStore satisfies it through config.SecretStore.
 type agentCredentialStore interface {
 	Configured(name string) bool
 	SetSecret(name, value string) error
+	ClearSecret(name string) error
 }
 
 // mintMissingAgentCredentials stores a credential for every agent id that has
@@ -84,10 +83,46 @@ func mintMissingAgentCredentials(store agentCredentialStore, agentIDs []string) 
 	return minted, nil
 }
 
-// ensureAgentCredentials is the boot-time half: every registered agent gets a
-// credential if the store is on. Logged, never fatal — a kernel whose store is
-// off still boots, and the ADR-0130 boot line already said no agent can
-// authenticate in that configuration.
+// retireKernelSpawnedAgentCredentials is the ADR-0157 Q4 migration (owner
+// answer: delete, not keep behind a flag) on the ADR-0101 store,
+// configs/config.db.
+//
+// cambrian:destructive — it DELETES the stored `agent:<id>:token` of every
+// agent id the kernel spawns. Those secrets authenticate nothing any more (the
+// verifier refuses the stored path for a kernel-spawned agent), and keeping
+// them would leave usable-looking credentials for a sandbox escape to find.
+// It is idempotent: an absent secret is skipped, so it runs on every boot and
+// also removes a secret a later `setup` of an older release writes back. The
+// store is not snapshotted here: operators take `orchestrator backup run`
+// (which copies config.db) before upgrading, as for any destructive migration.
+//
+// Returns the ids whose secret it deleted.
+func retireKernelSpawnedAgentCredentials(store agentCredentialStore, agentIDs []string) ([]string, error) {
+	if store == nil {
+		return nil, errConfigStoreOff
+	}
+	var retired []string
+	for _, id := range agentIDs {
+		if id == "" {
+			continue
+		}
+		name := authz.AgentTokenSecretName(id)
+		if !store.Configured(name) {
+			continue
+		}
+		if err := store.ClearSecret(name); err != nil {
+			return retired, fmt.Errorf("retire agent credential for %s: %w", id, err)
+		}
+		retired = append(retired, id)
+	}
+	sort.Strings(retired)
+	return retired, nil
+}
+
+// ensureAgentCredentials is the boot-time half: registered agents the kernel
+// does not spawn get a stored credential if they lack one; kernel-spawned
+// agents have theirs retired. Logged, never fatal — a kernel whose store is
+// off still boots.
 func ensureAgentCredentials(ctx context.Context, store agentCredentialStore, registry domain.AgentRegistry) {
 	if store == nil || registry == nil {
 		return
@@ -97,25 +132,57 @@ func ensureAgentCredentials(ctx context.Context, store agentCredentialStore, reg
 		slog.Warn("ADR-0130: could not list agents to provision credentials", "err", err)
 		return
 	}
-	ids := make([]string, 0, len(defs))
+	var external, spawned []string
 	for _, d := range defs {
-		ids = append(ids, d.ID)
+		if d.SpawnedByKernel() {
+			spawned = append(spawned, d.ID)
+		} else {
+			external = append(external, d.ID)
+		}
 	}
-	minted, err := mintMissingAgentCredentials(store, ids)
+	retired, err := retireKernelSpawnedAgentCredentials(store, spawned)
+	if err != nil {
+		slog.Warn("ADR-0157: retiring kernel-spawned agents' stored credentials stopped early",
+			"retired", retired, "err", err)
+	}
+	if len(retired) > 0 {
+		slog.Warn("ADR-0157 Q4: deleted the stored credentials of kernel-spawned agents (destructive, one-way)",
+			"agents", retired, "secret", "agent:<id>:token",
+			"why", "kernel-spawned agents authenticate only with per-instance tokens minted at each spawn")
+	}
+	minted, err := mintMissingAgentCredentials(store, external)
 	if err != nil {
 		slog.Warn("ADR-0130: agent credential provisioning stopped early", "minted", minted, "err", err)
 	}
 	if len(minted) > 0 {
-		slog.Info("ADR-0130: minted agent credentials", "agents", minted, "secret", "agent:<id>:token")
+		slog.Info("ADR-0130: minted credentials for agents the kernel does not spawn",
+			"agents", minted, "secret", "agent:<id>:token")
 	}
 }
 
-// agentCredentialEnv is what the agent manager asks at spawn: the agent's
-// credential through the late-bound named-secret seam, so a rotation made
-// while the kernel runs reaches the next spawn without a restart. ok=false
-// (store off, never minted) spawns the agent WITHOUT a credential, which on a
-// strict plane means its first RPC is refused with a message that names the
-// fix — better than a kernel that will not start its agents at all.
-func agentCredentialEnv(agentID string) (string, bool) {
-	return resolveNamedSecret(authz.AgentTokenSecretName(agentID))
+// kernelSpawnedAgent is the verifier's ADR-0157 D4.5 predicate: does the kernel
+// spawn agentID itself? Read from the registry on every call, so an agent
+// registered while the kernel runs is covered at once. It fails CLOSED: when
+// the registry cannot be read it answers true, which refuses the stored-secret
+// path — an external agent is refused for that request rather than a
+// kernel-spawned one admitted on a stored secret. Only the stored-secret path
+// asks; a live instance token never reaches it.
+func kernelSpawnedAgent(reg domain.AgentLister) func(ctx context.Context, agentID string) bool {
+	return func(ctx context.Context, agentID string) bool {
+		if reg == nil {
+			return true
+		}
+		defs, err := reg.GetAllAgents(ctx)
+		if err != nil {
+			slog.WarnContext(ctx, "ADR-0157: agent registry unreadable; refusing the stored agent credential",
+				"agent_id", agentID, "err", err)
+			return true
+		}
+		for _, d := range defs {
+			if d.ID == agentID {
+				return d.SpawnedByKernel()
+			}
+		}
+		return false
+	}
 }

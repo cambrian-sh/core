@@ -1,17 +1,26 @@
 package agentmgr
 
-import "io"
+import (
+	"fmt"
+	"io"
+
+	"github.com/cambrian-sh/core/internal/authz"
+)
 
 // The agent's credential, placed in its process environment at spawn
-// (ADR-0130 D1).
+// (ADR-0130 D1, ADR-0157 D4).
 //
 // SEC-01 built a deny-by-default environment so no kernel secret reaches an
 // agent process (env_allowlist.go strips anything credential-shaped, and
 // CAMBRIAN_* wholesale). The agent-plane credential is the ONE deliberate
-// exception: it is the agent's OWN secret, minted for it and nothing else, and
-// the SDK reads it from exactly these two variables. They are appended after
-// the allowlist filter on purpose — the filter is what keeps the kernel's
-// secrets out, and this is not one of them.
+// exception: it is the agent's OWN credential — since ADR-0157 S3 a fresh
+// per-INSTANCE token minted at this spawn and held only in kernel memory
+// (authz.InstanceTokens), never the stored `agent:<id>:token` — and the SDK
+// reads it from exactly these two variables. They are appended after the
+// allowlist filter on purpose — the filter is what keeps the kernel's secrets
+// out, and this is not one of them. It is never put on argv: a command line is
+// readable by any local user in the process list
+// (T-20261115-per-instance-auth-token-is-passed-on-argv-but).
 
 // AgentTokenEnv carries the agent-plane bearer (ADR-0130 D1). The SDK
 // (cambrian_agent_sdk/channel.py) presents it as `authorization: Bearer`.
@@ -22,26 +31,22 @@ const AgentTokenEnv = "CAMBRIAN_AGENT_TOKEN"
 // did not set it before ADR-0130 (SignalStream, context-node reads).
 const AgentIDEnv = "CAMBRIAN_AGENT_ID"
 
-// SetAgentCredentialSource wires the per-agent credential lookup. Called once
-// by the composition root; nil (the default, and every test) spawns agents
-// with no credential, which is correct on a waived plane and refused with a
-// named reason on a strict one.
-func (im *InstanceManager) SetAgentCredentialSource(resolve func(agentID string) (string, bool)) {
-	im.agentCredential = resolve
-}
+// Tokens is the kernel's registry of live per-instance agent tokens. The
+// manager builds and owns it (NewInstanceManager): it mints at every spawn and
+// revokes at every teardown. The composition root hands it to the agent-plane
+// verifier's constructor (authz.NewAgentCredentialVerifier) — read access for
+// the one check, never a second registry.
+func (im *InstanceManager) Tokens() *authz.InstanceTokens { return im.tokens }
 
-// agentCredentialEnv returns the KEY=VALUE pairs for one agent, or nothing when
-// no credential is issued. The id rides alongside the token so the SDK never
-// has to guess which agent a token belongs to.
-func (im *InstanceManager) agentCredentialEnv(agentID string) []string {
-	if im.agentCredential == nil {
-		return nil
+// mintInstanceCredential mints the instance's token and returns the KEY=VALUE
+// pairs to append to its environment. The id rides alongside the token so the
+// SDK never has to guess which agent a token belongs to.
+func (im *InstanceManager) mintInstanceCredential(agentID, instanceID string) ([]string, error) {
+	tok, err := im.tokens.Mint(agentID, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("agent %s: %w", agentID, err)
 	}
-	tok, ok := im.agentCredential(agentID)
-	if !ok || tok == "" {
-		return nil
-	}
-	return []string{AgentTokenEnv + "=" + tok, AgentIDEnv + "=" + agentID}
+	return []string{AgentTokenEnv + "=" + tok, AgentIDEnv + "=" + agentID}, nil
 }
 
 // The agent's TRANSPORT to the kernel (ADR-0130 D3/D4;

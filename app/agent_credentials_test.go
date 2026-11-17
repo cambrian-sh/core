@@ -1,10 +1,16 @@
 package app
 
 import (
+	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/metabolism"
+	"github.com/cambrian-sh/core/internal/storage"
 )
 
 // fakeCredentialStore is the ADR-0101 store's presence+write surface.
@@ -17,6 +23,10 @@ func (f *fakeCredentialStore) Configured(name string) bool { _, ok := f.secrets[
 func (f *fakeCredentialStore) SetSecret(name, value string) error {
 	f.secrets[name] = value
 	f.writes++
+	return nil
+}
+func (f *fakeCredentialStore) ClearSecret(name string) error {
+	delete(f.secrets, name)
 	return nil
 }
 
@@ -55,4 +65,69 @@ func TestMintMissingAgentCredentials_NoStoreIsAnError(t *testing.T) {
 	if _, err := mintMissingAgentCredentials(nil, []string{"a"}); err == nil {
 		t.Fatal("nil store accepted")
 	}
+}
+
+// ADR-0157 Q4 migration, on the store the secrets live in (configs/config.db,
+// a real BoltConfigStore): ensureAgentCredentials deletes the stored secrets of
+// kernel-spawned agents, keeps an external agent's, mints for a registered
+// agent the kernel does not spawn — and is idempotent across boots.
+func TestEnsureAgentCredentials_RetiresKernelSpawnedSecrets_RealStore(t *testing.T) {
+	store, err := storage.OpenConfigStore(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	reg := metabolism.NewInMemoryRegistry()
+	reg.SetAgent(domain.AgentDefinition{ID: "chat_agent", Runtime: domain.RuntimePython, ExecPath: "chat_agent.py"})
+	reg.SetAgent(domain.AgentDefinition{ID: "js_agent", Runtime: domain.RuntimeBun, ExecPath: "agent.ts"})
+	reg.SetAgent(domain.AgentDefinition{ID: "remote_agent", Runtime: domain.RuntimeA2A, A2AEndpoint: "https://remote.example"})
+	// Left by an earlier release's setup/boot minting.
+	for _, id := range []string{"chat_agent", "js_agent"} {
+		if err := store.SetSecret(authz.AgentTokenSecretName(id), "old-"+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An unregistered external SDK agent's secret, set by an operator.
+	if err := store.SetSecret(authz.AgentTokenSecretName("external_sdk"), "ext"); err != nil {
+		t.Fatal(err)
+	}
+
+	for boot := 1; boot <= 2; boot++ { // idempotent: the second boot changes nothing
+		ensureAgentCredentials(context.Background(), store, reg)
+		for _, id := range []string{"chat_agent", "js_agent"} {
+			if store.Configured(authz.AgentTokenSecretName(id)) {
+				t.Fatalf("boot %d: kernel-spawned %s still has a stored secret", boot, id)
+			}
+		}
+		if store.Resolve(authz.AgentTokenSecretName("external_sdk"), "") != "ext" {
+			t.Fatalf("boot %d: the external agent's secret was touched", boot)
+		}
+		if !store.Configured(authz.AgentTokenSecretName("remote_agent")) {
+			t.Fatalf("boot %d: no credential minted for the A2A agent", boot)
+		}
+	}
+}
+
+// The verifier's predicate: process runtimes are kernel-spawned, a registered
+// remote agent and an unknown id are not, an unreadable registry fails closed.
+func TestKernelSpawnedAgent(t *testing.T) {
+	t.Parallel()
+	reg := metabolism.NewInMemoryRegistry()
+	reg.SetAgent(domain.AgentDefinition{ID: "chat_agent", Runtime: domain.RuntimePython})
+	reg.SetAgent(domain.AgentDefinition{ID: "remote_agent", Runtime: domain.RuntimeA2A})
+	reg.SetAgent(domain.AgentDefinition{ID: "llm:gpt", Trait: domain.TraitModel})
+	is := kernelSpawnedAgent(reg)
+	ctx := context.Background()
+	if !is(ctx, "chat_agent") || is(ctx, "remote_agent") || is(ctx, "llm:gpt") || is(ctx, "external_sdk") {
+		t.Fatal("kernel-spawned classification wrong")
+	}
+	if !kernelSpawnedAgent(failingLister{})(ctx, "external_sdk") {
+		t.Fatal("an unreadable registry must fail closed (treated as kernel-spawned)")
+	}
+}
+
+type failingLister struct{}
+
+func (failingLister) GetAllAgents(context.Context) ([]domain.AgentDefinition, error) {
+	return nil, errors.New("registry down")
 }

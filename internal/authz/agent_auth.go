@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"net"
 	"strings"
 
@@ -29,8 +30,12 @@ import (
 //
 // The rules:
 //
-//   - The credential is the named secret `agent:<agent_id>:token`
-//     (AgentTokenSecretName), presented as `authorization: Bearer <secret>`.
+//   - The credential is presented as `authorization: Bearer <token>`. For an
+//     agent the kernel spawns it is the per-instance token minted at spawn and
+//     held in kernel memory (ADR-0157 D4, instance_tokens.go); for an external
+//     agent it is the named secret `agent:<agent_id>:token`
+//     (AgentTokenSecretName). A kernel-spawned agent is refused on the stored
+//     secret.
 //   - `x-agent-id` is an ASSERTION, never the source of identity. It names
 //     which stored secret to compare against, and the compare is what decides.
 //     A presented token that matches a different agent's secret is refused:
@@ -47,10 +52,10 @@ import (
 // D3) alike — so a handler never reads its own identity claims (INV-5).
 // ─────────────────────────────────────────────────────────────────────────────
 
-// AgentTokenSecretName is the ADR-0101 named secret an agent authenticates
-// with. One name shape, used by the verifier, the agent manager (which injects
-// the value into the agent's process environment at spawn) and `setup` (which
-// mints it), so none of the three can drift.
+// AgentTokenSecretName is the ADR-0101 named secret an EXTERNAL agent (one the
+// kernel does not spawn) authenticates with. One name shape, used by the
+// verifier, boot-time minting and the ADR-0157 Q4 retirement of kernel-spawned
+// agents' secrets (app/agent_credentials.go), so none of them can drift.
 func AgentTokenSecretName(agentID string) string {
 	return "agent:" + agentID + ":token"
 }
@@ -77,23 +82,48 @@ func VerifyNamedSecret(resolve func(name string) (string, bool), name, token str
 
 // AgentCredentialVerifier decides whether an agent-plane request is
 // authenticated. Built once at the composition root and handed to the
-// interceptors; it holds the late-bound named-secret resolver, so a credential
-// minted or rotated while the kernel runs is honoured on the next request.
+// interceptors. It accepts two credential kinds (ADR-0157 D4.5):
+//
+//   - (a) a LIVE per-instance token (InstanceTokens) whose agent id equals the
+//     asserted x-agent-id — what every agent the kernel spawns presents;
+//   - (b) the stored named secret `agent:<id>:token`, late-bound through the
+//     resolver — ONLY for an agent the kernel does not spawn (an external SDK
+//     agent, ADR-0130's hand-started case). A kernel-spawned agent is refused on
+//     this path, so a leaked stored secret cannot impersonate a kernel-managed
+//     agent once agents run sandboxed.
+//
+// The same InstanceTokens registry answers the SignalStream gate
+// (agentmgr.InstanceManager.FindInstanceByToken), so both checks read one
+// mint/revoke registry (D4.3) — there is no second token store.
 type AgentCredentialVerifier struct {
 	resolve func(name string) (string, bool)
+	// instances is the kernel's in-memory registry of live per-instance tokens.
+	instances *InstanceTokens
+	// kernelSpawned reports whether the kernel spawns agentID itself (a
+	// registered agent with a process runtime). It must fail CLOSED: when it
+	// cannot tell, it answers true and the stored-secret path is refused.
+	kernelSpawned func(ctx context.Context, agentID string) bool
 	// waived is ADR-0130 D2: server.insecure_localhost=true disables agent
 	// authentication along with the transport refusal it already disables.
 	waived bool
 }
 
-// NewAgentCredentialVerifier builds the verifier. A nil resolver is legal and
-// means NO agent can ever authenticate (the ADR-0101 store is off): every
-// agent-plane call is refused unless waived. That is the fail-closed direction;
-// the composition root says so at boot rather than this constructor failing,
-// because a kernel that cannot authenticate agents is still a kernel the
-// operator plane can reach to fix the configuration.
-func NewAgentCredentialVerifier(resolve func(name string) (string, bool), waived bool) *AgentCredentialVerifier {
-	return &AgentCredentialVerifier{resolve: resolve, waived: waived}
+// NewAgentCredentialVerifier builds the verifier. instances and kernelSpawned
+// are REQUIRED (AGENTS.md §2.3): without the instance registry no spawned agent
+// could authenticate, and without the predicate the stored-secret path could
+// not refuse kernel-spawned agents — both are refused at construction rather
+// than discovered as a silent hole. A nil resolver is legal and means no
+// EXTERNAL agent can authenticate (the ADR-0101 store is off); kernel-spawned
+// agents still authenticate with their instance tokens.
+func NewAgentCredentialVerifier(resolve func(name string) (string, bool), instances *InstanceTokens,
+	kernelSpawned func(ctx context.Context, agentID string) bool, waived bool) (*AgentCredentialVerifier, error) {
+	if instances == nil {
+		return nil, errors.New("agent credential verifier: instance token registry is required (ADR-0157 D4)")
+	}
+	if kernelSpawned == nil {
+		return nil, errors.New("agent credential verifier: kernel-spawned predicate is required (ADR-0157 D4.5)")
+	}
+	return &AgentCredentialVerifier{resolve: resolve, instances: instances, kernelSpawned: kernelSpawned, waived: waived}, nil
 }
 
 // Waived reports whether ADR-0130 D2 disabled agent authentication.
@@ -149,10 +179,26 @@ func (v *AgentCredentialVerifier) Authenticate(ctx context.Context, fullMethod s
 		// the agent) and an x-agent-id with no token is the pre-ADR-0130 hole.
 		return ctx, errAgentUnauthenticated
 	}
-	if !VerifyNamedSecret(v.resolve, AgentTokenSecretName(asserted), token) {
+	if !v.verify(ctx, asserted, token) {
 		return ctx, errAgentUnauthenticated
 	}
 	return domain.WithPrincipal(ctx, domain.AgentPrincipal(asserted)), nil
+}
+
+// verify is the credential decision for one (asserted agent, presented token)
+// pair (ADR-0157 D4.5). Every refusal is the same answer to the caller.
+func (v *AgentCredentialVerifier) verify(ctx context.Context, asserted, token string) bool {
+	if id, ok := v.instances.Lookup(token); ok {
+		// (a) A live instance token decides by itself: it names one agent, and
+		// the header must name the same one. A token of another agent is refused
+		// here, never retried against the stored secret.
+		return id.AgentID == asserted
+	}
+	// (b) The stored named secret — only for an agent the kernel does not spawn.
+	if v.kernelSpawned(ctx, asserted) {
+		return false
+	}
+	return VerifyNamedSecret(v.resolve, AgentTokenSecretName(asserted), token)
 }
 
 // routablePeer reports whether the call came over the network from a

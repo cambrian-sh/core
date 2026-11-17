@@ -43,6 +43,10 @@ func (im *InstanceManager) watchExitThen(instanceID string, cmd *exec.Cmd, after
 	im.mu.Unlock()
 	go func() {
 		pe.err = cmd.Wait()
+		// ADR-0157 D4.2/D4.4: the token lives exactly as long as the process.
+		// Every exit (crash, kill, normal return) revokes it here, before any
+		// observer of the exit (the crash watcher's restart) mints a new one.
+		im.tokens.Revoke(instanceID)
 		if after != nil {
 			after()
 		}

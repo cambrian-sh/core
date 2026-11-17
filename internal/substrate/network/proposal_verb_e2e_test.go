@@ -54,7 +54,11 @@ func TestE2E_ProposeKnowledgeNeedsTheVerbGrantThroughTheAgentPlane(t *testing.T)
 	srvImpl := &network.Server{LLMGateway: gw, Knowledge: prop, ToolExecutor: &domain.ToolExecutor{Grants: grants}}
 
 	secrets := map[string]string{authz.AgentTokenSecretName("planner"): "tok-planner"}
-	verifier := authz.NewAgentCredentialVerifier(func(n string) (string, bool) { v, ok := secrets[n]; return v, ok }, false)
+	verifier, err := authz.NewAgentCredentialVerifier(func(n string) (string, bool) { v, ok := secrets[n]; return v, ok },
+		authz.NewInstanceTokens(), func(context.Context, string) bool { return false }, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	idp := identity.NewChain(identity.NewLocalAccounts(identity.NewMemRegistry(), identity.NewMemRegistry()), nil)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(

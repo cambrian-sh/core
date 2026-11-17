@@ -169,7 +169,8 @@ func RunSetup(ctx context.Context, args []string) int {
 	s.stepConfig()
 	s.stepMigrate(ctx)
 	s.stepOperator()
-	s.stepAgentCredentials(ctx)
+	// No agent-credential step: kernel-spawned agents get a per-instance token
+	// at each spawn (ADR-0157 D4), so there is nothing for setup to mint.
 	running := s.stepStart(ctx)
 
 	fmt.Println()
