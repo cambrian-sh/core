@@ -32,12 +32,14 @@ import (
 //	      without row tags (EvidenceExists / ObjectProperty / ObjectExtra / FenceClass);
 //	(iii) R = ∅ (or NULL) ⇒ admitted exactly as without row tags.
 //
-// Coverage counters require that each case actually happened in the random
-// phase: a row the evidence fence admits that R hides through a forbidden
-// (closed) tag; one it hides through a party-scoped tag the reader is not a party
-// to; and one a plain union fence(E ∪ R) would have WIDENED (R satisfies a
-// required or any-of term E does not) that stays hidden. The fixed matrix pins
-// each of them deterministically as well.
+// Coverage counters require that each case actually happened: a row the
+// evidence fence admits that R hides through a forbidden (closed) tag; one it
+// hides through a party-scoped tag the reader is not a party to; one a plain
+// union fence(E ∪ R) would have WIDENED (R satisfies a required or any-of term
+// E does not) that stays hidden; and empty-R rows. A seeded phase guarantees
+// every kind by construction (ENG-2142: relying on random draws alone flaked
+// with union-would-widen=0 after 10 runs); the random runs then explore around
+// it with the same assertions. The fixed matrix pins each verdict as well.
 
 // typedRowTags is the pool R is drawn from: plain, closed-by-predicate and
 // party-scoped material, and an owner tag (refused at write by
@@ -322,8 +324,116 @@ func TestPg_TypedRowFenceDifferential(t *testing.T) {
 		}
 	}
 
-	// Phase 2 — random predicates and rows.
+	// coverageKinds classifies one row against p over the evidence rendering's
+	// verdicts — the same rule for the seeded phase and the random phase.
+	type coverageKinds struct{ closed, party, widen, empty bool }
+	classify := func(p *domain.TagPredicate, r typedRow) coverageKinds {
+		var k coverageKinds
+		if p.Unfiltered() {
+			return k
+		}
+		if len(r.row) == 0 {
+			k.empty = true
+			return k
+		}
+		today, typed := typedVerdict(p, r, false)
+		if _, union := p.CheckRow(append(append([]string{}, r.tags...), r.row...), r.parties); union && !today {
+			k.widen = true
+		}
+		if !today || typed {
+			return k
+		}
+		for _, tag := range r.row {
+			if containsString(p.ForbiddenTags, tag) {
+				k.closed = true
+				break
+			}
+		}
+		for _, tag := range r.row {
+			if containsString(p.PartyScopedTags, tag) && !overlaps(r.parties, p.PartyIdentities) {
+				k.party = true
+				break
+			}
+		}
+		return k
+	}
 	var byClosed, byParty, widenTrap, emptyR int
+	count := func(p *domain.TagPredicate, rows []typedRow) {
+		for _, r := range rows {
+			k := classify(p, r)
+			if k.closed {
+				byClosed++
+			}
+			if k.party {
+				byParty++
+			}
+			if k.widen {
+				widenTrap++
+			}
+			if k.empty {
+				emptyR++
+			}
+		}
+	}
+
+	// Phase 2 — seeded coverage (ENG-2142). Every coverage kind is guaranteed by
+	// construction, so the differential can never be vacuous by bad luck: the
+	// random phase alone sometimes drew no union-would-widen row in 10 runs
+	// (rows must line up with the predicate's required / any-of terms). Each
+	// seed row declares the kind it must be and is checked with the same
+	// classifier, so a seed that stops being its kind fails loudly instead of
+	// silently thinning coverage. The predicates carry owner, forbidden,
+	// required / any-of and party terms together, as drawn ones do.
+	type seedRow struct {
+		row  typedRow
+		kind string // closed | party | widen | empty | control
+	}
+	for _, s := range []struct {
+		name string
+		p    *domain.TagPredicate
+		rows []seedRow
+	}{
+		{"owner alice, required sales, closed hr, party deal:x for p1",
+			&domain.TagPredicate{Owners: []string{"alice"}, RequiredTags: []string{"sales"}, ForbiddenTags: []string{"hr"},
+				PartyScopedTags: []string{"deal:x"}, PartyIdentities: []string{"p1"}},
+			[]seedRow{
+				{typedRow{id: "s-widen", tags: []string{"a", "owner:alice"}, row: []string{"sales"}}, "widen"},
+				{typedRow{id: "s-closed", tags: []string{"sales"}, row: []string{"hr"}}, "closed"},
+				{typedRow{id: "s-party", tags: []string{"sales", "owner:alice"}, parties: []string{"p2"}, row: []string{"deal:x"}}, "party"},
+				{typedRow{id: "s-empty", tags: []string{"sales"}}, "empty"},
+				{typedRow{id: "s-empty-null", tags: []string{"sales", "owner:alice"}, rowNull: true}, "empty"},
+				{typedRow{id: "s-party-mine", tags: []string{"sales"}, parties: []string{"p1"}, row: []string{"deal:x"}}, "control"},
+				{typedRow{id: "s-foreign", tags: []string{"sales", "owner:bob"}, row: []string{"a"}}, "control"},
+			}},
+		{"any-of {b, deal:y}, closed a, party deal:y for p2",
+			&domain.TagPredicate{AnyOfClauses: [][]string{{"b", "deal:y"}}, ForbiddenTags: []string{"a"},
+				PartyScopedTags: []string{"deal:y"}, PartyIdentities: []string{"p2"}},
+			[]seedRow{
+				{typedRow{id: "s-widen", tags: []string{"sales"}, row: []string{"b"}}, "widen"},
+				{typedRow{id: "s-closed", tags: []string{"b"}, row: []string{"a"}}, "closed"},
+				{typedRow{id: "s-party", tags: []string{"b"}, parties: []string{"p1"}, row: []string{"deal:y"}}, "party"},
+				{typedRow{id: "s-empty", tags: []string{"b"}, row: []string{}}, "empty"},
+				{typedRow{id: "s-inert", tags: []string{"b", "sales"}, row: []string{"hr"}}, "control"},
+			}},
+	} {
+		rows := make([]typedRow, 0, len(s.rows))
+		for _, sr := range s.rows {
+			rows = append(rows, sr.row)
+		}
+		verify(t.Fatalf, s.p, rows)
+		for _, sr := range s.rows {
+			k := classify(s.p, sr.row)
+			got := map[string]bool{"closed": k.closed, "party": k.party, "widen": k.widen, "empty": k.empty,
+				"control": !k.closed && !k.party && !k.widen && !k.empty}
+			if !got[sr.kind] {
+				t.Fatalf("seed %q row %s: not a %s row (classified %+v)", s.name, sr.row.id, sr.kind, k)
+			}
+		}
+		count(s.p, rows)
+	}
+	seeded := [4]int{byClosed, byParty, widenTrap, emptyR}
+
+	// Phase 3 — random predicates and rows.
 	prop := func(rt *rapid.T) {
 		// The predicate first, so R can be drawn from its own material: a forbidden
 		// tag (the closed-tag restriction), a party-scoped tag (the party
@@ -352,42 +462,17 @@ func TestPg_TypedRowFenceDifferential(t *testing.T) {
 			rows = append(rows, r)
 		}
 		verify(rt.Fatalf, p, rows)
-
-		// Coverage, over the evidence rendering's verdicts.
-		if p.Unfiltered() {
-			return
-		}
-		for _, r := range rows {
-			if len(r.row) == 0 {
-				emptyR++
-				continue
-			}
-			today, typed := typedVerdict(p, r, false)
-			if _, union := p.CheckRow(append(append([]string{}, r.tags...), r.row...), r.parties); union && !today {
-				widenTrap++
-			}
-			if !today || typed {
-				continue
-			}
-			for _, tag := range r.row {
-				if containsString(p.ForbiddenTags, tag) {
-					byClosed++
-					break
-				}
-			}
-			for _, tag := range r.row {
-				if containsString(p.PartyScopedTags, tag) && !overlaps(r.parties, p.PartyIdentities) {
-					byParty++
-					break
-				}
-			}
-		}
+		count(p, rows)
 	}
-	// One rapid run always; further runs (bounded) only until every coverage kind
-	// has been seen — each needs a predicate and a row that line up, which a single
-	// 100-draw run does not always produce. Every run asserts everything.
+	// One rapid run always; further runs (bounded) while the random phase has not
+	// yet met every coverage kind on its own — more exploration, never a failure
+	// condition: the seeded phase already guarantees each kind. Every run asserts
+	// everything (i)-(iii).
+	randomSeen := func() bool {
+		return byClosed > seeded[0] && byParty > seeded[1] && widenTrap > seeded[2] && emptyR > seeded[3]
+	}
 	rounds := 0
-	for rounds < 10 && (rounds == 0 || byClosed == 0 || byParty == 0 || widenTrap == 0 || emptyR == 0) {
+	for rounds < 10 && (rounds == 0 || !randomSeen()) {
 		rapid.Check(t, prop)
 		rounds++
 	}
@@ -395,8 +480,8 @@ func TestPg_TypedRowFenceDifferential(t *testing.T) {
 		t.Fatalf("vacuous differential after %d runs: admitted=%d restricted-by-closed-tag=%d restricted-by-party-tag=%d union-would-widen=%d empty-R rows=%d",
 			rounds, admitted, byClosed, byParty, widenTrap, emptyR)
 	}
-	t.Logf("typed-row differential (%d random runs): %d admissions; R restricted %d rows by a closed tag, %d by a party-scoped tag; %d rows a plain union would have widened stayed hidden; %d empty-R rows read as today",
-		rounds, admitted, byClosed, byParty, widenTrap, emptyR)
+	t.Logf("typed-row differential (seeded + %d random runs): %d admissions; R restricted %d rows by a closed tag (%d random), %d by a party-scoped tag (%d random); %d rows a plain union would have widened stayed hidden (%d random); %d empty-R rows read as today (%d random)",
+		rounds, admitted, byClosed, byClosed-seeded[0], byParty, byParty-seeded[1], widenTrap, widenTrap-seeded[2], emptyR, emptyR-seeded[3])
 }
 
 func containsString(xs []string, x string) bool {
