@@ -22,9 +22,29 @@ type fakeDispatcher struct {
 	callErr  error
 	// block, when non-nil, holds CallDaemon until closed — used to saturate the pool.
 	block chan struct{}
+	// instance overrides a stream's instance id (a replacement); tracked/idle drive
+	// DaemonServing (ADR-0070 D3 heartbeat liveness).
+	instance map[string]string
+	tracked  map[string]bool
+	idle     map[string]bool
 }
 
-func newFake() *fakeDispatcher { return &fakeDispatcher{live: map[string]bool{}} }
+func newFake() *fakeDispatcher {
+	return &fakeDispatcher{live: map[string]bool{}, instance: map[string]string{},
+		tracked: map[string]bool{}, idle: map[string]bool{}}
+}
+
+func (f *fakeDispatcher) DaemonServing(streamID string, _ time.Time) (bool, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tracked[streamID], f.idle[streamID]
+}
+
+func (f *fakeDispatcher) set(fn func(f *fakeDispatcher)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
 
 func (f *fakeDispatcher) SpawnDaemon(_ context.Context, agentID, streamID string, _ map[string]any) (string, error) {
 	f.mu.Lock()
@@ -49,6 +69,9 @@ func (f *fakeDispatcher) DaemonInstanceID(streamID string) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ok := f.live[streamID]
+	if id, replaced := f.instance[streamID]; replaced {
+		return id, ok
+	}
 	return "inst-" + streamID, ok
 }
 
@@ -242,4 +265,115 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("condition not met within deadline")
+}
+
+// ENG-1348: a turn the caller abandoned while its worker is still alive (and so still
+// busy with it) must not hand that worker to the next turn. The worker is held until
+// heartbeat liveness replaced it; the next turn then runs on the fresh worker.
+func TestPool_AbandonedTurnHoldsWorkerUntilReplaced(t *testing.T) {
+	f := newFake()
+	f.block = make(chan struct{}) // the worker hangs inside the call
+	p := testPool(t, f, Config{AgentID: "a", Size: 1, RecoverTimeout: 5 * time.Second, RecoverPoll: 5 * time.Millisecond})
+	f.set(func(f *fakeDispatcher) { f.tracked["pool-a-0"] = true })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := p.Dispatch(ctx, &domain.Handoff{}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("abandoned turn: %v, want deadline exceeded", err)
+	}
+
+	// The next turn must wait — the only worker is held, not free.
+	next := make(chan error, 1)
+	go func() {
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel2()
+		_, err := p.Dispatch(ctx2, &domain.Handoff{})
+		next <- err
+	}()
+	select {
+	case err := <-next:
+		t.Fatalf("next turn ran on the held worker: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Liveness kills the hung worker and the restart policy brings up a new instance.
+	f.set(func(f *fakeDispatcher) {
+		f.instance["pool-a-0"] = "inst-replacement"
+		f.block = nil
+	})
+	select {
+	case err := <-next:
+		if err != nil {
+			t.Fatalf("next turn after replacement: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the replaced worker never went back into rotation")
+	}
+}
+
+// A held worker that finishes its orphaned turn and reports idle goes back unreplaced.
+func TestPool_AbandonedTurnWorkerReturnsWhenIdleAgain(t *testing.T) {
+	f := newFake()
+	f.block = make(chan struct{})
+	p := testPool(t, f, Config{AgentID: "a", Size: 1, RecoverTimeout: 5 * time.Second, RecoverPoll: 5 * time.Millisecond})
+	f.set(func(f *fakeDispatcher) { f.tracked["pool-a-0"] = true })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _ = p.Dispatch(ctx, &domain.Handoff{})
+
+	f.set(func(f *fakeDispatcher) { f.idle["pool-a-0"] = true; f.block = nil })
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if _, err := p.Dispatch(ctx2, &domain.Handoff{}); err != nil {
+		t.Fatalf("worker that reported idle was not returned: %v", err)
+	}
+}
+
+// A worker that never heartbeats (an agent on an older SDK) gives the pool nothing to
+// wait for: it goes straight back, exactly as before ENG-1348.
+func TestPool_AbandonedTurnUntrackedWorkerGoesStraightBack(t *testing.T) {
+	f := newFake()
+	f.block = make(chan struct{})
+	p := testPool(t, f, Config{AgentID: "a", Size: 1, RecoverTimeout: time.Hour, RecoverPoll: 5 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _ = p.Dispatch(ctx, &domain.Handoff{})
+
+	f.set(func(f *fakeDispatcher) { f.block = nil })
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	if _, err := p.Dispatch(ctx2, &domain.Handoff{}); err != nil {
+		t.Fatalf("untracked worker was held: %v", err)
+	}
+}
+
+// Past RecoverTimeout a held worker is returned anyway, and Stop ends a hold cleanly.
+func TestPool_HoldIsBoundedAndStopEndsIt(t *testing.T) {
+	f := newFake()
+	f.block = make(chan struct{})
+	p := testPool(t, f, Config{AgentID: "a", Size: 1, RecoverTimeout: 50 * time.Millisecond, RecoverPoll: 5 * time.Millisecond})
+	f.set(func(f *fakeDispatcher) { f.tracked["pool-a-0"] = true })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, _ = p.Dispatch(ctx, &domain.Handoff{})
+	f.set(func(f *fakeDispatcher) { f.block = nil })
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	if _, err := p.Dispatch(ctx2, &domain.Handoff{}); err != nil {
+		t.Fatalf("hold was not bounded by RecoverTimeout: %v", err)
+	}
+
+	// A hold in progress at Stop exits without blocking Stop (goleak checks the rest).
+	f.set(func(f *fakeDispatcher) { f.block = make(chan struct{}) })
+	p.cfg.RecoverTimeout = time.Hour
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel3()
+	_, _ = p.Dispatch(ctx3, &domain.Handoff{})
+	done := make(chan struct{})
+	go func() { p.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked on a worker hold")
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,6 +87,9 @@ type InstanceManager struct {
 	// bootTimeout bounds the wait for a spawned agent's socket
 	// (execution.agents.agent_boot_timeout_ms); 0 ⇒ agentBootTimeout.
 	bootTimeout time.Duration
+	// heartbeatInterval, when > 0, is passed to every long-lived (daemon / pool
+	// worker) launch as --heartbeat-interval-ms (ADR-0070 D3; heartbeat.go).
+	heartbeatInterval time.Duration
 	// manifestFor resolves an agent's manifest so its per-agent memory_limit_mb
 	// can override the global default (SEC-01). nil ⇒ only the global default is
 	// used. Set by NewAgentManager (which holds the registry).
@@ -491,6 +495,18 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 		// argv flag carries no such risk. Unknown flags are ignored by the SDK,
 		// so older agents are unaffected.
 		cmd.Args = append(cmd.Args, "--agent-id", def.ID)
+	}
+	// ADR-0070 D3: a long-lived launch (SpawnDaemon passes its stream) is asked to
+	// heartbeat. Every trait, not only TraitDaemon: a chat pool worker is a cognitive
+	// agent spawned as a daemon, and it is the one that hangs inside Execute
+	// (ENG-1348). The stream id rides along so a beat can be attributed when the
+	// caller carries no per-instance token. Unknown flags are ignored by the SDK, so
+	// an agent on an older SDK is unaffected — and, never beating, never tracked.
+	if streamID != "" && im.heartbeatInterval > 0 {
+		if def.Trait != domain.TraitDaemon {
+			cmd.Args = append(cmd.Args, "--stream-id", streamID)
+		}
+		cmd.Args = append(cmd.Args, "--heartbeat-interval-ms", strconv.FormatInt(im.heartbeatInterval.Milliseconds(), 10))
 	}
 	return cmd, nil
 }

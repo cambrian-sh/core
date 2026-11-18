@@ -106,6 +106,7 @@ func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string
 		exited := m.InstanceManager.awaitExit(instanceID, cmd)
 		go func() {
 			<-exited
+			m.forgetHeartbeat(instanceID) // ADR-0070 D3: an exited instance is no longer tracked
 			unexpected := !m.isExpectedStop(instanceID)
 			if unexpected {
 				slog.Warn("daemon crashed unexpectedly",

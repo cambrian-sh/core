@@ -188,6 +188,7 @@ func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
 // out/ to be collected (KillAllAgents). The ledger must stay open until it
 // returns (MetabolismStack.Shutdown, then Kernel.Shutdown closes the store).
 func (m *AgentManager) Shutdown(ctx context.Context) error {
+	m.StopHeartbeatWatch() // ADR-0070 D3: no liveness kill races the shutdown
 	m.StopAdmitting()
 	m.StopAllDaemons()
 	return m.KillAllAgents(ctx)

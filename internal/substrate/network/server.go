@@ -155,6 +155,12 @@ type Server struct {
 	// reference" — unexecutable, and the failure was emitted as spoken dialogue.
 	IngressInbound IngressAccepter
 
+	// Heartbeats records ADR-0070 D3 liveness beats from long-lived agents
+	// (*agentmgr.AgentManager). A beat is consumed on the SignalStream before any
+	// signal routing — it never reaches an ingress, the Watcher or a pipeline. nil ⇒
+	// beats are dropped (liveness off).
+	Heartbeats HeartbeatSink
+
 	// WatchHandler is the premium reactive engine's WatchConfig store. Injected by
 	// the premium binary via the app.Options reactive hook; nil in OSS. It backs the
 	// OperatorConsole watch commands (app.go hands it to the operator service); the
@@ -359,6 +365,18 @@ type AgentCallLogger interface {
 type IngressAccepter interface {
 	Accept(ctx context.Context, m ingress.InboundMessage) error
 }
+
+// HeartbeatSink records one liveness beat (ADR-0070 D3). instanceID is the instance the
+// agent-plane verifier stamped from the per-instance token ("" without one); streamID
+// and agentID attribute a beat on an unauthenticated plane. Implemented by
+// agentmgr.AgentManager.RecordDaemonHeartbeat.
+type HeartbeatSink interface {
+	RecordDaemonHeartbeat(instanceID, streamID, agentID string, busy bool) bool
+}
+
+// HeartbeatSignalType is the _signal_type of a liveness beat (the SDK's
+// liveness.HEARTBEAT_SIGNAL_TYPE).
+const HeartbeatSignalType = "_heartbeat"
 
 // SyncProcessor extends domain.SignalReceiver with synchronous request/response
 // semantics used by the CHAT routing path. The premium ReactiveEngine implements
@@ -1009,6 +1027,14 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 			return err
 		}
 
+		// ADR-0070 D3: a liveness beat is bookkeeping, not a signal. Consumed here,
+		// before routing, so it can never trip the Watcher's invalid-signal breaker,
+		// be planned, or be taken for an ingress message.
+		if protoHandoff.GetMetadata()["_signal_type"] == HeartbeatSignalType {
+			s.recordHeartbeat(ctx, protoHandoff)
+			continue
+		}
+
 		dHandoff := protoToHandoff(stream.Context(), protoHandoff, s.TelemetryObserver)
 
 		// ADR-0090: a signal from a registered ingress is a conversational turn, not a
@@ -1077,6 +1103,25 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 			_ = s.SignalReceiver.OnSignal(ctx, sig)
 		}
 	}
+}
+
+// recordHeartbeat attributes one beat. The instance comes from the caller's
+// per-instance token (kernel-held); the sender is the authenticated agent, or — on a
+// plane with no agent authentication — the declared one.
+func (s *Server) recordHeartbeat(ctx context.Context, h *pb.Handoff) {
+	if s.Heartbeats == nil {
+		return
+	}
+	agentID := h.GetFromAgent()
+	if p := domain.PrincipalFromContext(ctx); p.ID != "" {
+		if p.Kind != domain.PrincipalAgent {
+			return // SignalStream is the agent plane; nobody else beats
+		}
+		agentID = p.ID
+	}
+	meta := h.GetMetadata()
+	s.Heartbeats.RecordDaemonHeartbeat(domain.AgentInstanceFromContext(ctx), meta["_stream_id"], agentID,
+		meta["_heartbeat_busy"] == "true")
 }
 
 // loadOrCreateSession resumes the caller's session, or opens a new one under goal.

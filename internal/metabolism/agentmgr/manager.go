@@ -35,6 +35,10 @@ type AgentManager struct {
 	// restarts owns the pending auto-restart goroutines; StopAllDaemons cancels
 	// and drains them (crash_detection.go, AGENTS.md §3.3).
 	restarts restartLifecycle
+	// heartbeats is ADR-0070 D3 liveness: last beat per daemon instance and the
+	// watcher that kills a silent one into the restart path (heartbeat.go). Off until
+	// ConfigureHeartbeat sets an interval.
+	heartbeats heartbeatTracker
 	// DaemonBootHook, when non-nil, replaces the real bootDaemonAgent path in SpawnDaemon
 	// (returning an instance id + the launched process). It exists so the chaos/kill test
 	// can drive the real crash-watcher → restart loop with controllable OS processes.

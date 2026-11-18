@@ -33,6 +33,12 @@ type Dispatcher interface {
 	// uses it to tell "the worker never received this turn" from "the worker ran the turn
 	// and failed" — a distinction that decides whether a retry is safe.
 	DaemonInstanceID(streamID string) (string, bool)
+	// DaemonServing reports whether the stream's live worker is heartbeat-tracked
+	// (ADR-0070 D3) and whether it reported itself idle after since. The pool uses it
+	// to keep a worker whose turn it abandoned out of rotation until it can serve
+	// again; tracked=false (an older SDK, liveness off) means "unknowable" and the
+	// worker goes straight back, as before.
+	DaemonServing(streamID string, since time.Time) (tracked, idle bool)
 }
 
 var (
@@ -66,6 +72,16 @@ type Config struct {
 	StreamPrefix string
 	// Params are passed to each worker at spawn.
 	Params map[string]any
+	// RecoverTimeout bounds how long a worker whose turn was abandoned (the caller's
+	// context ended while the worker still ran it) is held out of rotation, waiting to
+	// be replaced (heartbeat liveness killed it and the restart policy respawned it)
+	// or to report itself idle again. A single-threaded worker still running an
+	// orphaned turn cannot serve the next one; handing it back at once made every
+	// later turn on the pool queue behind the hang (ENG-1348). Past the bound the
+	// worker is returned anyway. 0 disables the hold (the pre-ENG-1348 behaviour).
+	RecoverTimeout time.Duration
+	// RecoverPoll is how often a held worker is re-checked. Defaults to 100 ms.
+	RecoverPoll time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -77,6 +93,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.QueueSize < 0 {
 		c.QueueSize = 0
+	}
+	if c.RecoverPoll <= 0 {
+		c.RecoverPoll = 100 * time.Millisecond
 	}
 	return c
 }
@@ -95,6 +114,10 @@ type Pool struct {
 	mu      sync.Mutex
 	workers []string
 	started bool
+	// stopRecover ends the recovery goroutines (recoverWorker) at Stop; recovering
+	// counts them so Stop waits (AGENTS.md §3.3: the pool owns them).
+	stopRecover chan struct{}
+	recovering  sync.WaitGroup
 }
 
 // New builds an unstarted pool.
@@ -132,6 +155,7 @@ func (p *Pool) Start(ctx context.Context) error {
 		p.free <- stream
 	}
 	p.started = true
+	p.stopRecover = make(chan struct{})
 	slog.Info("ADR-0084: agent pool started",
 		"agent", p.cfg.AgentID, "size", p.cfg.Size, "queue", p.cfg.QueueSize)
 	return nil
@@ -145,6 +169,15 @@ func (p *Pool) Stop() {
 		return
 	}
 	p.started = false
+	if p.stopRecover != nil {
+		close(p.stopRecover)
+		p.stopRecover = nil
+	}
+	// Recovery goroutines put a worker back only while the pool is started (checked
+	// under mu), so they exit without touching free; wait for them outside mu.
+	p.mu.Unlock()
+	p.recovering.Wait()
+	p.mu.Lock()
 	for _, s := range p.workers {
 		if err := p.disp.StopDaemon(s); err != nil {
 			slog.Warn("agentpool: stopping worker failed", "stream", s, "err", err)
@@ -200,11 +233,25 @@ func (p *Pool) Dispatch(ctx context.Context, h *domain.Handoff) (*domain.Handoff
 		}
 		return nil, ErrPoolBusy
 	}
-	defer func() { p.free <- stream }()
+	release := true
+	defer func() {
+		if release {
+			p.free <- stream
+		}
+	}()
 
 	resp, err := p.disp.CallDaemon(ctx, stream, h)
 	if err != nil {
-		if _, live := p.disp.DaemonInstanceID(stream); !live {
+		instanceID, live := p.disp.DaemonInstanceID(stream)
+		if live && ctx.Err() != nil && p.cfg.RecoverTimeout > 0 {
+			// The caller gave up (deadline, stall cut, cancellation) while the worker is
+			// still alive — and so, being single-threaded, still busy with this turn.
+			// Hold it until it is replaced or reports idle, so the next turn waits for
+			// a worker that can serve instead of queueing behind this one (ENG-1348).
+			release = false
+			p.holdWorker(stream, instanceID, time.Now())
+		}
+		if !live {
 			// The worker was gone, so this turn never ran. Self-heal, then tell the
 			// caller precisely that — retry safety is theirs to judge.
 			// The self-heal must finish even if this turn's caller gives up: detach
@@ -219,4 +266,68 @@ func (p *Pool) Dispatch(ctx context.Context, h *domain.Handoff) (*domain.Handoff
 		return nil, err
 	}
 	return resp, nil
+}
+
+// holdWorker keeps stream out of rotation on a pool-owned goroutine until its worker is
+// replaced by another instance, reports itself idle after abandonedAt, turns out to be
+// untracked by heartbeat liveness (nothing to wait for), or RecoverTimeout passes.
+// Then it goes back to free — unless the pool stopped meanwhile.
+func (p *Pool) holdWorker(stream, instanceID string, abandonedAt time.Time) {
+	p.mu.Lock()
+	stop := p.stopRecover
+	if !p.started || stop == nil {
+		p.mu.Unlock()
+		return
+	}
+	p.recovering.Add(1)
+	p.mu.Unlock()
+
+	go func() {
+		defer p.recovering.Done()
+		deadline := time.NewTimer(p.cfg.RecoverTimeout)
+		defer deadline.Stop()
+		tick := time.NewTicker(p.cfg.RecoverPoll)
+		defer tick.Stop()
+		reason := ""
+		for reason == "" {
+			reason = p.workerReady(stream, instanceID, abandonedAt)
+			if reason != "" {
+				break
+			}
+			select {
+			case <-stop:
+				return
+			case <-deadline.C:
+				reason = "recover timeout"
+			case <-tick.C:
+			}
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if !p.started || p.stopRecover != stop {
+			return // stopped (or stopped and restarted): Stop drained free already
+		}
+		slog.Info("agentpool: worker back in rotation after an abandoned turn",
+			"stream", stream, "reason", reason, "held", time.Since(abandonedAt).Round(time.Millisecond))
+		p.free <- stream
+	}()
+}
+
+// workerReady returns why a held worker may go back ("" = keep holding).
+func (p *Pool) workerReady(stream, instanceID string, abandonedAt time.Time) string {
+	current, live := p.disp.DaemonInstanceID(stream)
+	if !live {
+		return "" // killed; the restart policy is bringing up its replacement
+	}
+	if current != instanceID {
+		return "replaced"
+	}
+	tracked, idle := p.disp.DaemonServing(stream, abandonedAt)
+	if !tracked {
+		return "not heartbeat-tracked"
+	}
+	if idle {
+		return "idle again"
+	}
+	return ""
 }

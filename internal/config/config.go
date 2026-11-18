@@ -1885,6 +1885,23 @@ type AgentsConfig struct {
 	DaemonRestartBaseBackoffMs int `json:"daemon_restart_base_backoff_ms"`
 	DaemonRestartMaxBackoffMs  int `json:"daemon_restart_max_backoff_ms"`
 
+	// ── ADR-0070 D3: heartbeat liveness ──
+	// DaemonHeartbeatIntervalMs is how often a kernel-spawned long-lived agent (a
+	// daemon, an ingress, a chat pool worker) sends a heartbeat on its SignalStream;
+	// the kernel passes it at spawn (--heartbeat-interval-ms) and the SDK (0.1.8+)
+	// beats with no author code. A process that misses
+	// DaemonHeartbeatMissedBeforeKill beats in a row is killed and the restart policy
+	// above brings up a fresh one — the case a crash watcher cannot see: alive, but
+	// serving nobody (ENG-1348). Tracking arms on a process's FIRST beat, so an agent
+	// on an older SDK that never beats is never killed for it. 0 = off (no flag
+	// passed, no tracking). Default 5000.
+	DaemonHeartbeatIntervalMs int `json:"daemon_heartbeat_interval_ms"`
+
+	// DaemonHeartbeatMissedBeforeKill is the consecutive missed beats after which a
+	// tracked process is killed. Default 3 (15 s at the default interval). <= 0 with
+	// the interval on = 3.
+	DaemonHeartbeatMissedBeforeKill int `json:"daemon_heartbeat_missed_before_kill"`
+
 	// Sandbox is the per-trust-tier containment of kernel-spawned agents
 	// (ADR-0139 D8; agents_sandbox.go).
 	Sandbox AgentSandboxConfig `json:"sandbox"`
@@ -3473,6 +3490,9 @@ func DefaultConfig() *Config {
 				DaemonRestartWindowSeconds: 300,
 				DaemonRestartBaseBackoffMs: 1000,
 				DaemonRestartMaxBackoffMs:  30000,
+				// ADR-0070 D3 (ENG-1348): heartbeat liveness on; hung = 3 missed 5 s beats.
+				DaemonHeartbeatIntervalMs:       5000,
+				DaemonHeartbeatMissedBeforeKill: 3,
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: 10 s killed
 				// the kg_extractor (spaCy load) while the kernel booted its agents.
 				AgentBootTimeoutMs: 30000,

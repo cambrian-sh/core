@@ -136,6 +136,19 @@ func (b *kernelBuild) buildMetabolism() error {
 			time.Duration(cfg.Execution.Agents.DaemonRestartMaxBackoffMs)*time.Millisecond,
 		)
 	}
+	// ADR-0070 D3 (ENG-1348): heartbeat liveness. Every long-lived launch is asked to
+	// beat (--heartbeat-interval-ms); the SignalStream records the beats (buildServer
+	// sets the server's Heartbeats); the watch kills an instance that stopped beating
+	// into the restart policy above. Off when daemon_heartbeat_interval_ms is 0.
+	meta.Manager.ConfigureHeartbeat(
+		time.Duration(cfg.Execution.Agents.DaemonHeartbeatIntervalMs)*time.Millisecond,
+		cfg.Execution.Agents.DaemonHeartbeatMissedBeforeKill,
+	)
+	b.lifecycles = append(b.lifecycles, Lifecycle{
+		Name:  "daemon-heartbeat-watch",
+		Start: meta.Manager.StartHeartbeatWatch,
+		Stop:  meta.Manager.StopHeartbeatWatch,
+	})
 
 	b.aw, b.calendar, b.spendMeter, b.llmGateway, b.meta = aw, calendar, spendMeter, llmGateway, meta
 	b.pyEnv, b.sup, b.eventBus, b.agentSockets = pyEnv, sup, eventBus, agentSockets

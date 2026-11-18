@@ -9,6 +9,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/agentpool"
 	corechat "github.com/cambrian-sh/core/internal/chat"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/ingress"
 	"github.com/cambrian-sh/core/internal/kernel"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
@@ -47,6 +48,9 @@ func (b *kernelBuild) buildChatLane() {
 			QueueSize:      cfg.Execution.Chat.ChatPoolQueueSize,
 			AcquireTimeout: time.Duration(cfg.Execution.Chat.ChatPoolAcquireTimeoutSeconds) * time.Second,
 			StreamPrefix:   "chat",
+			// ENG-1348: a worker whose turn was abandoned is held until heartbeat
+			// liveness replaced it or it reports idle (0 when liveness is off).
+			RecoverTimeout: poolRecoverTimeout(cfg.Execution.Agents),
 		})
 		chatTurns = corechat.NewTurnService(conversations, pool, kernelSvc.AcquireLLMToken)
 		// A scheduled task's firing runs its turn here, as its owner.
@@ -189,6 +193,8 @@ func (b *kernelBuild) buildServer() error {
 		runStore, checkpointStore = pgSessions, pgSessions
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler, runStore, checkpointStore, spendMeter)
+	// ADR-0070 D3: SignalStream heartbeats feed the agent manager's liveness table.
+	cambrianServer.Heartbeats = meta.Manager
 	// ADR-0137 S6: the agent-plane PreviewForget / Forget / ListMyErasures doors.
 	cambrianServer.Forgetter = forgetSvc
 	cambrianServer.Delegations = turnDelegations
@@ -403,4 +409,25 @@ func secondsOr(secs int, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// poolRecoverTimeout bounds how long the chat pool holds a worker whose turn was
+// abandoned (agentpool.Config.RecoverTimeout, ENG-1348), derived from the settings that
+// decide how long a replacement can take: the missed-beat budget, one more beat, the
+// longest restart backoff and a boot. 0 (no hold) when heartbeat liveness is off —
+// nothing would ever replace the worker or report it idle.
+func poolRecoverTimeout(a config.AgentsConfig) time.Duration {
+	if a.DaemonHeartbeatIntervalMs <= 0 {
+		return 0
+	}
+	missed := a.DaemonHeartbeatMissedBeforeKill
+	if missed <= 0 {
+		missed = 3
+	}
+	boot := a.AgentBootTimeoutMs
+	if boot <= 0 {
+		boot = 10000
+	}
+	ms := a.DaemonHeartbeatIntervalMs*(missed+1) + a.DaemonRestartMaxBackoffMs + boot
+	return time.Duration(ms) * time.Millisecond
 }
