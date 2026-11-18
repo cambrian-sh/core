@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -114,6 +115,10 @@ type Pool struct {
 	mu      sync.Mutex
 	workers []string
 	started bool
+	// up mirrors started for readers that must not wait on mu: Start holds mu
+	// for the whole spawn (a cold boot is seconds), and a health probe asking
+	// "is the lane up?" must answer at once (ENG-2105).
+	up atomic.Bool
 	// stopRecover ends the recovery goroutines (recoverWorker) at Stop; recovering
 	// counts them so Stop waits (AGENTS.md §3.3: the pool owns them).
 	stopRecover chan struct{}
@@ -130,6 +135,10 @@ func New(d Dispatcher, cfg Config) *Pool {
 		admit: make(chan struct{}, cfg.Size+cfg.QueueSize),
 	}
 }
+
+// Started reports whether the workers are up: Start succeeded and Stop has
+// not run since. It never blocks on a Start in progress.
+func (p *Pool) Started() bool { return p.up.Load() }
 
 // Size reports the configured worker count.
 func (p *Pool) Size() int { return p.cfg.Size }
@@ -155,6 +164,7 @@ func (p *Pool) Start(ctx context.Context) error {
 		p.free <- stream
 	}
 	p.started = true
+	p.up.Store(true)
 	p.stopRecover = make(chan struct{})
 	slog.Info("ADR-0084: agent pool started",
 		"agent", p.cfg.AgentID, "size", p.cfg.Size, "queue", p.cfg.QueueSize)
@@ -169,6 +179,7 @@ func (p *Pool) Stop() {
 		return
 	}
 	p.started = false
+	p.up.Store(false)
 	if p.stopRecover != nil {
 		close(p.stopRecover)
 		p.stopRecover = nil

@@ -139,6 +139,35 @@ func TestPool_StartIsAllOrNothing(t *testing.T) {
 	}
 }
 
+// ENG-2105: a Start refused (the sandbox Python env still building) leaves the
+// pool unstarted and re-startable — the chat lane retries it once the env is
+// ready — and Started reports each state.
+func TestPool_StartedAndRestartAfterFailedStart(t *testing.T) {
+	f := newFake()
+	f.spawnErr = errors.New("sandbox Python env building")
+	p := New(f, Config{AgentID: "a", Size: 2})
+	if p.Started() {
+		t.Fatal("a new pool reports started")
+	}
+	if err := p.Start(context.Background()); err == nil || p.Started() {
+		t.Fatalf("failed Start: err=%v started=%v", err, p.Started())
+	}
+	f.set(func(f *fakeDispatcher) { f.spawnErr = nil })
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start after the refusal cleared: %v", err)
+	}
+	if !p.Started() {
+		t.Fatal("Started false after a successful Start")
+	}
+	if spawned, _, _ := f.counts(); spawned != 2 {
+		t.Fatalf("spawned %d workers, want 2", spawned)
+	}
+	p.Stop()
+	if p.Started() {
+		t.Fatal("Started true after Stop")
+	}
+}
+
 func TestPool_DispatchBeforeStart(t *testing.T) {
 	p := New(newFake(), Config{AgentID: "a", Size: 1})
 	if _, err := p.Dispatch(context.Background(), &domain.Handoff{}); !errors.Is(err, ErrPoolNotStarted) {

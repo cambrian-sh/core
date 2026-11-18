@@ -84,6 +84,10 @@ type pythonEnvGate interface {
 	// Builder is the env's builder (nil when the env is unavailable on this
 	// host): the per-agent package layers resolve and install with it.
 	Builder() *pyenv.Builder
+	// ReadyC is closed once Python agents may start (pyenv.Env.ReadyC): what a
+	// boot-time Python agent start refused with pyenv.ErrBuilding waits on
+	// (ENG-2105). nil (never ready) when the env is unavailable on this host.
+	ReadyC() <-chan struct{}
 	Stop()
 }
 
@@ -94,6 +98,7 @@ func (r refusedPythonEnv) Interpreter() (pyenv.Interpreter, error) {
 }
 func (refusedPythonEnv) Stop()                   {}
 func (refusedPythonEnv) Builder() *pyenv.Builder { return nil }
+func (refusedPythonEnv) ReadyC() <-chan struct{} { return nil }
 
 // pythonInterpreterPath adapts the env to the Python system tools' resolver
 // (toolproc.ProcessHandler.Interpreter): the same managed interpreter as the

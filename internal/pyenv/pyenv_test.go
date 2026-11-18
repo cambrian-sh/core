@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
 )
@@ -609,6 +610,70 @@ func TestEnvReadyWhileBuilding(t *testing.T) {
 	e.Wait()
 	if err := e.Ready(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ENG-2105: ReadyC is the explicit readiness signal a boot-time Python agent
+// start waits on — open while the background build runs, closed once it
+// finishes healthy; closed at once when the boot check finds a usable env;
+// never closed after a failed build or with build_on_boot off and nothing built.
+func TestEnvReadyCSignalsTheBuiltEnv(t *testing.T) {
+	isClosed := func(c <-chan struct{}) bool {
+		select {
+		case <-c:
+			return true
+		default:
+			return false
+		}
+	}
+	f := newFixture(t)
+	release := make(chan struct{})
+	b := f.builder(t)
+	b.run = func(ctx context.Context, env []string, name string, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "pip install") {
+			<-release
+		}
+		return f.run(ctx, env, name, args...)
+	}
+	e := NewEnv(b, true)
+	e.Start(context.Background())
+	if isClosed(e.ReadyC()) {
+		t.Fatal("ReadyC closed while the env is still building")
+	}
+	close(release)
+	select {
+	case <-e.ReadyC():
+	case <-time.After(10 * time.Second):
+		t.Fatal("ReadyC not closed after the background build finished")
+	}
+	if err := e.Ready(); err != nil {
+		t.Fatalf("ReadyC closed but Ready refuses: %v", err)
+	}
+	e.Wait()
+
+	// The next boot finds the generation healthy: ready at once, no build.
+	again := NewEnv(f.builder(t), true)
+	again.Start(context.Background())
+	if !isClosed(again.ReadyC()) {
+		t.Fatal("a healthy env at the boot check must signal ready at once")
+	}
+	again.Stop()
+
+	// Nothing built and build_on_boot off: never ready.
+	off := NewEnv(newFixture(t).builder(t), false)
+	off.Start(context.Background())
+	if isClosed(off.ReadyC()) {
+		t.Fatal("an unusable env signalled ready")
+	}
+
+	// A failed build: never ready.
+	f2 := newFixture(t)
+	f2.failNext = "pip install"
+	bad := NewEnv(f2.builder(t), true)
+	bad.Start(context.Background())
+	bad.Wait()
+	if isClosed(bad.ReadyC()) {
+		t.Fatal("a failed build signalled ready")
 	}
 }
 

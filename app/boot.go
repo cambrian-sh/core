@@ -91,6 +91,7 @@ type kernelBuild struct {
 	llmGateway   *subnetwork.SubstrateLLMGateway
 	meta         *kernel.MetabolismStack
 	pyEnv        pythonEnvGate
+	agentLayout  error // checkAgentLayout's finding at boot; nil when complete
 	sup          *kernel.SupervisionStack
 	eventBus     *domain.InMemoryEventBus
 	agentSockets *agentSocketServer

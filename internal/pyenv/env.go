@@ -32,11 +32,17 @@ type Env struct {
 
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// readyC is closed the first time the env is usable (readyOnce guards the
+	// close): the explicit readiness signal a boot-time Python agent start
+	// waits on instead of polling (ENG-2105).
+	readyC    chan struct{}
+	readyOnce sync.Once
 }
 
 // NewEnv wraps a builder. buildOnBoot is execution.agents.python.build_on_boot.
 func NewEnv(b *Builder, buildOnBoot bool) *Env {
-	return &Env{b: b, buildOnBoot: buildOnBoot, status: Status{State: StateMissing, Reason: "not checked yet"}}
+	return &Env{b: b, buildOnBoot: buildOnBoot, status: Status{State: StateMissing, Reason: "not checked yet"}, readyC: make(chan struct{})}
 }
 
 // Root is the env root.
@@ -56,6 +62,7 @@ func (e *Env) Start(ctx context.Context) {
 	}
 	e.mu.Lock()
 	e.status = st
+	e.markReadyLocked()
 	e.mu.Unlock()
 	switch {
 	case st.State == StateHealthy:
@@ -107,6 +114,7 @@ func (e *Env) runBuild(ctx context.Context) {
 	}
 	e.buildErr = nil
 	e.status = st
+	e.markReadyLocked()
 	slog.Info("ADR-0157 D7: sandbox Python env ready", "generation", st.Generation, "interpreter", res.Interpreter,
 		"packages", res.Packages, "reused", res.Reused)
 }
@@ -138,6 +146,22 @@ func (e *Env) Status() Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.status
+}
+
+// ReadyC is closed once Python agents may start: at the boot check when the env
+// is already usable, else when the background build finished and the rebuilt
+// env checked healthy. It stays open while the env is unusable — building, a
+// failed build, or missing with build_on_boot off — so a boot-time start that
+// was refused with ErrBuilding waits on it and starts exactly once, instead of
+// failing for good or polling (ENG-2105: the chat pool started 6 s into a
+// 2 min first-boot build and never retried).
+func (e *Env) ReadyC() <-chan struct{} { return e.readyC }
+
+// markReadyLocked closes readyC the first time the status is usable. e.mu held.
+func (e *Env) markReadyLocked() {
+	if e.status.Usable() {
+		e.readyOnce.Do(func() { close(e.readyC) })
+	}
 }
 
 // Ready is the launch gate: nil when Python agents may start, else the reason

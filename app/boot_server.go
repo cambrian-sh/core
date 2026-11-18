@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -118,14 +117,18 @@ func (b *kernelBuild) buildChatLane() {
 		chatTurns.SetDeliverer(deliverySvc)
 		// ADR-0098 D2: the same resolved, re-authorised envelope carries progress.
 		progressOut.set(deliverySvc.DeliverProgress)
+		// ENG-2105: the pool starts when the sandbox Python env is ready — at
+		// boot when it already is, else on the env's readiness signal (a fresh
+		// install builds it for ~2 min) — and the health checker reports the
+		// chat lane not ready, with the reason, until the pool is up.
+		chatStart := newChatPoolStarter(pool, pythonReadinessOf(b.pyEnv), b.agentLayout)
+		if b.healthChecker != nil {
+			b.healthChecker.AddComponent(chatLaneComponent, chatStart.Ready)
+		}
 		lifecycles = append(lifecycles, Lifecycle{
-			Name: "chat-pool",
-			Start: func(ctx context.Context) {
-				if err := pool.Start(ctx); err != nil {
-					slog.Error("ADR-0084: chat pool failed to start; chat lane unavailable", "err", err)
-				}
-			},
-			Stop: pool.Stop,
+			Name:  "chat-pool",
+			Start: chatStart.Start,
+			Stop:  chatStart.Stop,
 		})
 	} else if cfg.Execution.Chat.ChatPoolSize > 0 {
 		slog.Warn("ADR-0084: chat pool configured but the conversation store is unavailable; chat lane disabled")

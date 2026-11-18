@@ -53,6 +53,12 @@ func (b *kernelBuild) buildMetabolism() error {
 	// background build) before any agent boots; Python spawns wait on its gate.
 	pyEnv := startPythonEnv(ctx, cfg, config.ResolveBaseDir())
 	meta.Manager.SetPythonEnv(pyEnv)
+	// ENG-2105: a missing agents directory or prompt library is named at boot,
+	// once, with its fix — not left to surface as an agent's import failure.
+	agentLayout := checkAgentLayout(cfg.Metabolism.AgentsDir)
+	if agentLayout != nil {
+		slog.Error("ENG-2105: agent layout incomplete; shipped Python agents will fail to start", "problem", agentLayout)
+	}
 	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, supervisionGen, cfg, observer)
 
 	// 3. Wire storage callback so newly-registered agents are enqueued for profile
@@ -152,6 +158,7 @@ func (b *kernelBuild) buildMetabolism() error {
 
 	b.aw, b.calendar, b.spendMeter, b.llmGateway, b.meta = aw, calendar, spendMeter, llmGateway, meta
 	b.pyEnv, b.sup, b.eventBus, b.agentSockets = pyEnv, sup, eventBus, agentSockets
+	b.agentLayout = agentLayout
 	return nil
 }
 
