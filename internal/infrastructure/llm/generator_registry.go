@@ -150,7 +150,9 @@ func (h *healthGenerator) GenerateStream(ctx context.Context, prompt string) (<-
 	}
 	in, err := sg.GenerateStream(ctx, prompt)
 	if err != nil {
-		h.breaker.Record(ctx, h.id, false)
+		if !isRequestFault(err) {
+			h.breaker.Record(ctx, h.id, false)
+		}
 		return nil, err
 	}
 	// Wrap the stream so the breaker sees the final outcome (empty body or
@@ -159,9 +161,11 @@ func (h *healthGenerator) GenerateStream(ctx context.Context, prompt string) (<-
 	out := make(chan domain.StreamChunk, 64)
 	go func() {
 		defer close(out)
-		var hadContent bool
+		var hadContent, fault bool
 		for c := range in {
-			if c.Text != "" {
+			if c.Err != nil {
+				fault = isRequestFault(c.Err)
+			} else if c.Text != "" {
 				hadContent = true
 			}
 			out <- c
@@ -169,7 +173,9 @@ func (h *healthGenerator) GenerateStream(ctx context.Context, prompt string) (<-
 				break
 			}
 		}
-		h.breaker.Record(ctx, h.id, hadContent)
+		if !fault {
+			h.breaker.Record(ctx, h.id, hadContent)
+		}
 	}()
 	return out, nil
 }
@@ -239,11 +245,16 @@ func capabilitiesOf(v any) domain.Capabilities {
 	return domain.Capabilities{}
 }
 
-// isRequestFault reports a failure that is the REQUEST's, not the endpoint's: a
-// field the model cannot honour (domain.ErrUnsupported) or a prompt over its context
-// window (domain.ErrContextOverflow). Neither is a health event — recording it would
-// open the breaker on a healthy model because one caller sent too much
-// (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
+// isRequestFault reports a failure that says nothing about the endpoint's health: a
+// field the model cannot honour (domain.ErrUnsupported), a prompt over its context
+// window (domain.ErrContextOverflow) — both the REQUEST's — or a refused credential
+// (domain.ErrProviderAuth), the deployment's. None is a health event: recording a
+// request fault would open the breaker on a healthy model because one caller sent
+// too much (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a), and an open
+// breaker over a refused credential would hide the provider's own refusal behind
+// "no healthy model" on every later call (owner decision 2026-11-18,
+// T-20261112-a-provider-auth-failure-streamed-through-the).
 func isRequestFault(err error) bool {
-	return errors.Is(err, domain.ErrUnsupported) || errors.Is(err, domain.ErrContextOverflow)
+	return errors.Is(err, domain.ErrUnsupported) || errors.Is(err, domain.ErrContextOverflow) ||
+		errors.Is(err, domain.ErrProviderAuth)
 }

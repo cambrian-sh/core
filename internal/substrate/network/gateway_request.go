@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -142,8 +145,17 @@ func usageProto(u domain.GenerateUsage) *pb.GenerateUsage {
 //   - OutOfRange: the prompt does not fit the model's context window
 //     (domain.ErrContextOverflow) — the same request is refused again, so the
 //     SDK must shrink it, and a step failing with it is never retried unchanged;
-//   - ResourceExhausted: the CONWIP gate is full, or the session spend ceiling;
-//   - Unavailable: no candidate model is available (breaker open, none configured);
+//   - Unauthenticated: the provider refused the credential (domain.ErrProviderAuth:
+//     401/403, an authentication_error envelope, or a proxy's streamed "Failed to
+//     authenticate") — nothing the agent can retry; a person must fix the
+//     credential (owner decision 2026-11-18,
+//     T-20261112-a-provider-auth-failure-streamed-through-the);
+//   - ResourceExhausted: the CONWIP gate is full, the session spend ceiling, or the
+//     provider still rate-limited the call (429) after the transport's backoff —
+//     with the provider's Retry-After as a RetryInfo detail when it sent one;
+//   - Unavailable: no candidate model is available (breaker open, none configured),
+//     or every candidate failed with a 5xx or without answering (connection
+//     refused or reset, a stream that broke: llm.ErrProviderUnreachable);
 //   - NotFound: the lease does not exist (or has expired).
 func gatewayStatus(err error) error {
 	if err == nil {
@@ -162,6 +174,12 @@ func gatewayStatus(err error) error {
 		return status.Error(codes.Aborted, msg)
 	case errors.Is(err, domain.ErrContextOverflow):
 		return status.Error(codes.OutOfRange, msg)
+	case errors.Is(err, domain.ErrProviderAuth):
+		return status.Error(codes.Unauthenticated, msg)
+	case providerStatus(err) == http.StatusTooManyRequests:
+		return withRetryInfo(status.New(codes.ResourceExhausted, msg), err)
+	case providerStatus(err) >= 500, errors.Is(err, llm.ErrProviderUnreachable):
+		return withRetryInfo(status.New(codes.Unavailable, msg), err)
 	case errors.Is(err, llm.ErrSpendCeiling):
 		return status.Error(codes.ResourceExhausted, msg)
 	case errors.Is(err, llm.ErrNoHealthyModel), strings.HasPrefix(msg, "no model allocated"):
@@ -173,6 +191,31 @@ func gatewayStatus(err error) error {
 	default:
 		return status.Error(codes.Internal, msg)
 	}
+}
+
+// providerStatus is the HTTP status of the provider refusal err carries, 0 when it
+// carries none.
+func providerStatus(err error) int {
+	var pe *llm.ProviderError
+	if errors.As(err, &pe) {
+		return pe.Status
+	}
+	return 0
+}
+
+// withRetryInfo attaches the provider's Retry-After as a google.rpc.RetryInfo
+// detail, so an agent waits as long as the provider asked before trying again.
+func withRetryInfo(st *status.Status, err error) error {
+	var pe *llm.ProviderError
+	if !errors.As(err, &pe) || pe.RetryAfter <= 0 {
+		return st.Err()
+	}
+	withInfo, derr := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(pe.RetryAfter)})
+	if derr != nil {
+		// The detail is advice; the code and message still say what happened.
+		return st.Err()
+	}
+	return withInfo.Err()
 }
 
 // renderExchangePrompt is the request side of an ADR-0079 exchange record: the

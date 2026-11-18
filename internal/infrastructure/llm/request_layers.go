@@ -320,8 +320,9 @@ var (
 //
 //   - 429 and 5xx (after sharedLLMTransport's own backoff gave up) and transport
 //     failures switch provider at once;
-//   - 401/403 first retries the SAME generator once — every call re-reads its
-//     credential (APIKeyFor), so a key rotated in the store applies — then switches;
+//   - a refused credential (401/403 or its streamed form, domain.ErrProviderAuth)
+//     is neither retried nor switched (owner decision 2026-11-18): it ends the call
+//     until a person fixes the credential — every call re-reads it (APIKeyFor);
 //   - a refusal (a successful response with StopRefusal), a schema failure
 //     (domain.ErrSchemaValidation), an unsupported field, a 4xx request error and
 //     the caller's own cancellation never switch: another provider would answer the
@@ -359,17 +360,13 @@ func (p *Provider) fallbackLoop(ctx context.Context, label string, acquire func(
 			return "", err
 		}
 		err = call(gen)
-		class := classifyForFallback(ctx, err)
-		if class == refreshThenFall {
-			p.log.Warn("llm provider: credential refused; retrying once with a refreshed credential",
-				"generator", id, "err", err)
-			err = call(gen)
-			class = classifyForFallback(ctx, err)
-			if class == refreshThenFall {
-				class = fallbackNow
-			}
+		if errors.Is(err, domain.ErrProviderAuth) {
+			// Loud: nothing in the kernel can fix a refused credential, and no other
+			// model is tried in its place.
+			p.log.Error("llm provider: the provider refused the credential; not retrying, not falling back",
+				"purpose", label, "generator", id, "err", err)
 		}
-		if class != fallbackNow {
+		if classifyForFallback(ctx, err) != fallbackNow {
 			return id, err
 		}
 		if excluded == nil {
@@ -388,10 +385,10 @@ func (p *Provider) fallbackLoop(ctx context.Context, label string, acquire func(
 //
 // candidates are generator ids in preference order — the auction's winner, its
 // fallbacks, then the configured default. The first one the circuit breaker admits
-// serves the call; on an endpoint-class failure (transport, 429, 5xx; 401/403 after
-// one credential refresh) the next one does. A refusal, a schema failure, an
-// unsupported field or a 4xx request error never moves down the chain: the same
-// D1 policy, and the same withFallback walk, the organs use.
+// serves the call; on an endpoint-class failure (transport, 429, 5xx) the next one
+// does. A refusal, a schema failure, an unsupported field, a refused credential
+// (401/403) or a 4xx request error never moves down the chain: the same D1 policy,
+// and the same withFallback walk, the organs use.
 //
 // The call crosses the Provider's whole decorator stack EXCEPT the spend meter:
 // the gateway admits and books lease calls itself (ADR-0131 D3), so metering here

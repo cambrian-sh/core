@@ -108,7 +108,8 @@ func (sh *SelfHealer) maxAttempts() int {
 //   - else the transport's view: Unavailable, ResourceExhausted (rate limit or
 //     overload), Aborted and DeadlineExceeded are transient; InvalidArgument,
 //     OutOfRange (a prompt over the context window, domain.ErrContextOverflow),
-//     FailedPrecondition, PermissionDenied, Unauthenticated, NotFound and
+//     FailedPrecondition, PermissionDenied, Unauthenticated (a refused provider
+//     credential, domain.ErrProviderAuth), NotFound and
 //     Unimplemented are deterministic (validation and refusals: the same request
 //     is refused again);
 //   - an agent that reports _error_type "system" is transient;
@@ -122,7 +123,11 @@ func ClassifyStepFailure(err error, code codes.Code, agentErrorType string) doma
 	// (gatewayStatus; the SDK's TraitServicer answers a worker that died of it
 	// with OUT_OF_RANGE). p06 re-ran a 12-round step into the same overflow
 	// (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
-	if errors.Is(err, domain.ErrContextOverflow) {
+	// A refused provider credential (domain.ErrProviderAuth; over the wire
+	// codes.Unauthenticated, below) is refused again on every attempt until a
+	// person fixes it: never re-run the step (owner decision 2026-11-18,
+	// T-20261112-a-provider-auth-failure-streamed-through-the).
+	if errors.Is(err, domain.ErrContextOverflow) || errors.Is(err, domain.ErrProviderAuth) {
 		return domain.StepFailureDeterministic
 	}
 	switch code {

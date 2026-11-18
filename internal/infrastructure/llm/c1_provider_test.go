@@ -214,19 +214,22 @@ func TestFallback_On429SwitchesProvider(t *testing.T) {
 	}
 }
 
-func TestFallback_On401RetriesOnceThenSwitches(t *testing.T) {
+// Owner decision 2026-11-18 (T-20261112-a-provider-auth-failure-streamed-through-the):
+// a refused credential is not retried and not switched — it replaced ADR-0139 D1's
+// "retry once with a refreshed credential, then fall back".
+func TestFallback_On401NeitherRetriesNorSwitches(t *testing.T) {
 	t.Parallel()
 	a := respondServer(t, http.StatusUnauthorized, `{"error":{"message":"invalid key"}}`)
 	b := respondServer(t, http.StatusOK, okBody(`"from b"`, "stop"))
 	p := twoGeneratorProvider(t, a, b)
 
-	resp, err := p.GeneratorFor(domain.PurposePlanner).(domain.RequestGenerator).
+	_, err := p.GeneratorFor(domain.PurposePlanner).(domain.RequestGenerator).
 		GenerateRequest(context.Background(), domain.UserPrompt("plan"))
-	if err != nil || resp.Text != "from b" {
-		t.Fatalf("GenerateRequest = %+v, %v", resp, err)
+	if !errors.Is(err, domain.ErrProviderAuth) {
+		t.Fatalf("GenerateRequest err = %v, want ErrProviderAuth", err)
 	}
-	if a.hits.Load() != 2 {
-		t.Errorf("a 401 is retried once with a refreshed credential before falling back; a hits = %d", a.hits.Load())
+	if a.hits.Load() != 1 || b.hits.Load() != 0 {
+		t.Errorf("a 401 is answered once and never served elsewhere; a hits = %d, b hits = %d", a.hits.Load(), b.hits.Load())
 	}
 }
 

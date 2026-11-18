@@ -108,6 +108,20 @@ func (rt *rateLimitRetryTransport) RoundTrip(req *http.Request) (*http.Response,
 				return resp, nil
 			}
 		}
+		// A proxy that relays an upstream credential refusal as its own 5xx ("Failed
+		// to authenticate: OAuth token revoked") is not weather either: the same
+		// credential is refused on every replay (owner decision 2026-11-18, no retry
+		// for a refused credential; T-20261112-a-provider-auth-failure-streamed-through-the).
+		if resp.StatusCode >= 500 {
+			if buf, ok := peekBody(resp); ok && isAuthText(string(buf)) {
+				slog.Warn("llm: provider relayed a credential refusal as a server error; not retrying",
+					"host", req.URL.Host,
+					"path", req.URL.Path,
+					"status", resp.StatusCode,
+					"attempt", attempt)
+				return resp, nil
+			}
+		}
 		// A 429 is only worth retrying when it is a RATE limit — a per-minute ceiling
 		// that clears on its own. A QUOTA exhaustion does not clear for days, and
 		// retrying it burns the full backoff ladder before failing anyway.

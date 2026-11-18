@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -224,6 +225,14 @@ type ProviderError struct {
 	// window (isContextOverflowRefusal); errors.Is(err, domain.ErrContextOverflow)
 	// then holds.
 	Overflow bool
+	// Auth marks a refusal of the credential (isAuthRefusal: 401/403 or an
+	// authentication_error / permission_error envelope); errors.Is(err,
+	// domain.ErrProviderAuth) then holds.
+	Auth bool
+	// RetryAfter is the provider's Retry-After on the refusal (a 429 or 503), 0
+	// when it sent none. sharedLLMTransport already waited it out between its
+	// retries; the gateway passes the last one on to the agent (RetryInfo).
+	RetryAfter time.Duration
 }
 
 func (e *ProviderError) Error() string {
@@ -232,15 +241,24 @@ func (e *ProviderError) Error() string {
 
 func (e *ProviderError) Unwrap() error { return e.Err }
 
-// Is makes a context-window refusal match domain.ErrContextOverflow while the
-// error keeps its provider, status and message.
+// Is makes a context-window refusal match domain.ErrContextOverflow, and a
+// credential refusal domain.ErrProviderAuth, while the error keeps its provider,
+// status and message.
 func (e *ProviderError) Is(target error) bool {
-	return e.Overflow && target == domain.ErrContextOverflow
+	return (e.Overflow && target == domain.ErrContextOverflow) || (e.Auth && target == domain.ErrProviderAuth)
 }
 
+// ErrProviderUnreachable marks a call the provider never answered with an HTTP
+// status: the connection was refused or reset, or the stream broke (or the
+// provider sent an error event) after the 200. The endpoint is unavailable, the
+// same class as a 503: the fallback policy switches provider on it and the gateway
+// answers it as codes.Unavailable.
+var ErrProviderUnreachable = errors.New("llm: provider endpoint did not answer")
+
 // wrapProviderError turns an SDK error into a ProviderError when it carries an HTTP
-// status; anything else (transport failure, cancellation) is returned wrapped with
-// the provider name.
+// status; anything else is returned wrapped with the provider name — and, unless it
+// is the caller's own cancellation, marked as a context overflow, a credential
+// refusal or an unreachable endpoint (ErrProviderUnreachable).
 func wrapProviderError(provider string, err error) error {
 	if err == nil {
 		return nil
@@ -251,11 +269,15 @@ func wrapProviderError(provider string, err error) error {
 	}
 	var ae *anthropic.Error
 	if errors.As(err, &ae) {
-		return providerError(provider, ae.StatusCode, msgOr(ae.RawJSON(), err), err)
+		pe := providerError(provider, ae.StatusCode, msgOr(ae.RawJSON(), err), err)
+		pe.RetryAfter = retryAfterOf(ae.Response)
+		return pe
 	}
 	var oe *openai.Error
 	if errors.As(err, &oe) {
-		return providerError(provider, oe.StatusCode, msgOr(oe.RawJSON(), err), err)
+		pe := providerError(provider, oe.StatusCode, msgOr(oe.RawJSON(), err), err)
+		pe.RetryAfter = retryAfterOf(oe.Response)
+		return pe
 	}
 	var ge genai.APIError
 	if errors.As(err, &ge) {
@@ -270,12 +292,111 @@ func wrapProviderError(provider string, err error) error {
 	if isContextOverflowText(err.Error()) {
 		return fmt.Errorf("%s: %w: %w", provider, domain.ErrContextOverflow, err)
 	}
-	return fmt.Errorf("%s: %w", provider, err)
+	// The same proxy streams a revoked credential the same way ("Failed to
+	// authenticate: OAuth token revoked", type server_error): text again, and
+	// again only because no status exists.
+	if isAuthText(err.Error()) {
+		return fmt.Errorf("%s: %w: %w", provider, domain.ErrProviderAuth, err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", provider, err)
+	}
+	return &unreachableError{provider: provider, err: err}
 }
+
+// unreachableError is a status-less endpoint failure: it reads exactly as it did
+// before it was classified ("<provider>: <cause>") and matches
+// ErrProviderUnreachable.
+type unreachableError struct {
+	provider string
+	err      error
+}
+
+func (e *unreachableError) Error() string        { return e.provider + ": " + e.err.Error() }
+func (e *unreachableError) Unwrap() error        { return e.err }
+func (e *unreachableError) Is(target error) bool { return target == ErrProviderUnreachable }
 
 func providerError(provider string, status int, msg string, err error) *ProviderError {
 	return &ProviderError{Provider: provider, Status: status, Message: msg, Err: err,
-		Overflow: isContextOverflowRefusal(status, msg)}
+		Overflow: isContextOverflowRefusal(status, msg), Auth: isAuthRefusal(status, msg)}
+}
+
+// retryAfterOf reads a response's Retry-After (delta-seconds or an HTTP date), 0
+// when there is none or it is unreadable.
+func retryAfterOf(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	v := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// authErrorCodes are the structured error type/code values providers use for a
+// refused credential: Anthropic authentication_error / permission_error, OpenAI and
+// compatible servers invalid_api_key, Gemini's UNAUTHENTICATED / PERMISSION_DENIED
+// status names (lowercased).
+var authErrorCodes = []string{"authentication_error", "permission_error", "invalid_api_key",
+	"unauthenticated", "permission_denied"}
+
+// authPhrases are the message texts of a refused credential where no status
+// exists (a proxy streaming the refusal after a 200: the claudebox proxy's "Failed
+// to authenticate: OAuth token revoked") or where a proxy relays it as its own
+// server error. Matched lowercased and deliberately specific: "unauthorized" alone
+// also appears in tool error text a model echoes.
+var authPhrases = []string{
+	"failed to authenticate",
+	"oauth token revoked",
+	"oauth token has expired",
+	"invalid api key",
+	"invalid x-api-key",
+	"incorrect api key",
+	"authentication_error",
+	"invalid_api_key",
+}
+
+// isAuthRefusal classifies an HTTP refusal: the status first (401, 403), then the
+// structured error type/code, then — only for a 5xx, where a proxy relays an
+// upstream credential refusal as its own server error — the message.
+func isAuthRefusal(status int, msg string) bool {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return true
+	}
+	if code := providerErrorCode(msg); code != "" {
+		for _, c := range authErrorCodes {
+			if code == c {
+				return true
+			}
+		}
+	}
+	if status >= 500 {
+		return isAuthText(msg)
+	}
+	return false
+}
+
+// isAuthText is the message-text fallback.
+func isAuthText(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, p := range authPhrases {
+		if strings.Contains(m, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // contextOverflowCodes are the structured error type/code values providers use for
@@ -360,30 +481,35 @@ func msgOr(body string, err error) string {
 type fallbackClass int
 
 const (
-	noFallback      fallbackClass = iota // a property of the request or the answer
-	fallbackNow                          // the endpoint is unavailable: try another
-	refreshThenFall                      // a credential problem: retry once, then fall
+	noFallback  fallbackClass = iota // a property of the request, the answer or the credential
+	fallbackNow                      // the endpoint is unavailable: try another
 )
 
-// classifyForFallback implements ADR-0139 D1: switch provider on 429, 5xx, 401/403
-// (after one credential refresh) and on transport failures; never on a refusal (that
-// is a successful response with StopRefusal, not an error), a schema failure, an
-// unsupported field, a prompt over the context window (domain.ErrContextOverflow —
-// even when a proxy streams it as a server_error, the next model would be sent the
-// same prompt), a 400-class request error, or the caller's own cancellation.
+// classifyForFallback implements ADR-0139 D1: switch provider on 429, 5xx and on
+// transport failures; never on a refusal (that is a successful response with
+// StopRefusal, not an error), a schema failure, an unsupported field, a prompt over
+// the context window (domain.ErrContextOverflow — even when a proxy streams it as a
+// server_error, the next model would be sent the same prompt), a refused credential
+// (domain.ErrProviderAuth: 401/403 or its streamed form), a 400-class request error,
+// or the caller's own cancellation.
+//
+// A refused credential replaced D1's "retry once with a refreshed credential, then
+// fall back" (owner decision 2026-11-18,
+// T-20261112-a-provider-auth-failure-streamed-through-the: no retry, no fallback, no
+// health event). Every call re-reads its credential (APIKeyFor), so a key a person
+// fixes in the store applies to the next call without a retry here.
 func classifyForFallback(ctx context.Context, err error) fallbackClass {
 	if err == nil || ctx.Err() != nil {
 		return noFallback
 	}
 	if errors.Is(err, domain.ErrSchemaValidation) || errors.Is(err, domain.ErrUnsupported) || errors.Is(err, domain.ErrContextOverflow) ||
+		errors.Is(err, domain.ErrProviderAuth) ||
 		errors.Is(err, ErrSpendCeiling) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return noFallback
 	}
 	var pe *ProviderError
 	if errors.As(err, &pe) {
 		switch {
-		case pe.Status == http.StatusUnauthorized || pe.Status == http.StatusForbidden:
-			return refreshThenFall
 		case pe.Status == http.StatusTooManyRequests || pe.Status >= 500:
 			return fallbackNow
 		default:

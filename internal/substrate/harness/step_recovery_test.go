@@ -123,3 +123,38 @@ func TestSelfHealer_DoesNotRetryContextOverflow(t *testing.T) {
 		t.Fatalf("err = %v, want a deterministic HealingExhaustedError (not a loop)", err)
 	}
 }
+
+// T-20261112-a-provider-auth-failure-streamed-through-the (owner decision
+// 2026-11-18): a refused provider credential is refused again on every attempt,
+// in process (domain.ErrProviderAuth) and over the wire (gateway Unauthenticated).
+func TestClassifyStepFailure_ProviderAuthDeterministic(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		code codes.Code
+	}{
+		"in process": {fmt.Errorf("openai: %w: Failed to authenticate", domain.ErrProviderAuth), codes.Unknown},
+		"over the wire (gateway UNAUTHENTICATED)": {status.Error(codes.Unauthenticated, "openai: HTTP 401: OAuth token revoked"), codes.Unauthenticated},
+		"sentinel under an Internal status":       {fmt.Errorf("rpc: %w", domain.ErrProviderAuth), codes.Internal},
+	}
+	for name, c := range cases {
+		if got := ClassifyStepFailure(c.err, c.code, ""); got != domain.StepFailureDeterministic {
+			t.Errorf("%s: class = %v, want deterministic", name, got)
+		}
+	}
+}
+
+func TestSelfHealer_DoesNotRetryProviderAuth(t *testing.T) {
+	calls := 0
+	sh := &SelfHealer{StepIndex: 1, MaxAttempts: 3}
+	_, err := sh.Wrap(func(context.Context, *domain.Handoff) (*domain.Handoff, error) {
+		calls++
+		return nil, status.Error(codes.Unauthenticated, "openai: received error while streaming: Failed to authenticate: OAuth token revoked")
+	})(context.Background(), &domain.Handoff{})
+	if calls != 1 {
+		t.Fatalf("the step ran %d times; a refused credential must not be retried", calls)
+	}
+	var he *HealingExhaustedError
+	if !errors.As(err, &he) || he.Class != domain.StepFailureDeterministic {
+		t.Fatalf("err = %v, want a deterministic HealingExhaustedError", err)
+	}
+}

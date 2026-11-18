@@ -52,6 +52,16 @@ var ErrSchemaValidation = errors.New("llm: response failed its schema")
 // (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
 var ErrContextOverflow = errors.New("llm: prompt exceeds the model's context window")
 
+// ErrProviderAuth is returned when the provider refused the CREDENTIAL (HTTP
+// 401/403, an authentication_error / permission_error envelope, or a proxy's
+// streamed "Failed to authenticate: OAuth token revoked"). It is deterministic for
+// the deployment until a person fixes the credential: it is never retried, never
+// triggers provider fallback and never counts against the model's health (owner
+// decision 2026-11-18, T-20261112-a-provider-auth-failure-streamed-through-the); the
+// gateway answers it as codes.Unauthenticated and a step failing with it is never
+// re-run.
+var ErrProviderAuth = errors.New("llm: provider refused the credential")
+
 // Request field names, as they appear in GenerateResponse.Ignored and in
 // ErrUnsupported messages. Stable strings: traces and tests match on them.
 const (
