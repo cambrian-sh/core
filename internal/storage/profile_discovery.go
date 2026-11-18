@@ -49,6 +49,11 @@ type DiscoverOptions struct {
 	// no grant of its own, and marked System so selection never picks it — the
 	// dispatcher calls it with a composition bound to the step lease. "" ⇒ none.
 	ComposedRuntimeID string
+	// OnRefused, when set, is told the id of every agent discovery found but
+	// REFUSED to register (today: a manifest trust_tier the kernel will not apply
+	// as written, ENG-2085), so the registrar can drop an earlier registration
+	// of it — otherwise the stale record would stay launchable at its old tier.
+	OnRefused func(id string)
 }
 
 // IsProfileRuntime reports whether an agent record runs the profile runtime —

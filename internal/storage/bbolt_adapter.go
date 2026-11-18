@@ -33,6 +33,8 @@ type sidecarManifest struct {
 	Capabilities  []string `json:"capabilities"`
 	Tools         []string `json:"tools"`
 	MemoryLimitMB int      `json:"memory_limit_mb"`
+	// TrustTier: the declared ADR-0139 D8 tier (manifestTrustTier, ENG-2085).
+	TrustTier string `json:"trust_tier"`
 }
 
 // sidecarTraits is the explicit-trait vocabulary a standalone sidecar may
@@ -197,7 +199,9 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 	}
 
 	// Phase 1: discover (file I/O; no write tx held).
-	discovered, walkErr := DiscoverFilesystemAgents(agentsDir, isSystemAgent)
+	var refused []string
+	discovered, walkErr := DiscoverFilesystemAgentsWith(agentsDir, isSystemAgent,
+		DiscoverOptions{OnRefused: func(id string) { refused = append(refused, id) }})
 	if walkErr != nil {
 		slog.Warn("DB (BBOLT): agents dir unreadable, skipping seed", "dir", agentsDir, "err", walkErr)
 	}
@@ -206,6 +210,16 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 	if err := b.db.Update(func(tx *bbolt.Tx) error {
 		for _, da := range discovered {
 			if err := upsertDiscovered(tx, da); err != nil {
+				return err
+			}
+		}
+		// A refused agent's earlier registration must not stay launchable
+		// (ENG-2085): drop it with its manifest.
+		for _, id := range refused {
+			if err := tx.Bucket(agentBucket).Delete([]byte(id)); err != nil {
+				return err
+			}
+			if err := tx.Bucket(manifestBucket).Delete([]byte(id)); err != nil {
 				return err
 			}
 		}
@@ -257,6 +271,11 @@ func DiscoverFilesystemAgentsWith(agentsDir string, isSystemAgent func(id string
 	if systemID == nil {
 		systemID = func(string) bool { return false }
 	}
+	refused := func(id string) {
+		if opt.OnRefused != nil {
+			opt.OnRefused(id)
+		}
+	}
 	var out []DiscoveredAgent
 	profilesDir := filepath.Join(agentsDir, ProfilesDirName)
 	runtimePath := filepath.Join(agentsDir, ProfileRuntimeFile)
@@ -282,7 +301,7 @@ func DiscoverFilesystemAgentsWith(agentsDir string, isSystemAgent func(id string
 			if isAgentPackage(walkPath) {
 				id := d.Name()
 				entry := filepath.Join(walkPath, "agent.py")
-				if da, ok := pythonAgentRecord(agentsDir, entry, id, systemID); ok {
+				if da, ok := pythonAgentRecord(agentsDir, entry, id, systemID, refused); ok {
 					out = append(out, da)
 				}
 				return fs.SkipDir
@@ -290,7 +309,7 @@ func DiscoverFilesystemAgentsWith(agentsDir string, isSystemAgent func(id string
 			// JS package form (ADR-0125): package.json + agent.ts/agent.js.
 			// Checked after the Python form, so Python wins when both are present.
 			if entry := jsAgentPackageEntry(walkPath); entry != "" {
-				if da, ok := jsAgentRecord(agentsDir, entry, d.Name(), systemID); ok {
+				if da, ok := jsAgentRecord(agentsDir, entry, d.Name(), systemID, refused); ok {
 					out = append(out, da)
 				}
 				return fs.SkipDir
@@ -307,12 +326,12 @@ func DiscoverFilesystemAgentsWith(agentsDir string, isSystemAgent func(id string
 		switch {
 		case strings.HasSuffix(name, "agent.py"):
 			id := strings.TrimSuffix(name, ".py")
-			if da, ok := pythonAgentRecord(agentsDir, walkPath, id, systemID); ok {
+			if da, ok := pythonAgentRecord(agentsDir, walkPath, id, systemID, refused); ok {
 				out = append(out, da)
 			}
 		case strings.HasSuffix(name, "agent.ts"), strings.HasSuffix(name, "agent.js"):
 			id := strings.TrimSuffix(name, filepath.Ext(name))
-			if da, ok := jsAgentRecord(agentsDir, walkPath, id, systemID); ok {
+			if da, ok := jsAgentRecord(agentsDir, walkPath, id, systemID, refused); ok {
 				out = append(out, da)
 			}
 		case strings.HasSuffix(name, ".manifest.json"):
@@ -323,7 +342,7 @@ func DiscoverFilesystemAgentsWith(agentsDir string, isSystemAgent func(id string
 			if hasSiblingAgentSource(walkPath, id) {
 				return nil
 			}
-			if da, ok := sidecarAgentRecord(agentsDir, walkPath, id, systemID); ok {
+			if da, ok := sidecarAgentRecord(agentsDir, walkPath, id, systemID, refused); ok {
 				out = append(out, da)
 			}
 		}
@@ -398,6 +417,22 @@ func upsertDiscovered(tx *bbolt.Tx, da DiscoveredAgent) error {
 	if existing.System != da.Agent.System {
 		slog.Info("DB (BBOLT): agent system status changed", "id", id, "system", da.Agent.System)
 		existing.System = da.Agent.System
+		data, err := json.Marshal(existing)
+		if err != nil {
+			return fmt.Errorf("marshal updated agent %s: %w", id, err)
+		}
+		if err := agentsBucket.Put([]byte(id), data); err != nil {
+			return fmt.Errorf("put agent %s: %w", id, err)
+		}
+	}
+	// The trust tier is reconciled before the short-circuit too (ENG-2085): it
+	// is a security property, and a record seeded before discovery read the
+	// manifest's trust_tier keeps the same SourceHash — skipping it would leave
+	// an agent that declares third-party running first-party until someone
+	// edits its source. A tier change does not make the agent provisional.
+	if existing.TrustTier != da.Agent.TrustTier {
+		slog.Info("DB (BBOLT): agent trust tier changed", "id", id, "trust_tier", da.Agent.TrustTier, "was", existing.TrustTier)
+		existing.TrustTier = da.Agent.TrustTier
 		data, err := json.Marshal(existing)
 		if err != nil {
 			return fmt.Errorf("marshal updated agent %s: %w", id, err)
@@ -485,7 +520,7 @@ func hasSiblingAgentSource(manifestPath, id string) bool {
 // is canonical; an embedded AGENT_MANIFEST = `{…}` template literal is the
 // fallback; AGENT_DESCRIPTION parses with the shared regex (it is anchor-free).
 // Runtime: the manifest's runtime field wins; else .ts → bun, .js → node.
-func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bool) (DiscoveredAgent, bool) {
+func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bool, refused func(string)) (DiscoveredAgent, bool) {
 	content, readErr := os.ReadFile(fullPath)
 
 	description := "General-purpose agent."
@@ -536,6 +571,11 @@ func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bo
 		slog.Warn("DB (BBOLT): agent manifest declares the retired trait \"tool\"; not registered (subclass CognitiveAgent, or expose the capability as a kernel tool)", "id", id, "file", fullPath)
 		return DiscoveredAgent{}, false
 	}
+	tier, tierOK := manifestTrustTier(id, fullPath, manifest.TrustTier, isSystemAgent(id))
+	if !tierOK {
+		refused(id)
+		return DiscoveredAgent{}, false
+	}
 	execPath := filepath.ToSlash(fullPath)
 	// ExecPath must be relative to Dir — buildAgentCmd resolves it under
 	// cmd.Dir=def.Dir (same rule as pythonAgentRecord).
@@ -556,6 +596,7 @@ func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bo
 			Provisional:     true,
 			Trait:           manifest.Trait,
 			System:          isSystemAgent(id),
+			TrustTier:       tier,
 		},
 		Manifest: manifest,
 	}, true
@@ -601,7 +642,7 @@ func (b *BBoltAdapter) checkSystemAgentLayout(agentsDir string) error {
 // declared JSON is less brittle than parsing a manifest out of source text. ok is always
 // true (an unreadable entry still registers with defaults, preserving pre-inversion
 // behavior; availability health-gating is applied by the app-layer source, not here).
-func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bool) (DiscoveredAgent, bool) {
+func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bool, refused func(string)) (DiscoveredAgent, bool) {
 	content, readErr := os.ReadFile(fullPath)
 
 	description := "General-purpose agent."
@@ -645,6 +686,11 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 		slog.Warn("DB (BBOLT): agent manifest declares the retired trait \"tool\"; not registered (subclass CognitiveAgent, or expose the capability as a kernel tool)", "id", id, "file", fullPath)
 		return DiscoveredAgent{}, false
 	}
+	tier, tierOK := manifestTrustTier(id, fullPath, manifest.TrustTier, isSystemAgent(id))
+	if !tierOK {
+		refused(id)
+		return DiscoveredAgent{}, false
+	}
 	execPath := filepath.ToSlash(fullPath)
 	// ExecPath must be relative to Dir — buildAgentCmd resolves it under cmd.Dir=def.Dir,
 	// so a full path produces a doubled 'agents/agents/...' and python can't open the file.
@@ -665,6 +711,7 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 			Provisional:     true,
 			Trait:           manifest.Trait,
 			System:          isSystemAgent(id),
+			TrustTier:       tier,
 		},
 		Manifest: manifest,
 	}, true
@@ -675,7 +722,7 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 // unparseable, its trait is missing or unknown (ADR-0125: tool/cognitive/model/daemon
 // are accepted; cognitive normalizes to ""), or its exec target does not exist — a
 // health gate at discovery time.
-func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(string) bool) (DiscoveredAgent, bool) {
+func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(string) bool, refused func(string)) (DiscoveredAgent, bool) {
 	manifestBytes, readErr := os.ReadFile(manifestPath)
 	if readErr != nil {
 		slog.Warn("DB (BBOLT): sidecar manifest unreadable, skipping", "file", manifestPath, "err", readErr)
@@ -698,6 +745,11 @@ func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(s
 		slog.Warn("DB (BBOLT): sidecar binary not found, skipping", "exec_path", resolvedExecPath, "err", binErr)
 		return DiscoveredAgent{}, false
 	}
+	tier, tierOK := manifestTrustTier(id, manifestPath, sm.TrustTier, isSystemAgent(id))
+	if !tierOK {
+		refused(id)
+		return DiscoveredAgent{}, false
+	}
 	runtime := "binary"
 	if sm.Runtime != "" {
 		runtime = sm.Runtime
@@ -716,6 +768,7 @@ func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(s
 			Provisional:     true,
 			Trait:           trait,
 			System:          isSystemAgent(id),
+			TrustTier:       tier,
 		},
 		Manifest: ManifestRecord{
 			Version:          sm.Version,
@@ -725,6 +778,7 @@ func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(s
 			Capabilities:     sm.Capabilities,
 			Tools:            sm.Tools,
 			MemoryLimitMB:    sm.MemoryLimitMB,
+			TrustTier:        tier,
 		},
 	}, true
 }

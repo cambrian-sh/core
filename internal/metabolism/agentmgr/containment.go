@@ -47,9 +47,10 @@ func (im *InstanceManager) SetAgentContainment(c AgentContainment) { im.containm
 // agentTrustTier is the tier the kernel runs an agent at — the kernel's view,
 // never the agent's claim, by the same rule as the agent card
 // (agentcard.TrustTier): a composition-root system agent is system; a profile
-// claiming "system" is first-party; a declared tier is kept; a local agent with
-// no declared tier is first-party (it runs from the deployment's own agents
-// directory).
+// claiming "system" is first-party; a declared tier (a profile's, or a local
+// agent manifest's — discovery refuses a manifest that would raise privilege,
+// ENG-2085) is kept; a local agent with no declared tier is first-party (it
+// runs from the deployment's own agents directory).
 func agentTrustTier(def *domain.AgentDefinition) string {
 	switch {
 	case domain.IsSystemDefinition(*def):

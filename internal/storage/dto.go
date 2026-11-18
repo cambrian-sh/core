@@ -33,7 +33,13 @@ type ManifestRecord struct {
 	// Runtime optionally overrides the discovery-derived runtime for the agent a
 	// sibling manifest describes (ADR-0125: e.g. run an agent.js under bun). It
 	// is discovery-time metadata only and never surfaces in domain.AgentManifest.
-	Runtime          string         `json:"runtime,omitempty"`
+	Runtime string `json:"runtime,omitempty"`
+	// TrustTier is a local agent's declared ADR-0139 D8 tier (AGENT_MANIFEST
+	// or *.manifest.json key trust_tier). Discovery copies it to
+	// AgentRecord.TrustTier only when it does not raise privilege
+	// (manifestTrustTier, ENG-2085); a raising or unknown value refuses the
+	// agent. Discovery-time metadata: never surfaces in domain.AgentManifest.
+	TrustTier        string         `json:"trust_tier,omitempty"`
 	Tools            []string       `json:"tools,omitempty"`
 	Capabilities     []string       `json:"capabilities,omitempty"`    // ROUTE-03: declared capability tags (manifest source of truth)
 	MemoryLimitMB    int            `json:"memory_limit_mb,omitempty"` // SEC-01: per-agent memory cap (0 = global default)

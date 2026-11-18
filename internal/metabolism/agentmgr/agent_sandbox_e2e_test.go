@@ -47,6 +47,8 @@ type probeReport struct {
 	Scratch string            `json:"scratch"`
 	Temp    string            `json:"temp"`
 	Cwd     string            `json:"cwd"`
+	// Dial: host:port → "ok" | "denied: …" for AGENTMGR_PROBE_DIAL (probeDials).
+	Dial map[string]string `json:"dial,omitempty"`
 }
 
 // runProbeAgent is the probe agent (TestMain, AGENTMGR_CHAOS_HELPER=probe).
@@ -79,6 +81,7 @@ func runProbeAgent() {
 		rep.Scratch = "denied: " + err.Error()
 	}
 	rep.Cwd, _ = os.Getwd()
+	probeDials(&rep)
 	// ADR-0157 D5.1: a file left in out/ is what the kernel collects at exit.
 	if out := os.Getenv(AgentOutEnv); out != "" {
 		_ = os.MkdirAll(filepath.Join(out, "sub"), 0o700)

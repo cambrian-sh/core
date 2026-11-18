@@ -150,8 +150,9 @@ type AgentDefinition struct {
 	// for an agent that is its own source file. A profile agent's grants and tool
 	// ceiling come from the profile's tool allowlist (app/profile_agents.go).
 	Profile string `json:"profile,omitempty"`
-	// TrustTier is the profile's declared ADR-0139 D8 tier (system, first-party,
-	// third-party). Read for the agent card and the console, and at launch
+	// TrustTier is the declared ADR-0139 D8 tier (system, first-party,
+	// third-party): a profile's trust_tier, or a local agent manifest's (which
+	// may lower privilege, never raise it — ENG-2085). Read for the agent card and the console, and at launch
 	// (agentmgr containment.go, execution.agents.sandbox): a third-party agent is
 	// refused while its containment is unavailable, unless on_unavailable is
 	// degrade; first-party and system agents launch as before.

@@ -14,8 +14,10 @@ import (
 // (AGENTS.md §3.4), with the same tier and on_unavailable vocabulary.
 //
 // The tier an agent runs at is the kernel's view (agentmgr.agentTrustTier, the
-// same rule as the agent card): a composition-root system agent and a local agent
-// that declares no tier are first-party; a profile's declared trust_tier is kept.
+// same rule as the agent card): a composition-root system agent is system; a
+// local agent that declares no tier is first-party; a profile's or a local
+// agent manifest's declared trust_tier is kept (a manifest may lower privilege,
+// never raise it: storage.manifestTrustTier, ENG-2085).
 //
 // enabled: true (the default since ADR-0157 S7, owner decision 2026-11-17,
 // after the live run on the production backend, ENG-2010) — ADR-0157 S1: every

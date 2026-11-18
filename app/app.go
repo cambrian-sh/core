@@ -3382,10 +3382,20 @@ var _ mcp.ToolSink = (*mcpToolSink)(nil)
 // It returns every agent it registered, so the composition root can bind what a
 // declarative profile declares (tool grants and ceiling, model preference) and
 // prune profile agents that were not discovered this boot.
+//
+// A source that refused agents at discovery (refusingAgentSource: a manifest
+// trust_tier the kernel will not apply as written, ENG-2085) has their earlier
+// registrations deleted once every source has registered — unless another
+// source registered the same id this boot — so a refused agent cannot stay
+// launchable at the tier it had before.
 func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, sources []AgentSource) []DiscoveredAgent {
 	var registered []DiscoveredAgent
+	var refused []string
 	for _, src := range sources {
 		discovered, err := src.DiscoverAgents(ctx)
+		if rs, ok := src.(refusingAgentSource); ok {
+			refused = append(refused, rs.RefusedAgentIDs()...)
+		}
 		if err != nil {
 			slog.Warn("registerAgentSources: source discovery failed", "source", src.Name(), "err", err)
 			continue
@@ -3406,7 +3416,36 @@ func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, s
 			registered = append(registered, da)
 		}
 	}
+	pruneRefusedAgents(ctx, reg, refused, registered)
 	return registered
+}
+
+// refusingAgentSource is an AgentSource that reports the agents it found but
+// refused to register (FilesystemAgentSource).
+type refusingAgentSource interface {
+	RefusedAgentIDs() []string
+}
+
+// pruneRefusedAgents deletes the registry records of agents discovery refused
+// (ENG-2085), sparing an id another source registered this boot.
+func pruneRefusedAgents(ctx context.Context, reg domain.AgentPruner, refused []string, registered []DiscoveredAgent) {
+	if len(refused) == 0 {
+		return
+	}
+	kept := make(map[string]bool, len(registered))
+	for _, da := range registered {
+		kept[da.Definition.ID] = true
+	}
+	for _, id := range refused {
+		if kept[id] {
+			continue
+		}
+		if err := reg.DeleteAgent(ctx, id); err != nil {
+			slog.Warn("registerAgentSources: dropping a refused agent's registration failed", "id", id, "err", err)
+			continue
+		}
+		slog.Warn("registerAgentSources: refused agent is not registered; any earlier registration was dropped (ENG-2085)", "id", id)
+	}
 }
 
 // routePreviewAdapter implements operator.RoutePreviewer (ROUTE-07 / ADR-0077) by scoring

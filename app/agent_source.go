@@ -31,7 +31,15 @@ type FilesystemAgentSource struct {
 	// composedRuntimeID registers the ADR-0145 D12 composed runtime under this id
 	// (storage.DiscoverOptions.ComposedRuntimeID); "" ⇒ not registered.
 	composedRuntimeID string
+	// refused holds the ids the last DiscoverAgents refused to register
+	// (storage.DiscoverOptions.OnRefused, ENG-2085); RefusedAgentIDs reads it.
+	refused []string
 }
+
+// RefusedAgentIDs returns the ids the last DiscoverAgents found but refused to
+// register (a manifest trust_tier that would raise privilege or is unknown,
+// ENG-2085). registerAgentSources drops their earlier registrations.
+func (s *FilesystemAgentSource) RefusedAgentIDs() []string { return s.refused }
 
 // withComposedRuntime registers the composed-worker runtime (execution.workers.composed)
 // under id beside the profile agents. Only the kernel's own source calls it.
@@ -88,8 +96,10 @@ func (s *FilesystemAgentSource) Name() string { return "filesystem:" + s.dir }
 // DiscoverAgents scans the directory and returns each agent's definition + manifest,
 // skipping any whose exec path does not resolve on disk.
 func (s *FilesystemAgentSource) DiscoverAgents(_ context.Context) ([]DiscoveredAgent, error) {
+	s.refused = nil
 	discovered, err := storage.DiscoverFilesystemAgentsWith(s.dir, s.isSystemAgent, storage.DiscoverOptions{
-		SkillTools: s.skillTools, ComposedRuntimeID: s.composedRuntimeID})
+		SkillTools: s.skillTools, ComposedRuntimeID: s.composedRuntimeID,
+		OnRefused: func(id string) { s.refused = append(s.refused, id) }})
 	if err != nil {
 		return nil, err
 	}
