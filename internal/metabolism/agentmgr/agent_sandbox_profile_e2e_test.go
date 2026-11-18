@@ -103,13 +103,11 @@ func TestE2E_ProfileAgentDeclaredPathInsideTheCapBoots(t *testing.T) {
 	}
 	root := e2eRoot(t)
 	cache := filepath.Join(root, "caches", "model")
-	if err := os.MkdirAll(cache, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agentOwnedDir(t, cache)
+	// The agent's uid owns the read-only path too: only the sandbox's
+	// read-only bind may deny the write, not file modes.
 	ro := filepath.Join(root, "caches", "weights")
-	if err := os.MkdirAll(ro, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agentOwnedDir(t, ro)
 	def, resolve := profileAgentFromDisk(t, root, []domain.SandboxPath{{Path: cache, Write: true}, {Path: ro}})
 	if def.Profile != "scout" || def.TrustTier != "first-party" {
 		t.Fatalf("not the discovered profile agent: %+v", def)
@@ -131,7 +129,7 @@ func TestE2E_ProfileAgentDeclaredPathInsideTheCapBoots(t *testing.T) {
 	im.SetEnvExtras([]string{"AGENTMGR_CHAOS_HELPER=probe",
 		"AGENTMGR_PROBE_WRITE=" + strings.Join([]string{cache, ro}, string(os.PathListSeparator))})
 	// The probe stands in for worker_agent.py; everything else is the profile agent's.
-	exe, _ := os.Executable()
+	exe := probeExe(t, root)
 	def.Runtime, def.ExecPath, def.Dir = domain.RuntimeBinary, exe, filepath.Dir(exe)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

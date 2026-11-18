@@ -112,9 +112,7 @@ func TestE2E_SandboxedAgentBootsConfined(t *testing.T) {
 		mustWrite(t, f)
 	}
 	cache := filepath.Join(root, "caches", "model")
-	if err := os.MkdirAll(cache, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agentOwnedDir(t, cache)
 	workRoot := filepath.Join(root, "w")
 	other := filepath.Join(workRoot, "first-party", "other-11112222", "secret.txt")
 	mustWrite(t, other)
@@ -139,7 +137,7 @@ func TestE2E_SandboxedAgentBootsConfined(t *testing.T) {
 	im.SetEnvExtras([]string{"AGENTMGR_CHAOS_HELPER=probe",
 		"AGENTMGR_PROBE_READ=" + strings.Join(reads, string(os.PathListSeparator)),
 		"AGENTMGR_PROBE_WRITE=" + strings.Join([]string{confDir, cache}, string(os.PathListSeparator))})
-	exe, _ := os.Executable()
+	exe := probeExe(t, root)
 	def := &domain.AgentDefinition{ID: "probe", Runtime: domain.RuntimeBinary, ExecPath: exe,
 		Dir: filepath.Dir(exe), TrustTier: "first-party"}
 
@@ -271,24 +269,82 @@ func TestE2E_SandboxRefusesAnUndeclaredPathAtBoot(t *testing.T) {
 	}
 }
 
+// mustWrite writes a fixture file that every uid may read (dirs 0755, file
+// 0644). Under a root kernel the agent runs as uid 65534 (sandbox low_privilege),
+// and a 0700/0600 fixture would be unreadable to it by plain file modes: the
+// "visible" control would fail and the hidden files would pass for the wrong
+// reason. World-readable fixtures make every denial the sandbox's own.
 func mustWrite(t *testing.T, f string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(f, []byte("secret"), 0o600); err != nil {
+	if err := os.WriteFile(f, []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// agentOwnedDir creates a directory the agent's own uid owns, so a write into
+// it can be denied only by the sandbox (a read-only bind), never by file modes.
+// As a non-root kernel the agent runs as the test's uid already; as root it
+// runs as 65534 (start_unix.go dropUID), so the directory is chowned to it.
+func agentOwnedDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(dir, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// probeExe is the probe agent's executable: this test binary. As a non-root
+// kernel it runs in place. As root the agent drops to uid 65534, which cannot
+// reach `go test`'s 0700 build directory (bwrap: "Can't find source path …:
+// Permission denied"), so the binary is copied to <root>/bin, 0755.
+func probeExe(t *testing.T, root string) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() != 0 {
+		return exe
+	}
+	b, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "bin", filepath.Base(exe))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dst
 }
 
 // e2eRoot is a short directory outside /tmp: bubblewrap gives the agent its own
 // /tmp (a /tmp fixture would be hidden for the wrong reason), and socket paths
 // must stay under 107 bytes. $AGENTMGR_E2E_ROOT wins when set.
+//
+// As root the agent drops to uid 65534, which must reach every directory
+// above its workdir: the default base is then /var/tmp (root's cache dir sits
+// under the 0700 /root), and the root is made 0755. Not 0711 like the
+// sandbox's work_root: bubblewrap running as 65534 cannot bind a host path
+// (here the probe binary's <root>/bin) under a root-owned traverse-only
+// ancestor ("Can't mkdir parents … Permission denied"). The work root
+// itself is a hide path (a tmpfs), so binds below it are unaffected.
 func e2eRoot(t *testing.T) string {
 	t.Helper()
 	base := os.Getenv("AGENTMGR_E2E_ROOT")
 	if base == "" && runtime.GOOS == "linux" {
-		if c, err := os.UserCacheDir(); err == nil {
+		if os.Geteuid() == 0 {
+			base = "/var/tmp"
+		} else if c, err := os.UserCacheDir(); err == nil {
 			base = c
 		}
 	}
@@ -302,6 +358,11 @@ func e2eRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	if os.Geteuid() == 0 {
+		if err := os.Chmod(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return d
 }
 

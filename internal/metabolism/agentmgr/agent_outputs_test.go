@@ -51,7 +51,7 @@ func TestE2E_OutCollectedBeforeTheScratchIsRemoved(t *testing.T) {
 	col := &recordingCollector{files: map[string]string{}}
 	im.SetOutputCollector(col)
 	im.SetEnvExtras([]string{"AGENTMGR_CHAOS_HELPER=probe"})
-	exe, _ := os.Executable()
+	exe := probeExe(t, root)
 	def := &domain.AgentDefinition{ID: "probe", Runtime: domain.RuntimeBinary, ExecPath: exe,
 		Dir: filepath.Dir(exe), TrustTier: "first-party"}
 
