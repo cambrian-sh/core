@@ -436,15 +436,34 @@ func probeBwrap(configured string) (string, string) {
 	if err != nil {
 		return "", "bubblewrap (bwrap) is not installed"
 	}
-	args := []string{"--ro-bind", "/", "/", "--unshare-net", "--unshare-pid", "--die-with-parent"}
-	if os.Geteuid() != 0 {
-		args = append(args, "--unshare-user")
-	}
-	args = append(args, "--", "/bin/true")
-	if out, err := exec.Command(path, args...).CombinedOutput(); err != nil { //nolint:gosec // probe of a configured binary
-		return "", "bubblewrap is installed but cannot create namespaces here: " + strings.TrimSpace(string(out))
+	if out, err := exec.Command(path, bwrapProbeArgs(os.Geteuid() != 0)...).CombinedOutput(); err != nil { //nolint:gosec // probe of a configured binary
+		return "", "bubblewrap is installed but cannot create namespaces here: " + strings.TrimSpace(string(out)) + containerHint()
 	}
 	return path, ""
+}
+
+// bwrapProbeArgs is the usability probe: the mounts and namespaces a launch
+// makes (bwrapArgs), so a host where only part of them works — a container
+// engine that allows the user namespace but not a fresh /proc — is reported
+// missing rather than enforced and then failing at every launch (ENG-2062).
+func bwrapProbeArgs(userNS bool) []string {
+	a := []string{"--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+		"--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net", "--die-with-parent", "--new-session"}
+	if userNS {
+		a = append(a, "--unshare-user")
+	}
+	return append(a, "--", "/bin/true")
+}
+
+// containerHint names the fix when the kernel runs in a container, where the
+// usual cause is the engine's seccomp/AppArmor policy (ENG-2062).
+func containerHint() string {
+	for _, f := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(f); err == nil {
+			return " (in a container: allow unprivileged user namespaces, e.g. docker --security-opt seccomp=deploy/seccomp-bwrap.json; see docs/container-sandbox.md)"
+		}
+	}
+	return ""
 }
 
 // lookPathIn resolves a bare command against the CHILD's PATH, because the

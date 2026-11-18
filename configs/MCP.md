@@ -264,6 +264,10 @@ launch; a third-party server with no network needs a pre-baked image on the dock
 Consequences: on Windows native a third-party server that declares no egress is refused (use
 `runner: docker`); on Linux native, third-party needs bubblewrap and a root kernel, else it is
 refused; a degrade tier whose docker runner is unavailable falls back to native and says so.
+The kernel image ships bubblewrap; inside a container it works only when the engine allows
+unprivileged user namespaces (`docker --security-opt seccomp=deploy/seccomp-bwrap.json`;
+Podman, Kubernetes and AppArmor notes in `docs/container-sandbox.md`), else the report names
+it missing.
 
 **Status:** the integration's `policy_summary` ends with the effective containment, e.g.
 `containment third-party/native: job_object+low_integrity [env workdir kill_tree … fs_confine

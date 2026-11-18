@@ -50,6 +50,18 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && pg_dump --version
 
+# bubblewrap (bwrap): the native Linux agent runner's fs_confine, hide_state and
+# network controls (ADR-0157 D1, ENG-2062). It is not setuid: the non-root kernel runs
+# it in an unprivileged user namespace, which the container engine must allow. Docker's
+# default seccomp profile does not, so the kernel container runs with
+# deploy/seccomp-bwrap.json (docs/container-sandbox.md has the Docker, Podman and
+# Kubernetes settings). Without them the agent containment report names fs_confine and
+# hide_state missing (first-party degraded, third-party refused) — never enforced.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends bubblewrap \
+ && rm -rf /var/lib/apt/lists/* \
+ && bwrap --version
+
 WORKDIR /app
 
 # Kernel binary (+ the pagerank worker) + agents + reference configs + migrations.
