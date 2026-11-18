@@ -62,7 +62,10 @@ func Pool(t testing.TB, schema string, opt Options) (*pgxpool.Pool, context.Cont
 	if !validSchema.MatchString(schema) {
 		t.Fatalf("pgscratch: schema %q must match %s", schema, validSchema)
 	}
-	ctx := context.Background()
+	// The test's own context (AGENTS.md §2.7): cancelled when the test ends, so a hung
+	// statement cannot outlive it. Cleanup work below runs after that cancellation and
+	// therefore uses context.WithoutCancel(ctx).
+	ctx := t.Context()
 	ident := pgx.Identifier{schema}.Sanitize()
 
 	// Reset with a plain connection first: the pool's AfterConnect sets a search_path
@@ -96,13 +99,14 @@ func Pool(t testing.TB, schema string, opt Options) (*pgxpool.Pool, context.Cont
 	}
 	// Registered before pool.Close so it runs after it (LIFO) on a fresh connection.
 	t.Cleanup(func() {
-		c, err := pgx.Connect(context.Background(), dsn)
+		cctx := context.WithoutCancel(ctx) // t.Context() is already cancelled when cleanups run
+		c, err := pgx.Connect(cctx, dsn)
 		if err != nil {
 			t.Logf("pgscratch: drop schema %s: %v", schema, err)
 			return
 		}
-		defer func() { _ = c.Close(context.Background()) }() // best-effort close
-		if _, err := c.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ident+" CASCADE"); err != nil {
+		defer func() { _ = c.Close(cctx) }() // best-effort close
+		if _, err := c.Exec(cctx, "DROP SCHEMA IF EXISTS "+ident+" CASCADE"); err != nil {
 			t.Logf("pgscratch: drop schema %s: %v", schema, err)
 		}
 	})

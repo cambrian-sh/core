@@ -1,6 +1,7 @@
 package objects_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -183,7 +184,7 @@ func TestPg_GetObjectLifecycle(t *testing.T) {
 	if _, err := e.onto.Apply(e.ctx, e.ns, domain.OntologyDoc{Kinds: []domain.KindSpec{life}}, "test", false); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = e.pool.Exec(e.ctx, `DROP TABLE IF EXISTS objects_lpcase`) }) // test-only
+	t.Cleanup(func() { _, _ = e.pool.Exec(context.WithoutCancel(e.ctx), `DROP TABLE IF EXISTS objects_lpcase`) }) // test-only; e.ctx is the test's, cancelled before cleanups
 	e.seedEvidence("life-")
 	e.mustObserve("lpcase/k1", "state", txt("triage"), 0, "life-south", "k1")
 	v, err := e.reader.Get(e.ctx, southOnly, e.ns, "lpcase/k1")
