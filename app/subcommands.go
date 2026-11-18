@@ -75,6 +75,9 @@ func Subcommands(spec SubcommandSpec) []Subcommand {
 		// ENG-681: deployment-owned backup, verify, rotation, restore and the
 		// weekly restore drill (internal/backup; docs/backup-and-restore.md).
 		{"backup", "back up, verify, rotate, restore or drill the kernel's durable state", RunBackup},
+		// ADR-0157 D7: the kernel-managed sandbox Python env — its boot check and
+		// the build the kernel names as the fix when it refuses Python agents.
+		{"python-env", "check or build the kernel-managed sandbox Python env", RunPythonEnv},
 	}
 }
 

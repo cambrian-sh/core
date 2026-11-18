@@ -1,13 +1,11 @@
 // Mechanical helpers for the setup subcommand (ADR-0122): process execution,
-// probes, the uv bootstrap download, embedded-asset unpacking, and the config
+// probes, the bun bootstrap download, embedded-asset unpacking, and the config
 // bundle writer. Kept free of prompting/step logic so they are unit-testable.
 package app
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/base64"
@@ -212,71 +210,6 @@ func (s *setupState) pollHealth(ctx context.Context, addr string, wait time.Dura
 	return false
 }
 
-// ---- uv bootstrap ------------------------------------------------------------------------
-
-const setupUVBaseURL = "https://github.com/astral-sh/uv/releases/latest/download/"
-
-// uvAsset maps GOOS/GOARCH to the uv release asset name.
-func uvAsset(goos, goarch string) (string, bool) {
-	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[goarch]
-	if arch == "" {
-		return "", false
-	}
-	switch goos {
-	case "linux":
-		return "uv-" + arch + "-unknown-linux-gnu.tar.gz", true
-	case "windows":
-		return "uv-" + arch + "-pc-windows-msvc.zip", true
-	case "darwin":
-		return "uv-" + arch + "-apple-darwin.tar.gz", true
-	}
-	return "", false
-}
-
-// ensureUV finds uv on PATH or in <prefix>/bin, downloading it there when
-// absent. Returns "" (with a warning printed) when uv cannot be provisioned —
-// callers fall back to system python/pip.
-func (s *setupState) ensureUV(ctx context.Context) string {
-	if s.uvBin != "" {
-		return s.uvBin
-	}
-	if p, err := exec.LookPath("uv"); err == nil {
-		s.uvBin = p
-		return p
-	}
-	local := filepath.Join(s.prefix, "bin", exeName("uv"))
-	if fileExists(local) {
-		s.uvBin = local
-		return local
-	}
-	asset, ok := uvAsset(runtime.GOOS, runtime.GOARCH)
-	if !ok {
-		return ""
-	}
-	fmt.Print("  downloading uv (package installer)… ")
-	tmp, err := downloadTemp(ctx, setupUVBaseURL+asset)
-	if err != nil {
-		fmt.Println(s.ui.yellow("failed"))
-		s.ui.line("warn", "uv download failed", err.Error())
-		return ""
-	}
-	defer os.Remove(tmp)
-	if strings.HasSuffix(asset, ".zip") {
-		err = extractOneFromZip(tmp, "uv", local)
-	} else {
-		err = extractOneFromTarGz(tmp, "uv", local)
-	}
-	if err != nil {
-		fmt.Println(s.ui.yellow("failed"))
-		s.ui.line("warn", "uv extract failed", err.Error())
-		return ""
-	}
-	_ = os.Chmod(local, 0o755)
-	fmt.Println(s.ui.green("done"))
-	s.uvBin = local
-	return local
-}
-
 // ---- bun bootstrap (ADR-0125) --------------------------------------------------------------
 
 const setupBunBaseURL = "https://github.com/oven-sh/bun/releases/latest/download/"
@@ -438,37 +371,6 @@ func extractOneFromZip(archive, base, dest string) error {
 		}
 		defer rc.Close()
 		return writeExecutable(dest, rc)
-	}
-	return fmt.Errorf("%s not found in archive", base)
-}
-
-func extractOneFromTarGz(archive, base, dest string) error {
-	f, err := os.Open(archive)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if hdr.Typeflag != tar.TypeReg {
-			continue
-		}
-		n := path.Base(hdr.Name)
-		if n == base || n == base+".exe" {
-			return writeExecutable(dest, tr)
-		}
 	}
 	return fmt.Errorf("%s not found in archive", base)
 }

@@ -91,6 +91,9 @@ type InstanceManager struct {
 	// containment is execution.agents.sandbox (containment.go); its zero value
 	// refuses third-party agents (fail closed).
 	containment AgentContainment
+	// pythonEnv is the managed Python env's readiness gate (ADR-0157 D7,
+	// python_env_gate.go); nil ⇒ no gate.
+	pythonEnv PythonEnvGate
 	// reported records the agent ids whose ADR-0157 containment report was
 	// already logged at INFO/WARN (agent_sandbox.go reportContainment).
 	reported sync.Map

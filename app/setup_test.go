@@ -10,29 +10,6 @@ import (
 	"testing"
 )
 
-func TestUVAssetMapping(t *testing.T) {
-	cases := []struct {
-		goos, goarch string
-		want         string
-		ok           bool
-	}{
-		{"linux", "amd64", "uv-x86_64-unknown-linux-gnu.tar.gz", true},
-		{"linux", "arm64", "uv-aarch64-unknown-linux-gnu.tar.gz", true},
-		{"windows", "amd64", "uv-x86_64-pc-windows-msvc.zip", true},
-		{"windows", "arm64", "uv-aarch64-pc-windows-msvc.zip", true},
-		{"darwin", "arm64", "uv-aarch64-apple-darwin.tar.gz", true},
-		{"linux", "riscv64", "", false},
-		{"plan9", "amd64", "", false},
-	}
-	for _, c := range cases {
-		got, ok := uvAsset(c.goos, c.goarch)
-		if got != c.want || ok != c.ok {
-			t.Errorf("uvAsset(%s,%s) = %q,%v; want %q,%v", c.goos, c.goarch, got, ok, c.want, c.ok)
-		}
-	}
-}
-
-// The Python system agents read the prompt library from <prefix>/prompts.
 func TestUnpackPromptsWritesTheLibraryTheAgentsRead(t *testing.T) {
 	dst := t.TempDir()
 	n, err := unpackPrompts(dst)

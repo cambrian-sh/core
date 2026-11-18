@@ -212,6 +212,10 @@ type Kernel struct {
 	ArtifactVault   *vault.ArtifactVault
 	EventBus        *domain.InMemoryEventBus
 
+	// PythonEnv is the kernel-managed sandbox Python env's boot check and
+	// background build (ADR-0157 D7, app/python_env.go); Shutdown stops it.
+	PythonEnv pythonEnvGate
+
 	// ADR-0139 D13: the skill lifecycle (nil when its store is not wired) and the
 	// deterministic curator worker (nil unless execution.skills.curator.enabled).
 	SkillLifecycle *skilllifecycle.Service
@@ -393,6 +397,9 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	// 3. Stop domain stacks (reverse order of dependency)
 	if k.Supervision != nil {
 		k.Supervision.Shutdown(ctx)
+	}
+	if k.PythonEnv != nil {
+		k.PythonEnv.Stop()
 	}
 	if k.Metabolism != nil {
 		k.Metabolism.Shutdown(ctx)
@@ -1033,6 +1040,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	spendMeter := llm.NewSpendMeter(cfg.Execution.Session.MaxSessionTokens, llmProvider.Ledger(), slog.Default())
 	llmGateway := subnetwork.NewLLMGateway(cfg.Execution, spendMeter)
 	meta := kernel.NewMetabolismStack(reg, embedder, mem.Reader(), mem.ProfileStore, mem.Agent, cfg, observer, llmGateway)
+	// ADR-0157 D7.11: the managed Python env's boot check (+ build_on_boot
+	// background build) before any agent boots; Python spawns wait on its gate.
+	pyEnv := startPythonEnv(ctx, cfg, config.ResolveBaseDir())
+	meta.Manager.SetPythonEnvGate(pyEnv)
 	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, supervisionGen, cfg, observer)
 
 	// 3. Wire storage callback so newly-registered agents are enqueued for profile
@@ -2982,6 +2993,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Memory:              mem,
 		Awareness:           aw,
 		Metabolism:          meta,
+		PythonEnv:           pyEnv,
 		Supervision:         sup,
 		Server:              cambrianServer,
 		Listener:            lis,

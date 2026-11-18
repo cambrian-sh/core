@@ -1860,6 +1860,10 @@ type AgentsConfig struct {
 	// Sandbox is the per-trust-tier containment of kernel-spawned agents
 	// (ADR-0139 D8; agents_sandbox.go).
 	Sandbox AgentSandboxConfig `json:"sandbox"`
+
+	// Python is the kernel-managed Python environment Python agents run on
+	// (ADR-0157 D7; agents_python.go).
+	Python AgentPythonConfig `json:"python"`
 }
 
 // SupervisionConfig — Supervision statistics: aggregation cadence, EWMA/latency windows and histogram sizing.
@@ -3412,6 +3416,9 @@ func DefaultConfig() *Config {
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: 10 s killed
 				// the kg_extractor (spaCy load) while the kernel booted its agents.
 				AgentBootTimeoutMs: 30000,
+				// ADR-0157 D7 (owner A1-Q12): a missing or broken sandbox Python
+				// env is built in the background at boot.
+				Python: AgentPythonConfig{BuildOnBoot: true},
 			},
 			Tools: ToolsConfig{
 				// T-20261107-chat-agent-re-delegates-after-a-deterministic (part 2).
@@ -4322,6 +4329,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	errs = append(errs, c.Workers.validate(c.Ledger.Enabled)...)
 	errs = append(errs, c.Lane.validate()...)
 	errs = append(errs, c.Agents.Sandbox.validate()...)
+	errs = append(errs, c.Agents.Python.validate()...)
 	if c.Plan.ChecklistEnabled && !c.Ledger.Enabled {
 		errs = append(errs, "execution.plan.checklist_enabled requires execution.ledger.enabled: item evidence is read from the run ledger")
 	}

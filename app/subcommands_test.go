@@ -99,7 +99,7 @@ func TestDispatchSubcommand_HelpPrintsUsageAndExitsZero(t *testing.T) {
 // The verb set is pinned: removing or renaming a verb changes the CLI of
 // both binaries, which operators and the installer depend on.
 func TestSubcommands_VerbSet(t *testing.T) {
-	want := []string{"backup", "config", "mcp", "migrate", "principal", "setup", "status", "stop", "version"}
+	want := []string{"backup", "config", "mcp", "migrate", "principal", "python-env", "setup", "status", "stop", "version"}
 	var got []string
 	for _, c := range Subcommands(SubcommandSpec{}) {
 		if c.Run == nil || c.Summary == "" {

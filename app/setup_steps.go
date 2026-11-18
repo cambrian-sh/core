@@ -10,8 +10,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"time"
+
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // stepInstall materializes the prefix layout and installs the running binary
@@ -172,8 +175,14 @@ func (s *setupState) stepDatabase(ctx context.Context) {
 
 // stepPython provisions the agent runtime: agents ship inside the binary and
 // are always materialized (the kernel scans exactly one metabolism.agents_dir);
-// the venv/SDK/deps half honors --skip-python. uv is downloaded on demand and
-// provisions CPython itself, so a machine with no Python at all still works.
+// the Python environment half honors --skip-python. The environment is the
+// kernel-managed one (ADR-0157 D7, ENG-2007): the same builder the kernel's
+// boot check uses downloads the pinned standalone CPython and the pinned uv,
+// verifies both against the embedded SHA-256 pin table, and installs the
+// release's hashed base lock (agents/base.lock) wheels-only into an immutable
+// generation under <prefix>/runtime/python. The host's Python is never used,
+// so a machine with no Python at all works, and execution.agents.python in
+// configs/config.json (mirror, index, wheelhouse, offline) applies here too.
 func (s *setupState) stepPython(ctx context.Context) {
 	s.ui.section("\n4. Python agent runtime")
 	s.agentsDir = filepath.Join(s.prefix, "agents")
@@ -189,96 +198,64 @@ func (s *setupState) stepPython(ctx context.Context) {
 		s.ui.line("ok", "prompt library materialized", fmt.Sprintf("%s  (%d files, embedded)", promptsDir, n))
 	}
 
-	venvDir := filepath.Join(s.prefix, "venv")
-	venvPy := venvPython(venvDir)
+	configDir := filepath.Join(s.prefix, "configs")
+	pc, err := config.ReadAgentPythonBlock(filepath.Join(configDir, "config.json"))
+	if err != nil {
+		s.warnf("execution.agents.python is invalid", err.Error())
+		return
+	}
+	b, err := newPythonEnvBuilder(pc, s.prefix, configDir)
+	if err != nil {
+		s.warnf("sandbox Python env unavailable on this host", err.Error())
+		return
+	}
 	if s.skipPython {
-		if fileExists(venvPy) {
-			s.venvPy = venvPy
+		if st, err := b.Check(ctx); err == nil && st.Usable() {
+			s.venvPy = st.Interpreter
 		}
 		s.ui.line("ok", "python runtime", "skipped (--skip-python)")
 		return
 	}
-
-	uv := s.ensureUV(ctx)
-	if uv != "" {
-		s.ui.line("ok", "package installer", "uv ("+uv+")")
-	} else {
-		s.ui.line("warn", "uv unavailable", "falling back to pip — installs will be slower")
+	b.Actor = "setup"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		b.Actor = "setup:" + u.Username
 	}
+	b.Progress = func(step string) { fmt.Println(s.ui.dim("     " + step)) }
 
-	if fileExists(venvPy) {
-		s.venvPy = venvPy
-		s.ui.line("ok", "venv present", venvDir)
-	} else {
-		var out string
-		var ok bool
-		if uv != "" {
-			fmt.Print("  creating venv (uv; downloads CPython if the host has none)… ")
-			out, ok = s.exec(ctx, 5*time.Minute, uv, "venv", "--python", "3.12", venvDir)
-		} else {
-			py := s.systemPython(ctx)
-			if py == "" {
-				s.warnf("no python and no uv", "install Python ≥3.11 (or let uv download succeed), then re-run setup")
-				return
-			}
-			fmt.Print("  creating venv (python -m venv)… ")
-			out, ok = s.exec(ctx, 2*time.Minute, py, "-m", "venv", venvDir)
+	// A dev tree installs its local SDK as a wheel built from the tree (an
+	// editable install would point agents at the repository, ADR-0157 D7.4.5);
+	// a released machine installs the SDK the base lock pins, hash-checked.
+	for _, cand := range []string{os.Getenv("CAMBRIAN_SDK_DIR"), filepath.Join(s.origCwd, "sdk"), filepath.Join(s.origCwd, "..", "sdk")} {
+		if cand == "" || !fileExists(filepath.Join(cand, "pyproject.toml")) {
+			continue
 		}
-		if !ok {
-			fmt.Println(s.ui.red("failed"))
-			s.warnf("venv creation failed", lastLines(out, 2))
+		fmt.Println("  building the local agent SDK wheel (" + cand + ")…")
+		wheel, err := b.BuildSDKWheel(ctx, cand)
+		if err != nil {
+			s.warnf("local SDK wheel not built", err.Error())
 			return
 		}
-		fmt.Println(s.ui.green("done"))
-		s.venvPy = venvPy
+		b.SDKWheel = wheel
+		s.ui.line("ok", "local agent SDK wheel", filepath.Base(wheel))
+		break
 	}
 
-	if s.uvBin == "" {
-		// pip path: make sure pip itself is current before the heavy installs.
-		s.exec(ctx, 2*time.Minute, s.venvPy, "-m", "pip", "install", "-q", "--upgrade", "pip")
+	fmt.Println("  building the sandbox Python env (pinned CPython " + b.Pins.Python.Version + ", hash-checked base lock)…")
+	res, err := b.Build(ctx)
+	if err != nil {
+		s.warnf("sandbox Python env not built", err.Error()+" — fix and re-run: cambrian-orchestrator python-env build")
+		return
 	}
-
-	// SDK: a dev tree installs the local editable package; a released machine
-	// pulls cambrian-agent-sdk from PyPI (PLAT-06 trusted publishing).
-	sdkDir := ""
-	for _, cand := range []string{os.Getenv("CAMBRIAN_SDK_DIR"), filepath.Join(s.origCwd, "sdk"), filepath.Join(s.origCwd, "..", "sdk")} {
-		if cand != "" && fileExists(filepath.Join(cand, "pyproject.toml")) {
-			sdkDir = cand
-			break
-		}
-	}
-	fmt.Print("  installing agent SDK… ")
-	var out string
-	var ok bool
-	if sdkDir != "" {
-		out, ok = s.pyInstall(ctx, 5*time.Minute, "-e", sdkDir)
+	s.venvPy = res.Interpreter
+	if res.Reused {
+		s.ui.line("ok", "sandbox Python env present", res.Generation)
 	} else {
-		out, ok = s.pyInstall(ctx, 5*time.Minute, "cambrian-agent-sdk")
-	}
-	if ok {
-		fmt.Println(s.ui.green("done"))
-	} else {
-		fmt.Println(s.ui.red("failed"))
-		s.warnf("agent SDK not installed", lastLines(out, 2))
-	}
-
-	lock := filepath.Join(s.agentsDir, "requirements.lock")
-	if fileExists(lock) {
-		fmt.Print("  installing agent deps (union lockfile)… ")
-		out, ok = s.pyInstall(ctx, 15*time.Minute, "-r", lock)
-		if ok {
-			fmt.Println(s.ui.green("done"))
-		} else {
-			fmt.Println(s.ui.red("failed"))
-			s.warnf("agent deps not installed", lastLines(out, 2))
-		}
-	} else {
-		s.warnf("agents/requirements.lock missing", "agent deps skipped")
+		s.ui.line("ok", "sandbox Python env built", fmt.Sprintf("%s  (%d packages)", res.Generation, res.Packages))
 	}
 
 	// Per-agent import self-check (PLAT-01): name EXACTLY which agent is
 	// missing which dist, not a vague "some import failed".
-	out, _ = s.exec(ctx, time.Minute, s.venvPy, "-c", setupSelfCheckPy, s.agentsDir)
+	out, _ := s.exec(ctx, time.Minute, s.venvPy, "-c", setupSelfCheckPy, s.agentsDir)
 	missing := parseSelfCheck(out)
 	if len(missing) == 0 {
 		s.ui.line("ok", "per-agent dependency self-check", "")
@@ -563,27 +540,4 @@ func (s *setupState) stepStart(ctx context.Context) bool {
 	fmt.Println(s.ui.red("timeout"))
 	s.warnf("kernel did not become ready in 90s", "logs: "+filepath.Join(s.prefix, "logs", "orchestrator.log"))
 	return false
-}
-
-// systemPython finds a working system interpreter, probing --version so the
-// Windows Store "python" alias stub doesn't count.
-func (s *setupState) systemPython(ctx context.Context) string {
-	for _, name := range []string{"python3", "python"} {
-		if _, err := exec.LookPath(name); err == nil {
-			if _, ok := s.exec(ctx, 8*time.Second, name, "--version"); ok {
-				return name
-			}
-		}
-	}
-	return ""
-}
-
-// pyInstall installs into the venv via uv when available, else pip.
-func (s *setupState) pyInstall(ctx context.Context, timeout time.Duration, args ...string) (string, bool) {
-	if s.uvBin != "" {
-		full := append([]string{"pip", "install", "--python", s.venvPy}, args...)
-		return s.exec(ctx, timeout, s.uvBin, full...)
-	}
-	full := append([]string{"-m", "pip", "install"}, args...)
-	return s.exec(ctx, timeout, s.venvPy, full...)
 }

@@ -58,7 +58,6 @@ type setupState struct {
 	// when setup manages the database; "" for an existing / remote Postgres.
 	pgContainer string
 	ollamaOK    bool
-	uvBin       string
 	venvPy      string
 	bunBin      string
 	nodeBin     string

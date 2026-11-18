@@ -27,6 +27,8 @@ plans/
 .sisyphus/
 deliverables/
 venv/
+# ADR-0157 D7: the kernel-managed sandbox Python env (<base dir>/runtime/python)
+/runtime/
 
 
 # Secrets — never commit (.env.example is the committed template)

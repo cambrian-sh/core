@@ -1,0 +1,27 @@
+{
+  "_comment": "ADR-0157 D7.2: the embedded pin table. One CPython minor (3.12, owner A1-Q1) as python-build-standalone install_only builds, and the installer (uv, owner A1-Q8), each with its SHA-256 per platform. Digests were taken from the release SHA256SUMS / the GitHub asset digests on 2026-11-18. Upgrading means editing this file in a kernel release; it is not operator configuration.",
+  "python": {
+    "version": "3.12.16",
+    "build_tag": "20261110",
+    "base_url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/",
+    "assets": {
+      "windows-x86_64": {"name": "cpython-3.12.16+20261110-x86_64-pc-windows-msvc-install_only.tar.gz", "sha256": "e23fe5b16926de1d81661b1a97352e89fb167549c55a6825796ccd0f32ec7f1b"},
+      "linux-x86_64-gnu": {"name": "cpython-3.12.16+20261110-x86_64-unknown-linux-gnu-install_only.tar.gz", "sha256": "c2f87d4b4e8db3abddb0f116c6ccfc503d0cbdbb9ee8faacddad1b679ec12e99"},
+      "linux-aarch64-gnu": {"name": "cpython-3.12.16+20261110-aarch64-unknown-linux-gnu-install_only.tar.gz", "sha256": "4792f81750282597fb2a3389fe18b945ed2ba6aad5e45ad406d122c58cb33081"},
+      "macos-x86_64": {"name": "cpython-3.12.16+20261110-x86_64-apple-darwin-install_only.tar.gz", "sha256": "83f2922437e6d546d0fcdb8c11f150a8e52787e8d9ea8651b1974e20908eb1bc"},
+      "macos-aarch64": {"name": "cpython-3.12.16+20261110-aarch64-apple-darwin-install_only.tar.gz", "sha256": "e956e60bc9465d577ef8062059aa05cd3a2665b4b8678a2ed24e432368330b8f"}
+    }
+  },
+  "installer": {
+    "name": "uv",
+    "version": "0.11.21",
+    "base_url": "https://github.com/astral-sh/uv/releases/download/0.11.21/",
+    "assets": {
+      "windows-x86_64": {"name": "uv-x86_64-pc-windows-msvc.zip", "sha256": "ace861f360c6de2babedc1607d0f454b6b09a820dbc8182dc15af927e4df9589"},
+      "linux-x86_64-gnu": {"name": "uv-x86_64-unknown-linux-gnu.tar.gz", "sha256": "8c88519b0ef0af9801fcdee419bbb12116bd9e6b18e162ae093c932d8b264050"},
+      "linux-aarch64-gnu": {"name": "uv-aarch64-unknown-linux-gnu.tar.gz", "sha256": "88e800834007cc5efd4675f166eb2a51e7e3ad19876d85fa8805a6fb5c922397"},
+      "macos-x86_64": {"name": "uv-x86_64-apple-darwin.tar.gz", "sha256": "f3c8e5708a84b920c18b691214d54d2b0da6b984789caae95d47c95120cb7765"},
+      "macos-aarch64": {"name": "uv-aarch64-apple-darwin.tar.gz", "sha256": "1f921d491ba5ffeea774eb04d6681ecee379101341cbb1500394993b541bf3f4"}
+    }
+  }
+}
