@@ -35,6 +35,8 @@ import (
 // The output is compared with testdata/boot_graph/<config>.golden. Regenerate
 // only for an INTENDED wiring change (go test -run TestPg_BootGraph -update-boot-graph)
 // and review the diff: a refactor that needs a new golden is not a refactor.
+// Every golden change names its cause (testdata/boot_graph/README.md): the change
+// that alters the graph updates the goldens itself (ENG-2138 repaired two that did not).
 
 var updateBootGraph = flag.Bool("update-boot-graph", false, "rewrite testdata/boot_graph/*.golden from the current wiring")
 

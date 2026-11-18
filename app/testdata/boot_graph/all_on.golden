@@ -28,7 +28,7 @@ ExtraServices: nil
 AgentGRPCServices: nil
 OperatorMethodRoles: nil
 LoginObserver: nil
-Lifecycles: []app.Lifecycle len=8
+Lifecycles: []app.Lifecycle len=9
 PluginCapabilities: nil
 PluginStatuses: []app.PluginStatus len=1
 Conversations: *postgres.PgConversationStore
@@ -86,6 +86,7 @@ FactReader: *authz.EnforcingFactItemReader
 FactInspector: *authz.EnforcingFactInspector
 FactExtractor: *memory.FactExtractor
 FactBackfill: *memory.FactBackfill
+Derivations: *memory.DerivationJournaler
 FactReset: nil
 
 ## Awareness
@@ -141,6 +142,7 @@ GenWrapper: nil
 EFETrafficPercent: int=0
 SignalReceiver: *watcher.Watcher
 IngressInbound: nil
+Heartbeats: *agentmgr.AgentManager
 WatchHandler: nil
 instWorkOnce: sync.Once
 instWork: nil
@@ -225,6 +227,7 @@ outboundIdentifiers: *domain.OutboundIdentifierGuard
 ## Lifecycles (registration order)
 retention start=true stop=true
 erasure-worker start=true stop=true
+daemon-heartbeat-watch start=true stop=true
 approval-hub start=true stop=true
 python-packages start=true stop=true
 ontology-drafts start=true stop=true
