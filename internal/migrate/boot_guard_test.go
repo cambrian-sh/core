@@ -38,7 +38,7 @@ func TestPolicyProtects_CaseInsensitive(t *testing.T) {
 	}
 }
 
-// guardPool connects to PG_TEST_DSN (a disposable database — same guard as the split
+// guardPool connects to the package scratch database (main_test.go — same as the split
 // test) and resets the public schema so every case starts from an empty database.
 func guardPool(t *testing.T) (context.Context, *pgxpool.Pool, string) {
 	t.Helper()

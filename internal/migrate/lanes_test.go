@@ -77,8 +77,8 @@ func TestRefuseLaneAhead(t *testing.T) {
 }
 
 // Postgres: a lane applies into its own ledger namespace, is idempotent, reports
-// status, and a protected database refuses before writing (PG_TEST_DSN; the
-// shared disposable database — the lead runs these).
+// status, and a protected database refuses before writing (the package scratch
+// database on PG_TEST_DSN's server, main_test.go).
 func TestPg_BootLanes_AppliesStatusAndGuard(t *testing.T) {
 	ctx, pool, db := guardPool(t)
 	lane := Lane{Namespace: "testlane", FS: laneFS(map[string]string{

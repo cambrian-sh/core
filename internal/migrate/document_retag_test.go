@@ -11,7 +11,7 @@ import (
 // the derived copies on its chunks move TOGETHER.
 //
 // They live in this package rather than beside the adapter because they need the real
-// migrated schema, and the migration is what defines it. Same disposable-database guard.
+// migrated schema, and the migration is what defines it. Same package scratch database.
 
 func retagFixture(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()

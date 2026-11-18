@@ -44,9 +44,9 @@ jobs:
     # premium's workflow is the model, T-20261031-premium-s-postgres-tests-never-run-in-ci).
     #
     # pgvector/pgvector:pg16 because the baseline migration needs the `vector`
-    # (and contrib `ltree`) extensions. The database name must look disposable
-    # (`*_test`): internal/migrate's split test renames the documents table and
-    # refuses any database whose name does not say test.
+    # (and contrib `ltree`) extensions. internal/migrate's destructive tests
+    # CREATE their own scratch database on this server (the service user owns
+    # it) and never write to cambrian_test.
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -122,11 +122,10 @@ jobs:
         run: make archlint
 
       # PG_TEST_DSN is deliberately NOT set here. `make test-race` runs every
-      # package in parallel, and the two Postgres-backed packages are destructive
-      # to the same database: internal/migrate's split test DROPs documents,
-      # chunks and schema_migrations, and the adapter tests DROP/CREATE chunks and
-      # conversations. Run concurrently against one database they would corrupt
-      # each other's schema mid-test. They get their own serialised step below;
+      # package in parallel; the Postgres-backed packages get their own
+      # serialised step below (internal/migrate now runs in its own scratch
+      # database, but the adapter tests still DROP/CREATE chunks and
+      # conversations in the shared one);
       # here they skip exactly as they did before, and the next step is what
       # turns that skip into a failure.
       - name: Gate — unit tests under the race detector
@@ -151,10 +150,9 @@ jobs:
           CAMBRIAN_EMBEDDER__DIMENSIONS: "1536"
         run: go run ./cmd/orchestrator migrate up
 
-      # -p 1: the two packages share one database and both reshape it (see
-      # above), so their test binaries must not overlap. Package order is the
-      # sorted import path, so the adapter tests run against the migrated schema
-      # first and the split test tears it down last.
+      # -p 1 is kept for the adapter packages' sake; internal/migrate's tests run
+      # in their own scratch database and are safe in parallel
+      # (T-20261118-internal-migrate-pg-tests-cannot-run-in).
       #
       # A Postgres test that SKIPS in CI is a failure, not a pass: every helper
       # skips on a missing/unreachable/non-disposable DSN, and that skip is

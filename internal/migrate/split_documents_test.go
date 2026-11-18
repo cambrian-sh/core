@@ -3,9 +3,6 @@ package migrate
 import (
 	"context"
 	"fmt"
-	"os"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,49 +15,10 @@ import (
 // wrong table. Every assertion below is a count or a value that would change if a row went
 // missing or a WHERE clause drifted.
 //
-// It is destructive (it creates and drops schema objects), so it refuses to run against a
-// database that does not look disposable. That guard exists because pointing destructive
-// integration tests at the live database has already destroyed real data in this workspace.
-
-var splitTestDBPattern = regexp.MustCompile(`(?i)(^|[_-])test($|[_-])|_test\b|\btest_`)
-
-func requireDisposableDB(t *testing.T, dsn string) {
-	t.Helper()
-	if os.Getenv("PG_TEST_ALLOW_DESTRUCTIVE") == "1" {
-		t.Log("PG_TEST_ALLOW_DESTRUCTIVE=1: operating on whatever this DSN points at")
-		return
-	}
-	db := databaseNameOf(dsn)
-	if db == "" {
-		t.Skip("PG_TEST_DSN has no database name; refusing to reshape an unknown target")
-	}
-	if !splitTestDBPattern.MatchString(db) {
-		t.Skipf("refusing to run the document-split migration in database %q — it does not look\n"+
-			"disposable. This test renames the documents table and creates six others. Use a database\n"+
-			"whose name says test (e.g. cambrian_split_test), or set PG_TEST_ALLOW_DESTRUCTIVE=1.", db)
-	}
-}
-
-func databaseNameOf(dsn string) string {
-	if i := strings.Index(dsn, "://"); i >= 0 {
-		rest := dsn[i+3:]
-		j := strings.Index(rest, "/")
-		if j < 0 {
-			return ""
-		}
-		db := rest[j+1:]
-		if k := strings.IndexAny(db, "?#"); k >= 0 {
-			db = db[:k]
-		}
-		return db
-	}
-	for _, f := range strings.Fields(dsn) {
-		if strings.HasPrefix(f, "dbname=") {
-			return strings.TrimPrefix(f, "dbname=")
-		}
-	}
-	return ""
-}
+// It is destructive (it creates and drops schema objects), so it runs in the package's own
+// scratch database (main_test.go), never in the shared PG_TEST_DSN one: pointing destructive
+// integration tests at a live database has already destroyed real data in this workspace,
+// and pointing them at the shared test database broke every package running beside them.
 
 const splitTestDim = 4
 
@@ -159,15 +117,13 @@ func count(ctx context.Context, t *testing.T, pool *pgxpool.Pool, q string, args
 	return n
 }
 
+// splitTestPool connects to the package's scratch database (main_test.go). Every
+// destructive test here reaches the database through it.
 func splitTestPool(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping the document-split integration test")
-	}
-	requireDisposableDB(t, dsn)
+	cfg := packageScratchConfig(t)
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

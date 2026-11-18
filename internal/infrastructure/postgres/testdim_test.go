@@ -39,9 +39,10 @@ const defaultTestEmbeddingDim = 1536
 // the tests: the default config's embedder.dimensions (1024), the dimension the kernel
 // and app Pg tests boot with and whose boot refuses a store at any other. Letting the
 // first ensureSchema create an empty database at defaultTestEmbeddingDim instead left
-// it at 1536 — or, after internal/migrate, half-migrated at 4 — for every package that
-// ran after this one (T-20261118-core-pg-test-packages-fail-on-an-empty-pg-test).
-// internal/migrate's TestMain restores an empty start to the same dimension.
+// it at 1536 for every package that ran after this one
+// (T-20261118-core-pg-test-packages-fail-on-an-empty-pg-test). internal/migrate's
+// destructive tests no longer touch this database: they run in their own scratch
+// database (T-20261118-internal-migrate-pg-tests-cannot-run-in).
 var sharedTestDBDim = config.DefaultConfig().Embedder.Dimensions
 
 // migrateEmptyTestDB migrates a database without a chunks table to HEAD at
