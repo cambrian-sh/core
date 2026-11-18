@@ -494,8 +494,14 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 		_ = os.RemoveAll(sockDir)
 		var refused *sandbox.RefusedError
 		if errors.As(err, &refused) {
-			return nil, nil, nil, nil, fmt.Errorf("agent %s (%s) not started: %w (execution.agents.sandbox.%s.on_unavailable is refuse)",
-				def.ID, agentTrustTier(def), err, tierConfigKey(def))
+			// A launch uid 65534 could not boot is refused on a degrade tier
+			// too (ENG-2026); name on_unavailable only when it is the reason.
+			why := ""
+			if spec.Policy != nil && spec.Policy.Tiers[spec.Tier].OnUnavailable == sandbox.OnUnavailableRefuse {
+				why = fmt.Sprintf(" (execution.agents.sandbox.%s.on_unavailable is refuse)", tierConfigKey(def))
+			}
+			return nil, nil, nil, nil, fmt.Errorf("agent %s (%s) not started: %w%s",
+				def.ID, agentTrustTier(def), err, why)
 		}
 		return nil, nil, nil, nil, fmt.Errorf("agent %s: sandboxed start: %w", def.ID, err)
 	}

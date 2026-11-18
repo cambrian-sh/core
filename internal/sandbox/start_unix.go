@@ -35,7 +35,9 @@ import (
 //     sandbox's own processes.
 //   - low_privilege: only when the kernel runs as root, the process (or bwrap)
 //     runs as nobody (65534). A non-root kernel has no lower identity to drop
-//     to; that tier needs runner docker.
+//     to; that tier needs runner docker. A launch uid 65534 could not boot
+//     (lowUIDBootBlocker: a bind or hidden path under an ancestor it cannot
+//     read) is refused at plan time, naming the path and the fix.
 //   - macOS / BSD: the sh ulimit limits and the process group; on macOS an
 //     AGENT additionally runs under a generated Seatbelt profile (sandbox-exec,
 //     seatbelt.go; ADR-0157 S5) for fs_confine, hide_state and network.
@@ -98,9 +100,23 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		}
 	}
 	if os.Geteuid() == 0 {
-		if why := traversableByOthers(p.WorkRoot); why != "" {
-			c.missing[ControlLowPrivilege] = "uid 65534 could not reach its workdir: " + why +
+		// A plan that drops to uid 65534 is enforced only when that uid can
+		// boot it; when it cannot, the launch is refused before anything starts
+		// whatever on_unavailable says (ENG-2026): degrading would mean running
+		// the process as root, and starting it anyway only ends in a bwrap
+		// stderr line while the report claimed low_privilege.
+		why := ""
+		if w := traversableByOthers(p.WorkRoot); w != "" {
+			why = "uid 65534 could not reach its workdir: " + w +
 				" (set mcp.sandbox.work_root outside /root, e.g. /var/lib/cambrian/sandbox)"
+		} else if tp.LowPrivilege {
+			why = lowUIDBootBlocker(p, spec, useBwrap)
+		}
+		if why != "" {
+			c.missing[ControlLowPrivilege] = why
+			if tp.LowPrivilege {
+				c.unbootable = why
+			}
 		} else {
 			c.enforced[ControlLowPrivilege] = "uid"
 		}
@@ -485,4 +501,98 @@ func traversableByOthers(dir string) string {
 		}
 		d = parent
 	}
+}
+
+// lowUID is the identity a root kernel drops a low_privilege process to.
+const lowUID = 65534
+
+// lowUIDBootBlocker reports why a process dropped to uid 65534 could not boot
+// this launch ("" if it can), so the plan refuses it naming the path and the
+// fix instead of starting it into a bwrap error (ENG-2026).
+//
+// Under bubblewrap the sandbox runs as uid 65534 in its own user namespace,
+// where it has no rights over root-owned directories. To mount a bind (or a
+// hidden path's tmpfs or /dev/null) at a host path, bwrap re-creates the path's
+// parents under its new root, and that fails ("Can't mkdir parents …:
+// Permission denied") when any parent is not both readable and searchable by
+// uid 65534 — a root-owned 0711 directory included — whatever the mounted
+// path's own owner or mode (measured with bubblewrap 0.12.0). A parent inside
+// a hidden directory is exempt: the hidden directory is a fresh tmpfs, so the
+// mount point is created there. Without bubblewrap nothing is mounted and the
+// process only has to walk to each path: every parent needs the search bit.
+func lowUIDBootBlocker(p *Policy, spec Spec, useBwrap bool) string {
+	var hiddenDirs, mounts []string
+	for _, h := range p.HidePaths {
+		if h == "" {
+			continue
+		}
+		if fi, err := os.Stat(h); err == nil {
+			if fi.IsDir() {
+				hiddenDirs = append(hiddenDirs, h)
+			}
+			if useBwrap {
+				mounts = append(mounts, h)
+			}
+		}
+	}
+	var binds []string
+	if spec.Agent != nil {
+		kept, _ := privateTmpSafe(spec.Agent.Binds)
+		for _, b := range kept {
+			binds = append(binds, b.Path)
+		}
+		if spec.Agent.SocketDir != "" {
+			binds = append(binds, spec.Agent.SocketDir)
+		}
+	}
+	if spec.Server.Root != "" {
+		binds = append(binds, spec.Server.Root)
+	}
+	need, verb, fix := os.FileMode(0o5), "read and search", "o+rx"
+	if !useBwrap {
+		need, verb, fix = 0o1, "search", "o+x"
+	}
+	for _, m := range append(mounts, binds...) {
+		if m == "" {
+			continue
+		}
+		if _, err := os.Stat(m); err != nil {
+			continue // a missing bind is dropped, not mounted (splitBinds)
+		}
+		m = filepath.Clean(m)
+		for d := filepath.Dir(m); ; d = filepath.Dir(d) {
+			inHidden := false
+			for _, h := range hiddenDirs {
+				if within(d, h) {
+					inHidden = true
+					break
+				}
+			}
+			if fi, err := os.Stat(d); err == nil && !inHidden && !lowUIDMay(fi, need) {
+				return fmt.Sprintf("uid 65534 cannot boot this launch: %s is under %s (mode %04o), which uid 65534 cannot %s, "+
+					"so the sandbox cannot set up %s; give %s %s (e.g. chmod 0755 %s) or move %s elsewhere",
+					m, d, fi.Mode().Perm(), verb, m, d, fix, d, m)
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+	return ""
+}
+
+// lowUIDMay reports whether uid 65534 (no supplementary groups) has the need
+// bits (r=4, w=2, x=1) on fi under DAC: the owner bits if it owns fi, the group
+// bits if fi's group is 65534, else the other bits.
+func lowUIDMay(fi os.FileInfo, need os.FileMode) bool {
+	perm, shift := fi.Mode().Perm(), 0
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		switch {
+		case st.Uid == lowUID:
+			shift = 6
+		case st.Gid == lowUID:
+			shift = 3
+		}
+	}
+	return (perm>>shift)&need == need
 }

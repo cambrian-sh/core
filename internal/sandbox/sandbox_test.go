@@ -42,6 +42,8 @@ func runFixture(mode string, args []string) int {
 		}
 		wd, _ := os.Getwd()
 		fmt.Println("CWD=" + wd)
+	case "uid": // the uid it runs as
+		fmt.Printf("uid=%d\n", os.Getuid())
 	case "stall": // reads requests, never answers
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "bigline":

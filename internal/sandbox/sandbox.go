@@ -450,21 +450,26 @@ func (r Report) Summary() string {
 	return b.String()
 }
 
-// RefusedError is returned when a tier refuses to start without a control.
+// RefusedError is returned when a tier refuses to start without a control, or
+// when the launch could not boot under the chosen runner (ENG-2026).
 type RefusedError struct{ Report Report }
 
 func (e *RefusedError) Error() string {
-	return fmt.Sprintf("sandbox refused to start %q at tier %s (on_unavailable=refuse): missing %s",
+	return fmt.Sprintf("sandbox refused to start %q at tier %s: missing %s",
 		e.Report.ServerID, e.Report.Tier, strings.Join(e.Report.Missing, "; "))
 }
 
 // capability is what one runner on this platform can enforce right now.
 type capability struct {
-	runner     string
-	enforced   map[Control]string // control → mechanism
-	missing    map[Control]string // control → reason
-	notes      []string
-	unusable   string // non-empty: the runner cannot run at all here (reason)
+	runner   string
+	enforced map[Control]string // control → mechanism
+	missing  map[Control]string // control → reason
+	notes    []string
+	unusable string // non-empty: the runner cannot run at all here (reason)
+	// unbootable: the runner could run, but this launch could not boot under
+	// it (a missing control's reason). The plan refuses whatever
+	// on_unavailable says: degrading would not make it boot (ENG-2026).
+	unbootable string
 	mechanisms []string
 }
 
@@ -499,6 +504,9 @@ func plan(spec Spec, tp TierPolicy, c capability) Report {
 	}
 	sort.Strings(r.Mechanisms)
 	if len(r.Missing) > 0 && tp.OnUnavailable == OnUnavailableRefuse {
+		r.Refused = true
+	}
+	if c.unbootable != "" {
 		r.Refused = true
 	}
 	return r
