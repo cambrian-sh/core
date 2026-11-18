@@ -1,43 +1,29 @@
 #!/usr/bin/env bash
-# setup-python-runtime.sh — build the Cambrian Python runtime (ADR-0023).
+# setup-python-runtime.sh — build the kernel-managed sandbox Python env for a
+# dev tree (ADR-0157 D7).
 #
-# Creates a repo-local .venv, installs the cambrian-agent-sdk (editable) with
-# dev extras, and verifies the SDK + all 5 agents import. The integration
-# benchmark and run-all-tests.ps1 auto-detect this venv.
+# Python agents and the Python system tools launch ONLY on the kernel-managed
+# env (execution.agents.python.root, default <kernel dir>/runtime/python): the
+# pinned, hash-verified CPython and uv, the release's hashed base lock, wheels
+# only. There is no host-Python or repo-venv fallback and no CAMBRIAN_PYTHON
+# (retired with metabolism.python_executable, config schema v4). This script
+# runs the same build an operator runs (`cambrian-orchestrator python-env
+# build`), with the agent SDK built from the sibling sdk/ checkout, as
+# `cambrian-orchestrator setup` does in a dev tree.
 #
-# Usage: ./scripts/setup-python-runtime.sh
+# Usage: ./scripts/setup-python-runtime.sh [SDK_DIR]   (default: ../sdk)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV="$ROOT/.venv"
-PY="$VENV/bin/python"
+SDK="${1:-$ROOT/../sdk}"
 
-echo "=== Cambrian Python Runtime Setup ==="
-
-if [ ! -x "$PY" ]; then
-  echo "Creating venv at $VENV ..."
-  python3 -m venv "$VENV"
-else
-  echo "venv already exists at $VENV"
+if [ ! -f "$SDK/pyproject.toml" ]; then
+  echo "no agent SDK checkout at $SDK (pass its directory as the first argument)" >&2
+  exit 2
 fi
 
-echo "Upgrading pip ..."
-"$PY" -m pip install --upgrade pip --quiet
-
-echo "Installing cambrian-agent-sdk (editable, with dev extras) ..."
-"$PY" -m pip install -e "$ROOT/python-sdk[dev]" --quiet
-
-echo "Verifying SDK import ..."
-"$PY" -c "from cambrian_agent_sdk import Agent, assemble_context, build_prompt, find_step_ref, extract_code_block, BudgetExceededError; print('  SDK OK')"
-
-echo "Verifying the chat agent and the profile runtime import ..."
-"$PY" -c "import sys; sys.path.insert(0, '$ROOT/agents'); import chat_agent, worker_agent; print('  agents OK')"
-
+cd "$ROOT"
+echo "=== Building the kernel-managed sandbox Python env (SDK from $SDK) ==="
+go run ./cmd/orchestrator python-env build --dir "$ROOT" --sdk-dir "$SDK"
 echo ""
-echo "=== Done ==="
-echo "Python runtime: $PY"
-echo ""
-echo "To run the orchestrator with this runtime, export:"
-echo "  export CAMBRIAN_PYTHON='$PY'"
-echo "  export CAMBRIAN_AGENTS_DIR='$ROOT/agents'"
-echo "  export CAMBRIAN_DATA_DIR='$ROOT/data'"
+go run ./cmd/orchestrator python-env status --dir "$ROOT"

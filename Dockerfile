@@ -2,13 +2,12 @@
 # Cambrian kernel image — PLAT-04 / ADR-0066.
 #
 # The kernel (Go) and its agents (Python) COLOCATE: the Go binary spawns the agents in
-# agents/ as subprocesses using the baked venv (CAMBRIAN_PYTHON). Because the agent SDK
+# agents/ as subprocesses on the kernel-managed sandbox Python env (ADR-0157 D7), which
+# is built INTO the image here, so a container boots Python agents at once, air-gapped
+# included, and never downloads an env at first boot (ENG-2034). Because the agent SDK
 # lives in the sibling `sdk/` repo, the build context is the MONOREPO ROOT:
 #
 #     docker build -f cambrian-core/Dockerfile -t ghcr.io/cambrian-sh/core:dev .
-#
-# GPU support is a wheel swap, not a code change: build the `-cuda` variant with
-# --build-arg TORCH_INDEX_URL / a CUDA base (see docs) — nothing here branches on it.
 
 ########################## Go builder ##########################
 FROM golang:1.25 AS build
@@ -22,7 +21,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w -X main.version=
  && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" \
     -o /out/pagerank-recompute ./cmd/pagerank-recompute
 
-########################## Python runtime ##########################
+########################## Runtime ##########################
+# python:3.12-slim only for the HEALTHCHECK below: agents and the Python system tools
+# never run on this interpreter, only on the managed env's pinned CPython.
 FROM python:3.12-slim AS runtime
 
 # Least privilege (PLAT-08): a non-root system user owns the app.
@@ -49,24 +50,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && pg_dump --version
 
-ENV VENV=/opt/venv
-ENV PATH="$VENV/bin:$PATH"
-RUN python -m venv "$VENV" && "$VENV/bin/pip" install --no-cache-dir --upgrade pip
-
 WORKDIR /app
-
-# The agent SDK first, from source — the union lockfile pins `cambrian-agent-sdk` but it
-# is a private package, so it is installed from sdk/ and skipped from the lockfile pass.
-COPY sdk/ /app/sdk/
-RUN "$VENV/bin/pip" install --no-cache-dir /app/sdk
-
-# The union lockfile (PLAT-01) — the transitive closure of every agent's deps.
-# TORCH_INDEX_URL lets the -cuda variant pull CUDA wheels without a Dockerfile change.
-ARG TORCH_INDEX_URL=""
-COPY cambrian-core/agents/requirements.lock /app/agents/requirements.lock
-RUN grep -vi '^cambrian-agent-sdk' /app/agents/requirements.lock > /tmp/req.txt \
- && if [ -n "$TORCH_INDEX_URL" ]; then EXTRA="--extra-index-url $TORCH_INDEX_URL"; else EXTRA=""; fi \
- && "$VENV/bin/pip" install --no-cache-dir $EXTRA -r /tmp/req.txt
 
 # Kernel binary (+ the pagerank worker) + agents + reference configs + migrations.
 COPY --from=build /out/orchestrator /app/orchestrator
@@ -85,15 +69,6 @@ COPY cambrian-core/db/ /app/db/
 # and mounted), and LoadRegistry treats a missing dir as empty.
 COPY cambrian-core/skills/ /app/skills/
 
-# Optional model pre-fetch (HF reranker/docling weights baked into the image cache), so
-# a running container makes NO runtime model download. Off by default to keep the base
-# image buildable without a multi-GB pull; enable with --build-arg PREFETCH_MODELS=1.
-ARG PREFETCH_MODELS=0
-ENV HF_HOME=/app/.cache/huggingface
-RUN if [ "$PREFETCH_MODELS" = "1" ]; then \
-      "$VENV/bin/python" -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-reranker-v2-m3')"; \
-    fi
-
 # data_dir (bbolt + blobs) and the agent UDS socket dir (a tmpfs is mounted here in
 # compose — PLAT-08).
 #
@@ -104,13 +79,42 @@ RUN if [ "$PREFETCH_MODELS" = "1" ]; then \
 # owned by the runtime user, because Docker seeds an empty named volume from the image
 # directory INCLUDING its ownership — without it the volume arrives root-owned and the
 # kernel refuses to boot. Same arrangement as cambrian-premium/Dockerfile.
-RUN mkdir -p /app/data /app/state /run/cambrian \
- && chown -R cambrian:cambrian /app /run/cambrian "$VENV"
+RUN mkdir -p /app/data /app/state /app/runtime /run/cambrian \
+ && chown -R cambrian:cambrian /app /run/cambrian
+
+# The kernel-managed sandbox Python env (ADR-0157 D7), built at image build time by the
+# same CLI an operator runs: the pinned, hash-verified CPython and uv, the release's
+# hashed base lock (agents/base.lock, embedded in the binary), wheels only. Its root is
+# the default execution.agents.python.root, <base dir>/runtime/python = /app/runtime/
+# python: owned by the runtime user (built as it), outside /app/data (a corpus reset
+# truncates that) and /app/state (the config store volume). The agent SDK is built from
+# the sibling sdk/ checkout (--sdk-dir), as the image always did: the base lock's
+# published SDK lags the kernel's agent channel (ENG-2033); the boot check counts a dev
+# SDK wheel as current, so the kernel finds the env healthy and builds nothing at boot.
+# downloads/ and cache/ (the verified archives and the wheel cache, several GB) only
+# serve rebuilds: an image is rebuilt, not repaired, so they are dropped in this layer.
+USER cambrian
+RUN --mount=type=bind,source=sdk,target=/tmp/sdk-src \
+    cp -r /tmp/sdk-src /tmp/sdk \
+ && /app/orchestrator python-env build --dir /app --sdk-dir /tmp/sdk \
+ && rm -rf /tmp/sdk /app/runtime/python/downloads /app/runtime/python/cache \
+ && /app/orchestrator python-env status --dir /app
+
+# Optional model pre-fetch (HF reranker/docling weights baked into the image cache), so
+# a running container makes NO runtime model download. Off by default to keep the base
+# image buildable without a multi-GB pull; enable with --build-arg PREFETCH_MODELS=1.
+# Runs on the managed env's interpreter (the only Python the agents have).
+ARG PREFETCH_MODELS=0
+ENV HF_HOME=/app/.cache/huggingface
+RUN if [ "$PREFETCH_MODELS" = "1" ]; then       py=$(/app/orchestrator python-env status --dir /app | awk '/^  interpreter:/{print $2}')       && "$py" -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-reranker-v2-m3')";     fi
+USER root
 
 # Wiring defaults; secrets + DB/embedder endpoints come from the compose env (koanf
 # CAMBRIAN_* overrides) or a mounted configs volume — never baked into the image.
-ENV CAMBRIAN_PYTHON="$VENV/bin/python" \
-    CAMBRIAN_AGENTS_DIR=/app/agents \
+# metabolism.agents_dir: CAMBRIAN_AGENTS_DIR, set here before, is not a config key
+# (internal/config/unknown_keys.go), so an image run without a mounted config.json
+# discovered no agents at all.
+ENV CAMBRIAN_METABOLISM__AGENTS_DIR=/app/agents \
     CAMBRIAN_CONFIG=/app/configs/config.json \
     CAMBRIAN_STORAGE__DATA_DIR=/app/data \
     CAMBRIAN_SERVER__HEALTHZ_PORT=8090

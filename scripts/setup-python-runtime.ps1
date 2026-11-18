@@ -1,44 +1,32 @@
 #!/usr/bin/env pwsh
-# setup-python-runtime.ps1 — build the Cambrian Python runtime (ADR-0023).
+# setup-python-runtime.ps1 — build the kernel-managed sandbox Python env for a
+# dev tree (ADR-0157 D7).
 #
-# Creates a repo-local .venv, installs the cambrian-agent-sdk (editable) with
-# dev extras, and verifies the SDK + all 5 agents import. The integration
-# benchmark and run-all-tests.ps1 auto-detect this venv.
+# Python agents and the Python system tools launch ONLY on the kernel-managed
+# env (execution.agents.python.root, default <kernel dir>\runtime\python): the
+# pinned, hash-verified CPython and uv, the release's hashed base lock, wheels
+# only. There is no host-Python or repo-venv fallback and no CAMBRIAN_PYTHON
+# (retired with metabolism.python_executable, config schema v4). This script
+# runs the same build an operator runs (`cambrian-orchestrator python-env
+# build`), with the agent SDK built from the sibling sdk\ checkout, as
+# `cambrian-orchestrator setup` does in a dev tree.
 #
-# Usage: .\scripts\setup-python-runtime.ps1
+# Usage: .\scripts\setup-python-runtime.ps1 [-Sdk <dir>]   (default: ..\sdk)
+param([string]$Sdk = "")
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$venv = Join-Path $root ".venv"
-$py = Join-Path $venv "Scripts\python.exe"
+if ($Sdk -eq "") { $Sdk = Join-Path (Split-Path -Parent $root) "sdk" }
 
-Write-Host "=== Cambrian Python Runtime Setup ===" -ForegroundColor Cyan
-
-if (-not (Test-Path $py)) {
-    Write-Host "Creating venv at $venv ..." -ForegroundColor Yellow
-    python -m venv $venv
-} else {
-    Write-Host "venv already exists at $venv" -ForegroundColor DarkGray
+if (-not (Test-Path (Join-Path $Sdk "pyproject.toml"))) {
+    Write-Error "no agent SDK checkout at $Sdk (pass its directory with -Sdk)"
+    exit 2
 }
 
-Write-Host "Upgrading pip ..." -ForegroundColor Yellow
-& $py -m pip install --upgrade pip --quiet
-
-Write-Host "Installing cambrian-agent-sdk (editable, with dev extras) ..." -ForegroundColor Yellow
-& $py -m pip install -e (Join-Path $root "python-sdk[dev]") --quiet
-
-Write-Host "Verifying SDK import ..." -ForegroundColor Yellow
-& $py -c "from cambrian_agent_sdk import Agent, assemble_context, build_prompt, find_step_ref, extract_code_block, BudgetExceededError; print('  SDK OK')"
-
-Write-Host "Verifying the chat agent and the profile runtime import ..." -ForegroundColor Yellow
-$agentsDir = Join-Path $root "agents"
-& $py -c "import sys; sys.path.insert(0, r'$agentsDir'); import chat_agent, worker_agent; print('  agents OK')"
-
+Set-Location $root
+Write-Host "=== Building the kernel-managed sandbox Python env (SDK from $Sdk) ===" -ForegroundColor Cyan
+go run ./cmd/orchestrator python-env build --dir $root --sdk-dir $Sdk
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ""
-Write-Host "=== Done ===" -ForegroundColor Cyan
-Write-Host "Python runtime: $py" -ForegroundColor Green
-Write-Host ""
-Write-Host "To run the orchestrator with this runtime, set:" -ForegroundColor Cyan
-Write-Host "  `$env:CAMBRIAN_PYTHON = '$py'" -ForegroundColor White
-Write-Host "  `$env:CAMBRIAN_AGENTS_DIR = '$agentsDir'" -ForegroundColor White
-Write-Host "  `$env:CAMBRIAN_DATA_DIR = '$(Join-Path $root "data")'" -ForegroundColor White
+go run ./cmd/orchestrator python-env status --dir $root
+exit $LASTEXITCODE
