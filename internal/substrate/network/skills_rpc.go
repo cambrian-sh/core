@@ -52,6 +52,23 @@ type SkillAccess interface {
 	Request(ctx context.Context, in access.RequestInput) access.Outcome
 }
 
+// skillLoadLeaseHeader is where an SDK puts the run's lease on a use_skill load
+// (ADR-0046 D6: the run key the conferred grants are activated under). SDKs up to
+// 0.1.6 send the lease ONLY there, never as x-lease-id.
+const skillLoadLeaseHeader = "x-session-token"
+
+// withSkillLoadLease makes a skill load's x-session-token the presented lease
+// when the call carries no x-lease-id, so identity resolution (withCallerSession)
+// sees the lease an older SDK sent. It is resolved by the same code and under the
+// same ADR-0139 D8 ownership rule as a header lease (withPresentedLease): a value
+// that is not a live lease bound to the caller resolves to nothing.
+func withSkillLoadLease(ctx context.Context) context.Context {
+	if mdValue(ctx, leaseHeader) != "" {
+		return ctx
+	}
+	return withPresentedLease(ctx, domain.LeaseID(mdValue(ctx, skillLoadLeaseHeader)))
+}
+
 // skillRationaleFromMetadata reads the optional use_skill request rationale
 // (x-skill-rationale), shown to the operator who decides the request.
 func skillRationaleFromMetadata(ctx context.Context) string { return mdValue(ctx, "x-skill-rationale") }
@@ -97,9 +114,15 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 	// Resolve the agent's read predicate. A nil predicate means the decision point
 	// could not resolve the principal → empty menu (fail-closed in the plugin;
 	// never reached in OSS, where every principal resolves).
-	// The turn's surface (ADR-0085 D7, re-stamped by withTurnSurface): a skill
-	// menu answers to a surface-linked policy as recall and tool calls do.
-	ctx = s.withTurnSurface(ctx, s.resolveCallerSession(ctx))
+	// The caller's identity, resolved from the lease it presented exactly as on
+	// QueryMemory/ExecuteTool (withCallerSession): the task session, the
+	// conversation owner, the resolved-lease marker and the turn's surface
+	// (ADR-0085 D7, so a skill menu answers to a surface-linked policy as recall
+	// and tool calls do). Re-stamping only the surface left a menu call with no
+	// session, owner or marker on ctx, so a credential-authenticated agent's menu
+	// was refused no_lease (ENG-518) on every turn although it held a live lease
+	// (T-20261118-chat-agent-and-composed-worker-memory-reads-are).
+	ctx = s.withCallerSession(withSkillLoadLease(ctx))
 	eff, _ := s.authorizer().ReadFilter(ctx, domain.AgentPrincipal(agentID),
 		domain.SurfaceFromContextOr(ctx, domain.SurfaceRef{Kind: domain.SurfaceAgent}))
 	if eff == nil {
