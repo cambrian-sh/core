@@ -29,9 +29,12 @@ const msgCols = `id, conversation_id, seq, role, content, COALESCE(client_id, ''
 // NewPgConversationStore returns the store, failing with an actionable error when the
 // schema has not been migrated (the only realistic cause is storage.auto_migrate=false).
 func NewPgConversationStore(ctx context.Context, pool *pgxpool.Pool) (*PgConversationStore, error) {
+	// Unqualified, like every query below: the guard must probe the relation the store will
+	// actually use (search_path), not public's — a scratch-schema test once had to drop the
+	// migrated table to make this check fail (T-20261114-postgres-adapter-tests-drop-migrated-tables).
 	var present bool
 	if err := pool.QueryRow(ctx,
-		`SELECT to_regclass('public.conversations') IS NOT NULL`).Scan(&present); err != nil {
+		`SELECT to_regclass('conversations') IS NOT NULL`).Scan(&present); err != nil {
 		return nil, fmt.Errorf("check conversations schema: %w", err)
 	}
 	if !present {

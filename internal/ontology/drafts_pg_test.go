@@ -29,10 +29,9 @@ type pgDraftRig struct {
 
 func newPgDraftRig(t *testing.T) (pgDraftRig, context.Context) {
 	t.Helper()
-	pool, ctx := pgPool(t)
+	pool, ctx := pgPool(t) // drafts tables start empty in the test's scratch schema
 	clean := func() {
 		bg := context.Background()
-		_, _ = pool.Exec(bg, `TRUNCATE ontology_draft_events, ontology_drafts`)
 		_, _ = pool.Exec(bg, `DELETE FROM approvals WHERE kind = $1`, domain.ApprovalKindOntologyChange)
 	}
 	clean()

@@ -11,45 +11,60 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // Integration tests for the session/run/checkpoint store (session Phase 4). Skips without
 // PG_TEST_DSN.
 //
-// The schema is applied by reading the REAL migration file rather than an inline copy, so
+// The schema is applied by reading the REAL migration files rather than an inline copy, so
 // this test cannot silently drift from the DDL that ships (0004 is authoritative, ADR-0064).
+// They are applied into the test's OWN schema (pgscratch, isolated): it used to TRUNCATE the
+// migrated sessions/runs/run_checkpoints, wiping rows of anything else using the database
+// (T-20261114-postgres-adapter-tests-drop-migrated-tables).
 func newSessionStore(t *testing.T) (*PgSessionStore, *pgxpool.Pool, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	for _, name := range []string{"0004_sessions_runs.sql", "0005_session_conversation_link.sql"} {
-		sql, err := os.ReadFile(filepath.Join("..", "..", "migrate", "migrations", name))
-		if err != nil {
-			t.Fatalf("read migration %s: %v", name, err)
-		}
-		if _, err := pool.Exec(ctx, string(sql)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
-	}
-	// Isolate: these tables are owned by this test run.
-	if _, err := pool.Exec(ctx, `TRUNCATE run_checkpoints, runs, sessions CASCADE`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
+	pool, ctx := pgscratch.Pool(t, "session_store_test", pgscratch.Options{
+		Migrations: []string{"0004_sessions_runs.sql", "0005_session_conversation_link.sql"},
+	})
 
 	store, err := NewPgSessionStore(ctx, pool)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	return store, pool, ctx
+}
+
+// The constructor's two guards probe the relation the store will use (search_path), so an
+// unmigrated or half-migrated schema is refused with the migration to run — even when a
+// migrated public.sessions exists on the same database. A shadowing scratch schema keeps
+// public on the search_path to prove exactly that.
+func TestNewPgSessionStore_GuardsProbeTheResolvedRelation(t *testing.T) {
+	pool, ctx := pgscratch.Pool(t, "session_guard_test", pgscratch.Options{Shadow: true})
+	var publicSessions bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.sessions') IS NOT NULL`).Scan(&publicSessions); err != nil {
+		t.Fatal(err)
+	}
+	if !publicSessions {
+		// Unmigrated database: nothing to shadow; the empty schema case is the plain one.
+		if _, err := NewPgSessionStore(ctx, pool); err == nil || !contains(err.Error(), "0004_sessions_runs.sql") {
+			t.Fatalf("unmigrated: want the 0004 refusal, got %v", err)
+		}
+		return
+	}
+
+	// 0004 only, in the scratch schema: it shadows the fully migrated public.sessions,
+	// which HAS conversation_id — the column guard must look at the shadowing table.
+	ddl, err := os.ReadFile(filepath.Join("..", "..", "migrate", "migrations", "0004_sessions_runs.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(ddl)); err != nil {
+		t.Fatalf("apply 0004: %v", err)
+	}
+	if _, err := NewPgSessionStore(ctx, pool); err == nil || !contains(err.Error(), "0005_session_conversation_link.sql") {
+		t.Fatalf("half-migrated: want the 0005 refusal, got %v", err)
+	}
 }
 
 func mkSession(id string, status domain.SessionStatus) domain.Session {

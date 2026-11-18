@@ -3,13 +3,11 @@ package network
 import (
 	"context"
 	"errors"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -21,6 +19,7 @@ import (
 	"github.com/cambrian-sh/core/internal/ontology"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // End to end over real Postgres (PG_TEST_DSN; migrations 0040 + 0041), the
@@ -30,21 +29,15 @@ import (
 // policy) → a person answers through the operator plane's AnswerApproval RPC →
 // the next substrate write validates against the approved declarations.
 func TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	// Shadowing scratch schema: the declarations and drafts tables (0040 + 0041) start
+	// empty there instead of the test TRUNCATE-ing the migrated, append-only ones
+	// (T-20261114-postgres-adapter-tests-drop-migrated-tables).
+	pool, ctx := pgscratch.Pool(t, "net_onto_draft_test", pgscratch.Options{Shadow: true,
+		Migrations: []string{"0040_ontology_declarations.sql", "0041_ontology_drafts.sql"}})
 	const ns = "e2e-drafts"
 	clean := func() {
 		bg := context.Background()
 		for _, q := range []string{
-			`TRUNCATE ontology_draft_events, ontology_drafts, ontology_declarations`,
 			`DELETE FROM approvals WHERE kind = 'ontology_change'`,
 			`DELETE FROM knowledge_items WHERE namespace_id = 'e2e-drafts'`,
 		} {

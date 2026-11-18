@@ -3,13 +3,15 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/migrate"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -18,8 +20,12 @@ import (
 // database named in protected_dbnames with pending migrations fails before it writes —
 // the acceptance the incident ticket asked for, on a scratch database standing in for
 // the operator's.
-var guardDisposableDB = regexp.MustCompile(`(?i)test`)
-
+//
+// The scratch database is the test's OWN (CREATE DATABASE on PG_TEST_DSN's server,
+// dropped WITH (FORCE) after). It used to reset the shared PG_TEST_DSN database itself —
+// DROP every extension and the public schema CASCADE, then re-migrate in cleanup — which
+// destroyed every migrated table and row under any test running beside it and every
+// row any earlier test had left (T-20261114-postgres-adapter-tests-drop-migrated-tables).
 func TestNewPgVectorAdapter_ProtectedDBWithPendingMigrations_RefusesBeforeAnyWrite(t *testing.T) {
 	dsn := os.Getenv("PG_TEST_DSN")
 	if dsn == "" {
@@ -29,91 +35,40 @@ func TestNewPgVectorAdapter_ProtectedDBWithPendingMigrations_RefusesBeforeAnyWri
 	if err != nil {
 		t.Fatal(err)
 	}
-	cc := pc.ConnConfig
-	if !guardDisposableDB.MatchString(cc.Database) {
-		t.Skipf("refusing to reset the schema of %q: its name does not say test", cc.Database)
-	}
 	ctx := context.Background()
+	server, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect PG_TEST_DSN: %v", err)
+	}
+	defer func() { _ = server.Close(ctx) }() // best-effort close
+	name := fmt.Sprintf("cambrian_test_guard_%d", time.Now().UnixNano())
+	if _, err := server.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatalf("create scratch database: %v", err)
+	}
+	t.Cleanup(func() {
+		c, err := pgx.Connect(context.Background(), dsn)
+		if err != nil {
+			t.Logf("drop %s: %v", name, err)
+			return
+		}
+		defer func() { _ = c.Close(context.Background()) }() // best-effort close
+		if _, err := c.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
+			t.Logf("drop %s: %v", name, err)
+		}
+	})
+	cc := pc.ConnConfig
+	cc.Database = name
 	admin, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(admin.Close) // after the restore below (cleanups run last-in, first-out)
-	// Leave the database as this test found it. The reset below drops the whole
-	// schema and the boot under test migrates it at 4 dims; left that way, every
-	// adapter test that runs after this file (activation, time, search filter,
-	// the memory store package) meets a 4-dim chunks table and the destructive-
-	// recreate guard refuses it (T-20261112-core-postgres-package-pg-tests-fail-on-a-fresh).
-	// So: remember the embedding dimension the database was migrated at, and in
-	// cleanup reset again and re-migrate at that dimension.
-	var origDim int
-	var vecType *string
-	if err := admin.QueryRow(ctx, `SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
-		WHERE a.attrelid = to_regclass('public.chunks') AND a.attname = 'embedding'`).Scan(&vecType); err == nil && vecType != nil {
-		if m := regexp.MustCompile(`^vector\((\d+)\)$`).FindStringSubmatch(*vecType); m != nil {
-			origDim, _ = strconv.Atoi(m[1]) // the regexp admits digits only
-		}
-	}
-	// The same reset the test itself performs: extensions first (CASCADE), then
-	// the schema. Dropping the schema while an extension's objects still hang off
-	// it fails with "cache lookup failed for function".
-	resetSchema := func(pool *pgxpool.Pool) []string {
-		var stmts []string
-		if rows, err := pool.Query(ctx, `SELECT extname FROM pg_extension WHERE extname <> 'plpgsql'`); err == nil {
-			for rows.Next() {
-				var ext string
-				if rows.Scan(&ext) == nil {
-					stmts = append(stmts, `DROP EXTENSION IF EXISTS "`+ext+`" CASCADE`)
-				}
-			}
-			rows.Close()
-		}
-		return append(stmts, `DROP SCHEMA IF EXISTS public CASCADE`, `CREATE SCHEMA public`, `CREATE EXTENSION IF NOT EXISTS vector`)
-	}
-	t.Cleanup(func() {
-		// A FRESH pool: the test's own connections cached type and function ids
-		// of the schema the reset dropped, and reuse fails with "cache lookup failed".
-		fresh, err := pgxpool.NewWithConfig(ctx, pc.Copy())
-		if err != nil {
-			t.Errorf("restore pool: %v", err)
-			return
-		}
-		defer fresh.Close()
-		for _, s := range resetSchema(fresh) {
-			if _, err := fresh.Exec(ctx, s); err != nil {
-				t.Errorf("restore (%s): %v", s, err)
-				return
-			}
-		}
-		if origDim > 0 {
-			if err := migrate.Boot(ctx, fresh, origDim, migrate.Policy{Mode: migrate.ModeAuto}); err != nil {
-				t.Errorf("restore: re-migrate at %d dims: %v", origDim, err)
-			}
-		}
-	})
+	t.Cleanup(admin.Close) // before the DROP DATABASE above (cleanups run last-in, first-out)
 
-	// A database with no Cambrian schema: every migration is pending.
-	rows, err := admin.Query(ctx, `SELECT extname FROM pg_extension WHERE extname <> 'plpgsql'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stmts []string
-	for rows.Next() {
-		var ext string
-		if err := rows.Scan(&ext); err != nil {
-			t.Fatal(err)
-		}
-		stmts = append(stmts, `DROP EXTENSION IF EXISTS "`+ext+`" CASCADE`)
-	}
-	rows.Close()
-	// The vector extension stays: the adapter's AfterConnect registers the vector type,
+	// A database with no Cambrian schema: every migration is pending. The vector
+	// extension is created: the adapter's AfterConnect registers the vector type,
 	// so it cannot connect to a database that lacks it at all (pre-existing, unrelated).
-	stmts = append(stmts, `DROP SCHEMA IF EXISTS public CASCADE`, `CREATE SCHEMA public`,
-		`CREATE EXTENSION IF NOT EXISTS vector`)
-	for _, s := range stmts {
-		if _, err := admin.Exec(ctx, s); err != nil {
-			t.Fatalf("reset (%s): %v", s, err)
-		}
+	if _, err := admin.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+		t.Fatalf("create vector extension: %v", err)
 	}
 
 	cfg := &config.Config{}

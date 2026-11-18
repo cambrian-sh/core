@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -16,28 +15,18 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // Integration tests over real Postgres (PG_TEST_DSN; migration 0040). The
-// declarations table is global, so each test starts from an empty one
-// (TRUNCATE — a test database only) and keeps its rows in its own namespace.
+// declarations table is global, so each test starts from an empty one — in its
+// own scratch schema (pgscratch, shadowing: 0040 + 0041 there, everything else the
+// migrated public tables) — and keeps its rows in its own namespace. It used to
+// TRUNCATE the migrated table (T-20261114-postgres-adapter-tests-drop-migrated-tables).
 
 func pgPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(ctx, `TRUNCATE ontology_declarations`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
-	return pool, ctx
+	return pgscratch.Pool(t, "ontology_pg_test", pgscratch.Options{Shadow: true, Migrations: []string{"0040_ontology_declarations.sql", "0041_ontology_drafts.sql"}})
 }
 
 func cleanNamespace(t *testing.T, pool *pgxpool.Pool, ns string) {

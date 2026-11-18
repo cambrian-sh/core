@@ -13,6 +13,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/objects"
 	"github.com/cambrian-sh/core/internal/ontology"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // End to end through the real knowledge_commit path (ADR-0149 D3/D4, P3): an
@@ -32,12 +33,11 @@ func TestPg_E2E_KnowledgeCommitReachesTheObjectRow(t *testing.T) {
 	if !regexp.MustCompile(`(?i)test`).MatchString(cfg.ConnConfig.Database) {
 		t.Skipf("refusing to touch %q: its name does not say test", cfg.ConnConfig.Database)
 	}
-	ctx := context.Background()
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	// Shadowing scratch schema: the global, append-only declarations table starts empty
+	// there instead of the test TRUNCATE-ing the migrated one
+	// (T-20261114-postgres-adapter-tests-drop-migrated-tables).
+	pool, ctx := pgscratch.Pool(t, "kc_objects_test", pgscratch.Options{Shadow: true,
+		Migrations: []string{"0040_ontology_declarations.sql", "0041_ontology_drafts.sql"}})
 	const ns = "p3test-kc"
 	clean := func() {
 		bg := context.Background()
@@ -49,9 +49,6 @@ func TestPg_E2E_KnowledgeCommitReachesTheObjectRow(t *testing.T) {
 	}
 	clean()
 	t.Cleanup(clean)
-	if _, err := pool.Exec(ctx, `TRUNCATE ontology_declarations`); err != nil {
-		t.Fatal(err)
-	}
 	caseKind := domain.KindSpec{
 		Kind: "p3case", Table: true, Policy: domain.ResolutionPolicyDesignatedActor, ResolutionScope: domain.ResolutionScopeEntity,
 		Designated: &domain.DesignatedActors{ApprovedViaCommit: true},

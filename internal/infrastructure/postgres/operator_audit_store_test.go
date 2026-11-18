@@ -1,31 +1,21 @@
 package postgres
 
 import (
-	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // Integration test for the Postgres operator_audit store (ADR-0047 0047-24).
 // Skips without PG_TEST_DSN; runs in CI. Covers the UNIQUE command_id dedup and
 // filtered query.
 func TestPgAuditStore_RecordDedupAndQuery(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	defer pool.Close()
-	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS operator_audit")
+	// Its own schema: NewPgAuditStore creates operator_audit there instead of the test
+	// dropping the migrated table every later test needs
+	// (T-20261114-postgres-adapter-tests-drop-migrated-tables).
+	pool, ctx := pgscratch.Pool(t, "operator_audit_test", pgscratch.Options{})
 
 	store, err := NewPgAuditStore(ctx, pool)
 	if err != nil {

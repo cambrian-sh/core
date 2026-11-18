@@ -33,9 +33,12 @@ const sessionCols = `id, parent_id, goal, status, summary, caller_scope, created
 // NewPgSessionStore returns the store, failing with an actionable error when the schema has
 // not been migrated.
 func NewPgSessionStore(ctx context.Context, pool *pgxpool.Pool) (*PgSessionStore, error) {
+	// Unqualified, like every query below: both guards probe the relation the store will
+	// actually use (search_path), not public's or any schema's
+	// (T-20261114-postgres-adapter-tests-drop-migrated-tables).
 	var present bool
 	if err := pool.QueryRow(ctx,
-		`SELECT to_regclass('public.sessions') IS NOT NULL`).Scan(&present); err != nil {
+		`SELECT to_regclass('sessions') IS NOT NULL`).Scan(&present); err != nil {
 		return nil, fmt.Errorf("check sessions schema: %w", err)
 	}
 	if !present {
@@ -47,8 +50,8 @@ func NewPgSessionStore(ctx context.Context, pool *pgxpool.Pool) (*PgSessionStore
 	// which migration is missing rather than failing later on an unknown column.
 	var linked bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_name = 'sessions' AND column_name = 'conversation_id')`).Scan(&linked); err != nil {
+		SELECT 1 FROM pg_attribute
+		WHERE attrelid = to_regclass('sessions') AND attname = 'conversation_id' AND NOT attisdropped)`).Scan(&linked); err != nil {
 		return nil, fmt.Errorf("check sessions.conversation_id: %w", err)
 	}
 	if !linked {

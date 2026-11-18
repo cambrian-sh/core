@@ -3,49 +3,29 @@ package postgres
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // Integration tests for the conversation store (ADR-0084 D1). Skips without PG_TEST_DSN.
 //
-// The schema is applied by reading the REAL migration file rather than an inline copy, so
+// The schema is applied by reading the REAL migration files rather than an inline copy, so
 // this test cannot silently drift from the DDL that ships (migration 0002 is authoritative
-// per ADR-0064).
+// per ADR-0064). They are applied into the test's OWN schema (pgscratch, isolated), never
+// over the migrated public tables: the test used to DROP conversations and
+// conversation_messages, which on a database provisioned by `orchestrator migrate up` left
+// every later test in the run without them
+// (T-20261114-postgres-adapter-tests-drop-migrated-tables).
 func newConvStore(t *testing.T) (*PgConversationStore, *pgxpool.Pool, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	_, _ = pool.Exec(ctx, `DROP TABLE IF EXISTS conversation_messages, conversations CASCADE`)
-
-	// Apply the REAL migration files, in order, so the test schema cannot drift from what
-	// ships (0002 base + 0003 policy column; ADR-0064).
-	for _, name := range []string{"0002_conversations.sql", "0003_conversation_policy.sql", "0006_conversation_delivery.sql"} {
-		path := filepath.Join("..", "..", "migrate", "migrations", name)
-		ddl, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read migration %s (the test applies the real migration on purpose): %v", path, err)
-		}
-		if _, err := pool.Exec(ctx, string(ddl)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
-	}
-
+	pool, ctx := pgscratch.Pool(t, "conv_store_test", pgscratch.Options{
+		Migrations: []string{"0002_conversations.sql", "0003_conversation_policy.sql", "0006_conversation_delivery.sql"},
+	})
 	store, err := NewPgConversationStore(ctx, pool)
 	if err != nil {
 		t.Fatalf("NewPgConversationStore: %v", err)
@@ -64,19 +44,11 @@ func seedConv(t *testing.T, s *PgConversationStore, ctx context.Context, id stri
 // The constructor must refuse to run against an unmigrated database with an actionable
 // error, rather than failing later with a raw SQL error on first use.
 func TestNewPgConversationStore_UnmigratedIsActionable(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	defer pool.Close()
-	_, _ = pool.Exec(ctx, `DROP TABLE IF EXISTS conversation_messages, conversations CASCADE`)
+	// An empty, isolated schema stands in for an unmigrated database: the store resolves
+	// conversations through search_path, so nothing migrated is visible from here.
+	pool, ctx := pgscratch.Pool(t, "conv_unmigrated_test", pgscratch.Options{})
 
-	_, err = NewPgConversationStore(ctx, pool)
+	_, err := NewPgConversationStore(ctx, pool)
 	if err == nil {
 		t.Fatal("expected an error against an unmigrated DB")
 	}

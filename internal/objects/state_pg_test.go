@@ -21,6 +21,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/objects"
 	"github.com/cambrian-sh/core/internal/ontology"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // Integration tests over real Postgres (PG_TEST_DSN, migrations through 0042).
@@ -43,17 +44,12 @@ func pgPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	if !disposableDB.MatchString(cfg.ConnConfig.Database) {
 		t.Skipf("refusing to touch %q: its name does not say test", cfg.ConnConfig.Database)
 	}
-	ctx := context.Background()
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	// The declarations table is global; each test starts from its own seed
-	// (as internal/ontology's Pg tests do — a test database only).
-	if _, err := pool.Exec(ctx, `TRUNCATE ontology_declarations`); err != nil {
-		t.Fatal(err)
-	}
+	// The declarations table is global and append-only; each test starts from its own
+	// seed in a shadowing scratch schema (0040 + 0041 there, everything else the
+	// migrated public tables) instead of TRUNCATE-ing the migrated table
+	// (T-20261114-postgres-adapter-tests-drop-migrated-tables).
+	pool, ctx := pgscratch.Pool(t, "objects_pg_test", pgscratch.Options{Shadow: true,
+		Migrations: []string{"0040_ontology_declarations.sql", "0041_ontology_drafts.sql"}})
 	return pool, ctx
 }
 
