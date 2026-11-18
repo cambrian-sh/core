@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/cambrian-sh/core/domain"
 )
 
@@ -55,6 +58,12 @@ func TestHumanFailure_TurkishOnEveryPath(t *testing.T) {
 		ErrTurnStalled, ErrEmptyReply, context.DeadlineExceeded, context.Canceled,
 		errors.New("agentpool: ErrPoolBusy"), errors.New("session not found: lease-1"),
 		errors.New("upstream timeout"), errors.New("boom"),
+		// ENG-2124's classes: relayed gateway codes, a dead worker, and the lease-only ones.
+		status.Error(codes.Unauthenticated, "x"), status.Error(codes.ResourceExhausted, "x"),
+		status.Error(codes.Unavailable, "x"),
+		&domain.TurnInterruption{Reason: domain.TurnInterruptProviderUnavailable},
+		&domain.TurnInterruption{Reason: domain.TurnInterruptSpendLimit},
+		&domain.TurnInterruption{Reason: domain.TurnInterruptContextTooLarge},
 	}
 	seen := map[string]bool{}
 	for _, err := range errs {

@@ -28,7 +28,7 @@ ExtraServices: nil
 AgentGRPCServices: nil
 OperatorMethodRoles: nil
 LoginObserver: nil
-Lifecycles: []app.Lifecycle len=9
+Lifecycles: []app.Lifecycle len=10
 PluginCapabilities: nil
 PluginStatuses: []app.PluginStatus len=1
 Conversations: *postgres.PgConversationStore
@@ -232,6 +232,7 @@ approval-hub start=true stop=true
 python-packages start=true stop=true
 ontology-drafts start=true stop=true
 delivery-redrive start=true stop=true
+chat-interrupted-turns start=true stop=true
 chat-pool start=true stop=true
 consent-bridge start=true stop=true
 

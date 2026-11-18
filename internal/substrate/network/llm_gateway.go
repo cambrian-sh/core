@@ -703,7 +703,15 @@ func (g *SubstrateLLMGateway) touchLocked(s *domain.BudgetLeaseState) {
 // ADR-0139 D1). It applies CONWIP, lease admission, Pass 1 budget enforcement and
 // Pass 2 reconciliation. Health and fallback are the Provider's: there is no second
 // health cache here.
-func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest, out chan<- domain.StreamChunk) error {
+func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest, out chan<- domain.StreamChunk) (err error) {
+	var streamFault error // a typed error a final stream_error chunk carried
+	defer func() {
+		if err == nil && streamFault != nil {
+			g.recordCallOutcome(sessionID, streamFault)
+			return
+		}
+		g.recordCallOutcome(sessionID, err)
+	}()
 	start := time.Now()
 	release, err := g.acquireSlot(ctx)
 	if err != nil {
@@ -755,6 +763,9 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		usage.Observe(chunk)
 		if chunk.Response != nil {
 			final = chunk.Response
+		}
+		if chunk.Err != nil {
+			streamFault = chunk.Err
 		}
 		if chunk.ToolCall != nil && chunk.Text == "" && !chunk.IsFinal {
 			// A tool-call fragment (ADR-0139 amendment 2026-11-06) carries no text
@@ -826,6 +837,37 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	return nil
 }
 
+// recordCallOutcome keeps the lease's LastFault true to its latest model call
+// (ENG-2124): a provider failure sets its class, a success clears it, and an error
+// that is not a provider failure (a cancelled turn, a capability answer, a hook
+// refusal) leaves it as it was. A no-op for an unknown lease.
+func (g *SubstrateLLMGateway) recordCallOutcome(leaseID domain.LeaseID, err error) {
+	fault := classifyProviderFault(err)
+	if err != nil && fault == domain.ProviderFaultNone {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if s, ok := g.sessions[leaseID]; ok {
+		s.LastFault = fault
+	}
+}
+
+// LeaseFault returns the class of the last failed model call under leaseID, or
+// ProviderFaultNone when the last call succeeded, none failed, or the lease is
+// unknown. The chat lane reads it when a turn fails (TurnService.SetLeaseFaultProbe).
+func (g *SubstrateLLMGateway) LeaseFault(leaseID domain.LeaseID) domain.ProviderFault {
+	if g == nil || leaseID == "" {
+		return domain.ProviderFaultNone
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if s, ok := g.sessions[leaseID]; ok {
+		return s.LastFault
+	}
+	return domain.ProviderFaultNone
+}
+
 // ErrToolCallingUnsupported is returned when the model serving a step cannot do
 // native tool-calling. It is a CAPABILITY answer, not a failure: the caller is
 // expected to fall back to the prompt-encoded action protocol, so it must stay
@@ -847,7 +889,8 @@ func (g *SubstrateLLMGateway) GenerateWithTools(ctx context.Context, sessionID d
 // are identical; only the transport to the provider differs — streamed when the
 // model source can stream (ObservedStepModels), unary otherwise. observe == nil is
 // GenerateWithTools.
-func (g *SubstrateLLMGateway) GenerateWithToolsObserved(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest, observe func(domain.ModelStreamDelta)) (domain.GenerateResponse, error) {
+func (g *SubstrateLLMGateway) GenerateWithToolsObserved(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest, observe func(domain.ModelStreamDelta)) (_ domain.GenerateResponse, err error) {
+	defer func() { g.recordCallOutcome(sessionID, err) }()
 	release, err := g.acquireSlot(ctx)
 	if err != nil {
 		return domain.GenerateResponse{}, err

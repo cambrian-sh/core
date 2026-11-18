@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -218,6 +219,46 @@ func TestConversationStore_ConcurrentAppendsDoNotCollide(t *testing.T) {
 		if !seqs[i] {
 			t.Fatalf("seq %d missing — assignment is not contiguous", i)
 		}
+	}
+}
+
+// ENG-2124: the turns a kernel stop cut off are the open conversations whose last
+// message is a user message from before the boot — not answered ones, not closed ones,
+// not marked ones, not turns of the running process.
+func TestConversationStore_ListUnansweredTurns(t *testing.T) {
+	s, _, ctx := newConvStore(t)
+	for _, id := range []string{"answered", "cut", "closed", "marked"} {
+		seedConv(t, s, ctx, id)
+	}
+	app := func(conv, id string, role domain.MessageRole) {
+		t.Helper()
+		if _, err := s.AppendMessage(ctx, domain.Message{ID: id, ConversationID: conv, Role: role, Content: "x"}); err != nil {
+			t.Fatalf("append %s: %v", id, err)
+		}
+	}
+	app("answered", "a1", domain.MessageRoleUser)
+	app("answered", "a2", domain.MessageRoleAgent)
+	app("cut", "c0", domain.MessageRoleUser)
+	app("cut", "c1", domain.MessageRoleAgent)
+	app("cut", "c2", domain.MessageRoleUser)
+	app("closed", "z1", domain.MessageRoleUser)
+	app("marked", "k1", domain.MessageRoleUser)
+	app("marked", "k2", domain.MessageRoleInterruption)
+	if err := s.SetConversationStatus(ctx, "closed", domain.ConversationClosed); err != nil {
+		t.Fatal(err)
+	}
+	boot := time.Now().Add(time.Second)
+
+	got, err := s.ListUnansweredTurns(ctx, boot, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "c2" || got[0].Role != domain.MessageRoleUser {
+		t.Fatalf("unanswered = %+v, want only c2", got)
+	}
+	// A turn of the running process (after boot) is not the last stop's.
+	if got, _ := s.ListUnansweredTurns(ctx, time.Now().Add(-time.Hour), 10); len(got) != 0 {
+		t.Fatalf("before an hour ago = %+v, want none", got)
 	}
 }
 

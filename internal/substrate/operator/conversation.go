@@ -54,6 +54,7 @@ func (s *Service) requireConvOps() error {
 // mapConvError translates store errors into gRPC status codes so a client can distinguish
 // a closed conversation (retryable never) from a missing one (client error).
 func mapConvError(err error) error {
+	var interrupted *domain.TurnInterruption
 	switch {
 	case err == nil:
 		return nil
@@ -63,9 +64,40 @@ func mapConvError(err error) error {
 		return status.Error(codes.FailedPrecondition, "conversation is closed")
 	case errors.Is(err, ErrConversationForbidden):
 		return status.Error(codes.PermissionDenied, "conversation is owned by another principal")
+	case errors.As(err, &interrupted):
+		// ENG-2124: the person is shown the plain sentence only — never the cause,
+		// which names providers, endpoints and socket paths (logged by the chat lane).
+		return status.Error(interruptCode(interrupted.Reason), interrupted.Message)
 	default:
 		return err
 	}
+}
+
+// interruptCodes is the status a failed turn answers with, per failure class (ENG-2124).
+// A refused provider credential is FailedPrecondition, not Unauthenticated: on the
+// operator plane Unauthenticated says the CALLER's credential is bad, and a client would
+// sign the person out for a fault only an operator's model settings can fix.
+var interruptCodes = map[domain.TurnInterruptReason]codes.Code{
+	domain.TurnInterruptProviderAuth:        codes.FailedPrecondition,
+	domain.TurnInterruptSpendLimit:          codes.FailedPrecondition,
+	domain.TurnInterruptProviderBusy:        codes.ResourceExhausted,
+	domain.TurnInterruptAtCapacity:          codes.ResourceExhausted,
+	domain.TurnInterruptProviderUnavailable: codes.Unavailable,
+	domain.TurnInterruptAssistantRestarted:  codes.Unavailable,
+	domain.TurnInterruptSessionLost:         codes.Unavailable,
+	domain.TurnInterruptContextTooLarge:     codes.OutOfRange,
+	domain.TurnInterruptStalled:             codes.DeadlineExceeded,
+	domain.TurnInterruptTimeout:             codes.DeadlineExceeded,
+	domain.TurnInterruptCancelled:           codes.Canceled,
+	domain.TurnInterruptEmptyReply:          codes.Internal,
+	domain.TurnInterruptFailed:              codes.Internal,
+}
+
+func interruptCode(r domain.TurnInterruptReason) codes.Code {
+	if c, ok := interruptCodes[r]; ok {
+		return c
+	}
+	return codes.Internal
 }
 
 // OpenConversation creates a conversation owned by the resolved operator principal — or,

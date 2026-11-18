@@ -118,6 +118,29 @@ func (m *memStore) AppendMessage(_ context.Context, msg domain.Message) (domain.
 	return msg, nil
 }
 
+// ListUnansweredTurns mirrors the Postgres query: the last message of an open
+// conversation, when it is a user message created before `before` (a zero CreatedAt
+// counts as before: this fake does not stamp times).
+func (m *memStore) ListUnansweredTurns(_ context.Context, before time.Time, limit int) ([]domain.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Message
+	for id, c := range m.convs {
+		msgs := m.msgs[id]
+		if c.Status != domain.ConversationOpen || len(msgs) == 0 {
+			continue
+		}
+		last := msgs[len(msgs)-1]
+		if last.Role == domain.MessageRoleUser && last.CreatedAt.Before(before) {
+			out = append(out, last)
+		}
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) ListMessages(_ context.Context, id string, afterSeq int64, limit int) ([]domain.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

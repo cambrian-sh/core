@@ -249,6 +249,37 @@ func (s *PgConversationStore) ListMessages(ctx context.Context, conversationID s
 	return out, rows.Err()
 }
 
+// ListUnansweredTurns returns the user messages created before `before` that are the
+// latest message of an open conversation (ENG-2124). The latest message is the one at
+// next_seq-1 (AppendMessage claims seq = next_seq, then increments), so this is a join
+// on the (conversation_id, seq) unique index, not a scan for a max per conversation.
+func (s *PgConversationStore) ListUnansweredTurns(ctx context.Context, before time.Time, limit int) ([]domain.Message, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id, m.conversation_id, m.seq, m.role, m.content, COALESCE(m.client_id, ''), m.created_at
+		  FROM conversations c
+		  JOIN conversation_messages m ON m.conversation_id = c.id AND m.seq = c.next_seq - 1
+		 WHERE c.status = $1 AND m.role = $2 AND m.created_at < $3
+		 ORDER BY m.created_at
+		 LIMIT $4`,
+		string(domain.ConversationOpen), string(domain.MessageRoleUser), before.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unanswered turns: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Message
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan unanswered turn: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // scanMessage maps one row of msgCols onto a domain.Message.
 func scanMessage(row pgx.Row) (domain.Message, error) {
 	var (

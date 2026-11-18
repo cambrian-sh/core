@@ -128,6 +128,11 @@ type TurnService struct {
 	// TurnTimeout counts only the time a turn spends NOT waiting on a person; nil ⇒
 	// TurnTimeout is wall-clock.
 	personWait func(originMessageID string) (waiting bool, waited time.Duration)
+	// leaseFault reports the provider failure the LLM gateway recorded on a lease
+	// (SubstrateLLMGateway.LeaseFault). Read when a turn fails, before its lease is
+	// released, so the person is told the provider's failure class in plain words
+	// (ENG-2124). nil ⇒ classified from the worker's error alone.
+	leaseFault func(domain.LeaseID) domain.ProviderFault
 	// delegations ends a turn's delegated work when the turn ends. nil ⇒ no
 	// kernel-side delegation tracking (a test, or an embedder without a planner).
 	delegations DelegationEnder
@@ -255,6 +260,13 @@ func (s *TurnService) clock() time.Time {
 // SetLivenessProbe wires stall detection. Optional: without it a turn is bounded only by
 // TurnTimeout.
 func (s *TurnService) SetLivenessProbe(f func(conversationID string) time.Time) { s.liveness = f }
+
+// SetLeaseFaultProbe lets a failed turn read the provider failure the LLM gateway
+// recorded on the turn's lease (ENG-2124): the kernel's own observation of why the
+// model call failed, independent of what the worker reports.
+func (s *TurnService) SetLeaseFaultProbe(f func(domain.LeaseID) domain.ProviderFault) {
+	s.leaseFault = f
+}
 
 // SetPersonWaitProbe makes the turn deadline pause while the turn waits on a person
 // (T-20261118-a-chat-turn-waiting-on-a-human-approval-is). A human approval has its
@@ -520,9 +532,15 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 
 	// Replay detection: anything already stored after this user message means the turn was
 	// processed on an earlier attempt.
+	// An interruption marker is not a reply: a retry of an interrupted turn runs it again,
+	// as it did before the marker existed (ENG-2124).
 	if req.ClientID != "" {
-		if later, lerr := s.store.ListMessages(ctx, req.ConversationID, userMsg.Seq, 1); lerr == nil && len(later) > 0 {
-			return later[0], nil
+		if later, lerr := s.store.ListMessages(ctx, req.ConversationID, userMsg.Seq, replayScan); lerr == nil {
+			for _, m := range later {
+				if m.Role != domain.MessageRoleInterruption {
+					return m, nil
+				}
+			}
 		}
 	}
 
@@ -550,6 +568,26 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 			Note:           humanFailure(turnErr, lang), // empty on success ⇒ the line is cleared
 			Language:       lang,
 		})
+	}()
+
+	// ENG-2124 (owner decision 2026-11-18): a turn that ends without a reply returns a
+	// *domain.TurnInterruption — a plain sentence for the person, the raw cause for the
+	// logs only — and leaves an interruption marker in the transcript, so the person sees
+	// on reopening that the turn did not complete and why. Deferred after the progress
+	// line's defer so it runs first: the status line ends on the same sentence. The
+	// marker is the person's trace, never model context (history and summaries skip
+	// it), which keeps the older invariant that a failed turn feeds nothing to the model.
+	var fault domain.ProviderFault
+	defer func() {
+		if turnErr == nil || errors.Is(turnErr, domain.ErrConversationClosed) {
+			return
+		}
+		ti := interruption(turnErr, fault, lang)
+		slog.Warn("chat: turn ended without a reply",
+			"conversation", req.ConversationID, "message", userMsg.ID,
+			"reason", ti.Reason, "provider_fault", fault, "err", ti.Cause)
+		s.markInterrupted(context.WithoutCancel(ctx), userMsg, ti.Message)
+		turnErr = ti
 	}()
 
 	// The transcript: the fixed message window, or (ADR-0145 D2) the token-budgeted
@@ -665,6 +703,10 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	h := s.buildHandoff(turnCtx, conv, req, history, sessionToken)
 	s.addTurnContext(h, tc)
 	resp, err := s.pool.Dispatch(turnCtx, h)
+	// Read while the turn's lease is still held: its release forgets the record.
+	if s.leaseFault != nil && sessionToken != "" {
+		fault = s.leaseFault(domain.LeaseID(sessionToken))
+	}
 	if err != nil {
 		// Distinguish "we gave up on a wedged turn" from an ordinary cancellation, so the
 		// user is told what actually happened rather than a generic failure.
@@ -758,9 +800,10 @@ func (s *TurnService) loadHistory(ctx context.Context, conversationID string, up
 		return nil, err
 	}
 	// Drop the message being answered; it travels as the payload, not as history.
+	// Interruption markers are the person's trace, not model context (ENG-2124).
 	out := make([]domain.Message, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Seq < upToSeq {
+		if m.Seq < upToSeq && m.Role != domain.MessageRoleInterruption {
 			out = append(out, m)
 		}
 	}

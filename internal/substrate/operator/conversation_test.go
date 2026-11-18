@@ -2,6 +2,7 @@ package operator_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -17,6 +18,7 @@ type fakeConvOps struct {
 	owners   map[string]string // conversation id -> owner
 	profiles map[string]string
 	sendN    int
+	sendErr  error
 	closed   map[string]bool
 }
 
@@ -38,6 +40,9 @@ func (f *fakeConvOps) Open(_ context.Context, id, ownerID, _, profile, _ string)
 
 func (f *fakeConvOps) SendTurn(_ context.Context, id, text, clientID string) (domain.Message, error) {
 	f.sendN++
+	if f.sendErr != nil {
+		return domain.Message{}, f.sendErr
+	}
 	return domain.Message{ID: "reply-" + clientID, ConversationID: id, Seq: 2, Role: domain.MessageRoleAgent, Content: "echo:" + text}, nil
 }
 
@@ -147,6 +152,42 @@ func TestSendTurn_ReturnsReply(t *testing.T) {
 	}
 	if ops.sendN != 1 {
 		t.Fatalf("expected 1 dispatch, got %d", ops.sendN)
+	}
+}
+
+// ENG-2124: a turn that ended without a reply answers with a status that reflects its
+// class and carries only the plain sentence — never the cause's provider JSON, URL or
+// socket path.
+func TestSendTurn_InterruptedTurnIsPlainWithAClassCode(t *testing.T) {
+	t.Parallel()
+	cause := errors.New(`rpc error: code = Internal desc = INTERNAL: openai: HTTP 429: {"type": "rate_limit_error"} via http://127.0.0.1:3132 and unix @->/run/cambrian/agents/sock/agent.sock`)
+	const plain = "The AI service is busy right now. Try again in a minute."
+	cases := []struct {
+		reason domain.TurnInterruptReason
+		want   codes.Code
+	}{
+		// FailedPrecondition, not Unauthenticated: the operator's own session is fine.
+		{domain.TurnInterruptProviderAuth, codes.FailedPrecondition},
+		{domain.TurnInterruptProviderBusy, codes.ResourceExhausted},
+		{domain.TurnInterruptProviderUnavailable, codes.Unavailable},
+		{domain.TurnInterruptAssistantRestarted, codes.Unavailable},
+		{domain.TurnInterruptTimeout, codes.DeadlineExceeded},
+		{domain.TurnInterruptFailed, codes.Internal},
+	}
+	for _, c := range cases {
+		svc, ops := convService(t)
+		if _, err := svc.OpenConversation(opCtx(), &pb.OpenConversationOpRequest{CommandId: "o", Reason: "s", ConversationId: "c"}); err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		ops.sendErr = &domain.TurnInterruption{Reason: c.reason, Message: plain, Cause: cause}
+		_, err := svc.SendTurn(opCtx(), &pb.SendTurnOpRequest{CommandId: "t1", Reason: "ask", ConversationId: "c", Text: "hello"})
+		st := status.Convert(err)
+		if st.Code() != c.want {
+			t.Errorf("%s: code = %v, want %v", c.reason, st.Code(), c.want)
+		}
+		if st.Message() != plain {
+			t.Errorf("%s: status message = %q, want the plain sentence only", c.reason, st.Message())
+		}
 	}
 }
 

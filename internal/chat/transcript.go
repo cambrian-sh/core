@@ -62,7 +62,8 @@ func (s *TurnService) loadBudgetedHistory(ctx context.Context, conv *domain.Conv
 	}
 	all := make([]domain.Message, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Seq < upToSeq {
+		// Interruption markers are the person's trace, not model context (ENG-2124).
+		if m.Seq < upToSeq && m.Role != domain.MessageRoleInterruption {
 			all = append(all, m)
 		}
 	}

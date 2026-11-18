@@ -116,10 +116,12 @@ func TestTurn_FailureIsReportedToTheUser(t *testing.T) {
 		t.Errorf("notice leaked the internal error name: %q", last.Text())
 	}
 
-	// And nothing was persisted beyond the user's own message.
+	// No agent message was persisted: only the user's message and, since ENG-2124, the
+	// interruption marker saying the same sentence — the person's trace, which never
+	// reaches the model (interruption_test.go).
 	msgs, _ := store.ListMessages(context.Background(), "c1", 0, 0)
-	if len(msgs) != 1 {
-		t.Errorf("a failed turn must store nothing but the user message, got %d: %+v", len(msgs), msgs)
+	if len(msgs) != 2 || msgs[1].Role != domain.MessageRoleInterruption || msgs[1].Content != last.Text() {
+		t.Errorf("a failed turn must store the user message and one interruption marker, got %d: %+v", len(msgs), msgs)
 	}
 }
 

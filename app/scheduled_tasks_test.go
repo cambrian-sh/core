@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	corechat "github.com/cambrian-sh/core/internal/chat"
@@ -70,6 +71,10 @@ func (m *convMem) ListMessages(_ context.Context, id string, afterSeq int64, _ i
 		}
 	}
 	return out, nil
+}
+
+func (m *convMem) ListUnansweredTurns(context.Context, time.Time, int) ([]domain.Message, error) {
+	return nil, nil
 }
 
 func (m *convMem) BindDelivery(context.Context, string, domain.DeliveryAddress) error { return nil }

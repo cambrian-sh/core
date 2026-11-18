@@ -5,6 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/agentpool"
 )
 
 // humanFailure maps a turn error onto one short sentence a user can act on, in the
@@ -29,35 +35,127 @@ func humanFailure(err error, lang string) string {
 	if err == nil {
 		return ""
 	}
+	var ti *domain.TurnInterruption
+	if errors.As(err, &ti) && ti.Message != "" {
+		return ti.Message // already said in the turn's language
+	}
 	return Message(failureMessage(err), lang)
+}
+
+// interruptMessages is the one table from a failure class to the sentence the person is
+// shown (ENG-2124; the text itself is in locale.go, per language). A class missing here
+// says the generic sentence; TestInterruptMessages_EveryReasonHasASentence holds the
+// table complete.
+var interruptMessages = map[domain.TurnInterruptReason]MessageID{
+	domain.TurnInterruptProviderAuth:        MsgProviderAuth,
+	domain.TurnInterruptProviderBusy:        MsgProviderBusy,
+	domain.TurnInterruptProviderUnavailable: MsgProviderUnavailable,
+	domain.TurnInterruptSpendLimit:          MsgSpendLimit,
+	domain.TurnInterruptContextTooLarge:     MsgContextTooLarge,
+	domain.TurnInterruptAssistantRestarted:  MsgAssistantRestarted,
+	domain.TurnInterruptStalled:             MsgTurnStalled,
+	domain.TurnInterruptTimeout:             MsgTurnTimeout,
+	domain.TurnInterruptCancelled:           MsgTurnCancelled,
+	domain.TurnInterruptAtCapacity:          MsgAtCapacity,
+	domain.TurnInterruptSessionLost:         MsgSessionLost,
+	domain.TurnInterruptEmptyReply:          MsgEmptyReply,
+	domain.TurnInterruptFailed:              MsgGenericFail,
+}
+
+// providerFaultReasons maps the provider-failure class the LLM gateway recorded on the
+// turn's lease (domain.BudgetLeaseState.LastFault) to the turn's failure class.
+var providerFaultReasons = map[domain.ProviderFault]domain.TurnInterruptReason{
+	domain.ProviderFaultAuth:            domain.TurnInterruptProviderAuth,
+	domain.ProviderFaultRateLimited:     domain.TurnInterruptProviderBusy,
+	domain.ProviderFaultUnavailable:     domain.TurnInterruptProviderUnavailable,
+	domain.ProviderFaultSpendLimit:      domain.TurnInterruptSpendLimit,
+	domain.ProviderFaultContextOverflow: domain.TurnInterruptContextTooLarge,
 }
 
 // failureMessage picks the catalogue sentence for a turn error (locale.go holds the text in
 // every supported language).
 func failureMessage(err error) MessageID {
+	return interruptMessage(failureReason(err, domain.ProviderFaultNone))
+}
+
+func interruptMessage(r domain.TurnInterruptReason) MessageID {
+	if id, ok := interruptMessages[r]; ok {
+		return id
+	}
+	return MsgGenericFail
+}
+
+// failureReason classifies a turn error. fault is the provider failure the gateway
+// recorded on the turn's lease, if any: the kernel's own observation, so it holds even
+// when the worker reported the failure as an opaque Internal error (until ENG-2125 the
+// SDK worker reports every gateway failure that way).
+//
+// Precedence: the kernel's own verdicts on the turn (stalled, empty, deadline) first;
+// then the lease's provider fault; then what the pool or the worker reported.
+func failureReason(err error, fault domain.ProviderFault) domain.TurnInterruptReason {
+	var ti *domain.TurnInterruption
 	switch {
+	case errors.As(err, &ti):
+		return ti.Reason
 	case errors.Is(err, ErrTurnStalled):
-		return MsgTurnStalled
+		return domain.TurnInterruptStalled
 	case errors.Is(err, ErrEmptyReply):
-		return MsgEmptyReply
+		return domain.TurnInterruptEmptyReply
 	case errors.Is(err, context.DeadlineExceeded):
-		return MsgTurnTimeout
+		return domain.TurnInterruptTimeout
+	}
+	if r, ok := providerFaultReasons[fault]; ok {
+		return r
+	}
+	switch {
 	case errors.Is(err, context.Canceled):
-		return MsgTurnCancelled
+		return domain.TurnInterruptCancelled
+	case errors.Is(err, agentpool.ErrPoolBusy):
+		return domain.TurnInterruptAtCapacity
+	case errors.Is(err, agentpool.ErrWorkerLost):
+		// The worker was gone when the turn reached it; the pool respawned it.
+		return domain.TurnInterruptAssistantRestarted
+	}
+	// The worker's status. Unavailable is the transport breaking under the call: the
+	// worker process died mid-turn (the readiness run's killed chat worker) and its
+	// supervisor restarts it. A provider outage the worker relays as Unavailable
+	// (ENG-2125) has a lease fault recorded and was classified above.
+	switch status.Code(err) {
+	case codes.Unavailable:
+		return domain.TurnInterruptAssistantRestarted
+	case codes.Unauthenticated:
+		return domain.TurnInterruptProviderAuth
+	case codes.ResourceExhausted:
+		return domain.TurnInterruptProviderBusy
+	case codes.DeadlineExceeded:
+		return domain.TurnInterruptTimeout
+	case codes.Canceled:
+		return domain.TurnInterruptCancelled
 	}
 
 	// Fall back to shape rather than exact identity, so errors from layers this package
 	// does not import still land somewhere sensible.
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "busy"), strings.Contains(msg, "capacity"):
-		return MsgAtCapacity
+	case strings.Contains(msg, "busy"), strings.Contains(msg, "capacity"), strings.Contains(msg, "saturated"):
+		return domain.TurnInterruptAtCapacity
 	case strings.Contains(msg, "session not found"), strings.Contains(msg, "lease"):
-		return MsgSessionLost
+		return domain.TurnInterruptSessionLost
 	case strings.Contains(msg, "deadline"), strings.Contains(msg, "timeout"):
-		return MsgTookTooLong
+		return domain.TurnInterruptTimeout
 	}
-	return MsgGenericFail
+	return domain.TurnInterruptFailed
+}
+
+// interruption turns a failed turn's error into the person-facing *domain.TurnInterruption:
+// the class, its plain sentence in lang, and the raw error as the cause (logs only).
+func interruption(err error, fault domain.ProviderFault, lang string) *domain.TurnInterruption {
+	var ti *domain.TurnInterruption
+	if errors.As(err, &ti) {
+		return ti
+	}
+	r := failureReason(err, fault)
+	return &domain.TurnInterruption{Reason: r, Message: Message(interruptMessage(r), lang), Cause: err}
 }
 
 // finalAnswerEnvelope is the structured output an SDK ReAct loop produces on its last

@@ -76,12 +76,17 @@ const (
 	MessageRoleUser   MessageRole = "user"
 	MessageRoleAgent  MessageRole = "agent"
 	MessageRoleSystem MessageRole = "system"
+	// MessageRoleInterruption marks a turn that ended without a reply (ENG-2124): its
+	// content is the plain sentence the person was shown. It is the transcript's trace
+	// for the person, never context for the model — history, summaries and replay
+	// skip it (internal/chat).
+	MessageRoleInterruption MessageRole = "interruption"
 )
 
 // Valid reports whether the role is known.
 func (r MessageRole) Valid() bool {
 	switch r {
-	case MessageRoleUser, MessageRoleAgent, MessageRoleSystem:
+	case MessageRoleUser, MessageRoleAgent, MessageRoleSystem, MessageRoleInterruption:
 		return true
 	}
 	return false
@@ -187,7 +192,7 @@ func (m Message) Validate() error {
 		return errors.New("message: ConversationID is required")
 	}
 	if !m.Role.Valid() {
-		return errors.New("message: Role must be user, agent, or system")
+		return errors.New("message: Role must be user, agent, system, or interruption")
 	}
 	if m.Content == "" {
 		return errors.New("message: Content is required")
@@ -225,6 +230,11 @@ type ConversationStore interface {
 	// ListMessages returns messages with Seq strictly greater than afterSeq, in order.
 	// Pass afterSeq=0 for the whole history. limit <= 0 means no limit.
 	ListMessages(ctx context.Context, conversationID string, afterSeq int64, limit int) ([]Message, error)
+	// ListUnansweredTurns returns, oldest first and at most limit, the user messages
+	// created before `before` that are still the LAST message of an open conversation:
+	// turns a kernel stop left with no reply and no interruption marker (ENG-2124). The
+	// chat lane marks them at boot.
+	ListUnansweredTurns(ctx context.Context, before time.Time, limit int) ([]Message, error)
 
 	// BindDelivery records where replies to this conversation go (ADR-0090).
 	//

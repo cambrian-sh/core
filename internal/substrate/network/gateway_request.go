@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -191,6 +192,34 @@ func gatewayStatus(err error) error {
 	default:
 		return status.Error(codes.Internal, msg)
 	}
+}
+
+// classifyProviderFault is the provider-failure class of a gateway error — the same
+// classes gatewayStatus answers with Unauthenticated, ResourceExhausted, Unavailable
+// and OutOfRange (ENG-1005) — recorded on the lease for the chat lane (ENG-2124).
+// ProviderFaultNone for nil and for anything that is not a provider failure.
+func classifyProviderFault(err error) domain.ProviderFault {
+	if err == nil {
+		return domain.ProviderFaultNone
+	}
+	switch {
+	case errors.Is(err, ErrToolCallingUnsupported), errors.Is(err, domain.ErrUnsupported),
+		errors.Is(err, domain.ErrSchemaValidation), errors.Is(err, domain.ErrHookDenied),
+		errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return domain.ProviderFaultNone
+	case errors.Is(err, domain.ErrContextOverflow):
+		return domain.ProviderFaultContextOverflow
+	case errors.Is(err, domain.ErrProviderAuth):
+		return domain.ProviderFaultAuth
+	case errors.Is(err, llm.ErrSpendCeiling):
+		return domain.ProviderFaultSpendLimit
+	case providerStatus(err) == http.StatusTooManyRequests, err.Error() == "gateway_overflow":
+		return domain.ProviderFaultRateLimited
+	case providerStatus(err) >= 500, errors.Is(err, llm.ErrProviderUnreachable),
+		errors.Is(err, llm.ErrNoHealthyModel):
+		return domain.ProviderFaultUnavailable
+	}
+	return domain.ProviderFaultNone
 }
 
 // providerStatus is the HTTP status of the provider refusal err carries, 0 when it

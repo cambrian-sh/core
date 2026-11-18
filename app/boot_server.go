@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -89,6 +90,10 @@ func (b *kernelBuild) buildChatLane() {
 		// approval window (schedules: 300 s) longer than chat_turn_timeout_seconds
 		// must be usable from chat (T-20261118-a-chat-turn-waiting-on-a-human-approval-is).
 		chatTurns.SetPersonWaitProbe(turnDelegations.PersonWait)
+		// ENG-2124: a failed turn tells the person the provider failure the gateway
+		// recorded on the turn's lease (credentials refused, rate-limited, unreachable)
+		// in plain words, whatever the worker reported; the raw cause goes to the log.
+		chatTurns.SetLeaseFaultProbe(llmGateway.LeaseFault)
 		chatTurns.PersonWaitAllowance = personWaitAllowance(cfg)
 		// Both bounds are operator config (execution.chat.chat_turn_timeout_seconds /
 		// chat_stall_timeout_seconds); 0 keeps the package default
@@ -133,6 +138,24 @@ func (b *kernelBuild) buildChatLane() {
 		if b.healthChecker != nil {
 			b.healthChecker.AddComponent(chatLaneComponent, chatStart.Ready)
 		}
+		// ENG-2124: turns the last stop cut off (a user message still unanswered, from
+		// before this boot) get an interruption marker, so the person sees on reopening
+		// that the turn did not complete and why. bootAt is taken before the operator
+		// plane serves, so no turn of this process can be among them.
+		bootAt := time.Now()
+		lifecycles = append(lifecycles, Lifecycle{
+			Name: "chat-interrupted-turns",
+			Start: func(ctx context.Context) {
+				n, err := chatTurns.MarkInterruptedTurns(ctx, bootAt)
+				switch {
+				case err != nil:
+					slog.Warn("chat: could not mark the turns the last stop interrupted", "err", err)
+				case n > 0:
+					slog.Info("chat: marked turns the last stop interrupted", "count", n)
+				}
+			},
+			Stop: func() {},
+		})
 		lifecycles = append(lifecycles, Lifecycle{
 			Name:  "chat-pool",
 			Start: chatStart.Start,

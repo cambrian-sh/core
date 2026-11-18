@@ -79,6 +79,11 @@ type BudgetLeaseState struct {
 	// through RunActivity (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
 	// Server-side only.
 	InFlightCalls int
+	// LastFault is the class of the last failed model call under the lease, cleared by
+	// a later successful one (ENG-2124). The chat lane reads it when a turn fails, so
+	// the person is told "the AI service is busy" rather than shown the provider's
+	// error — whatever the worker that made the call reported. Server-side only.
+	LastFault ProviderFault
 	// Binding is the execution identity the kernel attached at dispatch (session, run,
 	// step, agent). It is what lets a transport resolve an agent's opaque lease back to
 	// the session that owns it, instead of trusting the agent's own header. Written

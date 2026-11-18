@@ -3,6 +3,7 @@ package ingress_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
@@ -34,6 +35,9 @@ func (convStore) ListMessages(context.Context, string, int64, int) ([]domain.Mes
 }
 func (convStore) FindByDelivery(context.Context, domain.DeliveryAddress) (*domain.Conversation, error) {
 	return nil, domain.ErrConversationNotFound
+}
+func (convStore) ListUnansweredTurns(context.Context, time.Time, int) ([]domain.Message, error) {
+	return nil, nil
 }
 func (convStore) BindDelivery(context.Context, string, domain.DeliveryAddress) error { return nil }
 func (convStore) GetMessageByClientID(context.Context, string, string) (domain.Message, error) {
