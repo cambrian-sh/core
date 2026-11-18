@@ -122,6 +122,7 @@ func NewMetabolismStack(
 	// T-20261102-kg-extractor-cold-start-drops-the-first-kg: how long a spawned
 	// agent may take to open its socket before its boot fails.
 	manager.SetAgentBootTimeout(time.Duration(cfg.Execution.Agents.AgentBootTimeoutMs) * time.Millisecond)
+	manager.SetShutdownTimeout(time.Duration(cfg.Execution.Agents.ShutdownTimeoutMs) * time.Millisecond) // ENG-2095
 	// Wire default model pricing for token cost estimation. ADR-0042: the default
 	// generator's cost is the single source of truth (was cfg.Models[0]).
 	if def := cfg.LLMProvider.DefaultGenerator(); def != nil {
@@ -237,10 +238,14 @@ func (s *MetabolismStack) Start(ctx context.Context) error {
 // moments before the kernel dies — which is exactly how a restart used to strand one.
 // A stranded poller then holds its integration's token and answers the replacement with
 // 409 indefinitely.
+//
+// New boots are refused first, and Manager.Shutdown returns only once every
+// instance's out/ is in the run ledger or the bound
+// (execution.agents.shutdown_timeout_ms) ran out, the dropped instances named
+// (ENG-2095). Kernel.Shutdown closes the store — the ledger pool — after this.
 func (s *MetabolismStack) Shutdown(ctx context.Context) {
-	s.Manager.StopAllDaemons()
-	if err := s.Manager.KillAllAgents(ctx); err != nil {
-		slog.Warn("MetabolismStack: agent cleanup failed", "err", err)
+	if err := s.Manager.Shutdown(ctx); err != nil {
+		slog.Warn("MetabolismStack: agent shutdown incomplete", "err", err)
 	}
 	// ENG-2088: give the agent work root up; an instance whose cleanup has not
 	// run yet keeps its claim, and the next boot sweeps it.

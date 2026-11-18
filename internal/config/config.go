@@ -1848,6 +1848,15 @@ type AgentsConfig struct {
 	// (T-20261102-kg-extractor-cold-start-drops-the-first-kg). <= 0 = 10 s.
 	AgentBootTimeoutMs int `json:"agent_boot_timeout_ms,omitempty"`
 
+	// ShutdownTimeoutMs bounds how long a graceful kernel shutdown waits, after
+	// killing the agent instances, for each one's cleanup — a sandboxed
+	// instance's out/ collection into the run ledger (ADR-0157 D5.1) — before
+	// the ledger closes. An instance still unfinished at the bound is logged
+	// by agent and instance and its outputs are dropped; the kernel still
+	// exits. The kernel's whole shutdown budget is 10 s plus this value.
+	// Default 10000 (ENG-2095). <= 0 = 10 s.
+	ShutdownTimeoutMs int `json:"shutdown_timeout_ms,omitempty"`
+
 	// AgentEnvPassthrough lists extra NON-SECRET environment variable names that
 	// spawned agents may inherit beyond the OS base allowlist (SEC-01). Secret-
 	// looking names (*_API_KEY, CAMBRIAN_*, provider prefixes, …) are stripped
@@ -3467,6 +3476,9 @@ func DefaultConfig() *Config {
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: 10 s killed
 				// the kg_extractor (spaCy load) while the kernel booted its agents.
 				AgentBootTimeoutMs: 30000,
+				// ENG-2095: a graceful shutdown waits this long for the agents'
+				// out/ collection before the ledger closes.
+				ShutdownTimeoutMs: 10000,
 				// ADR-0157 D7 (owner A1-Q12): a missing or broken sandbox Python
 				// env is built in the background at boot.
 				Python: AgentPythonConfig{BuildOnBoot: true},

@@ -154,7 +154,7 @@ func TestCapCleanupOnExit_RunsOnceAfterTheProcessExits(t *testing.T) {
 	im.mu.Lock()
 	im.cmds[inst.ID] = cmd
 	im.mu.Unlock()
-	pe := im.watchExitThen(inst.ID, cmd, im.capCleanupOnExit(inst.ID))
+	pe := im.watchExitThen(inst.AgentID, inst.ID, cmd, im.capCleanupOnExit(inst.ID))
 	select {
 	case <-pe.done:
 	case <-time.After(30 * time.Second):

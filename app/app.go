@@ -339,7 +339,24 @@ func countMCPTools(tools []domain.SystemTool, serverID string) int {
 	return n
 }
 
+// kernelShutdownBudget is the whole graceful shutdown's bound: 10 s for the
+// sequence itself plus the agents' out/ collection wait
+// (execution.agents.shutdown_timeout_ms, ENG-2095), so that wait never eats
+// the time the steps after it need — the store must still close.
+func kernelShutdownBudget(k *Kernel) time.Duration {
+	budget := 10 * time.Second
+	if k != nil && k.Metabolism != nil && k.Metabolism.Manager != nil {
+		budget += k.Metabolism.Manager.ShutdownTimeout()
+	}
+	return budget
+}
+
 // Shutdown initiates the graceful teardown of all kernel resources.
+//
+// Order matters for the run ledger (ENG-2095): the metabolism stack's shutdown
+// returns only after every agent instance's out/ is collected into the ledger
+// (or the bound ran out), and the store — the ledger's pool — and the artifact
+// vault close after it.
 func (k *Kernel) Shutdown(ctx context.Context) {
 	slog.Info("🧬 Kernel: Initiating graceful shutdown sequence...")
 
@@ -642,7 +659,7 @@ func Run(ctx context.Context, opts Options) error {
 		// see the comment there.
 	}
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), kernelShutdownBudget(k))
 		defer cancel()
 		k.Shutdown(shutdownCtx)
 	}()

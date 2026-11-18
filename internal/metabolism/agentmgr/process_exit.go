@@ -23,11 +23,17 @@ var agentBootTimeout = 10 * time.Second
 type processExit struct {
 	done chan struct{}
 	err  error
+	// cmd is the child, so a graceful shutdown can kill one that is still
+	// booting (not yet a tracked instance) and wait for its cleanup; agentID
+	// names it when that wait times out (ENG-2095). Both are set before the
+	// Wait goroutine starts and never written again.
+	cmd     *exec.Cmd
+	agentID string
 }
 
 // watchExit starts the child's Wait goroutine and registers it under instanceID.
-func (im *InstanceManager) watchExit(instanceID string, cmd *exec.Cmd) *processExit {
-	return im.watchExitThen(instanceID, cmd, nil)
+func (im *InstanceManager) watchExit(agentID, instanceID string, cmd *exec.Cmd) *processExit {
+	return im.watchExitThen(agentID, instanceID, cmd, nil)
 }
 
 // watchExitThen is watchExit with a cleanup that runs after Wait returns and
@@ -36,10 +42,17 @@ func (im *InstanceManager) watchExit(instanceID string, cmd *exec.Cmd) *processE
 // container) and removes its scratch and socket directories (ADR-0157 D1.2:
 // deleted at exit). The goroutine is the one Wait goroutine every child
 // already has; nothing new is owned.
-func (im *InstanceManager) watchExitThen(instanceID string, cmd *exec.Cmd, after func()) *processExit {
-	pe := &processExit{done: make(chan struct{})}
+//
+// The child is also registered in im.children until that goroutine has
+// finished — cleanup included — and it is the goroutine itself that removes
+// it. A teardown path drops the instance from im.exits, so im.children is
+// what a graceful shutdown waits on: an instance's out/ is in the ledger
+// before KillAllAgents returns and the ledger pool closes (ENG-2095).
+func (im *InstanceManager) watchExitThen(agentID, instanceID string, cmd *exec.Cmd, after func()) *processExit {
+	pe := &processExit{done: make(chan struct{}), cmd: cmd, agentID: agentID}
 	im.mu.Lock()
 	im.exits[instanceID] = pe
+	im.children[instanceID] = pe
 	im.mu.Unlock()
 	go func() {
 		pe.err = cmd.Wait()
@@ -51,6 +64,11 @@ func (im *InstanceManager) watchExitThen(instanceID string, cmd *exec.Cmd, after
 			after()
 		}
 		close(pe.done)
+		im.mu.Lock()
+		if im.children[instanceID] == pe {
+			delete(im.children, instanceID)
+		}
+		im.mu.Unlock()
 	}()
 	return pe
 }
@@ -70,11 +88,15 @@ func (im *InstanceManager) forgetExit(instanceID string) {
 func (im *InstanceManager) awaitExit(instanceID string, cmd *exec.Cmd) <-chan struct{} {
 	im.mu.Lock()
 	pe, ok := im.exits[instanceID]
+	agentID := ""
+	if inst := im.instances[instanceID]; inst != nil {
+		agentID = inst.AgentID
+	}
 	im.mu.Unlock()
 	if ok {
 		return pe.done
 	}
-	return im.watchExit(instanceID, cmd).done
+	return im.watchExit(agentID, instanceID, cmd).done
 }
 
 // awaitSocket waits for the agent's UDS socket to appear, giving up on timeout,

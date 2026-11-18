@@ -39,6 +39,16 @@ type InstanceManager struct {
 	agentIndex map[string][]string     // agentID → []instanceID
 	cmds       map[string]*exec.Cmd    // instanceID → cmd
 	exits      map[string]*processExit // instanceID → the one Wait per child (process_exit.go)
+	// children holds every started child until its Wait goroutine — cleanup,
+	// i.e. out/ collection, included — has finished; that goroutine removes
+	// it. A graceful shutdown waits on it (shutdown.go, ENG-2095).
+	children map[string]*processExit
+	// closing is set by StopAdmitting: no new instance is booted or registered
+	// (shutdown.go). Guarded by mu.
+	closing bool
+	// shutdownTimeout bounds KillAllAgents' wait for the instances' cleanups
+	// (execution.agents.shutdown_timeout_ms); 0 ⇒ defaultShutdownTimeout.
+	shutdownTimeout time.Duration
 	// runtimeExes maps a JS runtime to its executable (ADR-0125): bun/node from
 	// their config keys (empty ⇒ $PATH fallback at spawn). Python agents launch
 	// only on the kernel-managed env (pythonEnv, ADR-0157 D7); RuntimeBinary
@@ -181,6 +191,7 @@ func NewInstanceManager(substrateAddr string) *InstanceManager {
 		agentIndex:    make(map[string][]string),
 		cmds:          make(map[string]*exec.Cmd),
 		exits:         make(map[string]*processExit),
+		children:      make(map[string]*processExit),
 		capCleanups:   make(map[string]func()),
 		tokens:        authz.NewInstanceTokens(),
 		runtimeExes:   map[domain.AgentRuntime]string{},
@@ -606,41 +617,6 @@ func (im *InstanceManager) EvictAgent(agentID string) {
 	}
 }
 
-// KillAllAgents kills every instance in parallel and clears all tracking maps.
-// The maps are cleared under the lock; the kills and cleanups run after it is
-// released (ENG-1963), bounded by a 5 s wait.
-func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
-	im.mu.Lock()
-	if len(im.instances) == 0 {
-		im.mu.Unlock()
-		return nil
-	}
-	teardowns := make([]func(), 0, len(im.instances))
-	for id := range im.instances {
-		teardowns = append(teardowns, im.detachLocked(id))
-	}
-	im.mu.Unlock()
-
-	cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	for _, td := range teardowns {
-		wg.Add(1)
-		go func(td func()) {
-			defer wg.Done()
-			td()
-		}(td)
-	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-		return nil
-	case <-cleanupCtx.Done():
-		return fmt.Errorf("agent cleanup timed out: %w", cleanupCtx.Err())
-	}
-}
-
 // BootCount returns the process-lifetime number of agent spawns. A delta across
 // a selection decision is the cost, in cold starts, of making that decision
 // (ADR-0100 P2).
@@ -662,6 +638,9 @@ func (im *InstanceManager) BootDedicatedInstance(ctx context.Context, def *domai
 }
 
 func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.AgentDefinition, index bool) (*domain.Instance, error) {
+	if err := im.admitting(); err != nil { // ENG-2095: no new work once shutdown began
+		return nil, fmt.Errorf("agent %s: %w", def.ID, err)
+	}
 	im.bootCount.Add(1)
 	inst := domain.NewInstance(def.ID)
 
@@ -747,7 +726,7 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	// Phase 1: wait for the UDS socket (fast inode-level check) — or for the boot
 	// timeout, the caller's ctx, or the child EXITING, whichever comes first
 	// (process_exit.go).
-	exit := im.watchExitThen(inst.ID, cmd, onExit)
+	exit := im.watchExitThen(def.ID, inst.ID, cmd, onExit)
 	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "agent "+def.ID, im.bootTimeout); err != nil {
 		im.forgetExit(inst.ID)
 		return nil, err
@@ -763,6 +742,11 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	}
 
 	im.mu.Lock()
+	if im.closing { // ENG-2095: shutdown began while this instance booted
+		im.mu.Unlock()
+		im.abandonBoot(inst.ID, cmd)
+		return nil, fmt.Errorf("agent %s: %w", def.ID, ErrShuttingDown)
+	}
 	im.cmds[inst.ID] = cmd
 	im.instances[inst.ID] = inst
 	if index {
@@ -781,6 +765,9 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 // The caller (SpawnDaemon on AgentManager) is responsible for launching the
 // crash-watcher goroutine. ADR-0033.
 func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.AgentDefinition, streamID string, params map[string]any) (*domain.Instance, error) {
+	if err := im.admitting(); err != nil { // ENG-2095: no new work once shutdown began
+		return nil, fmt.Errorf("daemon %s: %w", def.ID, err)
+	}
 	inst := domain.NewInstance(def.ID)
 	inst.Mode = domain.ModeDaemon
 
@@ -869,7 +856,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	// Wait for the socket file — or for the child exiting first (process_exit.go).
 	// The crash watcher in daemon_spawner.go consumes the SAME exit, so the
 	// child is waited on exactly once.
-	exit := im.watchExitThen(inst.ID, cmd, onExit)
+	exit := im.watchExitThen(def.ID, inst.ID, cmd, onExit)
 	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "daemon "+def.ID, im.bootTimeout); err != nil {
 		im.forgetExit(inst.ID)
 		return nil, err
@@ -879,6 +866,11 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	}
 
 	im.mu.Lock()
+	if im.closing { // ENG-2095: shutdown began while this daemon booted
+		im.mu.Unlock()
+		im.abandonBoot(inst.ID, cmd)
+		return nil, fmt.Errorf("daemon %s: %w", def.ID, ErrShuttingDown)
+	}
 	im.cmds[inst.ID] = cmd
 	im.instances[inst.ID] = inst
 	im.agentIndex[def.ID] = append(im.agentIndex[def.ID], inst.ID)

@@ -309,6 +309,7 @@ jobs:
           tests+='|TestE2E_PerInstanceAgentTokens|TestE2E_ArtifactsLeaveOnlyThroughTheKernel'
           tests+='|TestE2E_PythonPackageLayerThroughOperatorApproval'
           tests+='|TestE2E_AgentTurnPresentsItsLeaseOnRecallAndMenus|TestE2E_DispatchedStepArtifactsCarryTheStepsProvenance'
+          tests+='|TestE2E_GracefulShutdownCollectsLiveAgentsOutputs'
           go test -race -p 1 -count=1 -v -run "^(${tests})\$" \
             ./internal/sandbox/ ./internal/metabolism/agentmgr/ ./app/ 2>&1 \
             | tee "$RUNNER_TEMP/go-test-sandbox.log"
