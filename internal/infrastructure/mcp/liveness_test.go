@@ -144,8 +144,7 @@ func TestClassifyPing(t *testing.T) {
 // drop shows up as error health (the reconnect cannot succeed).
 func watched(t *testing.T, ctx context.Context, cs *mcpsdk.ClientSession, pingWait time.Duration) (*Connector, *recSink, *healthLog) {
 	t.Helper()
-	conn := NewConnector(CredentialSources{})
-	conn.pingWait = pingWait
+	conn := NewConnector(CredentialSources{}, WithTimeouts(ConnectorTimeouts{Ping: pingWait}))
 	hl := &healthLog{}
 	conn.SetHealthObserver(hl.add)
 	sink := newRecSink()

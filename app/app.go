@@ -2356,7 +2356,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	} else if credSource != nil {
 		slog.Info("ADR-0141: outbound credential provider installed")
 	}
-	mcpConnector = mcp.NewConnector(mcpCredentialSources(cfg, cfgStore, credSource), mcpConnectorOptions(cfgStore)...)
+	mcpConnector = mcp.NewConnector(mcpCredentialSources(cfg, cfgStore, credSource), mcpConnectorOptions(cfg, cfgStore)...)
 	// Integrations: every health change of every server goes onto the operator
 	// feed (OperatorEvent.integration_health). Publish is non-blocking.
 	mcpConnector.SetHealthObserver(func(h mcp.ServerHealth) {

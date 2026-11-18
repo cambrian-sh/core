@@ -199,11 +199,12 @@ type Connector struct {
 	gens     map[string]uint64
 	observer func(ServerHealth)
 
-	// pingWait bounds one health ping; 0 ⇒ defaultPingTimeout. A field only so
-	// tests can exercise the silence path without waiting 10 s.
+	// pingWait bounds one health ping; 0 ⇒ defaultPingTimeout
+	// (mcp.ping_timeout_ms, set at construction by WithTimeouts).
 	pingWait time.Duration
-	// handshakeWait bounds one connect handshake; 0 ⇒ defaultHandshakeTimeout
-	// (handshake.go). A field only so tests need not wait 60 s.
+	// handshakeWait bounds one connect handshake and one boot tools/list;
+	// 0 ⇒ defaultHandshakeTimeout (mcp.handshake_timeout_ms, set at
+	// construction by WithTimeouts; handshake.go).
 	handshakeWait time.Duration
 
 	// configs is each armed server's config, for per-call session selection
@@ -227,6 +228,27 @@ type Connector struct {
 // ConnectorOption configures an optional, non-credential dependency of a
 // connector at construction.
 type ConnectorOption func(*Connector)
+
+// ConnectorTimeouts are the connector's operator-set time bounds
+// (mcp.handshake_timeout_ms / mcp.ping_timeout_ms, ENG-2003: the Zero-Hardcode
+// Rule — a threshold is config, not a code constant). A zero field keeps the
+// built-in default (60 s handshake, 10 s ping).
+type ConnectorTimeouts struct {
+	// Handshake bounds one connect handshake (transport connect + initialize)
+	// and one boot tools/list, on the shared and the per-user path alike.
+	Handshake time.Duration
+	// Ping bounds one health ping of a connected server.
+	Ping time.Duration
+}
+
+// WithTimeouts sets the connector's time bounds at construction. Applied only
+// through NewConnector, so a bound is never changed under a running session.
+func WithTimeouts(t ConnectorTimeouts) ConnectorOption {
+	return func(c *Connector) {
+		c.handshakeWait = t.Handshake
+		c.pingWait = t.Ping
+	}
+}
 
 // NewConnector constructs an empty connector with a single shared MCP client,
 // resolving every credential from creds (the zero value: environment

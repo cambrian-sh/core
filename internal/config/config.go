@@ -2911,6 +2911,16 @@ type MCPConfig struct {
 	DefaultSessionBudget float64 `json:"default_session_budget,omitempty"`
 	// CallTimeoutMs bounds each MCP tool call (ADR-0043 D8). 0 ⇒ no per-call deadline.
 	CallTimeoutMs int `json:"call_timeout_ms,omitempty"`
+	// HandshakeTimeoutMs bounds one MCP connect handshake (transport connect +
+	// initialize) and one boot tools/list, shared and per-user servers alike
+	// (ENG-1528 bound, made config by ENG-2003). 0 ⇒ 60000 (60 s); at most
+	// MaxMCPTimeoutMs. No DefaultConfig pin, like the CL-2 knobs below, so an
+	// explicit 0 and "unset" are the same and a tuning file cannot shadow it.
+	HandshakeTimeoutMs int `json:"handshake_timeout_ms,omitempty"`
+	// PingTimeoutMs bounds one health ping of a connected server; a server
+	// silent for two pings in a row is dropped (ENG-2003). 0 ⇒ 10000 (10 s);
+	// at most MaxMCPTimeoutMs.
+	PingTimeoutMs int `json:"ping_timeout_ms,omitempty"`
 
 	// The ADR-0127 CL-2 contribution-lane knobs. All three use 0 ⇒ documented
 	// fallback semantics (no DefaultConfig pin), so an explicit 0 and "unset"
@@ -2948,6 +2958,26 @@ type MCPConfig struct {
 	// Sandbox is trust-tier containment for stdio servers (ADR-0139 D8):
 	// mcp_sandbox.go. Unset ⇒ the internal/sandbox defaults.
 	Sandbox MCPSandboxConfig `json:"sandbox,omitempty"`
+}
+
+// MaxMCPTimeoutMs caps mcp.handshake_timeout_ms and mcp.ping_timeout_ms
+// (10 min): a larger bound would leave a hung server holding the boot
+// ConnectAll or a watch loop for longer than any operator means.
+const MaxMCPTimeoutMs = 600000
+
+// validateTimeouts checks the connector's time bounds (ENG-2003). 0 is
+// allowed and means the built-in default.
+func (c MCPConfig) validateTimeouts() []string {
+	var errs []string
+	for _, f := range []struct {
+		key string
+		v   int
+	}{{"mcp.handshake_timeout_ms", c.HandshakeTimeoutMs}, {"mcp.ping_timeout_ms", c.PingTimeoutMs}} {
+		if f.v < 0 || f.v > MaxMCPTimeoutMs {
+			errs = append(errs, fmt.Sprintf("%s %d must be between 0 (the default) and %d", f.key, f.v, MaxMCPTimeoutMs))
+		}
+	}
+	return errs
 }
 
 // MCPUserSessionsConfig is mcp.user_sessions (ADR-0141). Every field uses
@@ -4059,6 +4089,8 @@ func (c *Config) secretErrors() []string {
 	}
 	// ADR-0139 D8: trust-tier containment policy.
 	errs = append(errs, c.MCP.Sandbox.validate()...)
+	// ENG-2003: the connector's handshake and ping bounds.
+	errs = append(errs, c.MCP.validateTimeouts()...)
 	return errs
 }
 

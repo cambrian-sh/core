@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/storage"
 )
@@ -27,8 +28,8 @@ func TestMCPToolLists_PersistedInTheConfigStoreAcrossARestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		opts := mcpConnectorOptions(store)
-		if len(opts) != 1 {
+		opts := mcpConnectorOptions(&config.Config{}, store)
+		if len(opts) != 2 { // the timeouts + the tool lists
 			t.Fatalf("an open store must persist tool lists (%d options)", len(opts))
 		}
 		conn := mcp.NewConnector(mcp.CredentialSources{Secrets: store, User: accounts}, opts...)

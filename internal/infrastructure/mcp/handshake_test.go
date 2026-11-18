@@ -38,9 +38,8 @@ func TestConnectAll_SilentServerFailsWithinTheHandshakeBound(t *testing.T) {
 	for _, transport := range []string{"http", "sse"} {
 		t.Run(transport, func(t *testing.T) {
 			url := silentServer(t)
-			conn := NewConnector(CredentialSources{})
+			conn := NewConnector(CredentialSources{}, WithTimeouts(ConnectorTimeouts{Handshake: 300 * time.Millisecond}))
 			defer conn.Close()
-			conn.handshakeWait = 300 * time.Millisecond
 
 			done := make(chan int, 1)
 			start := time.Now()
@@ -77,9 +76,8 @@ func TestConnectAll_SilentServerFailsWithinTheHandshakeBound(t *testing.T) {
 
 // The bound is a sentinel callers can tell apart from a refused connection.
 func TestConnectSession_TimeoutIsDistinguishable(t *testing.T) {
-	conn := NewConnector(CredentialSources{})
+	conn := NewConnector(CredentialSources{}, WithTimeouts(ConnectorTimeouts{Handshake: 200 * time.Millisecond}))
 	defer conn.Close()
-	conn.handshakeWait = 200 * time.Millisecond
 	s := ServerConfig{ID: "silent", Transport: "sse", Endpoint: silentServer(t), AllowPrivateNetwork: true}
 	_, _, err := conn.connect(context.Background(), s)
 	if !errors.Is(err, ErrHandshakeTimeout) {
@@ -121,17 +119,16 @@ func TestPerUser_SSE_SessionOutlivesItsConnect(t *testing.T) {
 	url, auths := sseEchoServer(t)
 	creds := newFakeUserCreds()
 	creds.set("crm", "alice", "tok-alice-7777")
-	conn := NewConnector(CredentialSources{User: creds})
+	// The first call dials; the later ones reuse the pooled session after its
+	// connect has long returned (and after the handshake timer would have
+	// fired, had it not been stopped).
+	conn := NewConnector(CredentialSources{User: creds}, WithTimeouts(ConnectorTimeouts{Handshake: 300 * time.Millisecond}))
 	defer conn.Close()
 	cfg := perUserHTTP("crm", url, "bearer", "")
 	cfg.Transport = "sse"
 	conn.rememberConfig(cfg)
 	h := &Handler{Sessions: conn}
 
-	// The first call dials; the later ones reuse the pooled session after its
-	// connect has long returned (and after the handshake timer would have
-	// fired, had it not been stopped).
-	conn.handshakeWait = 300 * time.Millisecond
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		out, err := callAs(ctx, h, "alice", "mcp:crm/whoami")
@@ -154,9 +151,8 @@ func TestPerUser_SSE_SessionOutlivesItsConnect(t *testing.T) {
 // The shared SSE session likewise keeps working past the handshake bound.
 func TestShared_SSE_SessionOutlivesTheHandshakeBound(t *testing.T) {
 	url, _ := sseEchoServer(t)
-	conn := NewConnector(CredentialSources{})
+	conn := NewConnector(CredentialSources{}, WithTimeouts(ConnectorTimeouts{Handshake: 300 * time.Millisecond}))
 	defer conn.Close()
-	conn.handshakeWait = 300 * time.Millisecond
 	tools := conn.ConnectAll(context.Background(), []ServerConfig{{
 		ID: "crm", Transport: "sse", Endpoint: url, AllowPrivateNetwork: true,
 		DefaultPolicy: &ToolPolicy{Effects: []string{"read"}},
@@ -169,5 +165,28 @@ func TestShared_SSE_SessionOutlivesTheHandshakeBound(t *testing.T) {
 	defer cancel()
 	if _, err := callAs(ctx, &Handler{Sessions: conn}, "", "mcp:crm/whoami"); err != nil {
 		t.Fatalf("shared SSE session died after the handshake bound: %v", err)
+	}
+}
+
+// ENG-2003: the bounds are config. Unset keeps the built-in defaults; a
+// configured value replaces each independently.
+func TestWithTimeouts_DefaultsAndOverrides(t *testing.T) {
+	def := NewConnector(CredentialSources{})
+	defer def.Close()
+	if got := def.handshakeTimeout(); got != 60*time.Second {
+		t.Fatalf("default handshake bound = %s, want 60s", got)
+	}
+	if got := def.pingTimeout(); got != 10*time.Second {
+		t.Fatalf("default ping bound = %s, want 10s", got)
+	}
+	zero := NewConnector(CredentialSources{}, WithTimeouts(ConnectorTimeouts{}))
+	defer zero.Close()
+	if zero.handshakeTimeout() != 60*time.Second || zero.pingTimeout() != 10*time.Second {
+		t.Fatal("a zero ConnectorTimeouts must keep the defaults")
+	}
+	set := NewConnector(CredentialSources{}, WithTimeouts(ConnectorTimeouts{Handshake: 5 * time.Second, Ping: 2 * time.Second}))
+	defer set.Close()
+	if set.handshakeTimeout() != 5*time.Second || set.pingTimeout() != 2*time.Second {
+		t.Fatalf("configured bounds not applied: %s / %s", set.handshakeTimeout(), set.pingTimeout())
 	}
 }

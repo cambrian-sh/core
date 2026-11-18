@@ -434,18 +434,23 @@ func mcpCredentialSources(cfg *config.Config, store *storage.BoltConfigStore, sr
 // same embedded store as the rest of the connector's durable state.
 const MCPToolListsNamespace = "mcp_tools"
 
-// mcpConnectorOptions are the connector's non-credential dependencies: the
-// persisted per_user tool lists when the ADR-0101 store is open (none in a
-// test or a kernel without the store; the server then shows no tools until
-// its first discovery, as before).
-func mcpConnectorOptions(store *storage.BoltConfigStore) []mcp.ConnectorOption {
+// mcpConnectorOptions are the connector's non-credential dependencies: its
+// configured handshake and ping bounds (ENG-2003; 0 ⇒ the connector's
+// defaults), and the persisted per_user tool lists when the ADR-0101 store is
+// open (none in a test or a kernel without the store; the server then shows
+// no tools until its first discovery, as before).
+func mcpConnectorOptions(cfg *config.Config, store *storage.BoltConfigStore) []mcp.ConnectorOption {
+	opts := []mcp.ConnectorOption{mcp.WithTimeouts(mcp.ConnectorTimeouts{
+		Handshake: time.Duration(cfg.MCP.HandshakeTimeoutMs) * time.Millisecond,
+		Ping:      time.Duration(cfg.MCP.PingTimeoutMs) * time.Millisecond,
+	})}
 	if store == nil {
-		return nil
+		return opts
 	}
 	recs, err := store.SealedRecords(MCPToolListsNamespace)
 	if err != nil {
 		slog.Warn("ADR-0140: per-user MCP tool lists are not persisted", "err", err)
-		return nil
+		return opts
 	}
-	return []mcp.ConnectorOption{mcp.WithToolLists(recs)}
+	return append(opts, mcp.WithToolLists(recs))
 }

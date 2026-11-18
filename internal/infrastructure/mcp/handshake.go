@@ -16,8 +16,9 @@ import (
 var ErrHandshakeTimeout = errors.New("MCP handshake timed out")
 
 // defaultHandshakeTimeout bounds one MCP connect handshake (and one boot
-// tools/list). 60 s is the bound the per-user dial already used; a stdio
-// server spawning a process takes a few seconds, a remote one well under one.
+// tools/list) when mcp.handshake_timeout_ms is unset (ENG-2003). 60 s is the
+// bound the per-user dial already used; a stdio server spawning a process
+// takes a few seconds, a remote one well under one.
 const defaultHandshakeTimeout = 60 * time.Second
 
 func (c *Connector) handshakeTimeout() time.Duration {

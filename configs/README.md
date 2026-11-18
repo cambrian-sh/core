@@ -61,6 +61,7 @@ for a setting, here's where to look:
 | Gatekeeper weights, EWMA alpha, plan timeout | `tuning.local.json` |
 | KG²RAG enable, blend weights, recall settings | `tuning.local.json` |
 | MCP server URLs, auth, tool policy | `mcp.json` |
+| MCP connector bounds (ENG-2003): `mcp.handshake_timeout_ms` (connect handshake + boot tools/list; 0 ⇒ 60000), `mcp.ping_timeout_ms` (one health ping; 0 ⇒ 10000); each at most 600000 | `mcp.json` (or the `mcp` block of `config.json`) |
 | Contribution-lane timeouts (ADR-0127 CL-2): `mcp.worker_call_timeout_ms` (0 ⇒ falls back to `mcp.call_timeout_ms`), `mcp.worker_consent_timeout_ms` (0 ⇒ 120000), `mcp.worker_park_deadline_ms` (0 ⇒ 86400000; parked steps do not survive a kernel restart) | `mcp.json` (or the `mcp` block of `config.json`) |
 
 ## First-time setup

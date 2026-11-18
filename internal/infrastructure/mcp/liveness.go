@@ -95,7 +95,8 @@ const (
 // delayed it. A closed connection is dropped at once — there is nothing to wait for.
 const pingTimeoutsBeforeDrop = 2
 
-// defaultPingTimeout bounds one health ping.
+// defaultPingTimeout bounds one health ping when mcp.ping_timeout_ms is unset
+// (ENG-2003).
 const defaultPingTimeout = 10 * time.Second
 
 func (c *Connector) pingTimeout() time.Duration {
