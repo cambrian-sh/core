@@ -259,13 +259,16 @@ jobs:
       # speak its current channel), and the release base lock narrowed to the
       # SDK's own dependencies (the full Linux base pulls ~3 GB of CUDA wheels).
       # Still hash-checked and wheels only. The e2es refuse any other Python.
+      # It lives under /opt, not the runner's home: the root-kernel step below
+      # drops agents to uid 65534, which must read and search every ancestor of
+      # the generation it is shown (ENG-2026 refuses the launch otherwise).
       - name: Build the kernel-managed sandbox Python env (SDK only)
         run: |
           awk '/^[A-Za-z0-9]/{n=tolower($1); sub(/[=;].*/,"",n);
                  keep=(n=="cambrian-agent-sdk"||n=="grpcio"||n=="grpcio-health-checking"||n=="protobuf"||n=="typing-extensions")}
                /^[A-Za-z0-9]/||/^ +--hash/{if(keep)print}' agents/base.lock > "$RUNNER_TEMP/sdk.lock"
-          mkdir -p "$RUNNER_TEMP/pyenv"
-          go run ./cmd/orchestrator python-env build --dir "$RUNNER_TEMP/pyenv" \
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/cambrian-pyenv
+          go run ./cmd/orchestrator python-env build --dir /opt/cambrian-pyenv \
             --lock "$RUNNER_TEMP/sdk.lock" --sdk-dir ./.sdk | tee "$RUNNER_TEMP/pyenv.log"
           py=$(awk '/^  interpreter:/{print $2}' "$RUNNER_TEMP/pyenv.log")
           test -x "$py"
@@ -309,6 +312,73 @@ jobs:
           done
           test "$fail" -eq 0
           echo "PASS: every ADR-0157 Linux sandbox e2e ran and passed"
+
+      # ADR-0157 D2.1 docker runner for agents, as a NON-root kernel (the
+      # runner user, in the docker group, against the runner's own dockerd):
+      # the probe agent boots first-party and kernel-only third-party, confined,
+      # and its scratch comes back through the reclaim container (ENG-2031):
+      # out/ collected, scratch and containers gone. The probe is this test
+      # binary, so the image needs only /bin/sh and a glibc at least the
+      # runner's (Debian trixie: 2.41).
+      - name: Gate — ADR-0157 docker agent runner e2e (non-root kernel)
+        shell: bash
+        run: |
+          test "$(id -u)" -ne 0
+          docker pull -q debian:trixie-slim
+          tests='TestE2E_DockerRunnerAgentBootsConfined'
+          AGENTMGR_E2E_DOCKER_IMAGE=debian:trixie-slim \
+            go test -race -count=1 -v -run "^(${tests})\$" ./internal/metabolism/agentmgr/ 2>&1 \
+            | tee "$RUNNER_TEMP/go-test-docker.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          fail=0
+          for t in ${tests//|/ }; do
+            if ! grep -qE "^\s*--- PASS: ${t} " "$RUNNER_TEMP/go-test-docker.log"; then
+              echo "FAIL: ${t} did not pass (skipped or not run)"
+              fail=1
+            fi
+          done
+          test "$fail" -eq 0
+          left=$(docker ps -aq --filter label=cambrian.sandbox=agent --filter label=cambrian.sandbox=agent-reclaim | wc -l)
+          test "$left" -eq 0
+          echo "PASS: the docker agent runner e2e ran and passed as a non-root kernel"
+
+      # The same agent sandbox e2es as a ROOT kernel (ENG-1989, owner decision
+      # on ENG-2024): agents then drop to uid 65534, and the root-only tests
+      # run instead of skipping. Run from a copy under /srv: uid 65534 must
+      # read and search every ancestor of the agents' code (the runner's home
+      # is not world-readable, and ENG-2026 refuses such a launch at plan time,
+      # which TestE2E_RootKernelRefusesABindUnderATraverseOnlyAncestor checks).
+      # Last in the job, with its own build cache, so no root-owned file lands
+      # in the runner user's caches before a later step.
+      - name: Gate — ADR-0157 Linux agent sandbox e2e as a root kernel
+        shell: bash
+        run: |
+          sudo rm -rf /srv/cambrian-core
+          sudo cp -a "$GITHUB_WORKSPACE" /srv/cambrian-core
+          sudo chmod 0755 /srv/cambrian-core
+          tests='TestLinuxThirdPartyFullContainmentAsRoot|TestLinuxRootRefusesAnUnbootableBindAtPlanTime'
+          tests+='|TestBwrapAgentCannotReadKernelState|TestLinuxBubblewrapConfinesWrites'
+          tests+='|TestE2E_SandboxedAgentBootsConfined|TestE2E_ProfileAgentDeclaredPathInsideTheCapBoots'
+          tests+='|TestE2E_OutCollectedBeforeTheScratchIsRemoved|TestE2E_ShippedAgentsServeUnderConfinement'
+          tests+='|TestE2E_RootKernelRefusesABindUnderATraverseOnlyAncestor'
+          cd /srv/cambrian-core
+          sudo env "PATH=$PATH" GOCACHE="$RUNNER_TEMP/gocache-root" GOMODCACHE="$(go env GOMODCACHE)" \
+            GOFLAGS=-mod=readonly GOTOOLCHAIN=local \
+            AGENTMGR_E2E_PY="$AGENT_PY" AGENTMGR_E2E_KERNEL=/srv/cambrian-core \
+            go test -race -p 1 -count=1 -v -run "^(${tests})\$" \
+            ./internal/sandbox/ ./internal/metabolism/agentmgr/ 2>&1 \
+            | tee "$RUNNER_TEMP/go-test-sandbox-root.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          fail=0
+          for t in ${tests//|/ }; do
+            if ! grep -qE "^\s*--- PASS: ${t} " "$RUNNER_TEMP/go-test-sandbox-root.log"; then
+              echo "FAIL: ${t} did not pass as root (skipped or not run)"
+              fail=1
+            fi
+          done
+          test "$fail" -eq 0
+          grep -q 'low_privilege' "$RUNNER_TEMP/go-test-sandbox-root.log"
+          echo "PASS: every ADR-0157 Linux sandbox e2e ran and passed as a root kernel"
 
   # Tell premium that a new core landed on main, so premium's bump-core workflow
   # moves premium's go.mod pin to this commit and opens (or updates) one PR there
