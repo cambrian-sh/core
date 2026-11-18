@@ -1,7 +1,7 @@
 # Agent sandbox in a container (bubblewrap in the kernel image)
 
-The kernel image ships **bubblewrap** (`bwrap`). With `execution.agents.sandbox.enabled: true`,
-the native Linux runner uses it to confine every kernel-spawned agent (ADR-0157 D1): the root
+The kernel image ships **bubblewrap** (`bwrap`). With `execution.agents.sandbox.enabled: true`
+(the default since ADR-0157 S7, ENG-2010), the native Linux runner uses it to confine every kernel-spawned agent (ADR-0157 D1): the root
 read-only, writes only to the agent's scratch, the kernel's state (the kernel directory,
 `configs/` with `config.db` and `secret.key`, `/app/state`, the data directory, the work roots)
 masked, and no network for a kernel-only tier. The image's kernel runs as the non-root user
@@ -112,6 +112,15 @@ reports `fs_confine`, `hide_state` (and `network`) enforced by `bwrap`. The imag
 `TestE2E_ContainerContainmentReport` in `internal/metabolism/agentmgr`, asserts both shapes
 (`AGENTMGR_E2E_EXPECT_CONTAINMENT=enforced|missing`).
 
-Enabling the agent sandbox itself (`execution.agents.sandbox.enabled`, environment
-`CAMBRIAN_EXECUTION__AGENTS__SANDBOX__ENABLED=true`) is a separate choice: it is off by default
-until the ADR-0157 S7 live run (ENG-2010).
+The agent sandbox itself (`execution.agents.sandbox.enabled`) is on by default since the
+ADR-0157 S7 live run (ENG-2010). Without the settings above, first-party and system agents
+start with the missing controls named (their tier degrades by default) and third-party agents
+are refused. `execution.agents.sandbox.enabled: false` (environment
+`CAMBRIAN_EXECUTION__AGENTS__SANDBOX__ENABLED=false`) restores the launch from before ADR-0157.
+
+The agents' shared model cache (`execution.agents.model_cache_dir`, default
+`<kernel dir>/runtime/models`, here `/app/runtime/models`) is where the kernel points
+`HF_HOME`, `TORCH_HOME` and `DOCLING_CACHE_DIR` for every agent; it is bound writable for
+first-party and system agents and read-only for third-party ones. Pre-fetch models into it
+(setup does; in an image, build with `HF_HOME=/app/runtime/models/huggingface`): an agent
+under `network: kernel_only_all` cannot download.

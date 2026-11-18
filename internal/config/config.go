@@ -1864,6 +1864,19 @@ type AgentsConfig struct {
 	// Python is the kernel-managed Python environment Python agents run on
 	// (ADR-0157 D7; agents_python.go).
 	Python AgentPythonConfig `json:"python"`
+
+	// ModelCacheDir is the agents' shared model cache (ADR-0157 S7;
+	// agents_model_cache.go): the kernel points HF_HOME, TORCH_HOME and
+	// DOCLING_CACHE_DIR there for every agent and, with the sandbox on, shows
+	// it writable to first-party and system agents, read-only to third-party.
+	// Relative paths resolve against the kernel base directory.
+	// "" ⇒ <kernel base dir>/runtime/models.
+	ModelCacheDir string `json:"model_cache_dir,omitempty"`
+	// ModelCache is ModelCacheDir resolved and created at boot by the
+	// composition root (app.anchorAgentSandboxPaths); "" when the directory is
+	// unusable (inside the kernel's own state, or not creatable), and then no
+	// agent is pointed at a cache. Never read from a config layer.
+	ModelCache string `json:"-"`
 }
 
 // SupervisionConfig — Supervision statistics: aggregation cadence, EWMA/latency windows and histogram sizing.
@@ -3437,6 +3450,11 @@ func DefaultConfig() *Config {
 				// ADR-0157 D7 (owner A1-Q12): a missing or broken sandbox Python
 				// env is built in the background at boot.
 				Python: AgentPythonConfig{BuildOnBoot: true},
+				// ADR-0157 S7 (owner decision 2026-11-17, ENG-2010): every agent
+				// launches through the sandbox by default, after the live run on
+				// the production backend. enabled: false restores the
+				// pre-ADR-0157 launch (agents_sandbox.go).
+				Sandbox: AgentSandboxConfig{Enabled: true},
 			},
 			Tools: ToolsConfig{
 				// T-20261107-chat-agent-re-delegates-after-a-deterministic (part 2).

@@ -250,6 +250,32 @@ func TestNewAgentSandbox_PolicyAndHideList(t *testing.T) {
 	}
 }
 
+// ADR-0157 S7 live run: the user profile moves into the scratch on Windows
+// (USERPROFILE/APPDATA/LOCALAPPDATA, which Path.home() and the cache libraries
+// read), as HOME does everywhere; Unix gets no Windows variables.
+func TestAgentWorkdirEnv_ProfileInScratch(t *testing.T) {
+	win := agentWorkdirEnv("windows")
+	for k, want := range map[string]string{"HOME": "home", "USERPROFILE": "home", "APPDATA": "home/AppData/Roaming",
+		"LOCALAPPDATA": "home/AppData/Local", "TEMP": "tmp", "TMP": "tmp", AgentOutEnv: AgentOutDir} {
+		if win[k] != want {
+			t.Errorf("windows %s = %q, want %q", k, win[k], want)
+		}
+	}
+	lin := agentWorkdirEnv("linux")
+	for _, k := range []string{"USERPROFILE", "APPDATA", "LOCALAPPDATA"} {
+		if _, ok := lin[k]; ok {
+			t.Errorf("linux env sets %s", k)
+		}
+	}
+	if lin["HOME"] != "home" || lin["TMPDIR"] != "tmp" || lin[AgentOutEnv] != AgentOutDir {
+		t.Errorf("linux env: %v", lin)
+	}
+	if got := NewAgentSandbox(AgentSandboxOptions{}).Policy().WorkdirEnv; got["HOME"] != "home" ||
+		(runtime.GOOS == "windows") != (got["USERPROFILE"] == "home") {
+		t.Errorf("policy WorkdirEnv on %s: %v", runtime.GOOS, got)
+	}
+}
+
 // ADR-0157 S2: with the sandbox on, a third-party agent is ADMITTED with the
 // tier memory cap — whether it starts is the sandbox plan's decision over the
 // controls the runner actually has (D1 + D3). Without the sandbox it is still
@@ -362,5 +388,45 @@ func TestReportContainment_OncePerAgent(t *testing.T) {
 		sandbox.Report{Enforced: []sandbox.Control{sandbox.ControlHideState}}, nil)
 	if !strings.Contains(buf.String(), "level=INFO") || !strings.Contains(buf.String(), "enforced") {
 		t.Fatalf("log:\n%s", buf.String())
+	}
+}
+
+// ADR-0157 S7: the shared model cache is shown to every instance at its own
+// path — writable for system and first-party agents, read-only for
+// third-party — private to the agent (the AppContainer grants it to the
+// agent's capability), and not shown at all when the kernel resolved none.
+func TestAgentBinds_ModelCacheByTier(t *testing.T) {
+	root := t.TempDir()
+	models := filepath.Join(root, "kernel", "runtime", "models")
+	sb, _ := testAgentSandbox(t, func(o *AgentSandboxOptions) { o.ModelCache = models })
+	im := withPython(NewInstanceManager("127.0.0.1:1"), "python")
+	im.SetAgentContainment(AgentContainment{Sandbox: sb})
+	for _, tc := range []struct {
+		def   *domain.AgentDefinition
+		write bool
+	}{
+		{&domain.AgentDefinition{ID: "docling_agent", Runtime: domain.RuntimePython, Dir: "agents", System: true}, true},
+		{&domain.AgentDefinition{ID: "researcher", Runtime: domain.RuntimePython, Dir: "agents", TrustTier: "first-party"}, true},
+		{&domain.AgentDefinition{ID: "vendor", Runtime: domain.RuntimePython, Dir: "agents", TrustTier: "third-party"}, false},
+	} {
+		binds, err := im.agentBinds(context.Background(), tc.def, "python")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := sandbox.Bind{Path: models, Write: tc.write, Private: true}
+		if !slices.Contains(binds, want) {
+			t.Errorf("%s: binds %+v lack %+v", tc.def.ID, binds, want)
+		}
+	}
+	none, _ := testAgentSandbox(t, nil)
+	im.SetAgentContainment(AgentContainment{Sandbox: none})
+	binds, err := im.agentBinds(context.Background(), &domain.AgentDefinition{ID: "x", Runtime: domain.RuntimePython, Dir: "agents"}, "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range binds {
+		if strings.Contains(b.Path, filepath.Join("runtime", "models")) {
+			t.Errorf("no model cache resolved, yet %s is bound", b.Path)
+		}
 	}
 }

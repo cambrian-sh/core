@@ -2,6 +2,7 @@ package app
 
 import (
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -74,6 +75,32 @@ func anchorAgentSandboxPaths(cfg *config.Config, configPath, baseDir string) {
 			sb.RuntimeReadPaths = append(sb.RuntimeReadPaths, absOr(p))
 		}
 	}
+	cfg.Execution.Agents.ModelCache = anchorModelCache(cfg.Execution.Agents, absOr(baseDir), sb.KernelStatePaths)
+}
+
+// anchorModelCache resolves and creates the agents' shared model cache
+// (ADR-0157 S7, config.AgentsConfig.ModelCacheDir). It may sit inside the
+// hidden kernel directory (the default, runtime/models, is shown again as a
+// bind like the managed Python env) but never inside the kernel's own state:
+// config.db, the data directory or a backup must not become agent-writable
+// because an operator pointed the cache there. An unusable directory is named
+// at ERROR and no agent is pointed at a cache — they download into their
+// scratch, slower but never into kernel state.
+func anchorModelCache(ag config.AgentsConfig, baseDir string, kernelState []string) string {
+	dir := absOr(ag.ResolvedModelCacheDir(baseDir))
+	for _, st := range kernelState {
+		if pathWithin(dir, st) || pathWithin(st, dir) {
+			slog.Error("execution.agents.model_cache_dir overlaps the kernel's own state; agents get no shared model cache (ADR-0157 S7)",
+				"model_cache_dir", dir, "kernel_state", st)
+			return ""
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Error("execution.agents.model_cache_dir cannot be created; agents get no shared model cache (ADR-0157 S7)",
+			"model_cache_dir", dir, "err", err)
+		return ""
+	}
+	return dir
 }
 
 // pathWithin reports whether p is dir or lies under it.

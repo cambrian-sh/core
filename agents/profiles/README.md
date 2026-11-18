@@ -202,14 +202,18 @@ Ticket `T-20261105-agent-stack-v2-worker-agent-runtime-plus`, part B.
    at launch (ADR-0139 D8 stage 1, `execution.agents.sandbox`): first-party agents launch
    as before (env allowlist + SEC-01 cap); a `third-party` profile is refused unless
    `execution.agents.sandbox.third_party.on_unavailable` is `degrade`. With
-   `execution.agents.sandbox.enabled` (ADR-0157 S1, default off) every profile agent, of
-   every tier, runs through the kernel's sandbox without sight of the kernel's own state
-   (config, key file, data directories) and with a private scratch directory. On Windows
-   that is an AppContainer (ADR-0157 S5): the interpreter must be one the kernel can grant
-   (a user-owned install or venv; an Administrators-owned `C:\PythonXY` falls back to low
-   integrity, where reads are not hidden, and the boot log says so and names the fix). The
-   starter profiles need no `sandbox_paths`: `worker_agent.py` needs only the agents,
-   prompts and skills directories, which the kernel shows every agent.
+   `execution.agents.sandbox.enabled` (ADR-0157 S1; on by default since S7, ENG-2010) every
+   profile agent, of every tier, runs through the kernel's sandbox without sight of the
+   kernel's own state (config, key file, data directories) and with a private scratch
+   directory. On Windows that is an AppContainer (ADR-0157 S5) on the kernel-managed Python
+   env (D7), which the kernel grants itself. The starter profiles need no `sandbox_paths`:
+   `worker_agent.py` needs only the agents, prompts and skills directories, which the kernel
+   shows every agent, and model weights go to the shared model cache
+   (`execution.agents.model_cache_dir`, default `<kernel dir>/runtime/models`; writable for
+   first-party and system agents, read-only for third-party). Known gap: a profile step is
+   composed into the `composed_worker` runtime (ADR-0145 D12), which runs at the system
+   tier, so a `third-party` profile does not get third-party containment there (ticket
+   T-20261118-third-party-profile-steps-run-in-the-system).
 
 Only profiles get allowlist grants. A `tool_allowlist` in an ordinary agent's own
 `AGENT_MANIFEST` is not turned into grants: that would be a self-asserted privilege.

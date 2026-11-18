@@ -48,6 +48,7 @@ type AgentSandbox struct {
 	allowlistCap []string
 	kernelState  []string
 	runtimeRead  []string
+	modelCache   string
 }
 
 // AgentSandboxOptions is what NewAgentSandbox needs from config.
@@ -67,6 +68,11 @@ type AgentSandboxOptions struct {
 	// KernelOnlyAll is execution.agents.sandbox.network: kernel_only_all —
 	// every tier kernel-only, not only third-party (ADR-0157 D3).
 	KernelOnlyAll bool
+	// ModelCache is the agents' shared model cache (ADR-0157 S7,
+	// execution.agents.model_cache_dir, resolved by the composition root): shown
+	// to every instance at its own path, writable for first-party and system
+	// agents, read-only for third-party. "" ⇒ none.
+	ModelCache string
 }
 
 // NewAgentSandbox builds the agent tiers' sandbox policy.
@@ -104,11 +110,8 @@ func NewAgentSandbox(o AgentSandboxOptions) *AgentSandbox {
 			sandbox.TierThirdParty: {OnUnavailable: onUnavail(o.ThirdPartyRefuse), Runner: runner,
 				ConfineFS: true, HideState: true, LowPrivilege: true, DenyNetwork: true},
 		},
-		WorkRoot: workRoot,
-		// CAMBRIAN_AGENT_OUT is the instance's out/ folder (ADR-0157 D5.1): what an
-		// agent writes there is collected into the run ledger when it exits.
-		WorkdirEnv: map[string]string{"TEMP": "tmp", "TMP": "tmp", "TMPDIR": "tmp", "HOME": "home",
-			AgentOutEnv: AgentOutDir},
+		WorkRoot:     workRoot,
+		WorkdirEnv:   agentWorkdirEnv(goruntime.GOOS),
 		BwrapPath:    o.BwrapPath,
 		DockerPath:   o.DockerPath,
 		CgroupParent: o.CgroupParent,
@@ -120,7 +123,45 @@ func NewAgentSandbox(o AgentSandboxOptions) *AgentSandbox {
 		policy: p, dockerImage: o.DockerImage, dockerUser: o.DockerUser,
 		allowlistCap: expandAll(o.AllowlistCap), kernelState: state,
 		runtimeRead: dedupePaths(o.RuntimeReadPaths),
+		modelCache:  o.ModelCache,
 	}
+}
+
+// modelCacheBind is the shared model cache as this agent is shown it (ADR-0157
+// S7): writable for first-party and system agents, whose organs download and
+// reuse weights there; read-only for third-party agents, which may load what is
+// cached but never plant weights a first-party organ would later load. Private,
+// so the Windows AppContainer grants it to the agent's own capability with the
+// tier's access, never to the runtime capability every tier holds.
+func (s *AgentSandbox) modelCacheBind(def *domain.AgentDefinition) (sandbox.Bind, bool) {
+	if s.modelCache == "" {
+		return sandbox.Bind{}, false
+	}
+	return sandbox.Bind{Path: filepath.Clean(s.modelCache), Write: agentTrustTier(def) != agentTierThirdParty, Private: true}, true
+}
+
+// agentWorkdirEnv is the environment every sandboxed agent instance gets
+// pointed into its private scratch directory: TEMP/TMP/TMPDIR and HOME, and
+// CAMBRIAN_AGENT_OUT, the instance's out/ folder (ADR-0157 D5.1) whose files
+// the kernel collects into the run ledger when it exits.
+//
+// On Windows the user profile is named by USERPROFILE, APPDATA and
+// LOCALAPPDATA, not HOME: Python's Path.home() / os.path.expanduser read
+// USERPROFILE, and the cache libraries (Hugging Face, torch, docling) build
+// their default paths from it. Left at the kernel user's profile, the first
+// stat of it fails inside the AppContainer, which is allowlist-only (found by
+// the ADR-0157 S7 live run: the SDK's host_facts() raised PermissionError on
+// C:\Users\<user> and failed every chat turn). So the profile moves into the
+// scratch too, as HOME does on Unix.
+func agentWorkdirEnv(goos string) map[string]string {
+	env := map[string]string{"TEMP": "tmp", "TMP": "tmp", "TMPDIR": "tmp", "HOME": "home",
+		AgentOutEnv: AgentOutDir}
+	if goos == "windows" {
+		env["USERPROFILE"] = "home"
+		env["APPDATA"] = "home/AppData/Roaming"
+		env["LOCALAPPDATA"] = "home/AppData/Local"
+	}
+	return env
 }
 
 // Policy is the agent sandbox policy (tests, status surfaces).
@@ -389,6 +430,9 @@ func (im *InstanceManager) agentBinds(ctx context.Context, def *domain.AgentDefi
 	ro = append(ro, sb.runtimeRead...)
 	if im.agentTLSCA != "" {
 		ro = append(ro, im.agentTLSCA)
+	}
+	if mc, ok := sb.modelCacheBind(def); ok {
+		decl = append(decl, mc)
 	}
 	var binds []sandbox.Bind
 	for _, p := range dedupePaths(ro) {

@@ -96,6 +96,17 @@ func (s *setupState) exec(ctx context.Context, timeout time.Duration, name strin
 	return strings.TrimSpace(string(out)), err == nil
 }
 
+// execEnv is exec with an explicit environment (setup's model pre-fetch points
+// the model libraries at the agents' shared cache, ADR-0157 S7).
+func (s *setupState) execEnv(ctx context.Context, env []string, timeout time.Duration, name string, args ...string) (string, bool) {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, name, args...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err == nil
+}
+
 // execIn is exec with an explicit working directory (bun install runs in each
 // agent package dir, ADR-0125).
 func (s *setupState) execIn(ctx context.Context, dir string, timeout time.Duration, name string, args ...string) (string, bool) {

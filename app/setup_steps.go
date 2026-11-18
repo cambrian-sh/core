@@ -350,18 +350,33 @@ func (s *setupState) stepModels(ctx context.Context) {
 		s.ui.line("warn", "ollama missing — embedder model not pulled", "install ollama, then: ollama pull "+setupEmbedderModel)
 	}
 	if s.envPy != "" {
+		// ADR-0157 S7: pre-fetch into the agents' shared model cache — the
+		// directory the kernel points HF_HOME/TORCH_HOME/DOCLING_CACHE_DIR at
+		// for every agent — not into this user's own cache, which a sandboxed
+		// agent never sees.
+		configPath := filepath.Join(s.prefix, "configs", "config.json")
+		mcd, err := config.ReadModelCacheDir(configPath)
+		if err != nil {
+			s.ui.line("warn", "execution.agents.model_cache_dir unreadable; using the default", err.Error())
+		}
+		cache := config.AgentsConfig{ModelCacheDir: mcd}.ResolvedModelCacheDir(s.prefix)
+		if err := os.MkdirAll(cache, 0o755); err != nil {
+			s.ui.line("warn", "model cache not created; pre-fetch skipped", err.Error())
+			return
+		}
+		env := append(os.Environ(), config.ModelCacheEnv(cache)...)
 		rerank := os.Getenv("RERANK_MODEL")
 		if rerank == "" {
 			rerank = setupRerankModel
 		}
 		fmt.Print("  pre-fetching reranker (" + rerank + ")… ")
-		if _, ok := s.exec(ctx, 15*time.Minute, s.envPy, "-c", "import sys; from huggingface_hub import snapshot_download as s; s(sys.argv[1])", rerank); ok {
+		if _, ok := s.execEnv(ctx, env, 15*time.Minute, s.envPy, "-c", "import sys; from huggingface_hub import snapshot_download as s; s(sys.argv[1])", rerank); ok {
 			fmt.Println(s.ui.green("done"))
 		} else {
 			fmt.Println(s.ui.yellow("deferred"))
 			s.ui.line("warn", "reranker pre-fetch deferred", "downloads on first use (a few hundred MB)")
 		}
-		if _, ok := s.exec(ctx, 15*time.Minute, s.envPy, "-m", "docling.cli.models", "download"); ok {
+		if _, ok := s.execEnv(ctx, env, 15*time.Minute, s.envPy, "-m", "docling.cli.models", "download"); ok {
 			s.ui.line("ok", "docling models pre-fetched", "")
 		} else {
 			s.ui.line("warn", "docling models deferred", "download on first document parse")

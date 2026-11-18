@@ -17,22 +17,32 @@ import (
 // same rule as the agent card): a composition-root system agent and a local agent
 // that declares no tier are first-party; a profile's declared trust_tier is kept.
 //
-// enabled: false (the default) — the launch is unchanged from before ADR-0157:
-// the env allowlist (procenv), the SEC-01 memory cap, a lifetime-bound process,
-// the socket under the OS temp directory; a third-party agent is refused unless
-// third_party.on_unavailable is degrade (ENG-716 stage 1).
-//
-// enabled: true — ADR-0157 S1: every agent of every tier launches through
+// enabled: true (the default since ADR-0157 S7, owner decision 2026-11-17,
+// after the live run on the production backend, ENG-2010) — ADR-0157 S1: every
+// agent of every tier launches through
 // internal/sandbox (sandbox.StartCmd) with D1 confinement: a private ephemeral
-// scratch directory (its TEMP/TMP/TMPDIR/HOME), its socket in a per-instance
+// scratch directory (its TEMP/TMP/TMPDIR/HOME, and on Windows its
+// USERPROFILE/APPDATA/LOCALAPPDATA), its socket in a per-instance
 // directory under work_root, and the kernel's own state (the kernel directory,
 // configs/ with config.db and secret.key, the data directory, backups, the MCP
 // and agent work roots, plus hide_paths) unreadable where the runner can do it.
 // A control the runner cannot enforce is MISSING and the tier's on_unavailable
 // decides; the boot log names enforced and missing controls per agent.
+//
+// enabled: false — the launch is unchanged from before ADR-0157: the env
+// allowlist (procenv), the SEC-01 memory cap, a lifetime-bound process, the
+// socket under the OS temp directory; a third-party agent is refused unless
+// third_party.on_unavailable is degrade (ENG-716 stage 1).
+//
+// The S7 flip needs no schema migration: no key moved or was removed, and the
+// owner's decision is that installs which never set the key get the sandbox.
+// An operator who set enabled: false keeps it — the key carries no omitempty,
+// so an explicit false survives a marshal of the effective config (the
+// defaults layer, the ADR-0101 store), exactly like execution.erasure.enabled.
 type AgentSandboxConfig struct {
-	// Enabled launches agents through the sandbox (ADR-0157 S1). Default false.
-	Enabled bool `json:"enabled,omitempty"`
+	// Enabled launches agents through the sandbox (ADR-0157 S1). Default true
+	// (S7).
+	Enabled bool `json:"enabled"`
 	// Runner: "native" (default; Linux bubblewrap, Windows Job Object + an
 	// AppContainer token — low integrity when a runtime path cannot be granted —,
 	// macOS a Seatbelt profile; ADR-0157 S5) or "docker" (Linux hosts: one

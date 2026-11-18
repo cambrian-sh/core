@@ -113,6 +113,10 @@ func NewMetabolismStack(
 	// execution.content: the SDK's tool-output cap, preview, resolve window and
 	// prompt budget, so agent and kernel size content by one policy.
 	envExtras = append(envExtras, contentEnv(cfg.Execution)...)
+	// ADR-0157 S7: the shared model cache (HF_HOME, TORCH_HOME, DOCLING_CACHE_DIR),
+	// with the sandbox on or off, so an organ's weights outlive its instance's
+	// scratch (config.ModelCacheEnv; resolved by app.anchorAgentSandboxPaths).
+	envExtras = append(envExtras, config.ModelCacheEnv(cfg.Execution.Agents.ModelCache)...)
 	if len(envExtras) > 0 {
 		manager.SetEnvExtras(envExtras)
 	}
@@ -306,6 +310,7 @@ func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
 		DockerPath:       cfg.MCP.Sandbox.DockerPath,
 		CgroupParent:     cfg.MCP.Sandbox.CgroupParent,
 		KernelOnlyAll:    sb.KernelOnlyAll(),
+		ModelCache:       cfg.Execution.Agents.ModelCache,
 	})
 	p := s.Policy()
 	slog.Info("ADR-0157 S1: agents launch through the sandbox (D1 confinement, every tier)",
@@ -314,6 +319,8 @@ func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
 		"allowlist_cap", sb.AllowlistCap,
 		// ADR-0157 S2 (D3): the tiers whose agents have no network but the
 		// kernel's unix socket (execution.agents.sandbox.network).
-		"network", sb.NetworkOrDefault(), "kernel_only_tiers", s.KernelOnlyTiers())
+		"network", sb.NetworkOrDefault(), "kernel_only_tiers", s.KernelOnlyTiers(),
+		// ADR-0157 S7: writable for first-party and system agents, read-only for third-party.
+		"model_cache", cfg.Execution.Agents.ModelCache)
 	return s
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -25,11 +26,11 @@ func TestAgentSandbox_ValidateAndDefaults(t *testing.T) {
 	}
 }
 
-// ADR-0157 S1 keys: off by default; first-party degrades unless set to refuse
-// (Q2); runner, docker image, cap paths and on_unavailable are validated.
+// ADR-0157 S1 keys: on by default since S7; first-party degrades unless set to
+// refuse (Q2); runner, docker image, cap paths and on_unavailable are validated.
 func TestAgentSandbox_S1Keys(t *testing.T) {
 	d := DefaultConfig().Execution.Agents.Sandbox
-	if d.Enabled || d.FirstParty.Refuses() || d.RunnerOrDefault() != "native" {
+	if !d.Enabled || d.FirstParty.Refuses() || d.RunnerOrDefault() != "native" {
 		t.Fatalf("defaults: enabled=%v first-party refuses=%v runner=%s", d.Enabled, d.FirstParty.Refuses(), d.RunnerOrDefault())
 	}
 	ok := AgentSandboxConfig{Enabled: true, Runner: "docker", DockerImage: "cambrian/kernel:1",
@@ -68,5 +69,39 @@ func TestAgentSandbox_NetworkKey(t *testing.T) {
 	bad := AgentSandboxConfig{Network: "none"}
 	if errs := bad.validate(); len(errs) != 1 || !strings.Contains(errs[0], "execution.agents.sandbox.network") {
 		t.Fatalf("bad network: %v", errs)
+	}
+}
+
+// ADR-0157 S7: the sandbox is on for an install that never set the key, and an
+// operator's explicit false — in a config file or a CAMBRIAN_* variable — still
+// turns it off. The key has no omitempty, so the defaults layer (marshalled
+// from DefaultConfig) carries true and a layer's false overrides it.
+func TestAgentSandbox_S7DefaultOnExplicitOffSurvives(t *testing.T) {
+	dir := baseBundle(t)
+	cfg, prov := loadFrom(t, dir, nil)
+	if !cfg.Execution.Agents.Sandbox.Enabled {
+		t.Fatal("a config that never sets execution.agents.sandbox.enabled must run with the sandbox on")
+	}
+	if got := prov.Source("execution.agents.sandbox.enabled"); got != SourceDefault {
+		t.Fatalf("enabled source = %q, want the default", got)
+	}
+
+	writeCfg(t, dir, "config.json", `{
+	  "database": {"host": "localhost", "user": "u", "password": "p", "dbname": "d"},
+	  "execution": {"agents": {"sandbox": {"enabled": false}}}
+	}`)
+	if cfg, _ := loadFrom(t, dir, nil); cfg.Execution.Agents.Sandbox.Enabled {
+		t.Fatal("an explicit enabled: false in config.json was lost")
+	}
+
+	off := baseBundle(t)
+	t.Setenv("CAMBRIAN_EXECUTION__AGENTS__SANDBOX__ENABLED", "false")
+	if cfg, _ := loadFrom(t, off, nil); cfg.Execution.Agents.Sandbox.Enabled {
+		t.Fatal("CAMBRIAN_EXECUTION__AGENTS__SANDBOX__ENABLED=false did not turn the sandbox off")
+	}
+
+	b, err := json.Marshal(AgentSandboxConfig{})
+	if err != nil || !strings.Contains(string(b), `"enabled":false`) {
+		t.Fatalf("an explicit false must survive a marshal (no omitempty): %s %v", b, err)
 	}
 }

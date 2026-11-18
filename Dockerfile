@@ -117,9 +117,12 @@ RUN /app/orchestrator python-env build --dir /app \
 # Optional model pre-fetch (HF reranker/docling weights baked into the image cache), so
 # a running container makes NO runtime model download. Off by default to keep the base
 # image buildable without a multi-GB pull; enable with --build-arg PREFETCH_MODELS=1.
-# Runs on the managed env's interpreter (the only Python the agents have).
+# Runs on the managed env's interpreter (the only Python the agents have), into the
+# agents' shared model cache: the kernel points every agent's HF_HOME at
+# <base dir>/runtime/models/huggingface (execution.agents.model_cache_dir, ADR-0157 S7),
+# so weights baked anywhere else are never seen by a sandboxed agent.
 ARG PREFETCH_MODELS=0
-ENV HF_HOME=/app/.cache/huggingface
+ENV HF_HOME=/app/runtime/models/huggingface
 RUN if [ "$PREFETCH_MODELS" = "1" ]; then       py=$(/app/orchestrator python-env status --dir /app | awk '/^  interpreter:/{print $2}')       && "$py" -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-reranker-v2-m3')";     fi
 USER root
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -65,5 +66,41 @@ func TestAnchorAgentSandboxPaths_HidesAnOutsidePythonRoot(t *testing.T) {
 	anchorAgentSandboxPaths(cfg, configPath, base)
 	if !slices.Contains(cfg.Execution.Agents.Sandbox.KernelStatePaths, outside) {
 		t.Fatalf("an env root outside the kernel dir must be hidden: %v", cfg.Execution.Agents.Sandbox.KernelStatePaths)
+	}
+}
+
+// ADR-0157 S7: the shared model cache defaults to <base>/runtime/models and is
+// created at boot; a relative model_cache_dir resolves against the base; a
+// directory overlapping the kernel's own state is refused (no cache at all,
+// never an agent-writable config or data directory).
+func TestAnchorAgentSandboxPaths_ModelCache(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "cambrian")
+	configPath := filepath.Join(base, "configs", "config.json")
+	cfg := &config.Config{Backup: config.DefaultBackupConfig()}
+	cfg.Storage.DataDir = filepath.Join(base, "data")
+	anchorAgentSandboxPaths(cfg, configPath, base)
+	want := filepath.Join(base, "runtime", "models")
+	if cfg.Execution.Agents.ModelCache != want {
+		t.Fatalf("default model cache = %q, want %q", cfg.Execution.Agents.ModelCache, want)
+	}
+	if fi, err := os.Stat(want); err != nil || !fi.IsDir() {
+		t.Fatalf("model cache not created: %v", err)
+	}
+
+	cfg = &config.Config{Backup: config.DefaultBackupConfig()}
+	cfg.Execution.Agents.ModelCacheDir = "caches/models"
+	anchorAgentSandboxPaths(cfg, configPath, base)
+	if got := cfg.Execution.Agents.ModelCache; got != filepath.Join(base, "caches", "models") {
+		t.Fatalf("relative model cache = %q", got)
+	}
+
+	for _, bad := range []string{filepath.Join(base, "data", "models"), filepath.Join(base, "configs"), base} {
+		cfg = &config.Config{Backup: config.DefaultBackupConfig()}
+		cfg.Storage.DataDir = filepath.Join(base, "data")
+		cfg.Execution.Agents.ModelCacheDir = bad
+		anchorAgentSandboxPaths(cfg, configPath, base)
+		if got := cfg.Execution.Agents.ModelCache; got != "" {
+			t.Errorf("model_cache_dir %s overlaps kernel state but resolved to %q", bad, got)
+		}
 	}
 }
