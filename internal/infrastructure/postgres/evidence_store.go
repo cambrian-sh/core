@@ -26,7 +26,17 @@ func NewPgEvidenceStore(pool *pgxpool.Pool) *PgEvidenceStore {
 	return &PgEvidenceStore{pool: pool}
 }
 
-var _ domain.EvidenceStore = (*PgEvidenceStore)(nil)
+var (
+	_ domain.EvidenceStore        = (*PgEvidenceStore)(nil)
+	_ domain.EvidenceErasureFence = (*PgEvidenceStore)(nil)
+)
+
+// SourceErased implements domain.EvidenceErasureFence: whether a tombstone of
+// sourceKey was written after the ingest origin ctx carries (ADR-0137 D5). Advisory
+// only — Insert re-checks under the per-document lock.
+func (s *PgEvidenceStore) SourceErased(ctx context.Context, sourceKey string) (bool, error) {
+	return erasedAfterOrigin(ctx, s.pool, sourceKey, "")
+}
 
 // Insert implements the idempotent evidence+outbox write (ADR-0105 D2/D3).
 //
@@ -67,6 +77,18 @@ func (s *PgEvidenceStore) Insert(ctx context.Context, ev domain.Evidence) (domai
 		return "", false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+
+	// ADR-0137 D5 no-resurrection fence (ENG-1866). An erase deletes the evidence
+	// whose source_key is an erased document id and leaves a tombstone keyed by that
+	// id (memory_erasure_targets.document_id), so the fence keys on source_key: it
+	// takes the per-document lock in shared mode (the erase holds it exclusively)
+	// and refuses with domain.ErrSourceErased when the tombstone is younger than the
+	// ingest origin on ctx — a reactive journal replay, a retried delivery or a
+	// queued ingest that predates the erase. A delivery accepted after the erase is
+	// a new act and passes (ADR-0137 Q4); a write with no origin only takes the lock.
+	if err := erasureFenceTx(ctx, tx, ev.SourceKey, ""); err != nil {
+		return "", false, fmt.Errorf("evidence insert: %w", err)
+	}
 
 	var srcTime *time.Time
 	if !ev.SourceTime.IsZero() {

@@ -292,20 +292,37 @@ func erasureFenceTx(ctx context.Context, q fenceQuerier, documentID, digest stri
 	if _, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtext($1))`, documentID); err != nil {
 		return fmt.Errorf("erasure fence: lock: %w", err)
 	}
-	origin, ok := domain.IngestOriginFrom(ctx)
-	if !ok {
-		return nil
-	}
-	var erased bool
-	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM memory_erasure_targets
-		WHERE (document_id = $1 OR (NULLIF($2, '') IS NOT NULL AND content_digest = $2)) AND erased_at > $3)`,
-		documentID, digest, origin).Scan(&erased); err != nil {
-		return fmt.Errorf("erasure fence: tombstone: %w", err)
+	erased, err := erasedAfterOrigin(ctx, q, documentID, digest)
+	if err != nil {
+		return err
 	}
 	if erased {
 		return fmt.Errorf("document %s: %w", documentID, domain.ErrSourceErased)
 	}
 	return nil
+}
+
+// erasedAfterOrigin reports whether a tombstone of documentID (or of digest) was
+// written after the ingest origin ctx carries; false when ctx carries none. It takes
+// no lock: erasureFenceTx calls it under the shared per-document lock, and
+// PgEvidenceStore.SourceErased uses it as an early, advisory answer.
+func erasedAfterOrigin(ctx context.Context, q rowQuerier, documentID, digest string) (bool, error) {
+	origin, ok := domain.IngestOriginFrom(ctx)
+	if !ok || documentID == "" {
+		return false, nil
+	}
+	var erased bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM memory_erasure_targets
+		WHERE (document_id = $1 OR (NULLIF($2, '') IS NOT NULL AND content_digest = $2)) AND erased_at > $3)`,
+		documentID, digest, origin).Scan(&erased); err != nil {
+		return false, fmt.Errorf("erasure fence: tombstone: %w", err)
+	}
+	return erased, nil
+}
+
+// rowQuerier is the read half of fenceQuerier.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // fenceQuerier is what erasureFenceTx needs of a transaction.

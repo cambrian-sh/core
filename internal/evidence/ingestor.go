@@ -35,6 +35,11 @@ type Raw = domain.RawEvidence
 type Ingestor struct {
 	blobs domain.ContentStore
 	store domain.EvidenceStore
+	// fence is the store's early erasure answer when it offers one (ADR-0137 D5):
+	// checked before the bytes are put, so a refused replay does not write erased
+	// content back into the content store. nil for a store without one; the
+	// authoritative fence is inside the store's Insert either way.
+	fence domain.EvidenceErasureFence
 }
 
 // NewIngestor builds an evidence ingestor. Both stores are required at
@@ -44,7 +49,8 @@ func NewIngestor(blobs domain.ContentStore, store domain.EvidenceStore) (*Ingest
 	if blobs == nil || store == nil {
 		return nil, fmt.Errorf("evidence ingestor: both a content store and an evidence store are required")
 	}
-	return &Ingestor{blobs: blobs, store: store}, nil
+	fence, _ := store.(domain.EvidenceErasureFence)
+	return &Ingestor{blobs: blobs, store: store, fence: fence}, nil
 }
 
 // contentNodeType labels evidence blobs in the ContentStore so GC policies and
@@ -66,6 +72,20 @@ func (i *Ingestor) Ingest(ctx context.Context, raw Raw) (id domain.EvidenceID, i
 	}
 	if raw.SourceID == "" || raw.SourceKey == "" {
 		return "", false, fmt.Errorf("evidence ingest: source_id and source_key are required")
+	}
+
+	// 0. ADR-0137 D5 (ENG-1866): a delivery whose source was erased after its
+	// ingest origin (a reactive journal replay, a retried delivery) is refused
+	// before anything is written — its bytes included, which an erase already
+	// deleted from the content store. Insert re-checks under the erase lock.
+	if i.fence != nil {
+		erased, err := i.fence.SourceErased(ctx, raw.SourceKey)
+		if err != nil {
+			return "", false, fmt.Errorf("evidence ingest: erasure fence: %w", err)
+		}
+		if erased {
+			return "", false, fmt.Errorf("evidence ingest: source %s: %w", raw.SourceKey, domain.ErrSourceErased)
+		}
 	}
 
 	// 1. Bytes first. Put is idempotent under the CID, so a crash-and-retry

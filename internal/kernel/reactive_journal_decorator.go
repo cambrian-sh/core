@@ -49,7 +49,7 @@ func (d *AgentRepoDecorator) ReplayStreams(match func(stream string) bool, after
 		if json.Unmarshal(r.SignalJSON, &sig) != nil {
 			continue // skip malformed
 		}
-		out = append(out, domain.JournaledSignal{Seq: r.Seq, Signal: sig})
+		out = append(out, domain.JournaledSignal{Seq: r.Seq, Signal: sig, ReceivedAt: r.ReceivedAt})
 	}
 	return out, nil
 }

@@ -8,6 +8,12 @@ import "time"
 type JournaledSignal struct {
 	Seq    uint64
 	Signal Signal
+	// ReceivedAt is when the journal accepted the signal (the record header's
+	// received_at, ADR-0061 A2.3). A replaying engine stamps it — or the signal's
+	// own Timestamp — as the ingest origin of the replayed work (ADR-0137 D5.2), so
+	// a replay of a signal that predates an erase cannot resurrect what it erased.
+	// Zero for records written before the header carried it.
+	ReceivedAt time.Time
 }
 
 // WatchDeadLetterReader is the read port backing the OperatorConsole

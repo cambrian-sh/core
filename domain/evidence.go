@@ -163,6 +163,18 @@ func EvidenceNotReady(holdKey, reason string) error {
 	return &NotReadyError{HoldKey: holdKey, Reason: reason}
 }
 
+// EvidenceErasureFence is the read half of the ADR-0137 D5 no-resurrection fence
+// on the evidence lane, offered by an EvidenceStore that enforces it
+// (postgres.PgEvidenceStore). SourceErased reports whether a tombstone of
+// sourceKey was written after the ingest origin ctx carries (domain.IngestOriginFrom;
+// false when ctx carries none), so the ingestor can refuse a replayed delivery
+// BEFORE it writes the erased bytes back into the content store. It is only an
+// early answer: the authoritative check runs again inside Insert's transaction,
+// under the per-document lock the erase takes exclusively.
+type EvidenceErasureFence interface {
+	SourceErased(ctx context.Context, sourceKey string) (bool, error)
+}
+
 // EvidenceStore persists evidence rows and their outbox items.
 //
 // The port's guarantees are decomposed per layer and deliberately NOT summed
