@@ -160,6 +160,34 @@ func documentColumnsWithEmbedding(table string, expr any) []any {
 	return out
 }
 
+// readColumns is the column list a non-dense read of table selects. Under ADR-0107
+// projection read a chunk's `embedding` is hydrated from chunk_embeddings for the
+// ACTIVE model, as fetchCandidates' dense branch does (stage 3c): under coexistence
+// the legacy chunks.embedding column holds the previous model's vector, or none for
+// chunks written since the switch, and consumers of doc.Embedding (the fact lane's
+// injected-chunk cosine, blend coherence) would score in a foreign space or score 0
+// (T-20261118-under-adr-0107-projection-read-by-id-reads).
+//
+// A correlated scalar subquery rather than a JOIN: the reads that use it filter
+// and order on unqualified columns (created_at, id) that chunk_embeddings also
+// carries, and the lookup hits the (chunk_id, model_id) primary key. A chunk with
+// no active-model row comes back with no embedding (NULL), never the legacy one.
+// The descriptor tables have no projection (ENG-2038) and keep the column.
+func (p *PgVectorAdapter) readColumns(table string) []any {
+	if !p.projectionRead || table != TableChunks {
+		return documentColumns("")
+	}
+	return documentColumnsWithEmbedding("", p.activeEmbeddingExpr(TableChunks+".id"))
+}
+
+// activeEmbeddingExpr selects the active model's projected vector for the chunk
+// whose id is idExpr, cast to the active dimension as the dense branch casts it.
+func (p *PgVectorAdapter) activeEmbeddingExpr(idExpr string) exp.AliasedExpression {
+	return goqu.L(fmt.Sprintf(
+		"(SELECT ce.embedding::vector(%d) FROM chunk_embeddings ce WHERE ce.chunk_id = %s AND ce.model_id = ?)",
+		p.dim, idExpr), p.projModelID).As("embedding")
+}
+
 // scanDocument is the central data-integrity gate.
 func scanDocument(row pgx.Row, includeDistance bool) (domain.Document, float64, error) {
 	var doc domain.Document
@@ -1121,7 +1149,7 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 			Order(goqu.L(cast+" <=> ?", vec).Asc())
 	} else {
 		ds = dialect.From(table).
-			Select(documentColumns("")...)
+			Select(p.readColumns(table)...)
 		if vector != nil {
 			vec := pgvector.NewVector(vector)
 			ds = ds.SelectAppend(goqu.L("embedding <=> ?", vec).As("distance")).
@@ -1219,8 +1247,9 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	}
 	// OR-tsquery: plainto -> text (' & ' joined lexemes) -> swap & for | -> tsquery.
 	orQuery := goqu.L("replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery", queryText)
-	ds := dialect.From(tableFor(opts.DocumentType)).
-		Select(documentColumns("")...).
+	lexTable := tableFor(opts.DocumentType)
+	ds := dialect.From(lexTable).
+		Select(p.readColumns(lexTable)...).
 		SelectAppend(goqu.L("ts_rank_cd(to_tsvector('english', text), replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery)", queryText).As("distance")).
 		Where(goqu.L("to_tsvector('english', text) @@ ?", orQuery)).
 		Order(goqu.C("distance").Desc())
@@ -1283,7 +1312,7 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 func (p *PgVectorAdapter) GetByID(ctx context.Context, id string) (*domain.Document, error) {
 	for _, table := range idLookupTables {
 		sql, args, _ := dialect.From(table).
-			Select(documentColumns("")...).
+			Select(p.readColumns(table)...).
 			Where(goqu.Ex{"id": id}).ToSQL()
 
 		doc, _, err := scanDocument(p.pool.QueryRow(ctx, sql, args...), false)
@@ -1433,7 +1462,7 @@ func (p *PgVectorAdapter) ChunksByIDs(ctx context.Context, ids []string) ([]doma
 
 func (p *PgVectorAdapter) getBatchFrom(ctx context.Context, table string, ids []string) ([]domain.Document, error) {
 	sql, args, err := dialect.From(table).
-		Select(documentColumns("")...).
+		Select(p.readColumns(table)...).
 		Where(goqu.Ex{"id": ids}).ToSQL()
 
 	if err != nil {
@@ -1478,7 +1507,7 @@ func (p *PgVectorAdapter) GetStaleMemories(ctx context.Context, limit int) ([]do
 	// guard that can never fire. decayLoner keeps one anyway, for stores that do
 	// populate the field; this predicate is what makes it true against Postgres.
 	sql, args, _ := dialect.From(TableChunks).
-		Select(documentColumns("")...).
+		Select(p.readColumns(TableChunks)...).
 		Where(goqu.Ex{"activation_strength": goqu.Op{"lt": 0.5}}).
 		Where(goqu.Ex{"experience_id": nil}).
 		Order(goqu.I("access_count").Asc(), goqu.I("last_accessed_at").Asc().NullsFirst()).
@@ -1532,7 +1561,7 @@ func (p *PgVectorAdapter) QueryByMetadata(ctx context.Context, filter map[string
 	}
 
 	q := dialect.From(TableChunks).
-		Select(documentColumns("")...).
+		Select(p.readColumns(TableChunks)...).
 		Where(goqu.L("metadata @> ?::jsonb", string(filterBytes))).
 		Order(goqu.I("created_at").Asc())
 	if limit > 0 {
