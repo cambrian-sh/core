@@ -84,6 +84,7 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 		)
 	}
 
+	m.InstanceManager.NoteDispatch(inst.AgentID, inst.ID, handoff) // ADR-0157 D5.2 provenance
 	protoResp, errExec := m.executeHandoff(ctx, addr, agentwire.ToProto(handoff))
 
 	if bootedHere {
@@ -142,6 +143,7 @@ func (m *AgentManager) CallDaemon(ctx context.Context, streamID string, handoff 
 	if !ok || inst.SocketPath == "" {
 		return nil, fmt.Errorf("CallDaemon: %w: daemon instance %q for stream %q not live", domain.ErrDaemonUnavailable, instanceID, streamID)
 	}
+	m.InstanceManager.NoteDispatch(inst.AgentID, instanceID, handoff) // ADR-0157 D5.2 provenance
 	protoResp, err := m.executeHandoff(ctx, "unix:"+inst.SocketPath, agentwire.ToProto(handoff))
 	if err != nil {
 		return nil, err

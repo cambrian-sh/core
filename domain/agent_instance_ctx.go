@@ -42,3 +42,15 @@ type AgentOutputs struct {
 type AgentOutputCollector interface {
 	CollectAgentOutputs(ctx context.Context, out AgentOutputs) (int, error)
 }
+
+// AgentWorkObserver learns, at dispatch, which lease the kernel handed an agent
+// instance its work under (ADR-0157 D5.2). The kernel knows both facts when it
+// sends a handoff — the instance it chose and the lease it put on the handoff —
+// so the run, session, step and conversation of what the instance hands back
+// later (an upload without a lease header, its out/ collected at exit) never
+// depend on the agent presenting that lease on some other call
+// (T-20261118-agent-artifacts-from-planner-lane-steps-carry). Provenance only:
+// nothing authorizes on it.
+type AgentWorkObserver interface {
+	AgentInstanceDispatched(agentID, instanceID string, lease LeaseID)
+}

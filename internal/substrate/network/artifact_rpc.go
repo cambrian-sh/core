@@ -130,8 +130,13 @@ func (s *Server) UploadArtifact(ctx context.Context, req *pb.UploadArtifactReque
 
 // artifactReadCtx puts the caller's read predicate on ctx for the enforced
 // ledger reader (AGENTS.md §2.4: a by-id read's only scope channel). nil ⇒ the
-// decision point denied the caller outright.
+// decision point denied the caller outright. The caller's identity is resolved
+// from the lease it presented first (withCallerSession: session, conversation
+// owner, resolved-lease marker), as on every other agent-plane read; without it
+// a credential-authenticated agent's artifact read was refused no_lease even
+// under a live lease (T-20261118-agent-artifacts-from-planner-lane-steps-carry).
 func (s *Server) artifactReadCtx(ctx context.Context) (context.Context, error) {
+	ctx = s.withCallerSession(ctx)
 	principal := artifactPrincipal(ctx)
 	eff, dec := s.authorizer().ReadFilter(ctx, principal, artifactSurface)
 	if eff == nil {

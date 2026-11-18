@@ -28,7 +28,11 @@ type AgentDialer interface {
 type Transport struct {
 	agentClients map[string]pb.AgentServiceClient
 	agentConns   map[string]*grpc.ClientConn
-	mu           sync.RWMutex
+	// agentInstances names the instance each cached client is connected to, so a
+	// dispatch can tell the kernel which instance works under which lease
+	// (dispatchNoter, ADR-0157 D5.2). Guarded by mu like the maps above.
+	agentInstances map[string]string
+	mu             sync.RWMutex
 	// dialGroup single-flights the boot+dial+register per agent so concurrent
 	// cache-misses share ONE connection instead of each dialing a fresh conn and
 	// racing RegisterAgentClient's oldConn.Close() (which fails the loser's
@@ -48,9 +52,10 @@ type Transport struct {
 // New creates the agent connection pool + invocation primitive.
 func New(manager AgentDialer) *Transport {
 	return &Transport{
-		agentClients: make(map[string]pb.AgentServiceClient),
-		agentConns:   make(map[string]*grpc.ClientConn),
-		Manager:      manager,
+		agentClients:   make(map[string]pb.AgentServiceClient),
+		agentConns:     make(map[string]*grpc.ClientConn),
+		agentInstances: make(map[string]string),
+		Manager:        manager,
 	}
 }
 
@@ -113,6 +118,12 @@ func (a *Transport) bootDialRegister(ctx context.Context, agent domain.AgentDefi
 
 	client := pb.NewAgentServiceClient(conn)
 	a.RegisterAgentClient(agent.ID, client, conn)
+	a.mu.Lock()
+	if a.agentInstances == nil { // a Transport built as a literal (tests) has no map yet
+		a.agentInstances = make(map[string]string)
+	}
+	a.agentInstances[agent.ID] = inst.ID
+	a.mu.Unlock()
 	return client, nil
 }
 
@@ -124,6 +135,7 @@ func (a *Transport) RegisterAgentClient(agentID string, client pb.AgentServiceCl
 	if oldConn, ok := a.agentConns[agentID]; ok {
 		_ = oldConn.Close()
 	}
+	delete(a.agentInstances, agentID) // a client registered from elsewhere names no instance we know
 
 	a.agentClients[agentID] = client
 	a.agentConns[agentID] = conn
@@ -196,6 +208,7 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 	if err != nil {
 		return nil, err
 	}
+	a.noteDispatch(agent.ID, a.cachedInstance(agent.ID, client), handoff)
 	protoResp, err := client.Execute(ctx, agentwire.ToProto(handoff))
 	if err != nil {
 		if status.Code(err) == codes.Unavailable {
@@ -260,6 +273,7 @@ func (a *Transport) callDedicated(ctx context.Context, booter dedicatedBooter, a
 		return nil, fmt.Errorf("dedicated instance: dial agent %s: %w", agent.ID, err)
 	}
 	defer func() { _ = conn.Close() }()
+	a.noteDispatch(agent.ID, inst.ID, handoff)
 	protoResp, err := pb.NewAgentServiceClient(conn).Execute(ctx, agentwire.ToProto(handoff))
 	if err != nil {
 		return nil, err
@@ -280,4 +294,33 @@ func (a *Transport) forgetAgentClient(agentID string, client pb.AgentServiceClie
 	}
 	delete(a.agentClients, agentID)
 	delete(a.agentConns, agentID)
+	delete(a.agentInstances, agentID)
+}
+
+// dispatchNoter is the optional AgentDialer surface that records which instance
+// works under which lease (agentmgr.AgentManager implements it, ADR-0157 D5.2).
+type dispatchNoter interface {
+	NoteDispatch(agentID, instanceID string, h *domain.Handoff)
+}
+
+// cachedInstance returns the instance the cached client for agentID is connected
+// to, "" when client is no longer the cached one or its instance is unknown.
+func (a *Transport) cachedInstance(agentID string, client pb.AgentServiceClient) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if cur, ok := a.agentClients[agentID]; !ok || cur != client {
+		return ""
+	}
+	return a.agentInstances[agentID]
+}
+
+// noteDispatch tells the manager the instance is about to work under the lease
+// on handoff, so what it hands back later carries that work's run (ADR-0157 D5.2).
+func (a *Transport) noteDispatch(agentID, instanceID string, handoff *domain.Handoff) {
+	if instanceID == "" {
+		return
+	}
+	if n, ok := a.Manager.(dispatchNoter); ok {
+		n.NoteDispatch(agentID, instanceID, handoff)
+	}
 }

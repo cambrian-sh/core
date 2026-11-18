@@ -48,3 +48,25 @@ func (l *instanceWorkLog) forget(instanceID string) {
 	delete(l.last, instanceID)
 	l.mu.Unlock()
 }
+
+var _ domain.AgentWorkObserver = (*Server)(nil)
+
+// AgentInstanceDispatched records that the kernel dispatched work to instanceID
+// of agentID under lease (ADR-0157 D5.2): the instance's later uploads without a
+// lease header, and its out/ collected at exit, are placed in that lease's run,
+// session, step and conversation even when the agent never presents the lease
+// itself (T-20261118-agent-artifacts-from-planner-lane-steps-carry). The lease is
+// resolved from the kernel's own registry; one bound to a different agent is
+// ignored (ADR-0139 D8 — the binding names who may work under it). A lease the
+// instance later presents and the kernel resolves replaces this entry as before.
+func (s *Server) AgentInstanceDispatched(agentID, instanceID string, lease domain.LeaseID) {
+	r := s.leaseResolver()
+	if r == nil || instanceID == "" || lease == "" {
+		return
+	}
+	b, known := r.ResolveLease(lease)
+	if !known || (b.AgentID != "" && b.AgentID != agentID) {
+		return
+	}
+	s.instanceWork().note(instanceID, b)
+}

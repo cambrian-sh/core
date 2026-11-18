@@ -60,3 +60,29 @@ func (im *InstanceManager) collectOutputs(ctx context.Context, agentID, instance
 		slog.Info("ADR-0157: agent out/ collected into the run ledger", "agent", agentID, "instance", instanceID, "files", n)
 	}
 }
+
+// handoffLeaseKey is the handoff context key the kernel puts a dispatch's lease
+// under (the same key internal/metabolism/dispatch and the network lanes stamp,
+// and the SDK reads as the task's session_token_id).
+const handoffLeaseKey = "_session_token_id"
+
+// NoteDispatch tells the output collector, when it observes dispatches
+// (domain.AgentWorkObserver), that instanceID of agentID is about to work under
+// the lease on h. Called by every path that sends a handoff to a chosen instance
+// (CallAgent, CallDaemon, the agent-plane Transport), so an instance's uploads
+// and out/ carry the run of the work the kernel gave it (ADR-0157 D5.2).
+func (im *InstanceManager) NoteDispatch(agentID, instanceID string, h *domain.Handoff) {
+	if instanceID == "" || h == nil {
+		return
+	}
+	lease := domain.LeaseID(h.Context[handoffLeaseKey])
+	if lease == "" {
+		return
+	}
+	im.mu.Lock()
+	c := im.outputs
+	im.mu.Unlock()
+	if o, ok := c.(domain.AgentWorkObserver); ok {
+		o.AgentInstanceDispatched(agentID, instanceID, lease)
+	}
+}
