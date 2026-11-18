@@ -116,6 +116,15 @@ func (a *sqlArgs) viaTypedRow(scope *domain.TagPredicate, refCol, rowCol string)
 	return cond
 }
 
+// viaLink fences a link row aliased alias on EVERY evidence row it rests on —
+// its cited evidence as a typed row and each supporting evidence
+// (sqlfence.LinkExists, ENG-2049): the SQL mirror of filterLinks.
+func (a *sqlArgs) viaLink(scope *domain.TagPredicate, alias string) string {
+	cond, extra := sqlfence.LinkExists(scope, alias, len(a.args))
+	a.args = append(a.args, extra...)
+	return cond
+}
+
 // evidenceRow fences the evidence table itself, aliased alias.
 func (a *sqlArgs) evidenceRow(scope *domain.TagPredicate, alias string) string {
 	cond, extra := sqlfence.Evidence(alias).Where(scope, len(a.args))

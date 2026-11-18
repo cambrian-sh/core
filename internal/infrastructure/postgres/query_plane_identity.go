@@ -225,10 +225,19 @@ func (p *PgQueryPlane) filterLinks(ctx context.Context, scope *domain.TagPredica
 	return guardNodes(ctx, p, scope, links, linkRefs)
 }
 
-// linkRefs is what a link stands on: its evidence and its own row
-// classification (ADR-0158 D2).
+// linkRefs is what a link stands on: its cited evidence with its own row
+// classification (ADR-0158 D2), and every supporting evidence row it was derived
+// from (links.supporting_evidence, ENG-2032), each fenced by its evidence alone.
+// guardNodes admits the link only if the scope may read EVERY ref (ENG-2049,
+// owner decision 2026-11-18, option a) — the walk mirror of sqlfence.LinkExists.
+// A link without supporting evidence stands on its cited ref alone, as before.
 func linkRefs(l domain.Link) []guardRef {
-	return []guardRef{{evidence: string(l.EvidenceID), rowTags: l.Classification}}
+	refs := make([]guardRef, 0, 1+len(l.SupportingEvidence))
+	refs = append(refs, guardRef{evidence: string(l.EvidenceID), rowTags: l.Classification})
+	for _, e := range l.SupportingEvidence {
+		refs = append(refs, guardRef{evidence: string(e)})
+	}
+	return refs
 }
 
 // linkRow renders one assertion for the wire. `row` discriminates the shapes an

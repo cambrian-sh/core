@@ -7,6 +7,8 @@
   PANIC
 - fence class triple
   PANIC
+- link exists (l)
+  PANIC
 
 ## maintenance
 - typed row exists (o.evidence_id, o.classification)
@@ -20,6 +22,9 @@
   args: []interface {}(nil)
 - fence class triple
   sql:  "TRUE"
+  args: []interface {}(nil)
+- link exists (l)
+  sql:  ""
   args: []interface {}(nil)
 
 ## bypass (system)
@@ -35,6 +40,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[])))))"
   args: []interface {}{[]string{}, []string{}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[]))))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[]))))"
+  args: []interface {}{[]string{}, []string{}, []string{}}
 
 ## bypass, owner alice
 - typed row exists (o.evidence_id, o.classification)
@@ -49,6 +57,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[])))))"
   args: []interface {}{[]string{"owner:alice"}, []string{"owner:alice"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[]))))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[]))))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"owner:alice"}, []string{"owner:alice"}}
 
 ## empty
 - typed row exists (o.evidence_id, o.classification)
@@ -63,6 +74,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[])))))"
   args: []interface {}{[]string{}, []string{}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[]))))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[]))))"
+  args: []interface {}{[]string{}, []string{}, []string{}}
 
 ## owner alice
 - typed row exists (o.evidence_id, o.classification)
@@ -77,6 +91,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[])))))"
   args: []interface {}{[]string{"owner:alice"}, []string{"owner:alice"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[]))))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[]))))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"owner:alice"}, []string{"owner:alice"}}
 
 ## owners alice+bob
 - typed row exists (o.evidence_id, o.classification)
@@ -91,6 +108,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[])))))"
   args: []interface {}{[]string{"owner:alice", "owner:bob"}, []string{"owner:alice", "owner:bob"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($4::text[]))))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[]))))"
+  args: []interface {}{[]string{"owner:alice", "owner:bob"}, []string{"owner:alice", "owner:bob"}, []string{"owner:alice", "owner:bob"}}
 
 ## required sales+eu
 - typed row exists (o.evidence_id, o.classification)
@@ -105,6 +125,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND c.tags @> $4 AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[])) AND (c.tags || c.row_tags) @> $6)))"
   args: []interface {}{[]string{}, []string{"sales", "eu"}, []string{}, []string{"sales", "eu"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4 AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[])) AND (e.classification || l.classification) @> $6))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND e.classification @> $8))"
+  args: []interface {}{[]string{}, []string{"sales", "eu"}, []string{}, []string{"sales", "eu"}, []string{}, []string{"sales", "eu"}}
 
 ## forbidden confidential+hr
 - typed row exists (o.evidence_id, o.classification)
@@ -119,6 +142,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (c.tags && $4) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[])) AND NOT ((c.tags || c.row_tags) && $6))))"
   args: []interface {}{[]string{}, []string{"confidential", "hr"}, []string{}, []string{"confidential", "hr"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (e.classification && $4) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[])) AND NOT ((e.classification || l.classification) && $6)))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND NOT (e.classification && $8)))"
+  args: []interface {}{[]string{}, []string{"confidential", "hr"}, []string{}, []string{"confidential", "hr"}, []string{}, []string{"confidential", "hr"}}
 
 ## any-of [a b] [] [sales]
 - typed row exists (o.evidence_id, o.classification)
@@ -133,6 +159,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND c.tags && $4 AND FALSE AND c.tags && $5 AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($6::text[])) AND (c.tags || c.row_tags) && $7 AND FALSE AND (c.tags || c.row_tags) && $8)))"
   args: []interface {}{[]string{}, []string{"a", "b"}, []string{"sales"}, []string{}, []string{"a", "b"}, []string{"sales"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification && $4 AND FALSE AND e.classification && $5 AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($6::text[])) AND (e.classification || l.classification) && $7 AND FALSE AND (e.classification || l.classification) && $8))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND e.classification && $10 AND FALSE AND e.classification && $11))"
+  args: []interface {}{[]string{}, []string{"a", "b"}, []string{"sales"}, []string{}, []string{"a", "b"}, []string{"sales"}, []string{}, []string{"a", "b"}, []string{"sales"}}
 
 ## party deal:acme, identity customer:acme
 - typed row exists (o.evidence_id, o.classification)
@@ -147,6 +176,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (c.tags && $4) OR c.parties && $5) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($6::text[])) AND (NOT ((c.tags || c.row_tags) && $7) OR c.parties && $8))))"
   args: []interface {}{[]string{}, []string{"deal:acme"}, []string{"customer:acme"}, []string{}, []string{"deal:acme"}, []string{"customer:acme"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (e.classification && $4) OR e.parties && $5) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($6::text[])) AND (NOT ((e.classification || l.classification) && $7) OR e.parties && $8)))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND (NOT (e.classification && $10) OR e.parties && $11)))"
+  args: []interface {}{[]string{}, []string{"deal:acme"}, []string{"customer:acme"}, []string{}, []string{"deal:acme"}, []string{"customer:acme"}, []string{}, []string{"deal:acme"}, []string{"customer:acme"}}
 
 ## party deal:acme, no identities
 - typed row exists (o.evidence_id, o.classification)
@@ -161,6 +193,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (c.tags && $4) OR c.parties && $5) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($6::text[])) AND (NOT ((c.tags || c.row_tags) && $7) OR c.parties && $8))))"
   args: []interface {}{[]string{}, []string{"deal:acme"}, []string{}, []string{}, []string{"deal:acme"}, []string{}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (e.classification && $4) OR e.parties && $5) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($6::text[])) AND (NOT ((e.classification || l.classification) && $7) OR e.parties && $8)))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND (NOT (e.classification && $10) OR e.parties && $11)))"
+  args: []interface {}{[]string{}, []string{"deal:acme"}, []string{}, []string{}, []string{"deal:acme"}, []string{}, []string{}, []string{"deal:acme"}, []string{}}
 
 ## combined
 - typed row exists (o.evidence_id, o.classification)
@@ -175,6 +210,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND c.tags @> $4 AND NOT (c.tags && $5) AND c.tags && $6 AND (NOT (c.tags && $7) OR c.parties && $8) AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND (c.tags || c.row_tags) @> $10 AND NOT ((c.tags || c.row_tags) && $11) AND (c.tags || c.row_tags) && $12 AND (NOT ((c.tags || c.row_tags) && $13) OR c.parties && $14))))"
   args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}, []string{"customer:acme"}, []string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}, []string{"customer:acme"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4 AND NOT (e.classification && $5) AND e.classification && $6 AND (NOT (e.classification && $7) OR e.parties && $8) AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND (e.classification || l.classification) @> $10 AND NOT ((e.classification || l.classification) && $11) AND (e.classification || l.classification) && $12 AND (NOT ((e.classification || l.classification) && $13) OR e.parties && $14)))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($15::text[])) AND e.classification @> $16 AND NOT (e.classification && $17) AND e.classification && $18 AND (NOT (e.classification && $19) OR e.parties && $20)))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}, []string{"customer:acme"}, []string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}, []string{"customer:acme"}, []string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}, []string{"customer:acme"}}
 
 ## own-rows
 - typed row exists (o.evidence_id, o.classification)
@@ -189,6 +227,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND ((NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (c.tags && $4) AND c.tags && $5) OR (c.tags @> ARRAY[$6::text] AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND NOT (c.tags && $8))) AND (cardinality(c.row_tags) = 0 OR (((NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND NOT ((c.tags || c.row_tags) && $10) AND (c.tags || c.row_tags) && $11) OR ((c.tags || c.row_tags) @> ARRAY[$12::text] AND NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($13::text[])) AND NOT ((c.tags || c.row_tags) && $14))))))"
   args: []interface {}{[]string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}, []string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (e.classification && $4) AND e.classification && $5) OR (e.classification @> ARRAY[$6::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND NOT (e.classification && $8))) AND (cardinality(l.classification) = 0 OR (((NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND NOT ((e.classification || l.classification) && $10) AND (e.classification || l.classification) && $11) OR ((e.classification || l.classification) @> ARRAY[$12::text] AND NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($13::text[])) AND NOT ((e.classification || l.classification) && $14)))))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($15::text[])) AND NOT (e.classification && $16) AND e.classification && $17) OR (e.classification @> ARRAY[$18::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($19::text[])) AND NOT (e.classification && $20)))))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}, []string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}, []string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}}
 
 ## own-rows, required + parties
 - typed row exists (o.evidence_id, o.classification)
@@ -203,6 +244,9 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND ((NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND c.tags @> $4 AND c.tags && $5 AND c.tags && $6 AND (NOT (c.tags && $7) OR c.parties && $8)) OR (c.tags @> ARRAY[$9::text] AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($10::text[])) AND c.tags @> $11 AND (NOT (c.tags && $12) OR c.parties && $13))) AND (cardinality(c.row_tags) = 0 OR (((NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($14::text[])) AND (c.tags || c.row_tags) @> $15 AND (c.tags || c.row_tags) && $16 AND (c.tags || c.row_tags) && $17 AND (NOT ((c.tags || c.row_tags) && $18) OR c.parties && $19)) OR ((c.tags || c.row_tags) @> ARRAY[$20::text] AND NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($21::text[])) AND (c.tags || c.row_tags) @> $22 AND (NOT ((c.tags || c.row_tags) && $23) OR c.parties && $24))))))"
   args: []interface {}{[]string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, []string{"customer:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}, []string{"customer:acme"}, []string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, []string{"customer:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}, []string{"customer:acme"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4 AND e.classification && $5 AND e.classification && $6 AND (NOT (e.classification && $7) OR e.parties && $8)) OR (e.classification @> ARRAY[$9::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($10::text[])) AND e.classification @> $11 AND (NOT (e.classification && $12) OR e.parties && $13))) AND (cardinality(l.classification) = 0 OR (((NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($14::text[])) AND (e.classification || l.classification) @> $15 AND (e.classification || l.classification) && $16 AND (e.classification || l.classification) && $17 AND (NOT ((e.classification || l.classification) && $18) OR e.parties && $19)) OR ((e.classification || l.classification) @> ARRAY[$20::text] AND NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($21::text[])) AND (e.classification || l.classification) @> $22 AND (NOT ((e.classification || l.classification) && $23) OR e.parties && $24)))))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($25::text[])) AND e.classification @> $26 AND e.classification && $27 AND e.classification && $28 AND (NOT (e.classification && $29) OR e.parties && $30)) OR (e.classification @> ARRAY[$31::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($32::text[])) AND e.classification @> $33 AND (NOT (e.classification && $34) OR e.parties && $35)))))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, []string{"customer:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}, []string{"customer:acme"}, []string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, []string{"customer:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}, []string{"customer:acme"}, []string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, []string{"customer:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}, []string{"customer:acme"}}
 
 ## own-rows malformed (other owner)
 - typed row exists (o.evidence_id, o.classification)
@@ -217,4 +261,7 @@
 - fence class triple
   sql:  "(c.tags IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(c.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND c.tags && $4 AND (cardinality(c.row_tags) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((c.tags || c.row_tags)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[])) AND (c.tags || c.row_tags) && $6)))"
   args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"owner:alice"}, []string{"sales"}}
+- link exists (l)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = l.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification && $4 AND (cardinality(l.classification) = 0 OR (NOT EXISTS (SELECT 1 FROM unnest((e.classification || l.classification)) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($5::text[])) AND (e.classification || l.classification) && $6))) AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)\n\t\tWHERE NOT EXISTS (SELECT 1 FROM evidence e\n\t\t\tWHERE e.id = link_support.id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND e.classification && $8))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"owner:alice"}, []string{"sales"}, []string{"owner:alice"}, []string{"sales"}}
 

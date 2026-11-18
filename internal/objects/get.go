@@ -239,7 +239,8 @@ func (p provenance) at() time.Time {
 }
 
 // readLinks reads the confirmed, unretracted links touching the object that the
-// caller may read (their own evidence and row classification), newest first: identity links become
+// caller may read (every evidence row they rest on and their row classification:
+// sqlfence.LinkExists, ENG-2049), newest first: identity links become
 // aliases, every other link a typed link in its direction.
 func readLinks(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, kinds *domain.KindRegistry,
 	rels *domain.RelationRegistry, ns, entityID string, view *domain.ObjectView) error {
@@ -247,7 +248,7 @@ func readLinks(ctx context.Context, tx pgx.Tx, scope *domain.TagPredicate, kinds
 	ref := domain.EntityRef(entityID)
 	sql := `SELECT l.id, l.relation, l.family, l.from_ref, l.to_ref, COALESCE(l.evidence_id, ''), l.asserted_at, l.valid_from, l.valid_to
 		FROM links l WHERE l.namespace_id = ` + b.arg(ns) + ` AND (l.from_ref = ` + b.arg(ref) + ` OR l.to_ref = $2)
-		  AND l.state = '` + domain.LinkStateConfirmed + `' AND l.retracted_at IS NULL` + b.typedRowVisible("l.evidence_id", "l.classification") + `
+		  AND l.state = '` + domain.LinkStateConfirmed + `' AND l.retracted_at IS NULL` + b.linkVisible("l") + `
 		ORDER BY l.asserted_at DESC, l.id LIMIT ` + strconv.Itoa(getMaxLinks)
 	rows, err := tx.Query(ctx, sql, b.args...)
 	if err != nil {

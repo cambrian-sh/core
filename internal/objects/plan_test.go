@@ -285,7 +285,11 @@ func TestPlan_RowTaggedProbe(t *testing.T) {
 		if !strings.HasPrefix(sql, "SELECT EXISTS (SELECT 1 FROM object_fence_classes WHERE cardinality(row_tags) > 0), ") {
 			t.Fatalf("%s: %s", r.name, sql)
 		}
-		if asksLinks := strings.Contains(sql, "FROM links WHERE cardinality(classification) > 0"); asksLinks != (len(c.Links) > 0) {
+		asksLinks := strings.Contains(sql, "FROM links WHERE cardinality(classification) > 0")
+		if asksSupport := strings.Contains(sql, "FROM links WHERE cardinality(supporting_evidence) > 0"); asksSupport != asksLinks {
+			t.Fatalf("%s: the probe must ask about row-classified AND supported links together (ENG-2049): %s", r.name, sql)
+		}
+		if asksLinks != (len(c.Links) > 0) {
 			t.Fatalf("%s: probe asks about links = %v with %d link filters: %s", r.name, asksLinks, len(c.Links), sql)
 		}
 	}

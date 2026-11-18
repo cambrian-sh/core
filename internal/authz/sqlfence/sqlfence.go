@@ -267,6 +267,38 @@ func TypedRowExists(scope *domain.TagPredicate, refCol, rowCol string, startIdx 
 	return evidenceExists(Evidence("e").WithRowTags(rowCol), scope, refCol, startIdx)
 }
 
+// LinkExists renders "may this reader see the link aliased alias" — the ONE SQL
+// rendering of the link fence (ENG-2049, owner decision 2026-11-18, option a): a
+// link is visible only to a reader allowed to read EVERY evidence row it rests on.
+//
+//   - its cited evidence, as the typed row it is: TypedRowExists over
+//     alias.evidence_id and the link's own classification alias.classification
+//     (ADR-0158 D2), exactly as before;
+//   - AND every id in alias.supporting_evidence (migration 0056, ENG-2032 — the
+//     other rows an identity producer derived the link from) names an evidence
+//     row the reader may read, through the evidence fence alone (Evidence("e"):
+//     classification, owner fence, parties — CheckRow(E_s, P_s)). A supporting id
+//     with no evidence row hides the link (fail closed, as EvidenceExists does).
+//
+// It is the SQL mirror of the query plane's walk guard (postgres linkRefs: the
+// cited ref with the link's row tags plus one ref per supporting id with none,
+// all of which guardNodes requires readable), so a walk and a SQL read can never
+// disagree about a link. Narrow-only: the first conjunct is TypedRowExists
+// unchanged, and for an empty supporting set the second is vacuously true, so a
+// link with no supporting evidence is admitted exactly as TypedRowExists admits
+// it. "" for ScopeMaintenance. Every SQL site that fences a link must use it
+// (TestLinkFencesUseLinkExists).
+func LinkExists(scope *domain.TagPredicate, alias string, startIdx int) (string, []any) {
+	cited, args := TypedRowExists(scope, alias+".evidence_id", alias+".classification", startIdx)
+	if cited == "" {
+		return "", nil
+	}
+	support, sargs := Evidence("e").Where(scope, startIdx+len(args))
+	return cited + ` AND NOT EXISTS (SELECT 1 FROM unnest(` + alias + `.supporting_evidence) AS link_support(id)
+		WHERE NOT EXISTS (SELECT 1 FROM evidence e
+			WHERE e.id = link_support.id` + support + `))`, append(args, sargs...)
+}
+
 // evidenceExists is the EXISTS against the evidence row aliased e, fenced by
 // shape (Evidence("e"), possibly with row tags).
 func evidenceExists(shape Shape, scope *domain.TagPredicate, refCol string, startIdx int) (string, []any) {

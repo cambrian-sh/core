@@ -45,8 +45,8 @@ const (
 //     entities that must carry a predicate.
 //
 // Every read is fenced by scope through the one fence renderer (internal/authz/
-// sqlfence): items by their own classification, links by their own evidence (the
-// query plane's filterLinks rule), entities by the evidence that minted them
+// sqlfence): items by their own classification, links by every evidence row they
+// rest on (sqlfence.LinkExists, the query plane's filterLinks rule), entities by the evidence that minted them
 // (mayKnowEntityExists). A link the caller cannot read does not satisfy a
 // required verb either — hidden and absent read the same (ADR-0128 D12).
 //
@@ -200,7 +200,7 @@ const confirmed = `l.namespace_id = $1 AND l.relation = $2 AND l.state = 'confir
 // endpoint reports confirmed links whose col is not an entity ref of kind.
 func (r *report) endpoint(rule, subject, verb, col, kind string) {
 	args := []any{r.ns, verb, domain.RefPrefixEntity + kind + "/"}
-	fence, fargs := sqlfence.TypedRowExists(r.scope, "l.evidence_id", "l.classification", len(args))
+	fence, fargs := sqlfence.LinkExists(r.scope, "l", len(args))
 	args = append(args, fargs...)
 	r.query(rule, subject, `
 		SELECT l.id, l.`+col+` FROM links l
@@ -213,9 +213,9 @@ func (r *report) endpoint(rule, subject, verb, col, kind string) {
 // cardinality-one verb from the same endpoint (once per pair).
 func (r *report) cardinality(subject, verb string) {
 	args := []any{r.ns, verb}
-	fa, aargs := sqlfence.TypedRowExists(r.scope, "l.evidence_id", "l.classification", len(args))
+	fa, aargs := sqlfence.LinkExists(r.scope, "l", len(args))
 	args = append(args, aargs...)
-	fb, bargs := sqlfence.TypedRowExists(r.scope, "b.evidence_id", "b.classification", len(args))
+	fb, bargs := sqlfence.LinkExists(r.scope, "b", len(args))
 	args = append(args, bargs...)
 	r.query(domain.ViolationCardinality, subject, `
 		SELECT l.id, b.id FROM links l
@@ -234,7 +234,7 @@ func (r *report) requiredLink(subject, verb, fromKind string) {
 	args := []any{r.ns, verb, fromKind, domain.RefPrefixEntity}
 	fe, eargs := sqlfence.TypedRowExists(r.scope, "en.first_seen_evidence", "en.first_seen_classification", len(args))
 	args = append(args, eargs...)
-	fl, largs := sqlfence.TypedRowExists(r.scope, "l.evidence_id", "l.classification", len(args))
+	fl, largs := sqlfence.LinkExists(r.scope, "l", len(args))
 	args = append(args, largs...)
 	r.query(domain.ViolationRequiredLink, subject, `
 		SELECT en.id, ''::text FROM entities en

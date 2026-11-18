@@ -339,8 +339,8 @@ func leastRestrictedOrder(col string) string {
 }
 
 // ConfirmedIdentityLinks implements domain.IdentityScanSource. A link is fenced
-// on its own evidence (the query plane's filterLinks rule), so an evidence-less
-// human link is visible only to ScopeMaintenance.
+// on every evidence row it rests on (viaLink: the query plane's filterLinks rule),
+// so an evidence-less human link is visible only to ScopeMaintenance.
 func (s *PgIdentityScanSource) ConfirmedIdentityLinks(ctx context.Context, scope *domain.TagPredicate, namespace string, limit int) ([]domain.Link, error) {
 	if err := s.check(scope, namespace); err != nil {
 		return nil, err
@@ -350,7 +350,7 @@ func (s *PgIdentityScanSource) ConfirmedIdentityLinks(ctx context.Context, scope
 		 FROM links l
 		 WHERE l.namespace_id=` + a.add(namespace) + `::text AND l.family=` + a.add(domain.LinkFamilyIdentity) + `::text
 		   AND l.state=` + a.add(domain.LinkStateConfirmed) + `::text AND l.retracted_at IS NULL` +
-		a.viaTypedRow(scope, "l.evidence_id", "l.classification") + `
+		a.viaLink(scope, "l") + `
 		 ORDER BY l.id
 		 LIMIT ` + a.add(limit) + `::int`
 	return s.links(ctx, "confirmed identity links", q, a.args)
@@ -370,7 +370,7 @@ func (s *PgIdentityScanSource) CandidateLinksSince(ctx context.Context, scope *d
 		   AND l.retracted_at IS NULL
 		   AND l.mechanism = ANY(` + a.add(mechanisms) + `::text[])
 		   AND (l.recorded_at, l.id) > (` + a.add(after.At) + `::timestamptz, ` + a.add(after.ID) + `::text)` +
-		a.viaTypedRow(scope, "l.evidence_id", "l.classification") + `
+		a.viaLink(scope, "l") + `
 		 ORDER BY l.recorded_at, l.id
 		 LIMIT ` + a.add(limit) + `::int`
 	return s.links(ctx, "candidate links", q, a.args)

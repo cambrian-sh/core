@@ -43,14 +43,15 @@ import (
 // observation that carries its own row classification R (<prop>__rowtags) is
 // visible only when fence(tags) AND fence(tags || R) pass — narrow-only, and for
 // R = ∅ exactly the fence above. A link filter's link likewise
-// (sqlfence.TypedRowExists over links.classification). The planner renders the
+// (sqlfence.LinkExists: links.classification, and every evidence row in
+// links.supporting_evidence readable, ENG-2049). The planner renders the
 // row-tags variants only where the request's snapshot holds row-classified data
 // (rowTagged, probed once per filtered request by visibleClasses in the same
 // REPEATABLE READ transaction): when no fence class carries row tags, no visible
 // value does — the maintainer interns every visible value's triple in the
 // transaction that writes it, and the dictionary is append-only — and when no
-// link carries a classification, TypedRowExists and EvidenceExists admit the
-// same links. So on data without row classification the statement is the one P4
+// link carries a classification or supporting evidence, LinkExists and
+// EvidenceExists admit the same links. So on data without row classification the statement is the one P4
 // shipped, byte for byte (testdata/plan.golden; the benchmark harness ports it),
 // and costs nothing more.
 
@@ -64,7 +65,8 @@ type cursor struct {
 // rowTagged records which row classifications the request's snapshot holds
 // (see ROW CLASSIFICATION above): Values — some fence class carries row tags, so
 // property fences and the visible classes render WithRowTags; Links — some link
-// carries a row classification, so link filters render TypedRowExists. GetObject
+// carries a row classification or supporting evidence (ENG-2049), so link
+// filters render LinkExists. GetObject
 // sets both (a point read; no golden, no probe).
 type rowTagged struct {
 	Values bool
@@ -114,6 +116,15 @@ func (b *sqlb) value(a string, p prop) string {
 // for a typed row (events, observations, links): use typedRowVisible.
 func (b *sqlb) evidenceVisible(refCol string) string {
 	sql, args := sqlfence.EvidenceExists(b.scope, refCol, len(b.args))
+	b.args = append(b.args, args...)
+	return sql
+}
+
+// linkVisible renders "the caller may read the link aliased alias": its cited
+// evidence as a typed row AND every supporting evidence row
+// (sqlfence.LinkExists, ENG-2049) — the one link fence.
+func (b *sqlb) linkVisible(alias string) string {
+	sql, args := sqlfence.LinkExists(b.scope, alias, len(b.args))
 	b.args = append(b.args, args...)
 	return sql
 }
@@ -217,11 +228,11 @@ func (b *sqlb) link(o string, i int, lf linkFilter) string {
 			l+".state = '"+domain.LinkStateConfirmed+"'", l+".retracted_at IS NULL")
 		var ev string
 		if b.rt.Links {
-			ev = b.typedRowVisible(l+".evidence_id", l+".classification")
+			ev = b.linkVisible(l)
 		} else {
-			// No link in the snapshot carries a row classification (rowTagged):
-			// the evidence fence admits exactly what TypedRowExists would, and
-			// the statement stays the one plan.golden pins.
+			// No link in the snapshot carries a row classification or supporting
+			// evidence (rowTagged): the evidence fence admits exactly what
+			// LinkExists would, and the statement stays the one plan.golden pins.
 			ev = b.evidenceVisible(l + ".evidence_id")
 		}
 		if ev != "" {
@@ -301,15 +312,17 @@ func planVisible(scope *domain.TagPredicate, rowTags bool) (string, []any) {
 
 // planRowTagged renders the probe for rowTagged in the request's snapshot: one
 // row, (some fence class carries row tags, some link carries a row
-// classification — FALSE when the request has no link filter). Each EXISTS is
-// served by a partial index holding only row-classified rows
-// (object_fence_classes_row_tagged, migration 0055; idx_links_row_classified,
-// internal/migrate concurrentIndexes), empty until a mapping writes row
-// classification. Run only for a filtered caller.
+// classification or supporting evidence — FALSE when the request has no link
+// filter). Each EXISTS is served by a partial index holding only such rows
+// (object_fence_classes_row_tagged, migration 0055; idx_links_row_classified and
+// idx_links_supported, internal/migrate concurrentIndexes), empty until a
+// mapping writes row classification or a producer records supporting evidence.
+// Run only for a filtered caller.
 func planRowTagged(c checked) string {
 	links := "FALSE"
 	if len(c.Links) > 0 {
-		links = "EXISTS (SELECT 1 FROM links WHERE cardinality(classification) > 0)"
+		links = "(EXISTS (SELECT 1 FROM links WHERE cardinality(classification) > 0)" +
+			" OR EXISTS (SELECT 1 FROM links WHERE cardinality(supporting_evidence) > 0))"
 	}
 	return "SELECT EXISTS (SELECT 1 FROM object_fence_classes WHERE cardinality(row_tags) > 0), " + links
 }

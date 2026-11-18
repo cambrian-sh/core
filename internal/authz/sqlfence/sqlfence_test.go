@@ -1,6 +1,7 @@
 package sqlfence
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -215,4 +216,39 @@ func TestFence_ObjectRowTagVariants(t *testing.T) {
 	if !strings.HasPrefix(ex, base[:len(base)-1]+" AND ") {
 		t.Errorf("ObjectExtraRowTags must keep ObjectExtra's fence first:\nbase: %s\nrow:  %s", base, ex)
 	}
+}
+
+// LinkExists is TypedRowExists over the link's cited evidence, unchanged and
+// first, AND every supporting evidence readable through the evidence fence
+// (ENG-2049): placeholders continue after the cited fence's, "" for maintenance,
+// a nil predicate panics as on the evidence plane.
+func TestFence_LinkExists(t *testing.T) {
+	p := &domain.TagPredicate{ForbiddenTags: []string{"hr"}, PartyScopedTags: []string{"deal:x"}, PartyIdentities: []string{"p1"}}
+	typed, targs := TypedRowExists(p, "l.evidence_id", "l.classification", 2)
+	link, largs := LinkExists(p, "l", 2)
+	if !strings.HasPrefix(link, typed+" AND NOT EXISTS (SELECT 1 FROM unnest(l.supporting_evidence) AS link_support(id)") {
+		t.Errorf("LinkExists must be TypedRowExists first, unchanged, then the supporting-evidence test:\ntyped: %s\nlink:  %s", typed, link)
+	}
+	ev, eargs := Evidence("e").Where(p, 2+len(targs))
+	if !strings.HasSuffix(link, "WHERE e.id = link_support.id"+ev+"))") {
+		t.Errorf("each supporting id must pass the evidence fence (parties included):\n%s", link)
+	}
+	if !strings.Contains(ev, "e.parties &&") {
+		t.Errorf("the supporting fence must be row-aware (parties): %s", ev)
+	}
+	if len(largs) != len(targs)+len(eargs) {
+		t.Errorf("args: %d, want %d + %d", len(largs), len(targs), len(eargs))
+	}
+	if !strings.Contains(link, "$"+strconv.Itoa(2+len(largs))) || strings.Contains(link, "$"+strconv.Itoa(3+len(largs))) {
+		t.Errorf("placeholders must run from $3 to $%d: %s", 2+len(largs), link)
+	}
+	if sql, args := LinkExists(domain.ScopeMaintenance, "l", 0); sql != "" || args != nil {
+		t.Errorf("maintenance must render nothing: %q %v", sql, args)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a nil predicate must panic, as for TypedRowExists")
+		}
+	}()
+	LinkExists(nil, "l", 0)
 }

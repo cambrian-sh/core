@@ -363,6 +363,13 @@ var concurrentIndexes = []concurrentIndex{
 	// column.
 	{name: "idx_links_row_classified", table: "links",
 		using: "(id) WHERE cardinality(classification) > 0", requires: 54},
+	// The same probe's second EXISTS (ENG-2049): link filters render the full
+	// link fence (sqlfence.LinkExists) when some link carries supporting
+	// evidence. 0056's GIN index cannot answer an EXISTS with no array operand,
+	// so this partial btree holds only supported links and the probe stays one
+	// index lookup. 0056 creates the column.
+	{name: "idx_links_supported", table: "links",
+		using: "(id) WHERE cardinality(supporting_evidence) > 0", requires: 56},
 }
 
 // ItemEmbeddingIndexName is the per-dimension partial HNSW index of the ADR-0136 A1 item

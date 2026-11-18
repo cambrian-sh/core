@@ -69,7 +69,7 @@ func TestPg_RowTaggedProbeFollowsTheSnapshot(t *testing.T) {
 	defer func() { _ = tx.Rollback(ctx) }() // test-only: leave the shared dictionary untouched
 	for _, q := range []string{
 		`DELETE FROM object_fence_classes WHERE cardinality(row_tags) > 0`,
-		`DELETE FROM links WHERE cardinality(classification) > 0`,
+		`DELETE FROM links WHERE cardinality(classification) > 0 OR cardinality(supporting_evidence) > 0`,
 	} {
 		if _, err := tx.Exec(ctx, q); err != nil {
 			t.Fatal(err)
@@ -95,6 +95,16 @@ func TestPg_RowTaggedProbeFollowsTheSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	probe("a row-classified fence class", withLink, rowTagged{Values: true})
+	// ENG-2049: a link with supporting evidence needs the full link fence too.
+	if _, err := tx.Exec(ctx, `INSERT INTO links (id, family, from_ref, to_ref, relation, state, mechanism, asserted_by, asserted_at, supporting_evidence)
+		VALUES ('probe-link-supported', 'relation', 'entity:a/1', 'entity:b/2', 'probe_rel', 'confirmed', 'record', 't', now(), '{probe-ev}')`); err != nil {
+		t.Fatal(err)
+	}
+	probe("a link with supporting evidence", withLink, rowTagged{Values: true, Links: true})
+	if _, err := tx.Exec(ctx, `DELETE FROM links WHERE id = 'probe-link-supported'`); err != nil {
+		t.Fatal(err)
+	}
+	probe("supported link gone", withLink, rowTagged{Values: true})
 	if _, err := tx.Exec(ctx, `INSERT INTO links (id, family, from_ref, to_ref, relation, state, mechanism, asserted_by, asserted_at, classification)
 		VALUES ('probe-link', 'relation', 'entity:a/1', 'entity:b/1', 'probe_rel', 'confirmed', 'record', 't', now(), '{cls:restricted}')`); err != nil {
 		t.Fatal(err)

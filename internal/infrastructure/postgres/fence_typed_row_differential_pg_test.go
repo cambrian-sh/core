@@ -443,6 +443,11 @@ func TestFenceRender_TypedSQLGolden(t *testing.T) {
 		{"fence class triple", func(p *domain.TagPredicate) (string, []any) {
 			return sqlfence.FenceClassRowTags("c").Expr(p, 2)
 		}},
+		// ENG-2049: the link fence — typed row exists over the cited evidence,
+		// then every supporting evidence readable.
+		{"link exists (l)", func(p *domain.TagPredicate) (string, []any) {
+			return sqlfence.LinkExists(p, "l", 2)
+		}},
 	}
 	var b strings.Builder
 	for _, fp := range fencePredicates() {
