@@ -187,3 +187,111 @@ func TestPg_DimensionChange_ProjectionCoexistenceBootsAndKeepsRows(t *testing.T)
 		t.Fatalf("the row must survive the model switch: %v (%v)", got, err)
 	}
 }
+
+// ENG-2036 end to end: under ADR-0107 coexistence (a store migrated at 1024 booted at
+// 1536 with the projection on, model m1 → m2) the chunk lane and the fact lane keep
+// working at the new dimension, and the old model stays readable for a switch back.
+// The fact lane needs no coexistence of its own: memory_facts (0020) was dropped by
+// 0021, and fact items carry their vectors in knowledge_item_embeddings (0022), an
+// untyped projection keyed by (item, model) with a per-dimension partial HNSW index
+// built at the boot dimension. The stores are composed as app.go composes them: the
+// knowledge store on the adapter's pool, the fact reader at embedder.model/dimensions.
+//
+// The descriptor tables (tools, skills, agent_profiles) are NOT covered by the
+// projection and break under a dimension change; that is a separate ticket
+// (T-20261118-adr-0107-coexistence-breaks-tool-skill-and), not asserted here.
+func TestPg_DimensionChange_ProjectionCoexistence_ChunkAndFactLanes(t *testing.T) {
+	cfgAt := dimScratchDB(t)
+	ctx := context.Background()
+	unit := func(dims, i int) []float32 { v := make([]float32, dims); v[i] = 1; return v }
+	reg, err := domain.NewKindRegistry([]domain.KindSpec{domain.MemoryFactKindSpec()},
+		[]domain.ResolutionAuthority{domain.ValidTimeSupersessionAuthority{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := func(value, chunk string) domain.KnowledgeItem {
+		day := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+		f := domain.Fact{Subject: "user", Attribute: "pet", Value: value, SubjectKey: "user",
+			AttributeKey: domain.NormalizeFactAttribute("pet"), ValueNorm: domain.NormalizeFactText(value),
+			ValidFrom: &day, AssertedAt: day, Actor: "alice", SourceChunkID: chunk, Quote: value}
+		return f.ToItem("default")
+	}
+	projected := func(dims int, model string) *config.Config {
+		cfg := cfgAt(dims)
+		cfg.Embedder.Model = model
+		cfg.Execution.Retrieval.EmbeddingProjectionWrite = true
+		cfg.Execution.Retrieval.EmbeddingProjectionRead = true
+		return cfg
+	}
+	bypass := &domain.TagPredicate{Bypass: true}
+
+	// Before the switch: model m1 at 1024 writes a chunk and a fact.
+	c1 := projected(1024, "m1")
+	first, err := NewPgVectorAdapter(ctx, c1)
+	if err != nil {
+		t.Fatalf("fresh boot at 1024: %v", err)
+	}
+	if err := first.Save(ctx, &domain.Document{ID: "eng2036-chunk-old", Text: "the user had a cat",
+		DocumentType: domain.DocTypeMemory, Embedding: domain.Embedding{Vector: unit(1024, 3)}, ActivationStrength: 0.1}); err != nil {
+		t.Fatalf("Save at 1024: %v", err)
+	}
+	ks1 := NewPgKnowledgeStore(first.Pool(), reg)
+	oldFact := fact("cat", "eng2036-chunk-old")
+	if _, _, err := ks1.PutItem(ctx, oldFact); err != nil {
+		t.Fatalf("PutItem at 1024: %v", err)
+	}
+	if err := ks1.PutItemEmbeddings(ctx, []domain.ItemEmbedding{{ItemID: oldFact.ID, ModelID: "m1", Vector: unit(1024, 3)}}); err != nil {
+		t.Fatalf("PutItemEmbeddings m1@1024: %v", err)
+	}
+	first.Close()
+
+	// After the switch: m2 at 1536, coexistence.
+	c2 := projected(1536, "m2")
+	p, err := NewPgVectorAdapter(ctx, c2)
+	if err != nil {
+		t.Fatalf("coexistence boot at 1536: %v", err)
+	}
+	defer p.Close()
+
+	// Chunk lane: a write at 1536 lands in the projection and dense search finds it
+	// with the active model's vector hydrated.
+	if err := p.SaveBatch(ctx, []*domain.Document{{ID: "eng2036-chunk-new", Text: "the user has a dog",
+		DocumentType: domain.DocTypeMemory, Embedding: domain.Embedding{Vector: unit(1536, 5)}, ActivationStrength: 0.1}}); err != nil {
+		t.Fatalf("SaveBatch at 1536 under coexistence: %v", err)
+	}
+	res, err := p.Search(ctx, unit(1536, 5), domain.SearchOptions{TopK: 5, Scope: bypass})
+	if err != nil {
+		t.Fatalf("chunk Search at 1536: %v", err)
+	}
+	if len(res) != 1 || res[0].Document.ID != "eng2036-chunk-new" || len(res[0].Document.Embedding.Vector) != 1536 {
+		t.Fatalf("chunk search = %+v, want only the m2 chunk with a 1536-dim vector from the projection", res)
+	}
+
+	// Fact lane: an m2 fact written at 1536 is found by the reader app.go builds.
+	ks2 := NewPgKnowledgeStore(p.Pool(), reg)
+	newFact := fact("dog", "eng2036-chunk-new")
+	if _, _, err := ks2.PutItem(ctx, newFact); err != nil {
+		t.Fatalf("PutItem at 1536: %v", err)
+	}
+	if err := ks2.PutItemEmbeddings(ctx, []domain.ItemEmbedding{{ItemID: newFact.ID, ModelID: "m2", Vector: unit(1536, 5)}}); err != nil {
+		t.Fatalf("PutItemEmbeddings m2@1536 under coexistence: %v", err)
+	}
+	r2 := NewPgFactItemReader(ks2, "default", c2.Embedder.Model, c2.Embedder.Dimensions)
+	hits, err := r2.SearchFacts(ctx, unit(1536, 5), domain.FactSearchOptions{TopK: 5, Scope: bypass})
+	if err != nil {
+		t.Fatalf("SearchFacts m2@1536: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Fact.ID != string(newFact.ID) || hits[0].Score < 0.99 {
+		t.Fatalf("fact search m2 = %+v, want only the m2 fact", hits)
+	}
+
+	// Switch back: the m1 vectors are untouched and still answer at 1024.
+	r1 := NewPgFactItemReader(ks2, "default", "m1", 1024)
+	hits, err = r1.SearchFacts(ctx, unit(1024, 3), domain.FactSearchOptions{TopK: 5, Scope: bypass})
+	if err != nil {
+		t.Fatalf("SearchFacts m1@1024: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Fact.ID != string(oldFact.ID) {
+		t.Fatalf("fact search m1 = %+v, want only the m1 fact", hits)
+	}
+}

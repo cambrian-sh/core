@@ -412,9 +412,13 @@ func (p *PgVectorAdapter) Close() {
 func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 	// Detect an embedder dimension that differs from the store's. Dimension rules:
 	// ADR-0107 (per-model coexistence) and card.core.db-migrations. pgvector cannot
-	// ALTER a VECTOR column, and the chunks/tools/skills/agent_profiles (0007) and
-	// memory_facts (0020) columns are all typed at the dimension the store was
-	// migrated with.
+	// ALTER a VECTOR column, and the chunks/tools/skills/agent_profiles (0007)
+	// columns are all typed at the dimension the store was migrated with (memory_facts,
+	// 0020, was dropped by 0021; fact items keep their vectors in the untyped
+	// knowledge_item_embeddings projection, 0022, which needs no coexistence of its own).
+	// The projection covers chunks only: under coexistence the descriptor tables lose
+	// their vectors and their dense search fails on the dimension
+	// (T-20261118-adr-0107-coexistence-breaks-tool-skill-and, ENG-2038).
 	//
 	// A mismatch is never a migration (ENG-2002). With the projection read on it is
 	// ADR-0107 coexistence; without it boot REFUSES, whatever the document count.
@@ -423,8 +427,7 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 	// documents present) is retired: on any schema past 0007 it failed re-applying
 	// 0001 and left the database unmigratable, it re-ran the shipped destructive
 	// migrations over the tables it had not dropped with no snapshot (an emptied
-	// schema_migrations reads as "no history" to guardDestructive), and memory_facts
-	// stayed at the old dimension. Rejected: widening the drop list (grows with every
+	// schema_migrations reads as "no history" to guardDestructive). Rejected: widening the drop list (grows with every
 	// vector column, still re-runs destructive migrations) and recreating only the
 	// dropped tables at HEAD (a second hand-kept copy of the schema, ADR-0064).
 	// Before that, a restart with a misconfigured dimension once wiped 5882 ingested
@@ -741,8 +744,11 @@ func keepStatedTime(table, col string) string {
 // active model (ADR-0107 stage 3a). Runs in the SAME transaction/statement
 // sequence as the chunk upsert, immediately after it, so the row and its
 // projection cannot diverge on a crash and the FK is always satisfied. Chunks
-// only: descriptor tables (tools, skills, profiles) are rebuilt from source on
-// every boot and have no model-migration problem to solve.
+// only. The descriptor tables (tools, skills, agent_profiles) are NOT projected,
+// and being re-derivable does not save them: their embedding columns are typed at
+// the store's original dimension, so under coexistence their vectors are dropped
+// (getUpsertBuilder) and their dense search fails on the dimension. Open:
+// T-20261118-adr-0107-coexistence-breaks-tool-skill-and (ENG-2038).
 const projectionUpsertSQL = `
 	INSERT INTO chunk_embeddings (chunk_id, model_id, model_version, dims, embedding)
 	VALUES ($1, $2, '', $3, $4)
