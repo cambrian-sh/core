@@ -413,7 +413,10 @@ jobs:
   # this job exists to remove.
   notify-premium:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: verify
+    # Waits for sandbox-e2e as well (owner decision 2026-11-18, ENG-2024): premium's core
+    # pin moves only when the ADR-0157 agent-sandbox gate is green too. Added after
+    # sandbox-e2e first passed on GitHub (run 44251254895).
+    needs: [verify, sandbox-e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch core-pushed to cambrian-sh/premium
