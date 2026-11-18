@@ -183,10 +183,10 @@ func TestPg_ComposeOperatorWiresEverySeamAsBefore(t *testing.T) {
 		}
 	}
 
-	// The handshake: computed from the same seams at the same points. The
-	// unconditional strings are all there; "authored-plans" is still absent, as
-	// before (its check runs before the submitter is decided —
-	// T-20261118-operator-handshake-never-advertises-authored).
+	// The handshake: computed from the same seams. The unconditional strings are
+	// all there, and "authored-plans" is advertised exactly when SubmitPlan is
+	// wired (T-20261118-operator-handshake-never-advertises-authored: the check
+	// used to run before the submitter was decided, so it was never advertised).
 	caps := map[string]bool{}
 	for _, c := range fieldAny(svc, "capabilities").([]string) {
 		caps[c] = true
@@ -198,8 +198,11 @@ func TestPg_ComposeOperatorWiresEverySeamAsBefore(t *testing.T) {
 			t.Errorf("capability %q missing from the handshake", c)
 		}
 	}
-	if caps["authored-plans"] {
-		t.Error(`"authored-plans" is advertised: the capability ordering changed (behaviour must stay as before)`)
+	if isNilAny(fieldAny(svc, "planSubmitter")) {
+		t.Fatal("SubmitPlan is not wired on a booted kernel (SessionMgr and Server exist)")
+	}
+	if !caps["authored-plans"] {
+		t.Error(`"authored-plans" is not advertised although SubmitPlan is wired`)
 	}
 	if cfg.Execution.Retrieval.AgenticRetrievalEnabled != caps["memory-answer"] {
 		t.Errorf("memory-answer advertised = %v with agentic retrieval %v", caps["memory-answer"], cfg.Execution.Retrieval.AgenticRetrievalEnabled)

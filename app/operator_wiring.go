@@ -440,6 +440,23 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 		o.LinkWriter = k.linkReviewLane
 	}
 
+	// Contract 0074 SubmitPlan. Decided BEFORE the handshake below: the
+	// "authored-plans" capability is derived from this seam, and deciding it after
+	// the capability list (as startKernelServices did until
+	// T-20261118-operator-handshake-never-advertises-authored) left the capability
+	// unadvertised on every kernel although SubmitPlan was served.
+	knownAgent := func(id string) bool {
+		if k.Registry == nil {
+			// Cannot verify ⇒ do not warn. A false "no such agent" on
+			// every pin would train an operator to ignore the warning,
+			// and then the real one goes unread too.
+			return true
+		}
+		a, err := k.Registry.GetAgentByName(context.Background(), id)
+		return err == nil && a != nil
+	}
+	o.PlanSubmitter = planSubmitterFor(k, knownAgent)
+
 	// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
 	// build does not advertise and warns on contract-version skew.
 	// ADR-0047 Amendment A2: contract bumped 0047→0048 for the CORE-OPS-1 read/
@@ -919,48 +936,6 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 			return nil
 		},
 	}
-	// Contract 0074: operator-authored plans. The submitter reuses the SAME
-	// execution path a planner-produced plan takes — it hands the plan in via
-	// network.AuthoredPlanMetadataKey rather than opening a second entrypoint,
-	// so session binding, run persistence, checkpointing and the feed are all
-	// the existing code.
-	if k.SessionMgr != nil && k.Server != nil {
-		o.PlanSubmitter = planSubmitter{
-			sessions: func(ctx context.Context, goal string) (string, error) {
-				ses, err := k.SessionMgr.CreateScopedSession(ctx, goal, "",
-					callerScopeFor(ctx, k.Server.Authz))
-				if err != nil {
-					return "", err
-				}
-				return string(ses.ID), nil
-			},
-			execute: func(ctx context.Context, sessionID, planJSON string) {
-				runCtx := operatorRunContext(ctx, sessionID) // ENG-1378, as SendFn
-				go func() {
-					_, err := k.Server.Execute(runCtx, &pb.Handoff{
-						Payload: &pb.Object{Data: []byte("")},
-						Metadata: map[string]string{
-							subnetwork.AuthoredPlanMetadataKey: planJSON,
-						},
-					})
-					if err != nil {
-						slog.Warn("operator SubmitPlan execution failed", "session", sessionID, "err", err)
-					}
-				}()
-			},
-			known: func(id string) bool {
-				if k.Registry == nil {
-					// Cannot verify ⇒ do not warn. A false "no such agent" on
-					// every pin would train an operator to ignore the warning,
-					// and then the real one goes unread too.
-					return true
-				}
-				a, err := k.Registry.GetAgentByName(context.Background(), id)
-				return err == nil && a != nil
-			},
-		}
-	}
-
 	// ADR-0084 D9: the OSS chat lane on the operator plane. Wired only when the chat
 	// TurnService exists (execution.chat_pool_size > 0 + a conversation store), so an
 	// OSS build with chat off honestly reports SendTurn/OpenConversation as Unimplemented
@@ -977,4 +952,44 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 			"seams", unwired)
 	}
 	return operatorSvc, nil
+}
+
+// planSubmitterFor builds the contract 0074 SubmitPlan seam: operator-authored
+// plans. The submitter reuses the SAME execution path a planner-produced plan
+// takes — it hands the plan in via network.AuthoredPlanMetadataKey rather than
+// opening a second entrypoint, so session binding, run persistence,
+// checkpointing and the feed are all the existing code. It returns an untyped
+// nil (never a typed-nil planSubmitter) when the kernel has no session manager
+// or server, so Options.HasPlanSubmitter and the "authored-plans" capability
+// read false exactly when SubmitPlan answers Unimplemented. known reports
+// whether a pinned agent exists (the pin warning).
+func planSubmitterFor(k *Kernel, known func(id string) bool) operator.PlanSubmitter {
+	if k.SessionMgr == nil || k.Server == nil {
+		return nil
+	}
+	return planSubmitter{
+		sessions: func(ctx context.Context, goal string) (string, error) {
+			ses, err := k.SessionMgr.CreateScopedSession(ctx, goal, "",
+				callerScopeFor(ctx, k.Server.Authz))
+			if err != nil {
+				return "", err
+			}
+			return string(ses.ID), nil
+		},
+		execute: func(ctx context.Context, sessionID, planJSON string) {
+			runCtx := operatorRunContext(ctx, sessionID) // ENG-1378, as SendFn
+			go func() {
+				_, err := k.Server.Execute(runCtx, &pb.Handoff{
+					Payload: &pb.Object{Data: []byte("")},
+					Metadata: map[string]string{
+						subnetwork.AuthoredPlanMetadataKey: planJSON,
+					},
+				})
+				if err != nil {
+					slog.Warn("operator SubmitPlan execution failed", "session", sessionID, "err", err)
+				}
+			}()
+		},
+		known: known,
+	}
 }
