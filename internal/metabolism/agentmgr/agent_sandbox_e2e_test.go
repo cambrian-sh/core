@@ -36,7 +36,10 @@ import (
 //     another instance's scratch are unreadable; a path outside the hide-list
 //     is readable (the control);
 //   - Windows (Job Object + low integrity): writes outside the scratch are
-//     denied, reads are NOT, and the report says so (hide_state missing).
+//     denied, reads are NOT, and the report says so (hide_state missing);
+//   - Linux without usable bubblewrap: neither reads nor writes outside the
+//     scratch are confined, and the report names fs_confine and hide_state
+//     missing — that report is what the test asserts there.
 
 type probeReport struct {
 	Read    map[string]string `json:"read"`
@@ -222,9 +225,30 @@ func TestE2E_SandboxedAgentBootsConfined(t *testing.T) {
 		t.Logf("no read confinement on this host (%s); the report names it missing", runtime.GOOS)
 	}
 
-	// Whatever the platform, nothing the agent wrote reached the host's configs/.
-	if _, err := os.Stat(filepath.Join(confDir, "probe-write.txt")); !os.IsNotExist(err) {
-		t.Errorf("the agent's write reached the host configs/ directory: %v", err)
+	// The write confinement is asserted exactly where the report claims it
+	// (D2.5: the boot log is honest). Where fs_confine is enforced (bwrap,
+	// Seatbelt, Windows), nothing the agent wrote may reach the host's
+	// configs/. Where it is missing (Linux without usable bubblewrap: same
+	// uid, configs/ owned by it), the write is not contained, and what must
+	// hold is that the report says so; asserting the write there would test a
+	// confinement the platform never claimed (ENG-2028).
+	plan := planAgent(sb)
+	reached := filepath.Join(confDir, "probe-write.txt")
+	if slices.Contains(plan.Enforced, sandbox.ControlFSConfine) {
+		if rep.Write[confDir] != "denied" {
+			t.Errorf("fs_confine is reported enforced but the agent wrote into configs/: %v", rep.Write)
+		}
+		if _, err := os.Stat(reached); !os.IsNotExist(err) {
+			t.Errorf("the agent's write reached the host configs/ directory: %v", err)
+		}
+	} else {
+		if !slices.ContainsFunc(plan.Missing, func(m string) bool {
+			return strings.HasPrefix(m, string(sandbox.ControlFSConfine)+":")
+		}) || !plan.Degraded() {
+			t.Errorf("fs_confine is not enforced, so the report must name it missing: %s", plan.Summary())
+		}
+		t.Logf("fs_confine missing on this host; the agent's configs/ write was %s, and the report says so: %s",
+			rep.Write[confDir], plan.Summary())
 	}
 
 	// The per-instance directories are removed when the process exits.
