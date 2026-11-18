@@ -95,3 +95,47 @@ func (s *TurnService) turnEntries(ctx context.Context, conv *domain.Conversation
 	}
 	return list
 }
+
+// turnSourceRefs returns the memory records (chunk, document, experience ids) the
+// turn's reply rests on: the union of the SourceRefs of every ledger entry the turn
+// produced — its recalls (recall_ledger.go), its tool results and, transitively
+// through DerivedFrom, the steps of the runs it delegated. The chat lane stores them
+// with the reply (domain.Message.SourceRefs) so an ADR-0137 erase of any of them
+// redacts it (owner decision 2026-11-18, ENG-2109). Kernel records only, never model
+// text, and sorted: the same turn always records the same refs.
+//
+// The whole turn rather than only the [led_…] entries the reply cited: markers are
+// optional (grounded_reply and reply_check default off) and stripped before the reply
+// is stored, so a reply quoting an uncited recall would otherwise keep a forgotten
+// value. The reach is bounded to replies of turns that recalled the record.
+//
+// Read under domain.ScopeMaintenance: the result is ids written onto the reply row,
+// never content shown to a principal, and an entry a tag fence hid here would be a
+// reference the erase could not follow. Scoped by conversation and turn.
+func (s *TurnService) turnSourceRefs(ctx context.Context, conv *domain.Conversation, turnID string) []string {
+	if !s.ledgerOn() || turnID == "" {
+		return nil
+	}
+	list, err := s.g.ledgerR.Find(domain.WithScope(ctx, domain.ScopeMaintenance), domain.LedgerQuery{
+		ConversationID: conv.ID, TurnID: turnID, Limit: stateQueryLimit,
+	})
+	if err != nil {
+		// Not silent (AGENTS.md §3.2): a reply stored without its sources is one a
+		// later erase of them cannot redact.
+		slog.Warn("chat: the reply's sources could not be read; it is stored without them and a forget of them will not redact it",
+			"conversation", conv.ID, "turn", turnID, "err", err)
+		return nil
+	}
+	var refs []string
+	for _, e := range list {
+		for _, r := range e.SourceRefs {
+			if r != "" {
+				refs = append(refs, r)
+			}
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return domain.SortedUniqueIDs(refs)
+}

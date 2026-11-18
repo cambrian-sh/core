@@ -37,6 +37,11 @@ import (
 // described are recomputed inside the transaction (ENG-1858); knowledge items recompute
 // theirs through EraseItemsTx's re-derivation.
 //
+// Chat replies that rested on an erased record (conversation_messages.source_refs) are
+// REDACTED in place, not deleted — text replaced with domain.RedactedReplyText, the row
+// kept so the transcript still reads in order — and listed on the receipt (ENG-2109,
+// redactReplies).
+//
 // Plugin rows that reference the erased evidence (premium ingress studio) are erased by
 // the domain.ErasureParticipant hooks INSIDE the same transaction, before the evidence
 // rows (ADR-0137 D4 step 8, S7). Without a participant for them such a row still fails
@@ -127,6 +132,9 @@ const (
 	eraseObservations     = "observations"
 	eraseLinks            = "links"
 	eraseLedgerEntries    = "ledger_entries"
+	// eraseConversationMessages counts agent replies REDACTED in place (ENG-2109),
+	// not deleted: the transcript keeps the row.
+	eraseConversationMessages = "conversation_messages"
 )
 
 // erasureTarget is one tombstone row (content-free).
@@ -233,12 +241,16 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 		return domain.ErasureReceipt{}, mapError("Erase: receipt", err)
 	}
 	seen := map[[2]string]bool{}
+	var redacted []string
 	for _, t := range run.targets {
 		k := [2]string{t.kind, t.id}
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
+		if t.kind == domain.ErasureTargetConversationMessage {
+			redacted = append(redacted, t.id)
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO memory_erasure_targets
 				(request_id, target_kind, target_id, document_id, content_digest, erased_at)
 			VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)`,
@@ -273,6 +285,10 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 		RequestID: id, Principal: req.Principal, PrincipalKind: req.PrincipalKind, Reason: req.Reason,
 		SelectorKinds: req.Selector.Kinds(), Status: status, ErasedAt: erasedAt.UTC(),
 		Counts: run.counts, Targets: len(seen), PendingSteps: len(cids) + len(bodies) + len(s.tailSteps),
+	}
+	if len(redacted) > 0 {
+		sort.Strings(redacted)
+		rec.RedactedMessages = redacted
 	}
 	if deadline != nil {
 		rec.AsyncDeadline = deadline.UTC()
@@ -498,13 +514,14 @@ func (s *PgErasureStore) eraseDocuments(ctx context.Context, run *erasureRun, do
 	}
 
 	// ADR-0157 D5.6: run-ledger entries that quote these documents (a recall's
-	// hits name chunk and document ids) and everything derived from them. The
+	// hits name chunk and document ids) and everything derived from them, and the
+	// chat replies built from them (ENG-2109, redacted in place). The
 	// chunk ids are read before the cascade deletes the chunks.
 	docChunks, err := collectIDs(ctx, tx, `SELECT id FROM `+TableChunks+` WHERE document_id = ANY($1)`, docs)
 	if err != nil {
 		return false, fmt.Errorf("erase: document chunks: %w", err)
 	}
-	if err := s.eraseLedger(ctx, run, append(append([]string{}, docs...), docChunks...)); err != nil {
+	if err := s.eraseQuoters(ctx, run, append(append([]string{}, docs...), docChunks...)); err != nil {
 		return false, err
 	}
 
@@ -644,7 +661,7 @@ func (s *PgErasureStore) eraseExperiences(ctx context.Context, run *erasureRun, 
 			return false, err
 		}
 	}
-	if err := s.eraseLedger(ctx, run, found); err != nil {
+	if err := s.eraseQuoters(ctx, run, found); err != nil {
 		return false, err
 	}
 	for _, e := range found {
@@ -671,7 +688,7 @@ func (s *PgErasureStore) eraseChunks(ctx context.Context, run *erasureRun, chunk
 		domain.KnowledgeErasure{ValuePredicate: domain.FactPredSourceChunk, ValueTexts: chunkIDs}); err != nil {
 		return err
 	}
-	if err := s.eraseLedger(ctx, run, chunkIDs); err != nil {
+	if err := s.eraseQuoters(ctx, run, chunkIDs); err != nil {
 		return err
 	}
 	for _, st := range []struct{ store, sql string }{
@@ -683,6 +700,51 @@ func (s *PgErasureStore) eraseChunks(ctx context.Context, run *erasureRun, chunk
 		if err := run.exec(ctx, st.store, st.sql, chunkIDs); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// eraseQuoters erases what quotes the memory records refs names, wherever an erase
+// reaches records: the run-ledger entries built from them (eraseLedger) and the chat
+// replies that rest on them (redactReplies).
+func (s *PgErasureStore) eraseQuoters(ctx context.Context, run *erasureRun, refs []string) error {
+	if err := s.eraseLedger(ctx, run, refs); err != nil {
+		return err
+	}
+	return s.redactReplies(ctx, run, refs)
+}
+
+// redactReplies replaces the text of every agent reply whose recorded sources
+// (conversation_messages.source_refs, written by the chat lane with the reply from
+// its turn's ledger entries) meet refs with domain.RedactedReplyText — owner decision
+// 2026-11-18, option B (ENG-2109): a reply that quoted a forgotten document is
+// derived content, so the erase reaches it, but the conversation must stay readable,
+// so the row, its role, seq and created_at stay and only the text goes. One
+// content-free tombstone per reply (target kind conversation_message) puts its id on
+// the receipt (ErasureReceipt.RedactedMessages). The person's own messages and
+// interruption markers are never touched (role = 'agent' only), and a reply an
+// earlier erase redacted is not counted again. It cannot come back: the text is
+// overwritten in this transaction, and a later turn cannot recall the erased record.
+//
+// Not reached (ADR-0137 inventory): a reply that quotes memory its turn did not
+// recall — a later reply repeating an earlier one from the transcript, a message
+// emitted outside a turn (a watch, a scheduled task) — records no sources.
+func (s *PgErasureStore) redactReplies(ctx context.Context, run *erasureRun, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	ids, err := collectIDs(ctx, run.tx, `UPDATE conversation_messages
+		   SET content = $2, redacted_at = now()
+		 WHERE role = $3 AND redacted_at IS NULL AND source_refs ?| $1::text[]
+		RETURNING id`, refs, domain.RedactedReplyText, string(domain.MessageRoleAgent))
+	if err != nil {
+		return fmt.Errorf("erase %s: %w", eraseConversationMessages, err)
+	}
+	if len(ids) > 0 {
+		run.counts[eraseConversationMessages] += len(ids)
+	}
+	for _, id := range ids {
+		run.target(domain.ErasureTargetConversationMessage, id, "", "")
 	}
 	return nil
 }
@@ -861,6 +923,16 @@ func receiptFrom(ctx context.Context, q pgxQuerier, requestID string) (domain.Er
 	}
 	if len(notErasable) > 0 {
 		rec.NotErasableExternal = notErasable
+	}
+	// ENG-2109: the agent replies the erase redacted, from their tombstones.
+	redacted, err := collectIDs(ctx, q, `SELECT target_id FROM memory_erasure_targets
+		WHERE request_id = $1 AND target_kind = $2 ORDER BY target_id`,
+		requestID, domain.ErasureTargetConversationMessage)
+	if err != nil {
+		return domain.ErasureReceipt{}, false, mapError("Receipt", err)
+	}
+	if len(redacted) > 0 {
+		rec.RedactedMessages = redacted
 	}
 	return rec, true, nil
 }

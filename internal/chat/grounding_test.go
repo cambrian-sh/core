@@ -29,7 +29,7 @@ func (l *memLedger) Record(_ context.Context, rec domain.LedgerRecord) (domain.L
 	e := domain.LedgerEntry{
 		ID: fmt.Sprintf("led_%032x", l.n), Kind: rec.Kind, ConversationID: rec.Provenance.ConversationID,
 		TurnID: rec.Provenance.TurnID, RunID: rec.Provenance.RunID, StepIndex: rec.Provenance.StepIndex,
-		ToolName: rec.ToolName, Owner: rec.Provenance.Owner, Body: rec.Body,
+		ToolName: rec.ToolName, Owner: rec.Provenance.Owner, Body: rec.Body, SourceRefs: rec.SourceRefs,
 		Preview: domain.LedgerPreview(rec.Body, 300), CreatedAt: time.Now(),
 	}
 	l.entries = append(l.entries, e)

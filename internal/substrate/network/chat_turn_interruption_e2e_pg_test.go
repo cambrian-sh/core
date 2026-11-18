@@ -84,7 +84,8 @@ func (b blockingHealth) Check(ctx context.Context, _ *healthpb.HealthCheckReques
 
 func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 	pool, ctx := pgscratch.Pool(t, "net_chat_interrupt_test", pgscratch.Options{
-		Migrations: []string{"0002_conversations.sql", "0003_conversation_policy.sql", "0006_conversation_delivery.sql"},
+		Migrations: []string{"0002_conversations.sql", "0003_conversation_policy.sql", "0006_conversation_delivery.sql",
+			"0060_conversation_message_sources.sql"},
 	})
 	store, err := postgres.NewPgConversationStore(ctx, pool)
 	if err != nil {

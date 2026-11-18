@@ -461,6 +461,12 @@ func (s *TurnService) RunTurn(ctx context.Context, conversationID, text, clientI
 // attempted, so a delivery failure never loses what was said. The returned error
 // is therefore a DELIVERY error: the message is valid whether or not it is nil.
 func (s *TurnService) Emit(ctx context.Context, conversationID, text string) (domain.Message, error) {
+	return s.emit(ctx, conversationID, text, nil)
+}
+
+// emit is Emit with the memory records the message rests on (domain.Message.
+// SourceRefs; a turn's reply carries its turn's, ENG-2109).
+func (s *TurnService) emit(ctx context.Context, conversationID, text string, sourceRefs []string) (domain.Message, error) {
 	if strings.TrimSpace(text) == "" {
 		return domain.Message{}, errors.New("chat: emitted text is required")
 	}
@@ -469,6 +475,7 @@ func (s *TurnService) Emit(ctx context.Context, conversationID, text string) (do
 		ConversationID: conversationID,
 		Role:           domain.MessageRoleAgent,
 		Content:        text,
+		SourceRefs:     sourceRefs,
 	})
 	if err != nil {
 		return domain.Message{}, err
@@ -771,7 +778,9 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	// "working on it" after the reply has arrived.
 	s.emitProgress(ctx, req.ConversationID, domain.PhaseWriting, lang)
 
-	msg, derr := s.Emit(ctx, req.ConversationID, reply)
+	// ENG-2109: the reply records what the turn recalled and called, so forgetting any
+	// of those records later redacts it in the transcript.
+	msg, derr := s.emit(ctx, req.ConversationID, reply, s.turnSourceRefs(ctx, conv, userMsg.ID))
 	if derr != nil {
 		slog.Warn("ADR-0090: turn reply stored but not delivered",
 			"conversation", req.ConversationID, "message", msg.ID, "err", derr)

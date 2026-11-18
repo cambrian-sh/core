@@ -180,7 +180,21 @@ type Message struct {
 	// Mirrors the operator plane's command_id discipline (ADR-0047).
 	ClientID  string
 	CreatedAt time.Time
+	// SourceRefs are the memory records (chunk, document, experience ids) an agent
+	// reply rests on: the union of the source refs of the turn's run-ledger entries
+	// (its recalls, tool results and delegated steps), recorded by the chat lane with
+	// the reply. An ADR-0137 erase of any of them redacts the reply
+	// (RedactedReplyText; ENG-2109). Empty on every other message.
+	SourceRefs []string
+	// RedactedAt is when an erase replaced this reply's text with RedactedReplyText;
+	// nil when it never was. The row keeps its role, Seq and CreatedAt.
+	RedactedAt *time.Time
 }
+
+// RedactedReplyText replaces the content of an agent reply that quoted a memory
+// record a principal has since erased (owner decision 2026-11-18, ENG-2109): the
+// message stays in the transcript, in order, without the forgotten value.
+const RedactedReplyText = "[removed: forgotten source]"
 
 // Validate checks the invariants the store relies on. Seq is intentionally not validated:
 // it is assigned by the store.

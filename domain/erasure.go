@@ -96,6 +96,11 @@ const (
 	// ErasureTargetMemoryNote is one entry (one line) of a principal memory-notes
 	// document (ADR-0139 D14), named by MemoryNoteEntryID (ENG-2106).
 	ErasureTargetMemoryNote = "memory_note"
+	// ErasureTargetConversationMessage is an agent reply whose text an erase replaced
+	// with RedactedReplyText because it rested on an erased record (ENG-2109). A
+	// tombstone kind only, never a selector kind: replies are reached through what
+	// they cite.
+	ErasureTargetConversationMessage = "conversation_message"
 )
 
 // Erasure statuses (memory_erasures.status).
@@ -300,6 +305,10 @@ type ErasureReceipt struct {
 	// (ErrErasureNotErasableExternal, ADR-0137 D7). Read from the outbox; empty until
 	// such a step ran.
 	NotErasableExternal []string
+	// RedactedMessages are the ids (sorted) of the agent replies whose text the erase
+	// replaced with RedactedReplyText because they rested on an erased record
+	// (ENG-2109). Read from the tombstones; empty when no reply cited what went.
+	RedactedMessages []string
 	// Replayed is true when this receipt was returned for a retry of a request that had
 	// already been executed: nothing was deleted by this call.
 	Replayed bool

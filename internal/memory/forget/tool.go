@@ -200,8 +200,16 @@ func receiptResult(rec domain.ErasureReceipt) ([]byte, error) {
 		out["erased"], out["erased_count"], out["outcome"] = false, 0, "already_erased"
 		out["tell_the_person"] = fmt.Sprintf("This was already erased by an earlier request (receipt %s); nothing more was erased now.", rec.RequestID)
 	case rec.Targets > 0:
-		out["erased"], out["erased_count"], out["outcome"] = true, rec.Targets, "erased"
-		out["tell_the_person"] = fmt.Sprintf("Erased %d record(s) permanently (receipt %s).", rec.Targets, rec.RequestID)
+		// ENG-2109: replies redacted in the transcript are tombstoned too, but they are
+		// not records the person asked to erase; they are told apart.
+		erased := rec.Targets - len(rec.RedactedMessages)
+		out["erased"], out["erased_count"], out["outcome"] = true, erased, "erased"
+		tell := fmt.Sprintf("Erased %d record(s) permanently (receipt %s).", erased, rec.RequestID)
+		if n := len(rec.RedactedMessages); n > 0 {
+			out["redacted_messages"] = rec.RedactedMessages
+			tell += fmt.Sprintf(" %d earlier chat repl(ies) that quoted it now read %q.", n, domain.RedactedReplyText)
+		}
+		out["tell_the_person"] = tell
 	default:
 		out["erased"], out["erased_count"], out["outcome"] = false, 0, "nothing_erased"
 		out["tell_the_person"] = "Nothing was erased. Say exactly that; do not say it was erased or removed."

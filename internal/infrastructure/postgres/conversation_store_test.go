@@ -25,7 +25,8 @@ import (
 func newConvStore(t *testing.T) (*PgConversationStore, *pgxpool.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := pgscratch.Pool(t, "conv_store_test", pgscratch.Options{
-		Migrations: []string{"0002_conversations.sql", "0003_conversation_policy.sql", "0006_conversation_delivery.sql"},
+		Migrations: []string{"0002_conversations.sql", "0003_conversation_policy.sql", "0006_conversation_delivery.sql",
+			"0060_conversation_message_sources.sql"},
 	})
 	store, err := NewPgConversationStore(ctx, pool)
 	if err != nil {
