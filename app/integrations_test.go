@@ -152,7 +152,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 }
 
 func (r *integrationRig) find(id string) *pb.IntegrationOp {
-	for _, op := range r.m.Integrations() {
+	for _, op := range r.m.Integrations(context.Background()) {
 		if op.GetId() == id {
 			return op
 		}
@@ -205,7 +205,7 @@ func TestIntegrations_EndToEndLifecycle(t *testing.T) {
 		acme.GetSecrets()[0].GetUpdatedAtUnixMs() == 0 || len(acme.GetMissingRequired()) != 0 {
 		t.Fatalf("secret state: %+v", acme.GetSecrets())
 	}
-	all, _ := json.Marshal(r.m.Integrations())
+	all, _ := json.Marshal(r.m.Integrations(t.Context()))
 	if strings.Contains(string(all), "tok-first-1234") {
 		t.Fatal("SECRET LEAK: a read returned the secret value")
 	}

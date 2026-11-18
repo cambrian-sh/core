@@ -92,7 +92,7 @@ func TestD8_RoleWriteIsStoredAndMirroredIntoTheHighestWritableFile(t *testing.T)
 func TestENG1417_StoreIsAuthoritativeOverAHandEditedMirror(t *testing.T) {
 	local := `{"execution": {"supervision": {"ewma_alpha": 0.6}}}`
 	src, dir := d8Source(t, map[string]string{"tuning.local.json": local})
-	outs, err := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.7})
+	outs, err := src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.7})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestD8_TrackedTuningJSONIsNeverRewritten(t *testing.T) {
 	tuning := `{"execution": {"ewma_alpha": 0.5}}`
 	src, dir := d8Source(t, map[string]string{"tuning.json": tuning})
 
-	outs, err := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.8})
+	outs, err := src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestD8_TrackedTuningJSONIsNeverRewritten(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "tuning.local.json"), []byte(local), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outs, _ = src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.7})
+	outs, _ = src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.7})
 	o = outcomeFor(t, outs, "execution.ewma_alpha")
 	if o.WrittenTo != config.SourceTuningLocal {
 		t.Fatalf("want written to tuning.local.json, got %+v", o)
@@ -203,7 +203,7 @@ func TestD8_EnvStillShadowsAWriteThrough(t *testing.T) {
 	local := `{"execution": {"ewma_alpha": 0.6}}`
 	t.Setenv("CAMBRIAN_EXECUTION__EWMA_ALPHA", "0.42")
 	src, _ := d8Source(t, map[string]string{"tuning.local.json": local})
-	outs, _ := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.7})
+	outs, _ := src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.7})
 	o := outcomeFor(t, outs, "execution.ewma_alpha")
 	if o.Effect != operator.EffectShadowed || o.ShadowedBy != "env:CAMBRIAN_EXECUTION__EWMA_ALPHA" || o.WrittenTo != config.SourceTuningLocal {
 		t.Fatalf("want shadowed by env, written to tuning.local.json; got %+v", o)

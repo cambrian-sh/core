@@ -23,7 +23,7 @@ func (s *stubIntegrations) Catalog() []*pb.IntegrationCatalogEntryOp {
 	return []*pb.IntegrationCatalogEntryOp{{Id: "brave-search"}}
 }
 func (s *stubIntegrations) Categories() []string { return []string{"web-search"} }
-func (s *stubIntegrations) Integrations() []*pb.IntegrationOp {
+func (s *stubIntegrations) Integrations(context.Context) []*pb.IntegrationOp {
 	return []*pb.IntegrationOp{{Id: "brave", Enabled: true}}
 }
 func (s *stubIntegrations) Install(_ context.Context, r *pb.InstallIntegrationOpRequest) (ConfigWriteOutcome, *pb.IntegrationOp, error) {

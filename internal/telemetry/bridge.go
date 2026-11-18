@@ -58,8 +58,7 @@ func NewBridgeWithProvider(_ config.TelemetryConfig, mp metric.MeterProvider) do
 	return b
 }
 
-func (b *Bridge) OnTaskCompleted(evt domain.TaskEvent) {
-	ctx := context.Background()
+func (b *Bridge) OnTaskCompleted(ctx context.Context, evt domain.TaskEvent) {
 	if evt.BudgetOverrun {
 		b.budgetOverrunCounter.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("agent_id", evt.AgentID),
@@ -72,22 +71,22 @@ func (b *Bridge) OnTaskCompleted(evt domain.TaskEvent) {
 	}
 }
 
-func (b *Bridge) OnSessionEvicted(agentID string) {
-	b.sessionLeakCounter.Add(context.Background(), 1,
+func (b *Bridge) OnSessionEvicted(ctx context.Context, agentID string) {
+	b.sessionLeakCounter.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("agent_id", agentID)))
 }
 
-func (b *Bridge) OnConwipWait(durationMs int64) {
-	b.conwipWaitHist.Record(context.Background(), durationMs)
+func (b *Bridge) OnConwipWait(ctx context.Context, durationMs int64) {
+	b.conwipWaitHist.Record(ctx, durationMs)
 }
 
-func (b *Bridge) OnSchemaMismatch(agentID, kind string) {
-	b.schemaMismatch.Add(context.Background(), 1,
+func (b *Bridge) OnSchemaMismatch(ctx context.Context, agentID, kind string) {
+	b.schemaMismatch.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("agent_id", agentID),
 			attribute.String("mismatch_type", kind),
 		))
 }
 
-func (b *Bridge) OnPlanCompleted(_ domain.PlanEvent)                       {}
-func (b *Bridge) OnContradictionResolved(_ domain.ContradictionResolution) {}
+func (b *Bridge) OnPlanCompleted(context.Context, domain.PlanEvent)                       {}
+func (b *Bridge) OnContradictionResolved(context.Context, domain.ContradictionResolution) {}

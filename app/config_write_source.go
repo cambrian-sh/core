@@ -40,7 +40,7 @@ type configWriteSource struct {
 	// hotApply applies a value to the running kernel. Returns false when the key
 	// has no live path, which makes the write restart-required rather than
 	// failed — the value IS stored either way.
-	hotApply func(param string, v float64) bool
+	hotApply func(ctx context.Context, param string, v float64) bool
 	// generatorList reports the BOOTED generator list — the base under the
 	// store's overrides. Credential and role validation always go through
 	// effectiveGenerators (store-first), so a generator saved from the console
@@ -100,7 +100,7 @@ func tunableByKey(key string) (tunable, bool) {
 // still persists and takes effect on the next boot — the operator's intent is
 // recorded either way. The reverse order could apply a change that then fails to
 // persist, which is the state that surprises someone after a restart.
-func (c configWriteSource) SetConfig(values map[string]float64) ([]operator.ConfigWriteOutcome, error) {
+func (c configWriteSource) SetConfig(ctx context.Context, values map[string]float64) ([]operator.ConfigWriteOutcome, error) {
 	if c.store == nil {
 		return nil, fmt.Errorf("no configuration store is available")
 	}
@@ -115,12 +115,12 @@ func (c configWriteSource) SetConfig(values map[string]float64) ([]operator.Conf
 
 	out := make([]operator.ConfigWriteOutcome, 0, len(keys))
 	for _, key := range keys {
-		out = append(out, c.setOne(key, values[key]))
+		out = append(out, c.setOne(ctx, key, values[key]))
 	}
 	return out, nil
 }
 
-func (c configWriteSource) setOne(key string, v float64) operator.ConfigWriteOutcome {
+func (c configWriteSource) setOne(ctx context.Context, key string, v float64) operator.ConfigWriteOutcome {
 	res := operator.ConfigWriteOutcome{Key: key}
 
 	t, known := tunableByKey(key)
@@ -176,7 +176,7 @@ func (c configWriteSource) setOne(key string, v float64) operator.ConfigWriteOut
 		return res
 	}
 
-	if t.Param != "" && c.hotApply != nil && c.hotApply(t.Param, v) {
+	if t.Param != "" && c.hotApply != nil && c.hotApply(ctx, t.Param, v) {
 		res.Effect = operator.EffectLive
 		return res
 	}
@@ -281,15 +281,15 @@ func (c configWriteSource) ClearGeneratorKey(generatorID string) error {
 
 // hotApplyFor builds the live-apply hook from the existing ADR-0054 seam, so
 // there is ONE code path that mutates live tunables rather than two that can
-// drift.
+// drift. The hook runs under the SetConfig request's ctx (AGENTS.md §2.7).
 func hotApplyFor(effects interface {
 	SetRuntimeConfig(ctx context.Context, params map[string]float64) error
-}) func(string, float64) bool {
+}) func(context.Context, string, float64) bool {
 	if effects == nil {
 		return nil
 	}
-	return func(param string, v float64) bool {
-		return effects.SetRuntimeConfig(context.Background(), map[string]float64{param: v}) == nil
+	return func(ctx context.Context, param string, v float64) bool {
+		return effects.SetRuntimeConfig(ctx, map[string]float64{param: v}) == nil
 	}
 }
 

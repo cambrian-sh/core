@@ -138,8 +138,8 @@ type stubMCP struct {
 	configured bool
 }
 
-func (s stubMCP) MCPServers() []MCPServerInfo { return s.servers }
-func (s stubMCP) MCPConfigured() bool         { return s.configured }
+func (s stubMCP) MCPServers(context.Context) []MCPServerInfo { return s.servers }
+func (s stubMCP) MCPConfigured() bool                        { return s.configured }
 
 // The `configured` flag is what separates an intentional zero from an absent
 // subsystem. Both are empty lists; only this field tells them apart.

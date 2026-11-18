@@ -38,7 +38,7 @@ type ConfigWriter interface {
 	// partial set can partly succeed and an all-or-nothing result would hide
 	// which field did not take. An error is reserved for a failure of the whole
 	// operation (the store is unreachable).
-	SetConfig(values map[string]float64) ([]ConfigWriteOutcome, error)
+	SetConfig(ctx context.Context, values map[string]float64) ([]ConfigWriteOutcome, error)
 
 	// DeleteConfig removes stored overrides, reverting each key to the layer
 	// beneath the store.
@@ -103,7 +103,7 @@ func (s *Service) SetConfig(ctx context.Context, req *pb.SetConfigOpRequest) (*p
 		"set_config", "config", configTargetID(req.GetValues()), summariseConfigWrite(req.GetValues()),
 		func() error {
 			var applyErr error
-			outcomes, applyErr = s.configWriter.SetConfig(req.GetValues())
+			outcomes, applyErr = s.configWriter.SetConfig(ctx, req.GetValues())
 			return applyErr
 		})
 	if err != nil {

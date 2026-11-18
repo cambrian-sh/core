@@ -1005,7 +1005,7 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 			return err
 		}
 
-		dHandoff := protoToHandoff(protoHandoff, s.TelemetryObserver)
+		dHandoff := protoToHandoff(stream.Context(), protoHandoff, s.TelemetryObserver)
 
 		// ADR-0090: a signal from a registered ingress is a conversational turn, not a
 		// trigger. It is routed to the chat lane and this iteration ends — the planner

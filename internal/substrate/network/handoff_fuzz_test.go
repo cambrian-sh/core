@@ -124,6 +124,6 @@ func FuzzProtoToHandoff(f *testing.F) {
 			return // invalid protobuf, skip
 		}
 		// Must not panic — domain rejections are valid behavior
-		protoToHandoff(&pbHandoff, domain.NoopTelemetryObserver{})
+		protoToHandoff(t.Context(), &pbHandoff, domain.NoopTelemetryObserver{})
 	})
 }

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+
 	"testing"
 
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
@@ -14,7 +16,7 @@ import (
 // absent submitter must be an untyped nil — a typed-nil planSubmitter would make
 // HasPlanSubmitter report true on a kernel that cannot run a plan.
 func TestPlanSubmitterFor_WiredExactlyWhenSessionsAndServerExist(t *testing.T) {
-	known := func(string) bool { return true }
+	known := func(context.Context, string) bool { return true }
 	cases := []struct {
 		name string
 		k    *Kernel

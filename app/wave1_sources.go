@@ -97,7 +97,7 @@ type mcpLister struct {
 // the console renders with its add affordance, not an absent subsystem.
 func (m mcpLister) MCPConfigured() bool { return m.runtime != nil }
 
-func (m mcpLister) MCPServers() []operator.MCPServerInfo {
+func (m mcpLister) MCPServers(ctx context.Context) []operator.MCPServerInfo {
 	var servers []mcp.ServerConfig
 	if m.runtime != nil {
 		servers = m.runtime.list()
@@ -138,7 +138,7 @@ func (m mcpLister) MCPServers() []operator.MCPServerInfo {
 		}
 		// ADR-0139 D8: a stdio server's effective containment, as on IntegrationOp.
 		if m.runtime != nil {
-			if rep, ok := m.runtime.containment(m.connector, s.ID); ok {
+			if rep, ok := m.runtime.containment(ctx, m.connector, s.ID); ok {
 				info.Containment = containmentOp(rep)
 			}
 		}
@@ -380,14 +380,14 @@ func vectorCounterFor(v any) func(ctx context.Context) int64 {
 type planSubmitter struct {
 	sessions func(ctx context.Context, goal string) (string, error)
 	execute  func(ctx context.Context, sessionID, planJSON string)
-	known    func(id string) bool
+	known    func(ctx context.Context, id string) bool
 }
 
-func (p planSubmitter) KnownAgent(id string) bool {
+func (p planSubmitter) KnownAgent(ctx context.Context, id string) bool {
 	if p.known == nil {
 		return true // cannot verify ⇒ do not warn; a false alarm on every pin is worse
 	}
-	return p.known(id)
+	return p.known(ctx, id)
 }
 
 // SubmitPlan attaches the plan to a session and starts it.

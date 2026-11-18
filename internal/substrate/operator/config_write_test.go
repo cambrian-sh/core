@@ -19,7 +19,7 @@ type stubConfigWriter struct {
 	gotKeys   []string
 }
 
-func (s *stubConfigWriter) SetConfig(v map[string]float64) ([]ConfigWriteOutcome, error) {
+func (s *stubConfigWriter) SetConfig(_ context.Context, v map[string]float64) ([]ConfigWriteOutcome, error) {
 	s.gotValues = v
 	return s.outs, s.err
 }

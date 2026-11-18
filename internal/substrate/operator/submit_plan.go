@@ -33,7 +33,7 @@ type PlanSubmitter interface {
 	SubmitPlan(ctx context.Context, sessionID, subject string, steps []domain.Step) (sessID, planID string, err error)
 	// KnownAgent reports whether an agent id exists, for pin validation. A pin on
 	// a non-existent agent is worth flagging BEFORE it strands a step at runtime.
-	KnownAgent(id string) bool
+	KnownAgent(ctx context.Context, id string) bool
 }
 
 // SubmitPlan validates and (unless dry_run) runs an operator-authored plan.
@@ -46,7 +46,9 @@ func (s *Service) SubmitPlan(ctx context.Context, req *pb.SubmitPlanOpRequest) (
 	}
 
 	steps := authoredStepsToDomain(req.GetSteps())
-	issues, order := validateAuthoredPlan(steps, s.planSubmitter.KnownAgent)
+	issues, order := validateAuthoredPlan(steps, func(id string) bool {
+		return s.planSubmitter.KnownAgent(ctx, id)
+	})
 
 	fatal := false
 	for _, i := range issues {

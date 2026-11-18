@@ -445,14 +445,14 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// the capability list (as startKernelServices did until
 	// T-20261118-operator-handshake-never-advertises-authored) left the capability
 	// unadvertised on every kernel although SubmitPlan was served.
-	knownAgent := func(id string) bool {
+	knownAgent := func(ctx context.Context, id string) bool {
 		if k.Registry == nil {
 			// Cannot verify ⇒ do not warn. A false "no such agent" on
 			// every pin would train an operator to ignore the warning,
 			// and then the real one goes unread too.
 			return true
 		}
-		a, err := k.Registry.GetAgentByName(context.Background(), id)
+		a, err := k.Registry.GetAgentByName(ctx, id)
 		return err == nil && a != nil
 	}
 	o.PlanSubmitter = planSubmitterFor(k, knownAgent)
@@ -963,7 +963,7 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 // or server, so Options.HasPlanSubmitter and the "authored-plans" capability
 // read false exactly when SubmitPlan answers Unimplemented. known reports
 // whether a pinned agent exists (the pin warning).
-func planSubmitterFor(k *Kernel, known func(id string) bool) operator.PlanSubmitter {
+func planSubmitterFor(k *Kernel, known func(ctx context.Context, id string) bool) operator.PlanSubmitter {
 	if k.SessionMgr == nil || k.Server == nil {
 		return nil
 	}

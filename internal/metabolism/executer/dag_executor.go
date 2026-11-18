@@ -501,7 +501,7 @@ func (d *DAGExecutor) executeStep(
 			}
 		}
 		if d.Observer != nil {
-			d.Observer.OnTaskCompleted(event)
+			d.Observer.OnTaskCompleted(ctx, event)
 		}
 	}
 	// Skip verification for budget-signal responses — the agent refused the task
@@ -1648,7 +1648,7 @@ coordinate:
 		}
 	}
 	if d.Observer != nil {
-		d.Observer.OnPlanCompleted(planEvent)
+		d.Observer.OnPlanCompleted(ctx, planEvent)
 	}
 
 	// ADR-0049 A2.2 / ADR-0095: the plan-outcome hook — close the episode, write the

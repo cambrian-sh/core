@@ -28,10 +28,10 @@ func TestNewBridge_NoExporterReturnsNoopObserver(t *testing.T) {
 func TestNoopObserver_AllMethodsNoPanic(t *testing.T) {
 	cfg := config.TelemetryConfig{}
 	obs := telemetry.NewBridge(cfg)
-	obs.OnTaskCompleted(domain.TaskEvent{})
-	obs.OnSessionEvicted("agent-1")
-	obs.OnConwipWait(100)
-	obs.OnSchemaMismatch("agent-1", "missing-field")
+	obs.OnTaskCompleted(t.Context(), domain.TaskEvent{})
+	obs.OnSessionEvicted(t.Context(), "agent-1")
+	obs.OnConwipWait(t.Context(), 100)
+	obs.OnSchemaMismatch(t.Context(), "agent-1", "missing-field")
 }
 
 func TestBridge_OnTaskCompleted_BudgetOverrunIncrementsCounter(t *testing.T) {
@@ -47,7 +47,7 @@ func TestBridge_OnTaskCompleted_BudgetOverrunIncrementsCounter(t *testing.T) {
 		BudgetOverrun: true,
 		TotalTokens:   1500,
 	}
-	obs.OnTaskCompleted(evt)
+	obs.OnTaskCompleted(t.Context(), evt)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -90,7 +90,7 @@ func TestBridge_OnTaskCompleted_FallbackModelUsedIncrementsCounter(t *testing.T)
 		FallbackModelUsed: true,
 		ActualModelID:     "fallback-model",
 	}
-	obs.OnTaskCompleted(evt)
+	obs.OnTaskCompleted(t.Context(), evt)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

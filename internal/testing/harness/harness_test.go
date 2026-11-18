@@ -42,9 +42,9 @@ func TestSystemHarness_ExecutePlan_Within100ms(t *testing.T) {
 
 func TestCapturingObserver_RecordsAllMethods(t *testing.T) {
 	obs := &harness.CapturingTelemetryObserver{}
-	obs.OnSessionEvicted("agent-1")
-	obs.OnConwipWait(50)
-	obs.OnSchemaMismatch("agent-1", "missing-field")
+	obs.OnSessionEvicted(t.Context(), "agent-1")
+	obs.OnConwipWait(t.Context(), 50)
+	obs.OnSchemaMismatch(t.Context(), "agent-1", "missing-field")
 
 	if len(obs.EvictedAgentIDs) != 1 {
 		t.Errorf("EvictedAgentIDs = %d, want 1", len(obs.EvictedAgentIDs))

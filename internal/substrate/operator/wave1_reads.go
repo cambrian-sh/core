@@ -36,7 +36,7 @@ type CheckpointLister interface {
 // MCPServerLister enumerates the configured external MCP servers (ADR-0043) with
 // live connection state.
 type MCPServerLister interface {
-	MCPServers() []MCPServerInfo
+	MCPServers(ctx context.Context) []MCPServerInfo
 	// MCPConfigured distinguishes "no servers configured" from "MCP is not set up
 	// on this build at all".
 	MCPConfigured() bool
@@ -137,11 +137,11 @@ func (s *Service) ListSessionCheckpoints(ctx context.Context, req *pb.ListSessio
 }
 
 // ListMCPServers enumerates external MCP servers with live connection state.
-func (s *Service) ListMCPServers(_ context.Context, _ *pb.ListMCPServersOpRequest) (*pb.ListMCPServersOpResponse, error) {
+func (s *Service) ListMCPServers(ctx context.Context, _ *pb.ListMCPServersOpRequest) (*pb.ListMCPServersOpResponse, error) {
 	if s.mcpServers == nil {
 		return nil, status.Error(codes.Unimplemented, "this kernel does not report MCP servers")
 	}
-	servers := s.mcpServers.MCPServers()
+	servers := s.mcpServers.MCPServers(ctx)
 	out := make([]*pb.MCPServerOp, 0, len(servers))
 	for _, m := range servers {
 		out = append(out, &pb.MCPServerOp{

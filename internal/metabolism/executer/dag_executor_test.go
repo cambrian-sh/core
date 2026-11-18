@@ -1156,12 +1156,14 @@ type testObserver struct {
 	onTaskCompleted func(domain.TaskEvent)
 }
 
-func (o *testObserver) OnTaskCompleted(evt domain.TaskEvent)                     { o.onTaskCompleted(evt) }
-func (o *testObserver) OnSessionEvicted(_ string)                                {}
-func (o *testObserver) OnConwipWait(_ int64)                                     {}
-func (o *testObserver) OnSchemaMismatch(_, _ string)                             {}
-func (o *testObserver) OnPlanCompleted(_ domain.PlanEvent)                       {}
-func (o *testObserver) OnContradictionResolved(_ domain.ContradictionResolution) {}
+func (o *testObserver) OnTaskCompleted(_ context.Context, evt domain.TaskEvent) {
+	o.onTaskCompleted(evt)
+}
+func (o *testObserver) OnSessionEvicted(context.Context, string)                                {}
+func (o *testObserver) OnConwipWait(context.Context, int64)                                     {}
+func (o *testObserver) OnSchemaMismatch(context.Context, string, string)                        {}
+func (o *testObserver) OnPlanCompleted(context.Context, domain.PlanEvent)                       {}
+func (o *testObserver) OnContradictionResolved(context.Context, domain.ContradictionResolution) {}
 
 func TestDAGExecutor_ObserverOnTaskCompletedCalled(t *testing.T) {
 	var captured domain.TaskEvent

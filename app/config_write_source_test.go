@@ -27,7 +27,7 @@ func writeSource(t *testing.T, dir string, applied map[string]float64) configWri
 	return configWriteSource{
 		store: store,
 		prov:  prov,
-		hotApply: func(param string, v float64) bool {
+		hotApply: func(_ context.Context, param string, v float64) bool {
 			if applied == nil {
 				return false
 			}
@@ -58,7 +58,7 @@ func TestSetConfig_ShadowedWriteIsReportedAtWriteTime(t *testing.T) {
 	t.Setenv("CAMBRIAN_EXECUTION__EWMA_ALPHA", "0.42")
 
 	src := writeSource(t, dir, nil)
-	outs, err := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.8})
+	outs, err := src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.8})
 	if err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestSetConfig_LiveKeyIsAppliedAndStored(t *testing.T) {
 	applied := map[string]float64{}
 	src := writeSource(t, dir, applied)
 
-	outs, err := src.SetConfig(map[string]float64{"execution.blend_weight_cosine": 0.6})
+	outs, err := src.SetConfig(t.Context(), map[string]float64{"execution.blend_weight_cosine": 0.6})
 	if err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestSetConfig_KeyWithoutLivePathIsRestartRequired(t *testing.T) {
 	dir := bundle(t, map[string]string{})
 	src := writeSource(t, dir, map[string]float64{})
 
-	outs, err := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.7})
+	outs, err := src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.7})
 	if err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSetConfig_OutOfRangeIsRejectedAndNotStored(t *testing.T) {
 	dir := bundle(t, map[string]string{})
 	src := writeSource(t, dir, map[string]float64{})
 
-	outs, _ := src.SetConfig(map[string]float64{"execution.blend_weight_cosine": 50})
+	outs, _ := src.SetConfig(t.Context(), map[string]float64{"execution.blend_weight_cosine": 50})
 	o := outcomeFor(t, outs, "execution.blend_weight_cosine")
 
 	if o.Effect != operator.EffectRejected || o.Set {
@@ -144,7 +144,7 @@ func TestSetConfig_NonFiniteIsRejected(t *testing.T) {
 	src := writeSource(t, dir, map[string]float64{})
 
 	for name, v := range map[string]float64{"NaN": math.NaN(), "Inf": math.Inf(1)} {
-		outs, _ := src.SetConfig(map[string]float64{"execution.blend_weight_cosine": v})
+		outs, _ := src.SetConfig(t.Context(), map[string]float64{"execution.blend_weight_cosine": v})
 		if o := outcomeFor(t, outs, "execution.blend_weight_cosine"); o.Effect != operator.EffectRejected {
 			t.Fatalf("%s: effect = %q, want rejected", name, o.Effect)
 		}
@@ -157,7 +157,7 @@ func TestSetConfig_UnknownKeySkipsWithoutLosingValidWrites(t *testing.T) {
 	dir := bundle(t, map[string]string{})
 	src := writeSource(t, dir, map[string]float64{})
 
-	outs, err := src.SetConfig(map[string]float64{
+	outs, err := src.SetConfig(t.Context(), map[string]float64{
 		"execution.blend_weight_cosine": 0.5,
 		"execution.retired_axis":        0.9,
 	})
@@ -179,7 +179,7 @@ func TestDeleteConfig_UnpinsTheKey(t *testing.T) {
 	dir := bundle(t, map[string]string{})
 	src := writeSource(t, dir, map[string]float64{})
 
-	if _, err := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.7}); err != nil {
+	if _, err := src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.7}); err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
 	if _, err := src.DeleteConfig([]string{"execution.ewma_alpha"}); err != nil {
@@ -302,8 +302,8 @@ func TestSetConfig_SurvivesIntoTheNextConfigLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first load: %v", err)
 	}
-	src := configWriteSource{store: store, prov: prov, hotApply: func(string, float64) bool { return false }}
-	if _, err := src.SetConfig(map[string]float64{"execution.ewma_alpha": 0.73}); err != nil {
+	src := configWriteSource{store: store, prov: prov, hotApply: func(context.Context, string, float64) bool { return false }}
+	if _, err := src.SetConfig(t.Context(), map[string]float64{"execution.ewma_alpha": 0.73}); err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
 	_ = store.Close()

@@ -203,7 +203,7 @@ func (s *stubSubmitter) SubmitPlan(_ context.Context, sessionID, subject string,
 	s.gotSteps = steps
 	return "sess-1", "plan-1", nil
 }
-func (s *stubSubmitter) KnownAgent(id string) bool {
+func (s *stubSubmitter) KnownAgent(_ context.Context, id string) bool {
 	if s.knownFn == nil {
 		return true
 	}

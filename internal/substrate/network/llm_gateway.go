@@ -709,7 +709,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	}
 	defer release()
 	if g.Observer != nil {
-		g.Observer.OnConwipWait(time.Since(start).Milliseconds())
+		g.Observer.OnConwipWait(ctx, time.Since(start).Milliseconds())
 	}
 
 	lc, err := g.beginLeaseCall(ctx, sessionID, req)

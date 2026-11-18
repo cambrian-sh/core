@@ -37,7 +37,7 @@ func TestSetConfig_RefusesValueTheLoadRulesReject(t *testing.T) {
 	}
 	src := configWriteSource{store: store, prov: prov, configPath: cfgPath}
 
-	outs, err := src.SetConfig(map[string]float64{
+	outs, err := src.SetConfig(t.Context(), map[string]float64{
 		"execution.cross_verify_rate": 1.5, // in the catalogue range, outside [0, 1]
 		"execution.ewma_alpha":        0.4, // valid: still written
 	})

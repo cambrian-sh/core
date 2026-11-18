@@ -27,7 +27,7 @@ import (
 type IntegrationManager interface {
 	Catalog() []*pb.IntegrationCatalogEntryOp
 	Categories() []string
-	Integrations() []*pb.IntegrationOp
+	Integrations(ctx context.Context) []*pb.IntegrationOp
 	Install(ctx context.Context, req *pb.InstallIntegrationOpRequest) (ConfigWriteOutcome, *pb.IntegrationOp, error)
 	Update(ctx context.Context, req *pb.UpdateIntegrationOpRequest) (ConfigWriteOutcome, *pb.IntegrationOp, error)
 	SetSecret(ctx context.Context, id, name, value string) (ConfigWriteOutcome, *pb.IntegrationOp, error)
@@ -80,11 +80,11 @@ func (s *Service) ListIntegrationCatalog(_ context.Context, _ *pb.ListIntegratio
 }
 
 // ListIntegrations returns every installed server with state and health.
-func (s *Service) ListIntegrations(_ context.Context, _ *pb.ListIntegrationsOpRequest) (*pb.ListIntegrationsOpResponse, error) {
+func (s *Service) ListIntegrations(ctx context.Context, _ *pb.ListIntegrationsOpRequest) (*pb.ListIntegrationsOpResponse, error) {
 	if err := s.needIntegrations(); err != nil {
 		return nil, err
 	}
-	return &pb.ListIntegrationsOpResponse{Integrations: s.integrations.Integrations(), Configured: true}, nil
+	return &pb.ListIntegrationsOpResponse{Integrations: s.integrations.Integrations(ctx), Configured: true}, nil
 }
 
 // integrationMutation runs one audited, deduped mutation and shapes the reply.

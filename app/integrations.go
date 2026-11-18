@@ -56,25 +56,25 @@ func (m *integrationManager) Catalog() []*pb.IntegrationCatalogEntryOp {
 
 func (m *integrationManager) Categories() []string { return m.catalog.Categories() }
 
-func (m *integrationManager) Integrations() []*pb.IntegrationOp {
+func (m *integrationManager) Integrations(ctx context.Context) []*pb.IntegrationOp {
 	stored := m.writer.storedMCPServers()
 	fileIDs := m.writer.fileMCPServerIDs()
 	var out []*pb.IntegrationOp
 	for _, sc := range m.runtime.list() {
-		out = append(out, m.integrationOp(sc.ID, stored, fileIDs))
+		out = append(out, m.integrationOp(ctx, sc.ID, stored, fileIDs))
 	}
 	return out
 }
 
 // one returns the read model for one id, or nil.
-func (m *integrationManager) one(id string) *pb.IntegrationOp {
+func (m *integrationManager) one(ctx context.Context, id string) *pb.IntegrationOp {
 	if _, ok := m.runtime.get(id); !ok {
 		return nil
 	}
-	return m.integrationOp(id, m.writer.storedMCPServers(), m.writer.fileMCPServerIDs())
+	return m.integrationOp(ctx, id, m.writer.storedMCPServers(), m.writer.fileMCPServerIDs())
 }
 
-func (m *integrationManager) integrationOp(id string, stored map[string]config.StoredMCPServer, fileIDs map[string]bool) *pb.IntegrationOp {
+func (m *integrationManager) integrationOp(ctx context.Context, id string, stored map[string]config.StoredMCPServer, fileIDs map[string]bool) *pb.IntegrationOp {
 	sc, _ := m.runtime.get(id)
 	cfg, _, hasCfg := m.runtime.config(id)
 	op := &pb.IntegrationOp{Id: id, Name: id, Transport: sc.Transport}
@@ -138,7 +138,7 @@ func (m *integrationManager) integrationOp(id string, stored map[string]config.S
 	// what the server would get), structured for the console; the summary
 	// string keeps the same text for older consoles
 	// (T-20261106-integrationop-has-no-structured-containment).
-	if rep, ok := m.runtime.containment(m.connector, id); ok {
+	if rep, ok := m.runtime.containment(ctx, m.connector, id); ok {
 		op.PolicySummary += "; " + rep.Summary()
 		op.Containment = containmentOp(rep)
 	}
@@ -360,10 +360,10 @@ func (m *integrationManager) Install(ctx context.Context, req *pb.InstallIntegra
 		}
 	}
 	out := m.writer.saveMCPEntry(entry)
-	return out, m.after(out, id), nil
+	return out, m.after(ctx, out, id), nil
 }
 
-func (m *integrationManager) Update(_ context.Context, req *pb.UpdateIntegrationOpRequest) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
+func (m *integrationManager) Update(ctx context.Context, req *pb.UpdateIntegrationOpRequest) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
 	id := req.GetId()
 	key := config.MCPServerOverrideKey(id)
 	cur, ok := m.effective(id)
@@ -403,14 +403,14 @@ func (m *integrationManager) Update(_ context.Context, req *pb.UpdateIntegration
 		next.ClassificationTags = req.GetClassificationTags()
 	}
 	out := m.writer.saveMCPEntry(next)
-	return out, m.after(out, id), nil
+	return out, m.after(ctx, out, id), nil
 }
 
 // SetTrustTier sets (tier != "") or clears (tier == "") the server's own
 // ADR-0139 D8 trust tier — any tier, raise or lower (owner decision
 // 2026-11-15) — and saves it like every console edit (the server restarts on
 // it). It returns the tier the server carried before, for the audit.
-func (m *integrationManager) SetTrustTier(_ context.Context, id, tier string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, string, error) {
+func (m *integrationManager) SetTrustTier(ctx context.Context, id, tier string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, string, error) {
 	key := config.MCPServerOverrideKey(id)
 	cur, ok := m.effective(id)
 	if !ok {
@@ -420,7 +420,7 @@ func (m *integrationManager) SetTrustTier(_ context.Context, id, tier string) (o
 	// resolves (catalog tier or the configured default), else the catalog's.
 	before := cur.TrustTier
 	if before == "" {
-		if op := m.one(id); op != nil {
+		if op := m.one(ctx, id); op != nil {
 			before = op.GetContainment().GetTier()
 			if before == "" {
 				before = op.GetTrustTier()
@@ -433,7 +433,7 @@ func (m *integrationManager) SetTrustTier(_ context.Context, id, tier string) (o
 	next := cur
 	next.TrustTier = tier
 	out := m.writer.saveMCPEntry(next)
-	return out, m.after(out, id), before, nil
+	return out, m.after(ctx, out, id), before, nil
 }
 
 func (m *integrationManager) SetSecret(ctx context.Context, id, name, value string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
@@ -446,8 +446,8 @@ func (m *integrationManager) SetSecret(ctx context.Context, id, name, value stri
 		return rejected(mcp.EnvSecretName(id, name), fmt.Sprintf("%q is not a secret field of integration %q", name, id)), nil, nil
 	}
 	storeName, envVar := m.secretLocation(id, cur, f)
-	out := m.writer.setMCPSecret(context.Background(), id, storeName, envVar, value)
-	return out, m.after(out, id), nil
+	out := m.writer.setMCPSecret(ctx, id, storeName, envVar, value)
+	return out, m.after(ctx, out, id), nil
 }
 
 func (m *integrationManager) ClearSecret(ctx context.Context, id, name string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
@@ -470,10 +470,10 @@ func (m *integrationManager) ClearSecret(ctx context.Context, id, name string) (
 	} else {
 		res.Effect = operator.EffectRestartRequired
 	}
-	return res, m.after(res, id), nil
+	return res, m.after(ctx, res, id), nil
 }
 
-func (m *integrationManager) SetEnabled(_ context.Context, id string, enabled bool) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
+func (m *integrationManager) SetEnabled(ctx context.Context, id string, enabled bool) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
 	key := config.MCPServerOverrideKey(id)
 	cur, ok := m.effective(id)
 	if !ok {
@@ -487,14 +487,14 @@ func (m *integrationManager) SetEnabled(_ context.Context, id string, enabled bo
 		}
 		// Judged on the read model so "enable" and the console's
 		// missing_required can never disagree.
-		if op := m.one(id); op != nil && len(op.GetMissingRequired()) > 0 {
+		if op := m.one(ctx, id); op != nil && len(op.GetMissingRequired()) > 0 {
 			return rejected(key, "cannot start until these are set: "+strings.Join(op.GetMissingRequired(), ", ")), op, nil
 		}
 	}
 	next := cur
 	next.Enabled = &enabled
 	out := m.writer.saveMCPEntry(next)
-	return out, m.after(out, id), nil
+	return out, m.after(ctx, out, id), nil
 }
 
 func (m *integrationManager) Remove(ctx context.Context, id string, keepSecrets bool) (operator.ConfigWriteOutcome, error) {
@@ -527,12 +527,12 @@ func (m *integrationManager) Remove(ctx context.Context, id string, keepSecrets 
 // (T-20261106-integrations-no-revert-to-file-for-an-mcp). The store write and
 // the live re-apply are configWriteSource.revertMCPEntryToFile — the same
 // writer and connector closures every other mutation ends in.
-func (m *integrationManager) RevertToFile(_ context.Context, id string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
+func (m *integrationManager) RevertToFile(ctx context.Context, id string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
 	if m.runtime.source(id) == mcpSourcePlugin {
 		return m.notEditable(id, config.MCPServerOverrideKey(id)), nil, nil
 	}
 	out := m.writer.revertMCPEntryToFile(id)
-	return out, m.after(out, id), nil
+	return out, m.after(ctx, out, id), nil
 }
 
 func (m *integrationManager) Test(ctx context.Context, id string, callProbe bool) (*pb.IntegrationTestResultOp, error) {
@@ -578,8 +578,8 @@ func (m *integrationManager) Test(ctx context.Context, id string, callProbe bool
 
 // after is the read model following a write — the unchanged state after a
 // rejection, when there is one.
-func (m *integrationManager) after(_ operator.ConfigWriteOutcome, id string) *pb.IntegrationOp {
-	return m.one(id)
+func (m *integrationManager) after(ctx context.Context, _ operator.ConfigWriteOutcome, id string) *pb.IntegrationOp {
+	return m.one(ctx, id)
 }
 
 func (m *integrationManager) notEditable(id, key string) operator.ConfigWriteOutcome {

@@ -39,16 +39,6 @@ var allowBackground = map[string]string{
 	"internal/metabolism/agentmgr/crash_detection.go AgentManager.publishEvent #1":    "daemon lifecycle events are kernel-owned (ENG-1466)",
 	"internal/ingress/consent_bridge.go NewConsentBridge #1":                          "the bridge's own post ctx until Start hands it the kernel ctx (ENG-1467 review)",
 	"internal/ingress/consent_bridge.go ConsentBridge.post #1":                        "nil-ctx guard on a best-effort delivery path (ENG-1467 review)",
-
-	// Known leaks: the seam has no ctx yet (T-20261118-remaining-context-background-leaks-on-request).
-	"app/operator_wiring.go composeOperator #1":               "known leak, T-20261118-remaining-context-background-leaks-on-request: pin-warning known(id) lookup (moved from startKernelServices by ENG-1305)",
-	"app/config_write_source.go hotApplyFor #1":               "known leak, T-20261118-remaining-context-background-leaks-on-request",
-	"app/integrations.go integrationManager.SetSecret #1":     "known leak, T-20261118-remaining-context-background-leaks-on-request",
-	"app/mcp_runtime.go mcpRuntime.containment #1":            "known leak, T-20261118-remaining-context-background-leaks-on-request",
-	"internal/telemetry/bridge.go Bridge.OnTaskCompleted #1":  "known leak, T-20261118-remaining-context-background-leaks-on-request: TelemetryObserver has no ctx",
-	"internal/telemetry/bridge.go Bridge.OnSessionEvicted #1": "known leak, T-20261118-remaining-context-background-leaks-on-request: TelemetryObserver has no ctx",
-	"internal/telemetry/bridge.go Bridge.OnConwipWait #1":     "known leak, T-20261118-remaining-context-background-leaks-on-request: TelemetryObserver has no ctx",
-	"internal/telemetry/bridge.go Bridge.OnSchemaMismatch #1": "known leak, T-20261118-remaining-context-background-leaks-on-request: TelemetryObserver has no ctx",
 }
 
 // allowClockIDs: rule 5, clock-derived identifiers (AGENTS.md §2.6). Keys are

@@ -1,19 +1,21 @@
 package network
 
 import (
+	"context"
+
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 )
 
 // protoToHandoff converts a proto Handoff to its domain equivalent. Nil-safe.
 // The observer is called when schema validation detects a mismatch.
-func protoToHandoff(h *pb.Handoff, obs domain.TelemetryObserver) *domain.Handoff {
+func protoToHandoff(ctx context.Context, h *pb.Handoff, obs domain.TelemetryObserver) *domain.Handoff {
 	if h == nil {
 		return nil
 	}
 	if h.Id == "" || h.FromAgent == "" {
 		if obs != nil {
-			obs.OnSchemaMismatch(h.ToAgent, "missing_required_field")
+			obs.OnSchemaMismatch(ctx, h.ToAgent, "missing_required_field")
 		}
 	}
 	d := &domain.Handoff{

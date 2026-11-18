@@ -12,24 +12,24 @@ func TestNoopTelemetryObserver_AllMethodsNoPanic(t *testing.T) {
 	t.Parallel()
 	obs := domain.NoopTelemetryObserver{}
 
-	obs.OnTaskCompleted(domain.TaskEvent{
+	obs.OnTaskCompleted(t.Context(), domain.TaskEvent{
 		TaskID:        "task-1",
 		AgentID:       "agent-1",
 		BudgetOverrun: true,
 	})
 
-	obs.OnSessionEvicted("agent-1")
+	obs.OnSessionEvicted(t.Context(), "agent-1")
 
-	obs.OnConwipWait(150)
+	obs.OnConwipWait(t.Context(), 150)
 
-	obs.OnSchemaMismatch("agent-1", "missing-field")
+	obs.OnSchemaMismatch(t.Context(), "agent-1", "missing-field")
 
-	obs.OnPlanCompleted(domain.PlanEvent{
+	obs.OnPlanCompleted(t.Context(), domain.PlanEvent{
 		PlanID:  "plan-1",
 		Outcome: domain.PlanOutcomeSuccess,
 	})
 
-	obs.OnContradictionResolved(domain.ContradictionResolution{
+	obs.OnContradictionResolved(t.Context(), domain.ContradictionResolution{
 		ResolutionID: "cr-1",
 		DocAID:       "doc-a",
 		DocBID:       "doc-b",

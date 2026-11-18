@@ -82,7 +82,7 @@ type mcpRuntime struct {
 
 // containment is a server's effective containment for status surfaces: the
 // last launch's report, else what it would get (planned, not started).
-func (r *mcpRuntime) containment(conn *mcp.Connector, id string) (sandbox.Report, bool) {
+func (r *mcpRuntime) containment(ctx context.Context, conn *mcp.Connector, id string) (sandbox.Report, bool) {
 	if conn != nil {
 		if rep, ok := conn.Containment(id); ok {
 			return rep, true
@@ -92,7 +92,7 @@ func (r *mcpRuntime) containment(conn *mcp.Connector, id string) (sandbox.Report
 	if !ok || s.Transport != "stdio" {
 		return sandbox.Report{}, false
 	}
-	return sandbox.Plan(context.Background(), s.Sandbox, sandbox.Command{Path: s.Endpoint}), true
+	return sandbox.Plan(ctx, s.Sandbox, sandbox.Command{Path: s.Endpoint}), true
 }
 
 // mcpSource values for mcpRuntime.sources.
