@@ -2,13 +2,17 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // TestMain leaves the shared PG_TEST_DSN database as the package found it.
@@ -26,8 +30,13 @@ import (
 // at; after them, reset the schema and re-migrate at that dimension — the same
 // restore internal/infrastructure/postgres/migration_guard_test.go does for its one
 // test. It runs only under the SAME disposable-database guard the tests use
-// (requireDisposableDB), so it can never touch a database the tests would not, and
-// only when the database carried a Cambrian schema to begin with.
+// (requireDisposableDB), so it can never touch a database the tests would not.
+//
+// A database that carried no Cambrian schema at start (an EMPTY PG_TEST_DSN, e.g. a
+// fresh container) is left migrated to HEAD at sharedTestDBDim, not as the tests
+// left it: they end it half-migrated at splitTestDim (4), and every package that ran
+// after this one met missing columns or a kernel refusing to boot on a 4-dim store
+// (T-20261118-core-pg-test-packages-fail-on-an-empty-pg-test).
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if err := restoreSharedSchema(); err != nil {
@@ -39,8 +48,17 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// origDimAtStart is the embedding dimension the shared database was migrated at
-// before any test in this package ran (0 = nothing to restore).
+// sharedTestDBDim is the dimension the shared PG_TEST_DSN database is left at when it
+// started empty: the default config's embedder.dimensions (1024), which the kernel and
+// app Pg tests boot with (config.DefaultConfig) and whose boot refuses a store at any
+// other dimension. internal/infrastructure/postgres migrates an empty database to the
+// same dimension before its tests (testdim_test.go).
+var sharedTestDBDim = config.DefaultConfig().Embedder.Dimensions
+
+// origDimAtStart is the embedding dimension the shared database is re-migrated at
+// after the tests: the one it was migrated at before any test in this package ran,
+// sharedTestDBDim when it carried no Cambrian schema, 0 = nothing to restore (no
+// disposable, reachable database).
 var origDimAtStart = -1
 
 func init() {
@@ -64,8 +82,9 @@ func disposableTarget(dsn string) bool {
 
 var vectorDim = regexp.MustCompile(`^vector\((\d+)\)$`)
 
-// recordOriginalDim returns the dimension of chunks.embedding, or 0 when the
-// database has no Cambrian schema (nothing to restore) or is not a disposable target.
+// recordOriginalDim returns the dimension of chunks.embedding, sharedTestDBDim when
+// the database has no usable chunks.embedding yet (empty: the restore migrates it to
+// HEAD), or 0 when it is unreachable or not a disposable target (nothing to restore).
 func recordOriginalDim() int {
 	dsn := os.Getenv("PG_TEST_DSN")
 	if !disposableTarget(dsn) {
@@ -77,16 +96,24 @@ func recordOriginalDim() int {
 		return 0
 	}
 	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		return 0 // unreachable: the tests report it; there is nothing to restore
+	}
 	var vecType *string
-	if err := pool.QueryRow(ctx, `SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
-		WHERE a.attrelid = to_regclass('public.chunks') AND a.attname = 'embedding'`).Scan(&vecType); err != nil || vecType == nil {
+	err = pool.QueryRow(ctx, `SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
+		WHERE a.attrelid = to_regclass('public.chunks') AND a.attname = 'embedding'`).Scan(&vecType)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return 0
 	}
-	if m := vectorDim.FindStringSubmatch(*vecType); m != nil {
-		dim, _ := strconv.Atoi(m[1]) // the regexp admits digits only
-		return dim
+	if vecType != nil {
+		if m := vectorDim.FindStringSubmatch(*vecType); m != nil {
+			dim, _ := strconv.Atoi(m[1]) // the regexp admits digits only
+			return dim
+		}
 	}
-	return 0
+	// No chunks table (an empty database), or one without a typed embedding column:
+	// end the package with the database migrated to HEAD, not half-way.
+	return sharedTestDBDim
 }
 
 // restoreSharedSchema resets the schema (extensions first, as guardPool does: a

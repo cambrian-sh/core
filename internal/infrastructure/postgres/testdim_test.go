@@ -12,6 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/migrate"
 )
 
 // eventTestDim is the embedding dimension every Pg test in this package writes and
@@ -29,9 +32,29 @@ import (
 var eventTestDim = defaultTestEmbeddingDim
 
 // defaultTestEmbeddingDim applies when there is no database to ask (no PG_TEST_DSN —
-// every Pg test skips then) or the database carries no chunks table yet (a fresh
-// database the first ensureSchema will create at this dimension).
+// every Pg test skips then) or the probe fails.
 const defaultTestEmbeddingDim = 1536
+
+// sharedTestDBDim is the dimension an EMPTY PG_TEST_DSN database is migrated at before
+// the tests: the default config's embedder.dimensions (1024), the dimension the kernel
+// and app Pg tests boot with and whose boot refuses a store at any other. Letting the
+// first ensureSchema create an empty database at defaultTestEmbeddingDim instead left
+// it at 1536 — or, after internal/migrate, half-migrated at 4 — for every package that
+// ran after this one (T-20261118-core-pg-test-packages-fail-on-an-empty-pg-test).
+// internal/migrate's TestMain restores an empty start to the same dimension.
+var sharedTestDBDim = config.DefaultConfig().Embedder.Dimensions
+
+// migrateEmptyTestDB migrates a database without a chunks table to HEAD at
+// sharedTestDBDim through the production runner (migrate.Boot, under its advisory
+// lock). Creating the schema in an empty database destroys nothing.
+func migrateEmptyTestDB(ctx context.Context, dsn string) error {
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	return migrate.Boot(ctx, pool, sharedTestDBDim, migrate.Policy{Mode: migrate.ModeAuto})
+}
 
 var vectorTypeDim = regexp.MustCompile(`^vector\((\d+)\)$`)
 
@@ -76,12 +99,25 @@ func TestMain(m *testing.M) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		dim, err := probeChunksEmbeddingDim(ctx, dsn)
 		cancel()
-		if err != nil {
+		switch {
+		case err != nil:
 			// Not fatal: the Pg tests report their own connection errors; the
 			// unit tests in this package need no database at all.
 			fmt.Fprintf(os.Stderr, "internal/infrastructure/postgres: probe chunks.embedding dimension: %v (using %d)\n", err, defaultTestEmbeddingDim)
-		} else if dim > 0 {
+		case dim > 0:
 			eventTestDim = dim
+		default:
+			// No chunks table: an empty database. Migrate it to HEAD at the shared
+			// dimension, so the tests meet the full schema and leave the database
+			// where the kernel and app packages can boot on it.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			err := migrateEmptyTestDB(ctx, dsn)
+			cancel()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "internal/infrastructure/postgres: migrate the empty PG_TEST_DSN database at %d dims: %v\n", sharedTestDBDim, err)
+				os.Exit(1)
+			}
+			eventTestDim = sharedTestDBDim
 		}
 	}
 	os.Exit(m.Run())
