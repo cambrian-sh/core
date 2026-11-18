@@ -23,6 +23,9 @@ type PG struct {
 	// Container, when set, runs pg_dump / pg_restore inside this Docker container over its
 	// local socket (backup.pg_container); otherwise they come from PATH.
 	Container string
+	// SessionOptions, when set, is passed to the client tool as PGOPTIONS: settings for
+	// that tool's session only (the restore's IndexBuildPlan), never a server change.
+	SessionOptions string
 }
 
 // WithDB is p pointed at another database on the same server.
@@ -51,12 +54,19 @@ const containerSocket = "/var/run/postgresql"
 // never on a command line.
 func (p PG) tool(ctx context.Context, name string, stdin bool, args ...string) (*exec.Cmd, error) {
 	env := append(os.Environ(), "PGPASSWORD="+p.Password)
+	if p.SessionOptions != "" {
+		env = append(env, "PGOPTIONS="+p.SessionOptions)
+	}
 	if p.Container != "" {
 		dargs := []string{"exec"}
 		if stdin {
 			dargs = append(dargs, "-i")
 		}
-		dargs = append(dargs, "-e", "PGPASSWORD", p.Container, name, "-h", containerSocket, "-U", p.User)
+		dargs = append(dargs, "-e", "PGPASSWORD")
+		if p.SessionOptions != "" {
+			dargs = append(dargs, "-e", "PGOPTIONS")
+		}
+		dargs = append(dargs, p.Container, name, "-h", containerSocket, "-U", p.User)
 		cmd := exec.CommandContext(ctx, "docker", append(dargs, args...)...)
 		cmd.Env = env
 		return cmd, nil
@@ -69,6 +79,14 @@ func (p PG) tool(ctx context.Context, name string, stdin bool, args ...string) (
 	cmd := exec.CommandContext(ctx, bin, append([]string{"-h", p.Host, "-p", p.Port, "-U", p.User}, args...)...)
 	cmd.Env = env
 	return cmd, nil
+}
+
+// dockerExec runs a plain command (no database credentials) inside backup.pg_container.
+func (p PG) dockerExec(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	if p.Container == "" {
+		return nil, errors.New("no backup.pg_container")
+	}
+	return exec.CommandContext(ctx, "docker", append([]string{"exec", p.Container}, args...)...), nil
 }
 
 // DumpInfo is what DumpDatabase learned at the dump's snapshot.

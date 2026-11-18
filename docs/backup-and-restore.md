@@ -79,6 +79,27 @@ premium binary has the same verbs.
   the manifest, and drops the scratch database. It drops an existing scratch database only
   if the drill created it (database comment marker). Exit code 1 on any mismatch.
 
+### Shared memory and the index rebuild
+
+A restore rebuilds every index in one go. A parallel HNSW build (the chunks embedding
+index) needs a shared memory segment of about `maintenance_work_mem` in `/dev/shm`, and
+Docker gives a container only 64 MB of it unless told otherwise — so on a default container
+the parallel build fails with `could not resize shared memory segment … No space left on
+device` once the store has a few thousand chunks (ENG-2123).
+
+`restore` and `drill` therefore measure first and print an `index build:` line. With
+`pg_container` set they read the free space of `/dev/shm` inside the container; when it is
+under twice the server's `maintenance_work_mem`, or cannot be measured (no `pg_container`),
+the restore's `pg_restore` session runs with `max_parallel_maintenance_workers=0`
+(`PGOPTIONS`, that session only; no server setting changes). The restore then works on any
+server, only slower to build indexes.
+
+For parallel (faster) rebuilds give the database container more shared memory. The shipped
+`db/docker-compose.yml` sets `shm_size: 1g`. An existing container created without it: add
+`shm_size: 1g` to its compose service (or `--shm-size=1g` to `docker run`) and recreate it
+(`docker compose up -d cambrian-db`; the data volume is kept). Check with
+`docker inspect -f '{{.HostConfig.ShmSize}}' cambrian-db` (67108864 = the 64 MB default).
+
 ## Mandatory snapshot before a destructive migration
 
 `migrate up` and the boot-time migration runner take a database snapshot (kind

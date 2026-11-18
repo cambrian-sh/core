@@ -2,6 +2,14 @@ services:
   cambrian-db:
     image: pgvector/pgvector:pg16
     container_name: cambrian-db
+    # Docker gives a container 64 MB of /dev/shm by default. Postgres allocates parallel
+    # query and parallel index build memory there; a backup restore rebuilds the chunks
+    # HNSW index (idx_chunks_embedding_cosine) in one parallel build that needs a segment
+    # of about maintenance_work_mem and fails with "No space left on device" on 64 MB
+    # (ENG-2123). `orchestrator backup restore|drill` falls back to a serial build on a
+    # small /dev/shm, but 1g lets restores build in parallel. Existing container: add this
+    # line and recreate it (`docker compose up -d cambrian-db`; the data volume is kept).
+    shm_size: 1g
     environment:
       POSTGRES_USER: ${CAMBRIAN_DB_USER:-cambrian}
       POSTGRES_PASSWORD: ${CAMBRIAN_DB_PASSWORD:-cambrian}

@@ -211,7 +211,8 @@ func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			return 2
 		}
 		if *toDB != "" {
-			ro := backup.RestoreOptions{Live: env.cfg.Database.DBName, Protected: env.cfg.Database.Migrations.ProtectedDBNames, ReplaceLive: *replaceLive}
+			ro := backup.RestoreOptions{Live: env.cfg.Database.DBName, Protected: env.cfg.Database.Migrations.ProtectedDBNames,
+				ReplaceLive: *replaceLive, Logf: logf}
 			if *replaceLive && strings.EqualFold(*toDB, env.cfg.Database.DBName) && !*skipSnapshot {
 				snap, err := backup.SnapshotBeforeRestore(ctx, env.cfg, env.paths, "before restoring "+filepath.Base(runDir)+" over the live database", nil)
 				if err != nil {
@@ -266,7 +267,7 @@ func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			return fail(err)
 		}
 		scratch := backup.DrillDBName(env.cfg)
-		ro := backup.RestoreOptions{Live: env.cfg.Database.DBName, Protected: env.cfg.Database.Migrations.ProtectedDBNames}
+		ro := backup.RestoreOptions{Live: env.cfg.Database.DBName, Protected: env.cfg.Database.Migrations.ProtectedDBNames, Logf: logf}
 		res, err := backup.Drill(ctx, runDir, env.pg, scratch, ro, *keep)
 		if err != nil {
 			return fail(err)

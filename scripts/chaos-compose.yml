@@ -3,6 +3,9 @@ version: "3.8"
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    # Docker's default 64 MB /dev/shm is too small for a parallel HNSW index build
+    # (restores, large reindexes); see db/docker-compose.yml (ENG-2123).
+    shm_size: 1g
     environment:
       POSTGRES_DB: cambrian
       POSTGRES_USER: cambrian

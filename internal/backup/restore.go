@@ -66,6 +66,27 @@ type RestoreOptions struct {
 	// ReplaceLive allows restoring over Live (or a protected database) — the
 	// disaster-recovery path. Without it a restore only creates a NEW database.
 	ReplaceLive bool
+	// Logf, when set, receives the operator-facing notes of the restore (the index build
+	// plan and why). Nil discards them.
+	Logf func(format string, args ...any)
+}
+
+func (o RestoreOptions) logf(format string, args ...any) {
+	if o.Logf != nil {
+		o.Logf(format, args...)
+	}
+}
+
+// withIndexBuildPlan is t with the session options of its server's IndexBuildPlan
+// (ENG-2123: a parallel HNSW rebuild must not exhaust a small /dev/shm), logged.
+func withIndexBuildPlan(ctx context.Context, t PG, o RestoreOptions) (PG, IndexBuildPlan, error) {
+	plan, err := t.PlanIndexBuild(ctx)
+	if err != nil {
+		return t, plan, err
+	}
+	o.logf("index build: %s", plan.Reason)
+	t.SessionOptions = plan.SessionOptions
+	return t, plan, nil
 }
 
 // RestoreDatabase loads a verified run's dump into target on pg's server and checks the
@@ -95,7 +116,10 @@ func RestoreDatabase(ctx context.Context, dir string, pg PG, target string, o Re
 	if err != nil {
 		return nil, nil, err
 	}
-	t := pg.WithDB(target)
+	t, _, err := withIndexBuildPlan(ctx, pg.WithDB(target), o)
+	if err != nil {
+		return nil, nil, err
+	}
 	switch {
 	case exists && !guarded:
 		return nil, nil, fmt.Errorf("restore: database %q already exists; restore into a new database name "+
@@ -127,6 +151,8 @@ type DrillResult struct {
 	Rows       int64
 	Mismatches []CountMismatch
 	Kept       bool
+	// IndexBuild is how the restore built its indexes and why.
+	IndexBuild IndexBuildPlan
 }
 
 // Drill verifies a run and restores its dump into a scratch database on pg's server,
@@ -149,6 +175,10 @@ func Drill(ctx context.Context, dir string, pg PG, scratch string, o RestoreOpti
 	if err != nil {
 		return nil, err
 	}
+	t, plan, err := withIndexBuildPlan(ctx, pg.WithDB(scratch), o)
+	if err != nil {
+		return nil, err
+	}
 	exists, comment, err := pg.databaseExists(ctx, scratch)
 	if err != nil {
 		return nil, err
@@ -165,8 +195,7 @@ func Drill(ctx context.Context, dir string, pg PG, scratch string, o RestoreOpti
 	if err := pg.createDatabase(ctx, scratch, DrillMarker); err != nil {
 		return nil, err
 	}
-	res := &DrillResult{Run: filepath.Base(dir), ScratchDB: scratch, Kept: keep}
-	t := pg.WithDB(scratch)
+	res := &DrillResult{Run: filepath.Base(dir), ScratchDB: scratch, Kept: keep, IndexBuild: plan}
 	restoreErr := t.restoreArchive(ctx, filepath.Join(dir, "db.dump"), false)
 	var got []TableCount
 	if restoreErr == nil {
