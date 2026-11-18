@@ -32,7 +32,8 @@ import (
 //
 // Nothing else of the host is visible, so the D1 hide-list is enforced by
 // absence; a hidden path that lies inside a mounted one is masked again
-// (tmpfs for a directory, /dev/null for a file).
+// (a read-only tmpfs for a directory, /dev/null for a file): empty AND
+// read-only, as D1 and the bubblewrap runner's --remount-ro have it.
 //
 // Host paths and the unix socket are shared with the container at the same
 // paths, so this runner needs a LINUX host: on Docker Desktop (Windows, macOS)
@@ -149,7 +150,9 @@ func dockerAgentArgs(p *Policy, spec Spec, tp TierPolicy, c Command, workdir str
 			}
 			if fi, err := os.Stat(h); err == nil {
 				if fi.IsDir() {
-					args = append(args, "--tmpfs", h)
+					// :ro — a write there must fail, not land in a throwaway
+					// tmpfs (ENG-2017 found the agent could write it).
+					args = append(args, "--tmpfs", h+":ro")
 				} else {
 					args = append(args, "-v", "/dev/null:"+h+":ro")
 				}

@@ -82,7 +82,9 @@ func runProbeAgent() {
 		_ = os.WriteFile(filepath.Join(out, "sub", "result.txt"), []byte("probe result"), 0o600)
 	}
 	b, _ := json.Marshal(rep)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(sock), "probe.json"), b, 0o600); err != nil {
+	// 0644: under the docker runner the agent's uid (65534) is not the
+	// kernel's, which must still read the report.
+	if err := os.WriteFile(filepath.Join(filepath.Dir(sock), "probe.json"), b, 0o644); err != nil {
 		os.Exit(4)
 	}
 	lis, err := net.Listen("unix", sock)
@@ -303,7 +305,7 @@ func agentOwnedDir(t *testing.T, dir string) {
 // probeExe is the probe agent's executable: this test binary. As a non-root
 // kernel it runs in place. As root the agent drops to uid 65534, which cannot
 // reach `go test`'s 0700 build directory (bwrap: "Can't find source path …:
-// Permission denied"), so the binary is copied to <root>/bin, 0755.
+// Permission denied"), so the binary is copied to <root>/probe, 0755.
 func probeExe(t *testing.T, root string) string {
 	t.Helper()
 	exe, err := os.Executable()
@@ -313,11 +315,24 @@ func probeExe(t *testing.T, root string) string {
 	if os.Geteuid() != 0 {
 		return exe
 	}
+	return copyProbeExe(t, root)
+}
+
+// copyProbeExe copies this test binary to <root>/probe (0755) and returns the
+// copy's path: a location any uid can execute, outside /tmp. Not <root>/bin:
+// runtimePrefix takes a "bin" directory's parent for a venv root, which would
+// bind the whole e2e root into the sandbox.
+func copyProbeExe(t *testing.T, root string) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	b, err := os.ReadFile(exe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(root, "bin", filepath.Base(exe))
+	dst := filepath.Join(root, "probe", filepath.Base(exe))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +350,7 @@ func probeExe(t *testing.T, root string) string {
 // above its workdir: the default base is then /var/tmp (root's cache dir sits
 // under the 0700 /root), and the root is made 0755. Not 0711 like the
 // sandbox's work_root: bubblewrap running as 65534 cannot bind a host path
-// (here the probe binary's <root>/bin) under a root-owned traverse-only
+// (here the probe binary's <root>/probe) under a root-owned traverse-only
 // ancestor ("Can't mkdir parents … Permission denied"). The work root
 // itself is a hide path (a tmpfs), so binds below it are unaffected.
 func e2eRoot(t *testing.T) string {

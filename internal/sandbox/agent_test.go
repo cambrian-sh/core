@@ -210,7 +210,7 @@ func TestDockerAgentArgs(t *testing.T) {
 	}
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"--user 65534:65534", "--network host", "--read-only", "--cap-drop ALL",
-		"-v " + home + ":" + home + ":ro", "-v " + sock + ":" + sock, "-v " + workdir + ":/work", "--tmpfs " + conf,
+		"-v " + home + ":" + home + ":ro", "-v " + sock + ":" + sock, "-v " + workdir + ":/work", "--tmpfs " + conf + ":ro",
 		"-w /srv/agents", "-e CAMBRIAN_AGENT_TOKEN", "cambrian/kernel:test /bin/sh -c"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv lacks %q:\n%s", want, joined)
