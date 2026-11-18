@@ -112,3 +112,24 @@ configs/secret.key
 *.exe~
 /bin/
 __pycache__/
+
+# Backup, merge-leftover and atomic-write temp copies are never source, anywhere
+# (T-20261118-stale-config-backups-configs-config-json-bak: two hand-made
+# configs/*.json.bak-<date> copies were tracked and shipped in the kernel image).
+# `.<name>.tmp-*` is what the config store's atomic write leaves if it dies
+# mid-write (internal/config/file_layers.go); *.pre-compact is bbolt-compact's
+# kept original. internal/archlint/hygiene_test.go fails on any tracked or
+# un-ignored file matching these, and Dockerfile.dockerignore keeps them out
+# of the image; change all three together.
+*.bak
+*.bak-*
+*.bak.*
+*.bak_*
+*.orig
+*.rej
+*.old
+*.backup
+*.swp
+*~
+.*.tmp-*
+*.pre-compact

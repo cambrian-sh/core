@@ -23,6 +23,22 @@ cambrian-core/configs/providers.json
 cambrian-core/configs/providers.local.json
 cambrian-core/configs/tuning.local.json
 cambrian-core/configs/mcp.json
+# Backup / merge-leftover / atomic-write temp copies (same list as .gitignore;
+# T-20261118-stale-config-backups-configs-config-json-bak): COPY cambrian-core/configs/
+# ships the directory, so a local config.json.bak-<date> would carry an operator's
+# real settings into the image even while git ignores it.
+**/*.bak
+**/*.bak-*
+**/*.bak.*
+**/*.bak_*
+**/*.orig
+**/*.rej
+**/*.old
+**/*.backup
+**/*.swp
+**/*~
+**/.*.tmp-*
+**/*.pre-compact
 # The ADR-0101 D6 store encryption key: gitignored, but present on every dev machine
 # that has booted a kernel, so a local `docker build` would bake it into a layer.
 **/secret.key

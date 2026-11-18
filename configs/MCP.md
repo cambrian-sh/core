@@ -611,7 +611,7 @@ Each server below was installed at its pinned version into a scratch folder and 
 Keyed integrations (GitHub, Google, Microsoft 365, Slack, Brave/Tavily/Exa, Postgres, Notion, Atlassian, Linear) were checked on their registries only. They need credentials to verify.
 
 **Owner's local `configs/mcp.json`:**
-- backed up to `mcp.json.bak-20261105`;
+- backed up to a local `mcp.json.bak-20261105` (backups are gitignored and kept out of the image);
 - super-shell removed;
 - `filesystem` and `sequential-thinking` pinned to 1.0.0 (2.x needs node 24);
 - `fetch` and `pdf-reader` pinned;
