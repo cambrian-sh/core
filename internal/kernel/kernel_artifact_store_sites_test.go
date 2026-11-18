@@ -23,8 +23,8 @@ import (
 // A principal-serving read or write must use Reader() or Writer() instead.
 func TestKernelArtifactStoreCallSites(t *testing.T) {
 	want := []string{
-		"app/app.go: ADR-0044 D3", // tool index: writer (ToolIndexer) and ranker (VectorToolRetriever)
-		"app/app.go: ADR-0046 D2", // skill index writer (SkillIndexer)
+		"app/boot_tools.go: ADR-0044 D3", // tool index: writer (ToolIndexer) and ranker (VectorToolRetriever)
+		"app/boot_tools.go: ADR-0046 D2", // skill index writer (SkillIndexer)
 	}
 
 	root := filepath.Join("..", "..") // the cambrian-core module root

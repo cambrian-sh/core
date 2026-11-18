@@ -160,7 +160,7 @@ func restrictedCtors(mod string) []restricted {
 		// The raw adapter is opened once by the composition root; an operator-run
 		// cmd/ maintenance tool may open its own (§2.2, checked for a citation below).
 		{mod + "/internal/infrastructure/postgres", "NewPgVectorAdapter", func(f srcFile) bool {
-			return f.rel == "app/app.go" || under(f.dir, "cmd")
+			return f.rel == "app/boot_infrastructure.go" || under(f.dir, "cmd")
 		}},
 		{mod + "/internal/authz", "NewEnforcingVectorStore", stack},
 		{mod + "/internal/authz", "NewEnforcingStoreWriter", stack},

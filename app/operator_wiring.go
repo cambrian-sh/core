@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -15,6 +16,7 @@ import (
 	"github.com/cambrian-sh/core/internal/memory/forget"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 )
 
 // composeOperator assembles the operator plane (OperatorConsole) from the kernel's
@@ -992,4 +994,111 @@ func planSubmitterFor(k *Kernel, known func(ctx context.Context, id string) bool
 		},
 		known: known,
 	}
+}
+
+// routePreviewAdapter implements operator.RoutePreviewer (ROUTE-07 / ADR-0077) by scoring
+// the inline candidates as ONE slate through gatekeeper.ScoreSlate under the ACTIVE arm,
+// then ranking them with gatekeeper.MeritRanksBefore — the same two calls the live
+// Gatekeeper makes, so the preview applies the same slate-mean neutral fills
+// (T-20261104-previewroute-scores-missing-latency-as-0-while) and the same ADR-0139 D6
+// merit mode. It is the gatekeeper-benchmark's deterministic routing entry point — no
+// planner, auction, or agents.
+//
+// Arms: "hand_weights" / "learned_scorer" (merit_mode legacy), "posterior_lcb", and
+// "thompson_mean": under thompson the live path ranks by one random posterior draw per
+// dispatch, which a deterministic preview cannot reproduce, so it reports and ranks by
+// the posterior MEAN (the expected draw) and names the arm accordingly.
+type routePreviewAdapter struct {
+	cfg    config.ExecutionConfig
+	scorer gatekeeper.RouteScorer
+}
+
+func (r routePreviewAdapter) PreviewRoute(requiredCaps []string, cands []operator.RouteCandidate) ([]domain.MeritResult, string) {
+	arm := "hand_weights"
+	switch r.cfg.Gatekeeper.ActiveMeritMode() {
+	case config.MeritModePosteriorLCB:
+		arm = config.MeritModePosteriorLCB
+	case config.MeritModeThompson:
+		arm = "thompson_mean"
+	default:
+		if r.cfg.Routing.LearnedScorer && r.scorer != nil {
+			arm = "learned_scorer"
+		}
+	}
+	entries := make([]gatekeeper.SlateEntry, len(cands))
+	for i, c := range cands {
+		p := previewProfileWithEvidence(c.Profile)
+		entries[i] = gatekeeper.SlateEntry{Profile: &p, Trait: c.Trait}
+	}
+	mbs := gatekeeper.ScoreSlate(entries, requiredCaps, r.cfg, r.scorer, nil)
+	order := make([]int, len(cands))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := mbs[order[i]], mbs[order[j]]
+		return gatekeeper.MeritRanksBefore(r.cfg, a.Score, a, b.Score, b)
+	})
+	out := make([]domain.MeritResult, len(cands))
+	for k, i := range order {
+		mb := mbs[i]
+		out[k] = domain.MeritResult{
+			AgentID: cands[i].Profile.AgentID, Score: mb.Score, SuccessRate: mb.SuccessRate,
+			TrustScore: mb.TrustScore, LatencyTerm: mb.LatencyTerm, CostTerm: mb.CostTerm,
+			Provisional: mb.Provisional, Mode: mb.Mode, Alpha: mb.Alpha, Beta: mb.Beta,
+		}
+	}
+	return out, arm
+}
+
+// previewProfileWithEvidence gives a PreviewRoute candidate's capability stats the
+// ADR-0139 D6 outcome evidence the wire cannot carry yet: RouteCandidateOp has
+// success_rate and sample_count per capability but no evidence fields, so a stat
+// with samples and no evidence is read as SuccessRate·n verified successes and
+// (1−SuccessRate)·n failures. The legacy arm never reads the evidence, so its
+// scores are unchanged. Wire fields for the evidence are a proto follow-up
+// (T-20261105-previewroute-wire-carries-no-outcome-evidence).
+func previewProfileWithEvidence(p domain.AgentProfile) domain.AgentProfile {
+	if len(p.CapabilityStats) == 0 {
+		return p
+	}
+	stats := make(map[string]domain.CapabilityStat, len(p.CapabilityStats))
+	for k, st := range p.CapabilityStats {
+		if st.SampleCount > 0 && st.Outcomes.IsZero() {
+			n := float64(st.SampleCount)
+			st.Outcomes = domain.OutcomeEvidence{VerifiedSuccess: st.SuccessRate * n, VerifiedFailure: (1 - st.SuccessRate) * n}
+		}
+		stats[k] = st
+	}
+	p.CapabilityStats = stats
+	return p
+}
+
+// pluginHandshake maps composed plugin statuses into the operator plane's own
+// shape (ADR-0089). The mapping lives here, in the composition root, because the
+// operator package must not learn how plugins are composed — the same separation
+// that keeps the kernel from interpreting capability strings (ADR-0082 D2).
+func pluginHandshake(statuses []PluginStatus) []operator.PluginInfo {
+	out := make([]operator.PluginInfo, 0, len(statuses))
+	for _, st := range statuses {
+		info := operator.PluginInfo{
+			ID:           st.Manifest.ID,
+			DisplayName:  st.Manifest.DisplayName,
+			Version:      st.Manifest.Version,
+			State:        st.State,
+			Capabilities: st.Manifest.Capabilities,
+			Reason:       st.Reason,
+			Missing:      st.Missing,
+		}
+		if st.ExpiresAt != nil {
+			info.ExpiresAt = st.ExpiresAt.Format(time.RFC3339)
+		}
+		for _, pan := range st.Manifest.Panels {
+			info.Panels = append(info.Panels, operator.PluginPanel{
+				ID: pan.ID, Title: pan.Title, Capability: pan.Capability,
+			})
+		}
+		out = append(out, info)
+	}
+	return out
 }

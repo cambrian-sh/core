@@ -97,21 +97,57 @@ func TestStartMCPEndpoint_LoopbackServesAndDrains(t *testing.T) {
 // after it would be unreachable for the whole of boot, which is exactly the
 // `claude mcp add` timeout the ordering exists to prevent — and the symptom
 // (a kernel that looks up) gives no hint of the cause.
+//
+// Since ENG-1123 the two calls live in separate boot phases (boot_tools.go), so
+// the order is pinned in two steps: each call is in its phase, and
+// bootstrapKernel (boot.go) runs the endpoint phase before the connector phase.
 func TestBootOrder_MCPEndpointStartsBeforeConnectAll(t *testing.T) {
-	src, err := os.ReadFile("app.go")
-	if err != nil {
-		t.Fatalf("read app.go: %v", err)
+	tools := readSource(t, "boot_tools.go")
+	inPhase := func(phase, call string) {
+		t.Helper()
+		body := funcBody(t, tools, "func (b *kernelBuild) "+phase+"(")
+		if !strings.Contains(body, call) {
+			t.Fatalf("%s is no longer called in %s; if it moved or was renamed, keep the "+
+				"ordering (ADR-0126 D3) and update this test", call, phase)
+		}
 	}
-	start := strings.Index(string(src), "startMCPEndpoint(")
-	connect := strings.Index(string(src), "mcpConnector.ConnectAll(ctx, enabledMCP)")
-	if start < 0 || connect < 0 {
-		t.Fatalf("call sites not found (startMCPEndpoint=%d ConnectAll=%d); "+
-			"if either was renamed, keep the ordering and update this test", start, connect)
+	inPhase("buildMCPEndpoint", "startMCPEndpoint(")
+	inPhase("buildMCPConnector", "mcpConnector.ConnectAll(ctx, enabledMCP)")
+
+	boot := funcBody(t, readSource(t, "boot.go"), "func bootstrapKernel(")
+	endpoint := strings.Index(boot, "b.buildMCPEndpoint()")
+	connector := strings.Index(boot, "b.buildMCPConnector()")
+	if endpoint < 0 || connector < 0 {
+		t.Fatalf("phase calls not found in bootstrapKernel (endpoint=%d connector=%d)", endpoint, connector)
 	}
-	if start > connect {
+	if endpoint > connector {
 		t.Fatal("the MCP endpoint now starts AFTER Connector.ConnectAll; the endpoint would be " +
 			"unreachable for the 40-45 s of MCP client init (ADR-0126 D3)")
 	}
+}
+
+func readSource(t *testing.T, name string) string {
+	t.Helper()
+	src, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(src)
+}
+
+// funcBody returns src from the line starting with decl to the next top-level
+// closing brace.
+func funcBody(t *testing.T, src, decl string) string {
+	t.Helper()
+	start := strings.Index(src, decl)
+	if start < 0 {
+		t.Fatalf("%q not found", decl)
+	}
+	end := strings.Index(src[start:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("could not delimit %q", decl)
+	}
+	return src[start : start+end]
 }
 
 // The D4 identity hop reaches the endpoint (ADR-0126 E6). Pinned in source
@@ -120,11 +156,7 @@ func TestBootOrder_MCPEndpointStartsBeforeConnectAll(t *testing.T) {
 // authenticates, every binding an operator authored is simply never consulted,
 // and blocking a client has no effect on the surface it arrives through.
 func TestWiring_MCPEndpointReceivesTheIdentityResolver(t *testing.T) {
-	src, err := os.ReadFile("app.go")
-	if err != nil {
-		t.Fatalf("read app.go: %v", err)
-	}
-	call := string(src)
+	call := readSource(t, "boot_tools.go") // the buildMCPEndpoint phase (ENG-1123)
 	start := strings.Index(call, "startMCPEndpoint(")
 	if start < 0 {
 		t.Fatal("startMCPEndpoint call site not found")

@@ -14,7 +14,7 @@ var allowImports = map[string]string{
 }
 
 // allowConstructors: rule 2, restricted memory-stack constructors. Empty: the
-// raw adapter is opened only by app/app.go and cited cmd/ tools.
+// raw adapter is opened only by app/boot_infrastructure.go and cited cmd/ tools.
 var allowConstructors = map[string]string{}
 
 // allowDomainCtx: rule 3, ctx-first I/O methods on domain ports.
@@ -29,12 +29,12 @@ var allowBackground = map[string]string{
 	// how a graceful stop gets time to finish (AGENTS.md §2.7 names no other).
 	"app/agentcard_endpoint.go startAgentCards #1":       "graceful HTTP shutdown deadline after the parent ctx ended (ENG-1467 review)",
 	"app/app.go Run #1":                                  "graceful kernel shutdown deadline after the parent ctx ended (ENG-1467 review)",
-	"app/app.go startKernelServices #1":                  "graceful listener shutdown deadline after the parent ctx ended (ENG-1467 review)",
-	"app/app.go startKernelServices #2":                  "graceful server shutdown deadline after the parent ctx ended (ENG-1467 review)",
+	"app/start_services.go serveGRPC #1":                 "graceful listener shutdown deadline after the parent ctx ended (ENG-1467 review)",
+	"app/start_services.go startIngestionHTTP #1":        "graceful server shutdown deadline after the parent ctx ended (ENG-1467 review)",
 	"internal/sandbox/docker.go containerHandle.kill #1": "container kill/cleanup must run after the caller's ctx is gone, bounded at 15 s (ADR-0157, ENG-2031)",
 
 	// Kernel-owned work: no request exists whose ctx could ride along.
-	"app/app.go bootstrapKernel #1": "MCP server health transitions come from the connector's own loops (ENG-1466)",
+	"app/boot_tools.go kernelBuild.buildMCPConnector #1":                              "MCP server health transitions come from the connector's own loops (ENG-1466)",
 	"internal/metabolism/agentmgr/crash_detection.go AgentManager.scheduleRestart #1": "kernel-owned daemon auto-restart after a crash (ENG-1467)",
 	"internal/metabolism/agentmgr/crash_detection.go AgentManager.publishEvent #1":    "daemon lifecycle events are kernel-owned (ENG-1466)",
 	"internal/ingress/consent_bridge.go NewConsentBridge #1":                          "the bridge's own post ctx until Start hands it the kernel ctx (ENG-1467 review)",

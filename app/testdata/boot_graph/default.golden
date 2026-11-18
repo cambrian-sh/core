@@ -1,0 +1,354 @@
+## Kernel
+Config: *config.Config
+ConfigProvenance: nil
+ConfigStore: nil
+ConfigPath: string(empty)
+Links: *postgres.PgLinkStore
+linkReviewLane: app.linkWriteSource
+Registry: *kernel.AgentRepoDecorator
+Store: *kernel.StorageHandle
+Memory: *kernel.MemoryStack
+Awareness: *kernel.AwarenessStack
+Metabolism: *kernel.MetabolismStack
+Supervision: *kernel.SupervisionStack
+Server: *network.Server
+Listener: *net.TCPListener
+GRPC: nil
+agentSockets: *app.agentSocketServer
+Health: *health.Checker
+OperatorEffects: operator.CommandEffectsFuncs
+MemorySharer: *app.memorySharer
+OperatorAudit: *postgres.PgAuditStore
+Documents: *postgres.PgVectorAdapter
+DocReader: *app.kernelDocumentReader
+WatchDeadLetters: *kernel.AgentRepoDecorator
+WatchMetrics: nil
+WatchBacktester: nil
+ExtraServices: nil
+AgentGRPCServices: nil
+OperatorMethodRoles: nil
+LoginObserver: nil
+Lifecycles: []app.Lifecycle len=7
+PluginCapabilities: nil
+PluginStatuses: []app.PluginStatus len=1
+Conversations: *postgres.PgConversationStore
+ChatTurns: *chat.TurnService
+PrincipalDirectory: *identity.PgRegistry
+PrincipalSchedules: nil
+StreamRegistry: *app.streamRegistryHolder
+Principals: *identity.PgRegistry
+Authenticator: *identity.Chain
+SessionMgr: *session.SessionManager
+CircadianRhythm: *circadian.CircadianRhythm
+ArtifactVault: *vault.ArtifactVault
+EventBus: *domain.InMemoryEventBus
+PythonEnv: *pyenv.Env
+SkillLifecycle: *lifecycle.Service
+SkillCurator: nil
+LedgerSweeper: *ledger.Sweeper
+SkillAccess: *access.Service
+Authorizer: *authz.ProfileNarrowingAuthorizer
+PolicyAdmin: nil
+ToolGrants: *domain.LayeredGrantsStore
+MCPConnector: *mcp.Connector
+MCPSink: *app.mcpToolSink
+MCPServers: []mcp.ServerConfig len=0
+MCPRuntime: *app.mcpRuntime
+credentialSeams: *app.credentialSeams
+MCPEndpoint: nil
+mcpTasks: *app.mcpTaskLane
+MCPCoreBackends: *mcpserve.CoreBackends
+GeneratorRuntime: *app.generatorRuntime
+LLMGateway: *network.SubstrateLLMGateway
+CheckpointSource: *kernel.StorageHandle
+LLMProvider: *llm.Provider
+VectorCounter: nil
+TokenSeries: *telemetry.TokenSeries
+Progress: *app.progressHolder
+StepOutputFeed: *app.stepOutputFeed
+Logs: nil
+
+## Memory
+vecDB: *postgres.PgVectorAdapter
+readStore: *authz.EnforcingVectorStore
+writeStore: *authz.EnforcingStoreWriter
+eraser: nil
+DocumentStore: *memory.EnforcingDocumentStore
+ProfileStore: *store.PgVectorProfileStore
+Agent: *memory.Agent
+QueryService: *memory.QueryService
+Embedder: *llm.OllamaEmbedder
+WorkspaceStage: *memory.WorkspaceStageImpl
+IngestionManager: *memory.IngestionManager
+ChunkTripletsBatcher: *memory.ChunkTripletsBatcher
+FactWriter: *authz.EnforcingKnowledgeWriter
+FactReader: *authz.EnforcingFactItemReader
+FactInspector: *authz.EnforcingFactInspector
+FactExtractor: *memory.FactExtractor
+FactBackfill: *memory.FactBackfill
+FactReset: nil
+
+## Awareness
+LLM: *llm.purposeGenerator
+Planner: *awareness.Planner
+
+## Metabolism
+rootCtx: nil
+Manager: *agentmgr.AgentManager
+Gatekeeper: *gatekeeper.Gatekeeper
+AgentTransport: *agentplane.Transport
+Selector: *yield.Resolver
+Dispatcher: *dispatch.Dispatcher
+ProfileSeeder: *registration.ProfileSeeder
+VerificationWorker: *verify.VerificationWorker
+VerifierPool: *verify.VerifierPool
+agentSandbox: *agentmgr.AgentSandbox
+
+## Supervision
+ProfileAggregator: *aggregator.ProfileAggregator
+
+## Server
+Progress: *app.progressHolder
+Activity: nil
+UnimplementedOrchestratorServer: proto.UnimplementedOrchestratorServer
+Router: *router.DefaultRouter
+Planner: *awareness.Planner
+Manager: *agentmgr.AgentManager
+Dispatcher: *yield.Resolver
+MemoryAgent: *memory.Agent
+SurpriseOracle: *supervision.MeritSurpriseOracle
+ExecCfg: config.ExecutionConfig
+EnqueueVerification: executer.EnqueueVerification
+Watcher: *watcher.Watcher
+MemorySearcher: *memory.QueryService
+Forgetter: *forget.Service
+Provider: *llm.Provider
+SessionMgr: *session.SessionManager
+ConvSurfaces: nil
+TaskOwners: *app.mcpTaskLane
+Runs: *postgres.PgSessionStore
+Checkpoints: *postgres.PgSessionStore
+WorkspaceStage: *memory.WorkspaceStageImpl
+LLMGateway: *network.SubstrateLLMGateway
+TelemetryObserver: domain.NoopTelemetryObserver
+ContentStore: *storage.BBoltContentStore
+StepCache: *storage.BBoltStepCache
+RunTracer: nil
+TokenRecorder: *telemetry.TokenSeries
+AgentCallLogger: nil
+ThoughtLLM: *llm.purposeGenerator
+GenWrapper: nil
+EFETrafficPercent: int=0
+SignalReceiver: *watcher.Watcher
+IngressInbound: nil
+WatchHandler: nil
+instWorkOnce: sync.Once
+instWork: nil
+Ledger: *network.LedgerAccess
+Checklist: nil
+Authz: *authz.ProfileNarrowingAuthorizer
+MemoryNotes: *memorynotes.Service
+MemoryNotesPrincipal: network.MemoryNotesPrincipalFunc
+RunPrincipal: network.MemoryNotesPrincipalFunc
+PrincipalNames: *identity.PgRegistry
+Calendar: *domain.Calendar
+ScheduledTasks: nil
+Knowledge: *knowledgecommit.Service
+OntologyDrafts: *ontology.Drafts
+ConversationOwner: network.MemoryNotesPrincipalFunc
+ConversationProfile: func(context.Context, domain.LeaseBinding) domain.ConversationProfile
+PrivateByDefault: true
+IngestionProcessor: *memory.IngestionManager
+ToolExecutor: *domain.ToolExecutor
+ApprovalHub: *domain.AddressedHub
+EventBus: *domain.InMemoryEventBus
+ControlHub: *operator.ExecutionControlHub
+Delegations: *network.TurnDelegations
+StepOutput: *stepoutput.Stream
+LLMExchangeSink: nil
+SkillRegistry: *domain.InMemorySkillRegistry
+SkillRetriever: domain.VectorSkillRetriever
+SkillLifecycle: *lifecycle.Service
+SkillAccess: *access.Service
+Compositions: *domain.ComposedLeases
+Subtasks: *domain.Subtasks
+ComposedRuntimeID: string(set)
+ComposedThirdPartyRuntimeID: string(set)
+RequestComposer: *compose.Composer
+ToolsOutsideStep: func(context.Context, domain.WorkerComposition) []domain.SystemTool
+WorkerDelegations: *domain.ActiveDelegations
+Embedder: *llm.OllamaEmbedder
+SpendMeter: *llm.SpendMeter
+planActions: network.planActionLedger
+
+## Server.ToolExecutor
+Registry: *domain.InMemoryToolRegistry
+Grants: *domain.LayeredGrantsStore
+Handler: *proc.ProcessHandler
+MCPHandler: *mcp.Handler
+Fleet: *domain.WorkerHub
+LocalHandler: domain.WorkerRelayHandler
+FleetDecisions: nil
+Consent: domain.consentView
+ParkDeadline: time.Duration=0
+approval: *domain.AddressedHub
+EgressAuditor: mcp.SlogEgressAuditor
+Retriever: domain.VectorToolRetriever
+authz: *authz.ProfileNarrowingAuthorizer
+ContentStore: *storage.BBoltContentStore
+InlineThreshold: int=65536
+PreviewChars: int=600
+PageBytes: int=16000
+Budget: *domain.BudgetLedger
+Pricing: domain.MapPricingSource
+unrestricted: false
+RestrictedTools: nil
+ceiling: *domain.ProfileToolCeiling
+Overlay: *domain.RunGrantOverlay
+ArtifactOutputDir: string(set)
+ToolOutput: *memory.Agent
+Hooks: *domain.HookChain
+History: *domain.ActionHistory
+leaseCeiling: domain.leaseCeilings
+Ledger: *ledger.EvidenceNotifier
+KernelTools: []domain.KernelTool len=9
+argValidator: toolargs.Validator
+idempotency: nil
+ReturnLedgerRef: false
+guards: nil
+writeTargets: *domain.WriteTargets
+Stager: *stagedinputs.Stager
+StepFailures: *domain.StepFailures
+subtasks: *domain.Subtasks
+outboundIdentifiers: *domain.OutboundIdentifierGuard
+
+## Lifecycles (registration order)
+retention start=true stop=true
+approval-hub start=true stop=true
+python-packages start=true stop=true
+ontology-drafts start=true stop=true
+delivery-redrive start=true stop=true
+chat-pool start=true stop=true
+consent-bridge start=true stop=true
+
+## Kernel tools (menu order)
+ledger_get ledger.getTool
+ledger_find ledger.findTool
+calc_date_window calc.dateWindowTool
+calc_date_add calc.dateAddTool
+calc_working_days calc.workingDaysTool
+calc_aggregate calc.aggregateTool
+calc_compare calc.compareTool
+forget_memory *forget.Tool
+run_subtasks *subtasks.Tool
+
+## Approval kinds with a handler
+knowledge_commit
+ontology_change
+publish
+python_package
+
+## Event-bus subscriptions after bootstrapKernel
+agent.ready 1
+
+## KernelServices handed to a plugin at Build
+Principals: *identity.PgRegistry
+Manager: *agentmgr.AgentManager
+Dispatcher: *yield.Resolver
+Ingestor: *app.scopedMemoryIngestor
+Documents: *app.kernelDocumentReader
+Planner: *awareness.Planner
+PlanExecutor: *app.kernelPlanExecutor
+LLM: *llm.purposeGenerator
+WatchStore: *kernel.AgentRepoDecorator
+PipelineStore: *kernel.AgentRepoDecorator
+EventBus: *domain.InMemoryEventBus
+Journal: *kernel.AgentRepoDecorator
+AcquireLLMToken: func(context.Context, int, time.Duration) (string, func(), error)
+AcquireAgentLLMToken: func(context.Context, string, int, time.Duration) (string, func(), error)
+Agents: *kernel.AgentRepoDecorator
+RegisterAgent: func(domain.AgentDefinition) error
+RegisterPipelineLister: func(domain.PipelineLister)
+RegisterPipelineDryRunner: func(domain.PipelineDryRunner)
+RegisterPipelineAuthor: func(domain.PipelineAuthor)
+RegisterPipelineWriter: func(domain.PipelineWriter)
+RegisterPipelineLifecycle: func(domain.PipelineLifecycle)
+RegisterIngressLister: func(domain.IngressLister)
+RegisterIngressSchemaDeclarer: func(domain.IngressSchemaDeclarer)
+RegisterIngressDeregistrar: func(domain.IngressDeregistrar)
+RegisterIngressRegistrar: func(domain.IngressRegistrar)
+RegisterIngressPipelineRetirer: nil
+RegisterTurnRouter: func(domain.TurnRouter)
+RegisterPrincipalSchedules: func(domain.PrincipalSchedules)
+RegisterStreamRegistry: func(domain.StreamRegistry)
+RunOwnedTurn: func(context.Context, domain.OwnedTurn) (domain.Message, error)
+RegisterPrincipalDirectory: func(domain.PrincipalDirectory)
+IngressTraffic: *postgres.PgConversationStore
+Ingresses: nil
+SetProgressSink: func(domain.ProgressSink)
+DeliverProgress: func(context.Context, string, string, bool) error
+WorkerConsent: domain.consentView
+Approvals: *domain.AddressedHub
+SQL: *pgxpool.Pool
+AgentExists: func(string) bool
+SessionScopes: *session.SessionManager
+Knowledge: app.knowledgeSourceFallback
+DeregisterIngress: func(context.Context, string) error
+DeclareIngressSchema: func(context.Context, string, []domain.IngressSchemaField) error
+RegisterIngress: func(context.Context, domain.IngressRegistration) error
+RetireIngressPipeline: func(context.Context, string) error
+TracePipelinePayloads: false
+PipelineDrainerEnabled: true
+Events: *postgres.PgEventStore
+Entities: *postgres.PgEntityStore
+Links: *postgres.PgLinkStore
+IdentityScans: *postgres.PgIdentityScanSource
+Relations: *ontology.Ontology
+Ontology: authz.scopedOntology
+OntologyDrafts: *ontology.Drafts
+Objects: authz.scopedObjects
+EvidenceStore: *postgres.PgEvidenceStore
+EvidenceIngest: func(context.Context, domain.RawEvidence) (domain.EvidenceID, bool, error)
+QueryKnowledge: func(context.Context, domain.PrincipalRef, domain.KnowledgeQuery) (domain.QueryResult, error)
+KnowledgeCatalog: func(context.Context, domain.PrincipalRef) (domain.SubstrateCatalog, error)
+StageEvidenceContent: func(context.Context, []uint8) (domain.CID, error)
+FetchEvidenceContent: func(context.Context, domain.CID) ([]uint8, error)
+ResolveNamedSecret: func(string) (string, bool)
+VerifyMachineToken: func(string, string) (domain.PrincipalRef, bool)
+GeneratorForModel: func(string) domain.Generator
+StoreNamedSecret: func(string, string) error
+ClearNamedSecret: func(string) error
+NamedSecretStatus: func(string) (bool, string)
+ResolveCredential: func(context.Context, domain.CredentialRequest) (domain.Credential, error)
+OrgCredentials: func() domain.OrgCredentialWriter
+OperatorCaller: func(context.Context) (string, bool, bool)
+RunOperatorMutation: func(context.Context, string, string, string, string, string, func() error) (bool, error)
+RecordAudit: func(context.Context, domain.AuditEntry) error
+
+## gRPC services after startKernelServices
+cambrian.OperatorConsole
+cambrian.Orchestrator
+grpc.health.v1.Health
+
+## Event-bus subscriptions after startKernelServices
+agent.ready 3
+agent.step 1
+auction.event 1
+daemon.crashed 1
+daemon.quarantined 1
+daemon.recovered 1
+hitl.raised 1
+hitl.resolved 1
+llm.health 1
+mcp.server_health 1
+memory.pressure 1
+memory.written 1
+pipeline.meters 1
+pipeline.step 1
+plan.state 2
+reactive.budget 1
+retention.run 1
+session.dormant 1
+session.state 1
+verifier.round 1
+watch.triggered 1

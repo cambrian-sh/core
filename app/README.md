@@ -10,7 +10,18 @@ The package is intentionally importable so a downstream (premium) binary can reu
 
 | File | Purpose |
 |---|---|
-| `app.go` | The `Kernel` struct, `Run`, `bootstrapKernel`, `startKernelServices`, reconcilers, MCP sink, helpers |
+| `app.go` | The `Kernel` struct, `Kernel.Shutdown`, `Run` |
+| `boot.go` | `bootstrapKernel` (the phase sequence), the `kernelBuild` state the phases share, and the final `Kernel` assembly |
+| `boot_infrastructure.go` | Phase 1: storage, pgvector, health, decision point, audit/conversation/principal stores, hooks, LLM Provider, embedder; agent registration |
+| `boot_memory.go` | Ontology + substrate, the memory stack, erasure and forget, the fact-layer boot line, the late recall lanes |
+| `boot_metabolism.go` | Awareness/metabolism/supervision stacks, gateway, event bus, agent transport; approvals, Watcher, sessions, CircadianRhythm; planner routing |
+| `boot_plugins.go` | Plugin seams and the `KernelServices` bundle; the plugin Build phase |
+| `boot_server.go` | The chat lane and the agent-plane server (`kernel.ProvideServer`) with its lanes |
+| `boot_tools.go` | Inbound MCP endpoint, MCP connector, tool executor, tool and skill catalogs |
+| `boot_operator.go` | Operator command effects, the Authenticator, the publish effect |
+| `start_services.go` | `startKernelServices`: background workers, plane auth, gRPC server, ingestion HTTP |
+| `agent_registration.go`, `mcp_tool_sink.go`, `pipeline_seams.go` | Agent sources and reconcilers, the MCP tool sink, the late-bound pipeline/ingress seams |
+| `testdata/boot_graph/*.golden` | The assembled object graph per representative config, pinned by `TestPg_BootGraphCharacterization` (regenerate only for an intended wiring change) |
 | `options.go` | `Options` injection seam + `ReactiveServices` capability bundle + `DefaultOptions` |
 | `*_test.go` | In-process micro-benchmarks and unit tests. These stay in-tree. Black-box / integration benchmarks live in the sibling `../cambrian-benchmarks` repo. |
 
@@ -50,7 +61,7 @@ type ReactiveServices struct {
 
 This is the spike-validated seam (ADR-0057 D14): the reactive engine + executors + watch handler are buildable from this bundle alone.
 
-### `Kernel` (`app.go:61-99`)
+### `Kernel` (`app.go`)
 
 The container that holds every wired subsystem. After the 2026-05-11c stack refactor it carries only:
 
@@ -59,13 +70,13 @@ The container that holds every wired subsystem. After the 2026-05-11c stack refa
 - **Runtime handles** + ADR-0012 synaptic bridge components (`SessionMgr`, `EventLogger`, `SynapticWatcher`, `CircadianRhythm`, `MemoryLifecycleMgr`, `ArtifactVault`, `EventBus`)
 - **Cross-cutting** (ADR-0034 / 0039 / 0043 / 0047): `ScopeResolver`, `ToolGrants`, `MCPConnector`, `OperatorEffects`, `OperatorAudit`
 
-`Kernel.Shutdown(ctx)` (line 102) tears down in reverse dependency order: gRPC GracefulStop → listener → domain stacks (reverse) → synapse components → store close.
+`Kernel.Shutdown(ctx)` tears down in reverse dependency order: gRPC GracefulStop → listener → domain stacks (reverse) → synapse components → store close.
 
 ---
 
 ## Main flow: `Run` → `bootstrapKernel` → `startKernelServices`
 
-### 1. `Run(ctx, opts)` — top-level entry (`app.go:159`)
+### 1. `Run(ctx, opts)` — top-level entry (`app.go`)
 
 1. `flag.Parse()`.
 2. Load `.env` then `configs/config.json` (7-layer config pipeline from ADR-0024).
@@ -77,7 +88,7 @@ The container that holds every wired subsystem. After the 2026-05-11c stack refa
 8. `errgroup.WithContext(rootCtx)` and call `startKernelServices(g, gCtx, k)`.
 9. `g.Wait()` — blocks until every goroutine exits.
 
-### 2. `bootstrapKernel` — the actual wiring (`app.go:232-1050`)
+### 2. `bootstrapKernel` — the actual wiring (`boot.go` and the `boot_*.go` phase files)
 
 Strictly sequential, dependency-ordered:
 
@@ -118,7 +129,7 @@ its `discovery_safe` tool ceiling — was retired the same day, along with nine 
 reasons are recorded per-key in `internal/config/execution_migration_test.go`
 (`retiredExecutionFields`), which is the authoritative list of what was deliberately removed.
 
-### 3. `startKernelServices` — the parallel workers (`app.go:1052-1292`)
+### 3. `startKernelServices` — the parallel workers (`start_services.go`)
 
 All started in an `errgroup.Group`, so any panicking goroutine fails the whole runtime:
 
@@ -134,11 +145,11 @@ All started in an `errgroup.Group`, so any panicking goroutine fails the whole r
 
 ---
 
-## Supporting helpers (in `app.go`)
+## Supporting helpers
 
 | Helper | Role |
 |---|---|
-| `mcpToolSink` (line 1298) | Keeps the tool registry + ADR-0044 retrieval index in step as MCP servers drop and reconnect. `Seed` on boot, `SetServerTools` on resync, `RemoveServerTools` on permanent drop |
+| `mcpToolSink` (`mcp_tool_sink.go`) | Keeps the tool registry + ADR-0044 retrieval index in step as MCP servers drop and reconnect. `Seed` on boot, `SetServerTools` on resync, `RemoveServerTools` on permanent drop |
 | `registerModelAgents` | Registers `TraitModel` agents (`llm:<id>` keyed). Idempotent upsert |
 | `reconcileModelAgents` | Evicts `TraitModel` agents no longer declared in `config.Generators` (config is the source of truth; registry is upsert-only, so eviction needs an explicit reconcile pass — the "qwen-after-removal orphan bug") |
 | `reconcileFilesystemAgents` | Evicts agents whose local source file is gone. Provenance-scoped: `ExecPath != ""` AND `Runtime != A2A` AND `Trait != Model` |
