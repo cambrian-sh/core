@@ -81,7 +81,15 @@ func (b *kernelBuild) buildChatLane() {
 		// busy in a 90 s code-sandbox step, and the turn was cancelled while it worked.
 		// turnDelegations reads each delegated plan's own liveness probe (step
 		// boundaries, tool calls and approvals in flight, model calls on its leases).
+		// A tool call blocked on a human approval reads as "now" through
+		// turnDelegations too (the hub reports the wait), so the stall watchdog pauses
+		// while the person decides, bounded by the approval's own window.
 		chatTurns.SetLivenessProbe(corechat.LatestActivity(progressSink.LastActivity, llmGateway.ConversationActivity, turnDelegations.ConversationActivity))
+		// And the turn deadline counts only time not spent waiting on a person: an
+		// approval window (schedules: 300 s) longer than chat_turn_timeout_seconds
+		// must be usable from chat (T-20261118-a-chat-turn-waiting-on-a-human-approval-is).
+		chatTurns.SetPersonWaitProbe(turnDelegations.PersonWait)
+		chatTurns.PersonWaitAllowance = personWaitAllowance(cfg)
 		// Both bounds are operator config (execution.chat.chat_turn_timeout_seconds /
 		// chat_stall_timeout_seconds); 0 keeps the package default
 		// (T-20261107-chat-turn-timeout-is-hardcoded-at-240-s).
@@ -412,6 +420,31 @@ func secondsOr(secs int, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// personWaitAllowance is how long a chat turn may wait on a person beyond its turn
+// timeout (corechat.TurnService.PersonWaitAllowance): the longest window the kernel
+// gives one blocking approval a turn can raise — the approvals default (dangerous
+// tools), a schedule proposal, a skill access request, a machine consent — so any
+// one of them can run its full window from chat
+// (T-20261118-a-chat-turn-waiting-on-a-human-approval-is). Derived from the
+// settings that own those windows; it adds no tunable of its own.
+func personWaitAllowance(cfg *config.Config) time.Duration {
+	consent := time.Duration(cfg.MCP.WorkerConsentTimeoutMs) * time.Millisecond
+	if consent <= 0 {
+		consent = 120 * time.Second // the hub's default consent window (domain.defaultConsentGrace)
+	}
+	longest := consent
+	for _, w := range []time.Duration{
+		cfg.Approvals.DefaultTimeout(),
+		cfg.Execution.Schedules.ApprovalTimeout(),
+		time.Duration(cfg.Execution.Skills.AccessRequestTimeoutSeconds) * time.Second,
+	} {
+		if w > longest {
+			longest = w
+		}
+	}
+	return longest
 }
 
 // poolRecoverTimeout bounds how long the chat pool holds a worker whose turn was

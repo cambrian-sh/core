@@ -1781,12 +1781,16 @@ type ChatConfig struct {
 	// deadline_remaining_ms, and the agent budgets its delegations against it, so
 	// raising it needs no agent change. Raise it for slow models or long delegated
 	// work. Default 240 (internal/chat DefaultTurnTimeout); 0 uses the default.
-	// T-20261107-chat-turn-timeout-is-hardcoded-at-240-s.
+	// T-20261107-chat-turn-timeout-is-hardcoded-at-240-s. Time the turn spends
+	// waiting on a person (a human approval its tool call blocks on) does not count,
+	// up to the longest approval window (TurnService.PersonWaitAllowance, ENG-2119).
 	ChatTurnTimeoutSeconds int `json:"chat_turn_timeout_seconds,omitempty"`
 
 	// ChatStallTimeoutSeconds fails a turn that reports no progress at all for this
 	// long — no progress event, no model call in flight on its lease, no movement in
-	// a plan it delegated — well before ChatTurnTimeoutSeconds would. Default 90
+	// a plan it delegated — well before ChatTurnTimeoutSeconds would. A tool call
+	// waiting on a human approval is not silence: it pauses the stall clock for as
+	// long as the approval's window lets it wait (ENG-2119). Default 90
 	// (internal/chat DefaultStallTimeout); 0 uses the default.
 	ChatStallTimeoutSeconds int `json:"chat_stall_timeout_seconds,omitempty"`
 

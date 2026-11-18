@@ -628,6 +628,11 @@ func (h *AddressedHub) await(ctx context.Context, it ApprovalItem, window time.D
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
+	// From here until an answer, the window or the requester's end, the requester
+	// is waiting on a person — not silent. Whoever put a hook on ctx (the chat
+	// turn admission) counts the span (approval_wait.go;
+	// T-20261118-a-chat-turn-waiting-on-a-human-approval-is).
+	defer BeginApprovalWait(ctx)()
 	select {
 	case res := <-ch:
 		return res, nil
@@ -635,10 +640,41 @@ func (h *AddressedHub) await(ctx context.Context, it ApprovalItem, window time.D
 		res, _ := h.resolve(context.WithoutCancel(ctx), it, ApprovalExpired, "", "nobody answered within the approval window")
 		return h.takeAfterResolve(ch, res), nil
 	case <-ctx.Done():
-		res, _ := h.resolve(context.WithoutCancel(ctx), it, ApprovalWithdrawn, "", "the requester stopped waiting: "+ctx.Err().Error())
+		res, _ := h.resolve(context.WithoutCancel(ctx), it, ApprovalWithdrawn, "", withdrawnDetail(ctx))
 		res = h.takeAfterResolve(ch, res)
 		return ApprovalItem{State: res.State, ID: res.ID, ResolvedBy: res.ResolvedBy, Choice: res.Choice}, ctx.Err()
 	}
+}
+
+// withdrawnDetail says why a requester stopped waiting. The context's cause
+// names it when the canceller gave one — a chat turn that ended cancels its tool
+// calls with "the chat turn that ordered this work has ended" — so the approver
+// who answers late is told that, not a bare "context canceled". Only the cause's
+// first line: a joined cause carries the turn's own failure after it, which is
+// internal text.
+func withdrawnDetail(ctx context.Context) string {
+	why := ctx.Err().Error()
+	if c := context.Cause(ctx); c != nil && c != ctx.Err() {
+		why, _, _ = strings.Cut(c.Error(), "\n")
+	}
+	return "the requester stopped waiting: " + why
+}
+
+// resolvedRefusal is Answer's refusal for an item that is no longer pending. It
+// wraps ErrApprovalResolved with the item's state and reason, so an approver who
+// answers after the request was withdrawn or expired reads that nothing was done
+// and why (AnswerApproval returns it as the refusal) — a late approve never runs
+// the action silently, and never fails silently either.
+func resolvedRefusal(it ApprovalItem) error {
+	switch it.State {
+	case ApprovalWithdrawn, ApprovalExpired:
+		msg := string(it.State) + "; nothing was done"
+		if it.Detail != "" {
+			msg += " (" + it.Detail + ")"
+		}
+		return fmt.Errorf("%w: %s", ErrApprovalResolved, msg)
+	}
+	return ErrApprovalResolved
 }
 
 // takeAfterResolve prefers an answer that raced the timer/cancel.
@@ -735,12 +771,12 @@ func (h *AddressedHub) Answer(ctx context.Context, id string, ans ApprovalAnswer
 	}
 	if it.State != ApprovalPending {
 		h.answerMu.Unlock()
-		return it, ErrApprovalResolved
+		return it, resolvedRefusal(it)
 	}
 	if !it.ExpiresAt.IsZero() && !h.now().Before(it.ExpiresAt) {
 		h.answerMu.Unlock()
 		res, _ := h.resolve(ctx, it, ApprovalExpired, "", "answered after the approval window")
-		return res, ErrApprovalResolved
+		return res, resolvedRefusal(res)
 	}
 	if ok, why := h.answerable(ctx, it, ans.By); !ok {
 		h.answerMu.Unlock()
@@ -791,7 +827,7 @@ func (h *AddressedHub) Answer(ctx context.Context, id string, ans ApprovalAnswer
 	}
 	if !ok {
 		cur, _ := h.store.GetApproval(ctx, id)
-		return cur, ErrApprovalResolved
+		return cur, resolvedRefusal(cur)
 	}
 	if standing != nil {
 		if err := h.store.PutStanding(ctx, *standing); err != nil {

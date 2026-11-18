@@ -66,6 +66,20 @@ type TurnDelegations struct {
 	// lane reads them kernel-side (TurnResults) for the reply check, the turn index
 	// and ask-back (ADR-0145 D2/D5a/D8), instead of trusting the agent to relay them.
 	results map[string][]domain.ExecuteResult
+	// waits is how long each live turn has waited on a person (an approval its
+	// tool calls block on), by origin message id, until EndTurn
+	// (T-20261118-a-chat-turn-waiting-on-a-human-approval-is). Kept apart from
+	// turns because a turn's record is dropped whenever nothing is in flight,
+	// and the time it waited still counts for the rest of the turn.
+	waits map[string]*personWait
+}
+
+// personWait is one turn's time spent waiting on a person. Overlapping waits
+// (two tool calls blocked on approvals at once) count once.
+type personWait struct {
+	active int           // approval waits in progress now
+	since  time.Time     // when active last went 0 → 1
+	total  time.Duration // completed wait spans
 }
 
 // TurnResults returns the structured results of the runs the turn delegated
@@ -156,6 +170,7 @@ func NewTurnDelegations() *TurnDelegations {
 		runOrigin: map[domain.RunID]string{},
 		ended:     map[string]time.Time{},
 		revoked:   map[domain.LeaseID]time.Time{},
+		waits:     map[string]*personWait{},
 		now:       time.Now,
 	}
 }
@@ -281,9 +296,16 @@ func (d *TurnDelegations) ConversationActivity(conversationID string) time.Time 
 	d.mu.Lock()
 	var probes []func() time.Time
 	planning := false
-	for _, tw := range d.turns {
+	for origin, tw := range d.turns {
 		if tw.conversationID != conversationID {
 			continue
+		}
+		// A tool call of the turn blocked on a human approval is waiting for a
+		// person, not silent: the stall watchdog pauses for exactly as long as
+		// the approval's own window lets it wait (T-20261118-a-chat-turn-
+		// waiting-on-a-human-approval-is).
+		if w := d.waits[origin]; w != nil && w.active > 0 {
+			planning = true
 		}
 		for r := range tw.runs {
 			if r.probe == nil {
@@ -326,6 +348,7 @@ func (d *TurnDelegations) EndTurn(conversationID, originMessageID string, turnLe
 	tw := d.turns[originMessageID]
 	delete(d.turns, originMessageID)
 	delete(d.results, originMessageID)
+	delete(d.waits, originMessageID)
 	hook := d.onTurnEnd
 	var cancels []context.CancelCauseFunc
 	runs := 0
@@ -374,6 +397,61 @@ func (d *TurnDelegations) pruneLocked(now time.Time) {
 	}
 }
 
+// beginPersonWait marks the turn as waiting on a person until the returned func
+// runs. A wait reported for a turn that has already ended counts nothing.
+func (d *TurnDelegations) beginPersonWait(origin string) func() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, gone := d.ended[origin]; gone {
+		return func() {}
+	}
+	w := d.waits[origin]
+	if w == nil {
+		w = &personWait{}
+		d.waits[origin] = w
+	}
+	if w.active == 0 {
+		w.since = d.now()
+	}
+	w.active++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if d.waits[origin] != w || w.active == 0 {
+				return // the turn ended meanwhile
+			}
+			w.active--
+			if w.active == 0 {
+				w.total += d.now().Sub(w.since)
+			}
+		})
+	}
+}
+
+// PersonWait reports whether the turn ordered by originMessageID is waiting on a
+// person right now, and how long it has waited on one in all (the current span
+// included). The chat lane's turn deadline counts only the time a turn spends
+// NOT waiting on a person (chat.TurnService.SetPersonWaitProbe): the approval's
+// own window bounds the wait, the turn deadline bounds the work.
+func (d *TurnDelegations) PersonWait(originMessageID string) (waiting bool, waited time.Duration) {
+	if d == nil || originMessageID == "" {
+		return false, 0
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.waits[originMessageID]
+	if w == nil {
+		return false, 0
+	}
+	waited = w.total
+	if w.active > 0 {
+		waited += d.now().Sub(w.since)
+	}
+	return w.active > 0, waited
+}
+
 // GuardToolCall is ExecuteTool's admission for turn-ordered work. lease is the
 // presented lease; binding/known its resolution for this caller. It refuses
 // (ok=false) a lease of a turn that has ended — before any authorisation or
@@ -408,6 +486,10 @@ func (d *TurnDelegations) GuardToolCall(ctx context.Context, lease domain.LeaseI
 	tw := d.turnLocked(origin, binding.ConversationID)
 	tw.guards[g] = struct{}{}
 	tw.leases[lease] = struct{}{}
+	// The approval hub reports when this call blocks on a person (domain
+	// .BeginApprovalWait); the span is the turn's, for its stall watchdog and
+	// its deadline.
+	gctx = domain.WithApprovalWaitHook(gctx, func() func() { return d.beginPersonWait(origin) })
 	return gctx, func() {
 		d.mu.Lock()
 		if tw := d.turns[origin]; tw != nil {

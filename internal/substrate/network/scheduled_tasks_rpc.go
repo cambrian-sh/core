@@ -83,11 +83,38 @@ func (s *Server) ProposeScheduledTask(ctx context.Context, req *pb.ProposeSchedu
 	if err != nil {
 		return nil, err
 	}
+	// The proposal blocks on a person for up to the approval window. Admitted
+	// like a tool call (admitTurnWork): the wait counts as the chat turn waiting
+	// on a person, not as silence, and the turn's end withdraws the approval, so
+	// a late approve is refused rather than creating a task for a turn whose
+	// person was already answered (T-20261118-a-chat-turn-waiting-on-a-human-
+	// approval-is).
+	lease := domain.LeaseID(req.GetLeaseId())
+	if lease == "" {
+		lease = domain.LeaseID(mdValue(ctx, leaseHeader))
+	}
+	ctx, release, ok := s.admitTurnWork(ctx, lease)
+	if !ok {
+		return &pb.ProposeScheduledTaskResponse{
+			Rejection: pb.ScheduledTaskRejection_SCHEDULED_TASK_REJECTION_NO_DECISION,
+			Detail:    ErrTurnEnded.Error() + "; nothing was created",
+		}, nil
+	}
+	defer release()
 	out, err := s.ScheduledTasks.Propose(ctx, scheduledtask.Proposal{
 		OwnerID: owner, AgentID: agentID, Title: req.GetTitle(), Goal: req.GetGoal(),
 		Cron: req.GetCron(), RRule: req.GetRrule(), Timezone: req.GetTimezone(),
 		RunAgent: req.GetAgentId(), Delivery: req.GetDelivery(),
 	})
+	if err != nil && errors.Is(context.Cause(ctx), ErrTurnEnded) {
+		// The chat turn that asked ended while the approval was pending: the hub
+		// withdrew it, nothing was created, and nobody is waiting for this answer.
+		slog.InfoContext(ctx, "scheduled task: proposal withdrawn; its chat turn ended", "owner", owner, "agent", agentID)
+		return &pb.ProposeScheduledTaskResponse{
+			Rejection: pb.ScheduledTaskRejection_SCHEDULED_TASK_REJECTION_NO_DECISION,
+			Detail:    ErrTurnEnded.Error() + "; nothing was created",
+		}, nil
+	}
 	if err != nil {
 		slog.WarnContext(ctx, "scheduled task: proposal failed", "owner", owner, "agent", agentID, "err", err)
 		return nil, status.Error(codes.Unavailable, "scheduled tasks are unavailable")

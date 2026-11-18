@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,12 @@ const (
 	// tokenLimit / tokenTTL bound the per-turn managed-LLM lease.
 	tokenLimit = 8192
 )
+
+// HandoffKeyTurnBudgetMs carries the turn's work budget (TurnTimeout, ms) to the
+// session worker when the RPC deadline also covers time waiting on a person
+// (PersonWaitAllowance): the agent plans its rounds and its wall cap against it,
+// not against the longer RPC deadline.
+const HandoffKeyTurnBudgetMs = "_turn_budget_ms"
 
 // ErrEmptyReply reports that the worker returned nothing to say. Surfaced rather than stored,
 // because persisting an empty agent message would corrupt the transcript for every later turn.
@@ -115,6 +122,12 @@ type TurnService struct {
 	// liveness reports when a conversation last showed signs of work. Supplied by the
 	// composition root; nil disables stall detection.
 	liveness func(conversationID string) time.Time
+	// personWait reports whether the turn ordered by a message is waiting on a person
+	// (a human approval its tool call blocks on) and how long it has waited on one in
+	// all (network.TurnDelegations.PersonWait). With it and a PersonWaitAllowance,
+	// TurnTimeout counts only the time a turn spends NOT waiting on a person; nil ⇒
+	// TurnTimeout is wall-clock.
+	personWait func(originMessageID string) (waiting bool, waited time.Duration)
 	// delegations ends a turn's delegated work when the turn ends. nil ⇒ no
 	// kernel-side delegation tracking (a test, or an embedder without a planner).
 	delegations DelegationEnder
@@ -150,6 +163,19 @@ type TurnService struct {
 	// a wedged turn holds its worker, its lease and the user's attention for the full
 	// TurnTimeout while reporting nothing — truthfully, and uselessly.
 	StallTimeout time.Duration
+	// PersonWaitAllowance is how much time waiting on a person (a human approval a
+	// tool call of the turn blocks on) a turn may spend on top of TurnTimeout. The
+	// composition root sets it to the longest approval window the kernel grants
+	// (approvals default, schedules, skill access, machine consent), so any one
+	// approval can run its full window from chat. 0, or no person-wait probe ⇒
+	// TurnTimeout is wall-clock, as before ENG-2119.
+	//
+	// The turn's context deadline — which is the deadline the session worker's RPC
+	// carries — is TurnTimeout + PersonWaitAllowance, because a deadline cannot be
+	// extended once sent; the kernel enforces the real budget itself
+	// (watchDeadline), and tells the worker its work budget as "_turn_budget_ms" so
+	// the agent still plans its own work inside TurnTimeout.
+	PersonWaitAllowance time.Duration
 	// DefaultLanguage is the language of the kernel's fixed failure sentences when nothing
 	// the user wrote identifies one (execution.chat.chat_default_language). Empty or a
 	// language the catalogue lacks means English (locale.go).
@@ -230,6 +256,17 @@ func (s *TurnService) clock() time.Time {
 // TurnTimeout.
 func (s *TurnService) SetLivenessProbe(f func(conversationID string) time.Time) { s.liveness = f }
 
+// SetPersonWaitProbe makes the turn deadline pause while the turn waits on a person
+// (T-20261118-a-chat-turn-waiting-on-a-human-approval-is). A human approval has its
+// own window (execution.schedules.approval_timeout_seconds, the approvals default
+// timeout), routinely longer than TurnTimeout: a wall-clock deadline would cut the
+// turn before the person could answer, and the person would be told the request
+// failed while the approval still waited for them. The wait stays bounded — by the
+// approval's window, which ends it as expired — and TurnTimeout still bounds the work.
+func (s *TurnService) SetPersonWaitProbe(f func(originMessageID string) (bool, time.Duration)) {
+	s.personWait = f
+}
+
 // LatestActivity combines liveness sources into one probe: a conversation was last
 // active at the LATEST time any source reports. The composition root uses it to
 // join progress emissions with in-flight model work (the LLM gateway reports "now"
@@ -259,7 +296,10 @@ func LatestActivity(sources ...func(conversationID string) time.Time) func(conve
 // killed. One that has emitted nothing for the stall window has stopped, whatever the
 // clock says. "Reporting" is whatever the liveness probe counts — in production both
 // progress emissions and a model call in flight on the turn's lease (LatestActivity), so
-// a turn waiting on one long generation is working, not silent.
+// a turn waiting on one long generation is working, not silent. So is a tool call
+// blocked on a human approval: network.TurnDelegations.ConversationActivity reports
+// "now" while the approval hub says the turn waits on a person, which pauses this
+// watchdog for as long as the approval's own window lets the wait run (ENG-2119).
 func (s *TurnService) watchStall(ctx context.Context, conversationID string, cancel context.CancelFunc, stalled *atomic.Bool) {
 	if s.liveness == nil || s.StallTimeout <= 0 {
 		return
@@ -290,6 +330,51 @@ func (s *TurnService) watchStall(ctx context.Context, conversationID string, can
 				cancel()
 				return
 			}
+		}
+	}
+}
+
+// pausesForPerson reports whether the turn deadline pauses while the turn waits on
+// a person (SetPersonWaitProbe + PersonWaitAllowance).
+func (s *TurnService) pausesForPerson() bool {
+	return s.TurnTimeout > 0 && s.personWait != nil && s.PersonWaitAllowance > 0
+}
+
+// watchDeadline ends the turn once it has spent TurnTimeout NOT waiting on a person
+// (SetPersonWaitProbe). It replaces a wall-clock context deadline only when the probe
+// is wired; the turn then reports context.DeadlineExceeded exactly as before. It
+// sleeps until the earliest moment the budget could run out and re-reads the probe
+// then: a wait that began meanwhile has moved that moment later.
+func (s *TurnService) watchDeadline(ctx context.Context, origin string, start time.Time, cancel context.CancelFunc, timedOut *atomic.Bool) {
+	poll := s.stallPoll
+	if poll <= 0 {
+		poll = time.Second
+	}
+	for {
+		waiting, waited := s.personWait(origin)
+		if waited >= s.PersonWaitAllowance {
+			// The allowance is spent: from here the wait is ordinary turn time.
+			waited, waiting = s.PersonWaitAllowance, false
+		}
+		remaining := s.TurnTimeout - (s.clock().Sub(start) - waited)
+		if !waiting && remaining <= 0 {
+			timedOut.Store(true)
+			cancel()
+			return
+		}
+		next := remaining
+		if waiting || next > poll {
+			// While a person is awaited the budget is not being spent; re-check at
+			// the poll interval for the wait's end. Otherwise never sleep past one
+			// poll either, so a fake clock in tests is honoured promptly.
+			next = poll
+		}
+		t := time.NewTimer(next)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
 		}
 	}
 }
@@ -484,14 +569,23 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 
 	turnCtx := ctx
 	turnCancel := context.CancelFunc(func() {})
-	if s.TurnTimeout > 0 {
+	var timedOut atomic.Bool
+	pauseForPerson := s.pausesForPerson()
+	switch {
+	case pauseForPerson:
+		turnCtx, turnCancel = context.WithTimeout(ctx, s.TurnTimeout+s.PersonWaitAllowance)
+	case s.TurnTimeout > 0:
 		turnCtx, turnCancel = context.WithTimeout(ctx, s.TurnTimeout)
-	} else {
+	default:
 		turnCtx, turnCancel = context.WithCancel(ctx)
 	}
 	defer turnCancel()
 	turn, untrack := s.trackActive(req.ConversationID, turnCancel)
 	defer untrack()
+	// The deadline counts only time not spent waiting on a person (SetPersonWaitProbe).
+	if pauseForPerson {
+		go s.watchDeadline(turnCtx, userMsg.ID, s.clock(), turnCancel, &timedOut)
+	}
 
 	// A turn that goes quiet is cut loose long before TurnTimeout would notice.
 	var stalled atomic.Bool
@@ -579,6 +673,9 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		}
 		if turn.closed.Load() {
 			return domain.Message{}, domain.ErrConversationClosed
+		}
+		if timedOut.Load() {
+			return domain.Message{}, fmt.Errorf("chat: turn deadline: %w", context.DeadlineExceeded)
 		}
 		return domain.Message{}, err // ErrPoolBusy / ErrWorkerLost pass through
 	}
@@ -717,6 +814,11 @@ func (s *TurnService) buildHandoff(ctx context.Context, conv *domain.Conversatio
 	// stopping rule.
 	if s.Lane.SingleAgent {
 		s.Lane.Limits.Stamp(handoffCtx)
+	}
+	// The worker's RPC deadline includes the person-wait allowance; its own work
+	// budget is TurnTimeout (agents/chat_agent.py budgets against the smaller).
+	if s.pausesForPerson() {
+		handoffCtx[HandoffKeyTurnBudgetMs] = strconv.FormatInt(s.TurnTimeout.Milliseconds(), 10)
 	}
 	if s.workSystems != nil && conv.Profile != domain.ProfileCustomer && !s.Lane.SingleAgent {
 		if ws := strings.TrimSpace(s.workSystems(ctx)); ws != "" {

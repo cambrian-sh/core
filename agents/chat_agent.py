@@ -105,12 +105,37 @@ _LEDGER_TOOLS = ("ledger_get", "ledger_find")
 # it in this lane), ends the turn on its answer, and runs under the lane's D4
 # stopping rule (the SDK reads the caps from the same context keys).
 _KEY_LANE = "_lane"
+# The turn's work budget when the RPC deadline also covers waiting on a person
+# (internal/chat HandoffKeyTurnBudgetMs, ENG-2119).
+_KEY_TURN_BUDGET_MS = "_turn_budget_ms"
 _LANE_SINGLE_AGENT = "single_agent"
 _DELEGATION_TOOLS = ("delegate_to_planner",)
 
 
 def _single_agent_lane(task) -> bool:
     return (task.context.get(_KEY_LANE) or "") == _LANE_SINGLE_AGENT
+
+
+def _turn_budget_ms(task) -> int:
+    """The milliseconds this turn may spend on its own work.
+
+    The RPC deadline (task.deadline_remaining_ms), unless the kernel sent a smaller
+    work budget as _turn_budget_ms: when a turn may wait on a person (a human approval
+    a tool call blocks on), the kernel extends the RPC deadline by that allowance
+    and pauses its own turn clock during the wait, but the agent still plans its
+    rounds inside the turn timeout (internal/chat HandoffKeyTurnBudgetMs;
+    T-20261118-a-chat-turn-waiting-on-a-human-approval-is). Counting the wait
+    against the budget here only makes the agent wrap up sooner after one, never
+    later than the kernel allows."""
+    remaining = getattr(task, "deadline_remaining_ms", 0) or 0
+    raw = (getattr(task, "context", None) or {}).get(_KEY_TURN_BUDGET_MS, "")
+    try:
+        budget = int(str(raw).strip() or "0")
+    except ValueError:
+        budget = 0
+    if budget > 0 and (remaining <= 0 or budget < remaining):
+        return budget
+    return remaining
 
 
 def _lane_limits_for_turn(task, time_left, reply_reserve_s: float):
@@ -1128,7 +1153,7 @@ class ChatAgent(CognitiveAgent):
             # ADR-0150 D3: no front desk hand-off in the single-agent lane.
             hidden = tuple(hidden) + _DELEGATION_TOOLS
         self._tools = ToolRegistry(self, hidden=hidden)
-        remaining_ms = getattr(task, "deadline_remaining_ms", 0) or 0
+        remaining_ms = _turn_budget_ms(task)
         self._turn_deadline = _now() + remaining_ms / 1000.0 if remaining_ms > 0 else 0.0
         substrate = self.substrate
         if self._turn_deadline and not lane:

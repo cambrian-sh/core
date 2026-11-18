@@ -177,10 +177,18 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 			if !skillInSet(acc) && full && !composedBound {
 				// Outside the effective set: ask the operator. Only a Tier-2 load
 				// asks; a Tier-1 lookup just reports the skill as requestable.
-				out := s.SkillAccess.Request(ctx, access.RequestInput{
-					AgentID: agentID, Skill: n, RunID: s.skillRunID(ctx), Rationale: skillRationaleFromMetadata(ctx),
-				})
-				acc, detail = out.Access, out.Detail
+				// The request may block on the operator for its window: admitted
+				// like a tool call, so the wait counts as the chat turn waiting on
+				// a person and the turn's end withdraws it (admitTurnWork, ENG-2119).
+				if actx, release, ok := s.admitTurnWork(ctx, domain.LeaseID(mdValue(ctx, leaseHeader))); !ok {
+					acc, detail = domain.SkillAccessDenied, ErrTurnEnded.Error()
+				} else {
+					out := s.SkillAccess.Request(actx, access.RequestInput{
+						AgentID: agentID, Skill: n, RunID: s.skillRunID(ctx), Rationale: skillRationaleFromMetadata(ctx),
+					})
+					release()
+					acc, detail = out.Access, out.Detail
+				}
 			}
 			if !skillInSet(acc) {
 				skills = append(skills, servedSkill{sk: sk, access: acc, detail: detail})

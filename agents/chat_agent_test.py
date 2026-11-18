@@ -891,3 +891,31 @@ def test_customer_conversation_recalls_when_the_kernel_says_so():
     stub = _Stub([_answer("ok")])
     _agent(stub, mem).run(_task("when are you open?", recall_lookup="true", profile="customer"))
     assert mem.queries, "a customer conversation with recall_lookup=true must recall"
+
+
+# ── ENG-2119: the work budget when the RPC deadline also covers a person's wait ──
+
+
+def test_turn_budget_prefers_the_kernels_smaller_work_budget():
+    # The kernel extended the RPC deadline by the person-wait allowance (540 s) but
+    # the turn's own work budget is the turn timeout (240 s): the agent plans
+    # against 240 s.
+    t = _deadline_task("set up a weekly report", 540_000)
+    t.context[ca._KEY_TURN_BUDGET_MS] = "240000"
+    assert ca._turn_budget_ms(t) == 240_000
+
+
+def test_turn_budget_without_the_key_is_the_rpc_deadline():
+    t = _deadline_task("hello", 240_000)
+    assert ca._turn_budget_ms(t) == 240_000
+    t.context[ca._KEY_TURN_BUDGET_MS] = "not-a-number"
+    assert ca._turn_budget_ms(t) == 240_000
+    # A budget never widens the deadline the RPC actually carries.
+    t.context[ca._KEY_TURN_BUDGET_MS] = "900000"
+    assert ca._turn_budget_ms(t) == 240_000
+
+
+def test_turn_budget_with_no_rpc_deadline_uses_the_budget():
+    t = _deadline_task("hello", 0)
+    t.context[ca._KEY_TURN_BUDGET_MS] = "240000"
+    assert ca._turn_budget_ms(t) == 240_000

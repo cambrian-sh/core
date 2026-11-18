@@ -126,20 +126,11 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	// ended turn is refused BEFORE authorisation, so no approval can be raised for it,
 	// and a call in flight when the turn ends is cancelled — which withdraws the
 	// approval it may be waiting on (T-20261106-a-chat-turn-that-fails-deadline-exceeded-or).
-	if s.Delegations != nil {
-		b, known := s.resolveLeaseFor(ctx, sessionToken)
-		gctx, release, ok := s.Delegations.GuardToolCall(ctx, sessionToken, b, known)
-		if !ok {
-			return &pb.ExecuteToolResponse{Denied: true, DenyReason: ErrTurnEnded.Error()}, nil
-		}
-		defer release()
-		ctx = gctx
+	ctx, release, ok := s.admitTurnWork(ctx, sessionToken)
+	if !ok {
+		return &pb.ExecuteToolResponse{Denied: true, DenyReason: ErrTurnEnded.Error()}, nil
 	}
-	// A tool call is plan (and chat-turn) activity for as long as it runs: a page
-	// fetch or a confined process can take minutes without a model call on the
-	// lease, and the idle watchdogs must not read that as silence
-	// (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
-	defer s.trackLeaseWork(sessionToken)()
+	defer release()
 
 	// The operator-facing counterpart, which DOES name the tool.
 	//
@@ -374,6 +365,39 @@ func (s *Server) WatchApprovals(_ *pb.WatchApprovalsRequest, stream pb.Orchestra
 			}
 		}
 	}
+}
+
+// admitTurnWork is the agent plane's one admission for a call made under a lease
+// that may belong to a chat turn: ExecuteTool, and every other RPC that can block
+// on a human approval (ProposeScheduledTask, a skill access request on a full
+// skill load). Before ENG-2119 only ExecuteTool had it, so a schedule proposal's
+// 300 s approval wait read as silence to the chat stall watchdog, and its RPC —
+// running on the SDK worker's context, which the turn's cancel never reaches —
+// kept the approval pending after the turn had failed: the late approve created
+// the task (T-20261118-a-chat-turn-waiting-on-a-human-approval-is).
+//
+// A lease of an ended turn is refused (ok=false) before anything runs — no
+// approval can be raised for it. Otherwise the call runs under a context the
+// turn's end cancels, which withdraws the approval it may wait on (a late answer
+// is then refused with the reason, domain.AddressedHub.Answer); its approval
+// waits count as the turn waiting on a person (TurnDelegations.PersonWait); and
+// it is work in flight on its lease for as long as it runs, so neither idle
+// watchdog reads a page fetch, a confined process or an approval wait as silence
+// and the lease is not swept under it
+// (T-20261105-owner-decision-needed-120-s-plan-timeout-ms). release must run when
+// the call returns. Work no chat turn ordered passes the turn gate untouched.
+func (s *Server) admitTurnWork(ctx context.Context, lease domain.LeaseID) (context.Context, func(), bool) {
+	releaseGuard := func() {}
+	if s.Delegations != nil {
+		b, known := s.resolveLeaseFor(ctx, lease)
+		gctx, rel, ok := s.Delegations.GuardToolCall(ctx, lease, b, known)
+		if !ok {
+			return ctx, func() {}, false
+		}
+		ctx, releaseGuard = gctx, rel
+	}
+	untrack := s.trackLeaseWork(lease)
+	return ctx, func() { untrack(); releaseGuard() }, true
 }
 
 // SubmitApprovalDecision resolves a pending approval (ADR-0039 D10). Operator-plane
