@@ -106,3 +106,56 @@ func (c *BBoltStepCache) Put(_ context.Context, key string, handoff *domain.Hand
 		return b.Put([]byte(key), data)
 	})
 }
+
+// PurgeAll deletes every cached step result and returns how many there were. It is
+// the ADR-0137 D7 step-cache erasure (StepCacheErasureStep): an entry records no
+// session or source record (its key is a salted hash, ADR-0145 D9), so a cached
+// hand-off that quoted erased content cannot be singled out — and the cache is a
+// pure memo, so dropping it costs only recomputation.
+func (c *BBoltStepCache) PurgeAll(_ context.Context) (int, error) {
+	n := 0
+	err := c.db.Update(func(tx *bbolt.Tx) error {
+		if b := tx.Bucket(stepCacheBucket); b != nil {
+			n = b.Stats().KeyN
+			if err := tx.DeleteBucket(stepCacheBucket); err != nil {
+				return err
+			}
+		}
+		_, err := tx.CreateBucket(stepCacheBucket)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// StepCacheErasureStepName is the outbox step name of the step-cache erasure.
+const StepCacheErasureStepName = "step_cache"
+
+// StepCachePurger is what the step-cache erasure step needs of a step cache.
+type StepCachePurger interface {
+	PurgeAll(ctx context.Context) (int, error)
+}
+
+// StepCacheErasureStep is the core ADR-0137 D7 async step for the step cache
+// (inventory row 28; ENG-1967): after every executed erasure it evicts every cached
+// step result, so a hand-off computed from erased content is never served again.
+// It runs through the plugin tail-step seam (domain.ErasureTailStep, composed in
+// app.go next to the plugins' steps). "By session" is not possible: no entry records
+// its session or the records it read, and flushing is a superset of it.
+type StepCacheErasureStep struct{ Cache StepCachePurger }
+
+var _ domain.ErasureTailStep = StepCacheErasureStep{}
+
+// Step implements domain.ErasureTailStep.
+func (StepCacheErasureStep) Step() string { return StepCacheErasureStepName }
+
+// RunErasureStep implements domain.ErasureTailStep. Idempotent: a retry purges an
+// empty (or refilled-by-new-work) cache.
+func (s StepCacheErasureStep) RunErasureStep(ctx context.Context, _ domain.ErasedRecords) (int, error) {
+	if s.Cache == nil {
+		return 0, nil
+	}
+	return s.Cache.PurgeAll(ctx)
+}

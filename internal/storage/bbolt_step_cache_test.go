@@ -141,3 +141,42 @@ func TestBBoltStepCache_EmptyKey_Noop(t *testing.T) {
 		t.Fatalf("expected no-op for empty key: ok=%v err=%v handoff=%+v", ok, err, got)
 	}
 }
+
+// ENG-1967 (ADR-0137 D7 / R4 row 28): the step-cache erasure step evicts every cached
+// step result (no entry records its session or source records), reports how many,
+// is idempotent, and leaves a working cache behind.
+func TestStepCacheErasureStep_EvictsEveryEntry(t *testing.T) {
+	cache, cleanup := newTestStepCache(t)
+	defer cleanup()
+	ctx := context.Background()
+	for _, k := range []string{"k1", "k2"} {
+		if err := cache.Put(ctx, k, &domain.Handoff{ID: k, Payload: &domain.Payload{Data: []byte("quotes erased text")}}, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var step domain.ErasureTailStep = StepCacheErasureStep{Cache: cache}
+	if step.Step() != StepCacheErasureStepName {
+		t.Fatalf("step name = %q", step.Step())
+	}
+	n, err := step.RunErasureStep(ctx, domain.ErasedRecords{RequestID: "erase:x", DocumentIDs: []string{"doc-1"}})
+	if err != nil || n != 2 {
+		t.Fatalf("RunErasureStep = (%d, %v), want 2 evicted", n, err)
+	}
+	for _, k := range []string{"k1", "k2"} {
+		if _, ok, err := cache.Get(ctx, k); ok || err != nil {
+			t.Fatalf("Get(%s) after the erasure step: hit=%v err=%v", k, ok, err)
+		}
+	}
+	if n, err := step.RunErasureStep(ctx, domain.ErasedRecords{}); err != nil || n != 0 {
+		t.Fatalf("retried run = (%d, %v), want nothing left", n, err)
+	}
+	if err := cache.Put(ctx, "k3", &domain.Handoff{ID: "k3"}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok, err := cache.Get(ctx, "k3"); !ok || err != nil || h.ID != "k3" {
+		t.Fatalf("cache unusable after the purge: %v %v %v", h, ok, err)
+	}
+	if n, err := (StepCacheErasureStep{}).RunErasureStep(ctx, domain.ErasedRecords{}); n != 0 || err != nil {
+		t.Fatalf("no cache: (%d, %v), want a no-op", n, err)
+	}
+}

@@ -939,10 +939,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// execution.erasure.enabled) and exposes only that, MemoryStack.Eraser().
 	// S7: plugin participants erase their evidence-keyed rows in the same transaction;
 	// observers (the premium signed receipt) are told after commit.
+	// ADR-0137 D7: the async tail's steps beyond the CAS/vault deletes — the plugins'
+	// (opts.ErasureTailSteps, ENG-1966) and core's own, through the same seam:
+	// ENG-1967 evicts the step cache (no entry records its session or source records,
+	// so the whole memo goes; it is TTL-bounded and recomputed on a miss).
+	erasureTails := coreErasureTailSteps(storeHandle, opts.ErasureTailSteps)
 	erasureStore := postgres.NewPgErasureStore(docLifecycle,
 		postgres.WithErasureAsyncDeadline(cfg.Execution.Erasure.AsyncDeadline()),
 		postgres.WithErasureParticipants(opts.ErasureParticipants...),
-		postgres.WithErasureTailSteps(erasureTailStepNames(opts.ErasureTailSteps)...),
+		postgres.WithErasureTailSteps(erasureTailStepNames(erasureTails)...),
 		postgres.WithErasureObserver(opts.ErasureObserver))
 	memBackend.Eraser = erasureStore
 	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
@@ -983,7 +988,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if cfg.Execution.Erasure.Enabled {
 		ew := erasureworker.New(erasureStore, storeHandle.ContentEraser, erasureworker.Config{
 			Vault:              artifactVault,
-			TailSteps:          opts.ErasureTailSteps,
+			TailSteps:          erasureTails,
 			Poll:               cfg.Execution.Erasure.WorkerPoll(),
 			MaxAttempts:        cfg.Execution.Erasure.WorkerAttempts(),
 			TombstoneRetention: cfg.Execution.Erasure.TombstoneRetention(),
