@@ -59,7 +59,17 @@ type AddressedHub struct {
 	subs     map[int]*approvalSub
 	nextSub  int
 	handlers map[string]ApprovalHandler
-	notices  int
+	// recoverers carry out the intent of a sync item approved after its
+	// requester's kernel run ended, per intent executor (approval_intent.go).
+	recoverers map[string]ApprovalRecoverer
+	// local marks the pending sync items a requester of THIS process raised or
+	// joined: such an item is answered to its requester. A pending sync item
+	// that is neither here nor waited on is an orphan of an earlier run.
+	local map[string]bool
+	// actions is the ADR-0154 durable action record a recovered execution runs
+	// under (exactly once, keyed RecoveryActionKey).
+	actions ActionRecordStore
+	notices int
 	// dupNotices holds the DuplicateNotice of each pending item by id, for a store
 	// that does not persist it (Postgres): Get and List overlay it, so a console
 	// that lists pending approvals sees the notice the stream delivered.
@@ -90,6 +100,11 @@ type AddressedHubConfig struct {
 	// SweepInterval is how often Start's sweeper expires orphaned pending items
 	// (default 30 s).
 	SweepInterval time.Duration
+	// ActionRecords is the ADR-0154 durable action record that makes the
+	// recovered execution of an approval raised by an earlier kernel run happen
+	// once (approval_intent.go); nil ⇒ an in-process record (exactly once within
+	// a run only, like every in-memory store).
+	ActionRecords ActionRecordStore
 	// Bus publishes HITLRaisedEvent / HITLResolvedEvent to the operator feed.
 	Bus    EventBus
 	Now    func() time.Time
@@ -210,12 +225,18 @@ func NewAddressedHub(cfg AddressedHubConfig) *AddressedHub {
 		waiters:       map[string][]chan ApprovalItem{},
 		subs:          map[int]*approvalSub{},
 		handlers:      map[string]ApprovalHandler{},
+		recoverers:    map[string]ApprovalRecoverer{},
+		local:         map[string]bool{},
+		actions:       cfg.ActionRecords,
 		dupNotices:    map[string]string{},
 		stopCh:        make(chan struct{}),
 		done:          make(chan struct{}),
 	}
 	if h.store == nil {
 		h.store = NewMemoryApprovalStore()
+	}
+	if h.actions == nil {
+		h.actions = NewMemActionRecordStore()
 	}
 	if h.policy == nil {
 		p, err := NewConfigApprovalPolicy(DefaultApprovalPolicyConfig())
@@ -310,7 +331,8 @@ func (h *AddressedHub) HandleKind(kind string, fn ApprovalHandler) {
 // ── lifecycle ────────────────────────────────────────────────────────────────
 
 // Start runs a recovery sweep at once (items left pending by a previous process
-// whose window has passed are expired and published) and then a periodic sweep.
+// whose window has passed are expired and published; approved intents a crash
+// interrupted are finished, approval_intent.go) and then a periodic sweep.
 // One owner; drained by Stop.
 func (h *AddressedHub) Start(ctx context.Context) {
 	h.startOnce.Do(func() {
@@ -318,6 +340,7 @@ func (h *AddressedHub) Start(ctx context.Context) {
 		h.started = true
 		h.mu.Unlock()
 		h.sweep(ctx)
+		h.resumeRecoveries(ctx)
 		go func() {
 			defer close(h.done)
 			t := time.NewTicker(h.sweepEvery)
@@ -409,6 +432,11 @@ func (h *AddressedHub) windowFor(req ApprovalRequest) time.Duration {
 func (h *AddressedHub) raise(ctx context.Context, req ApprovalRequest, async bool) (ApprovalItem, ApprovalDecision, bool, error) {
 	it := itemFromRequest(req)
 	it.Async = async
+	// The intent rides only on an item that is persisted PENDING for a blocking
+	// requester (below): a standing-approved, fail-closed or async item has no
+	// requester to outlive, so nothing would ever carry it out or clear it.
+	intent := it.Intent
+	it.Intent = nil
 	route, err := h.Policy().Route(ctx, it)
 	if err != nil {
 		return it, ApprovalDecision{}, true, fmt.Errorf("approvals: route: %w", err)
@@ -471,6 +499,7 @@ func (h *AddressedHub) raise(ctx context.Context, req ApprovalRequest, async boo
 	if latest, found, err := h.store.LatestByKey(ctx, it.NaturalKey); err == nil && found {
 		switch {
 		case latest.State == ApprovalPending && now.Before(latest.ExpiresAt):
+			h.markLocal(latest, async)                    // this requester now waits on it, here
 			return latest, ApprovalDecision{}, false, nil // join
 		case (latest.State == ApprovalApproved || latest.State == ApprovalDenied) &&
 			!latest.Consumed && now.Before(latest.ExpiresAt) && !async:
@@ -535,7 +564,14 @@ func (h *AddressedHub) raise(ctx context.Context, req ApprovalRequest, async boo
 	}
 
 	it.State = ApprovalPending
+	if !async {
+		it.Intent = intent
+	}
+	h.markLocal(it, async)
 	if err := h.store.PutApproval(ctx, it); err != nil {
+		h.mu.Lock()
+		delete(h.local, it.ID)
+		h.mu.Unlock()
 		// Durability is the point; a store failure must not silently degrade to
 		// an un-persisted approval, nor approve anything.
 		return it, ApprovalDecision{}, true, fmt.Errorf("approvals: persist: %w", err)
@@ -677,14 +713,22 @@ func resolvedRefusal(it ApprovalItem) error {
 	return ErrApprovalResolved
 }
 
-// takeAfterResolve prefers an answer that raced the timer/cancel.
+// takeAfterResolve prefers an answer that raced the timer/cancel. An approval
+// another requester already took (Consumed, with nothing delivered here) is
+// not this waiter's to act on: the recoverer of a kernel that found the item
+// orphaned carried it out (approval_intent.go), and acting on it here too would
+// run the action twice.
 func (h *AddressedHub) takeAfterResolve(ch chan ApprovalItem, fallback ApprovalItem) ApprovalItem {
 	select {
 	case res := <-ch:
 		return res
 	default:
-		return fallback
 	}
+	if fallback.State == ApprovalApproved && fallback.Consumed {
+		fallback.State = ApprovalWithdrawn
+		fallback.Detail = "the approval was carried out by another requester; nothing was done here"
+	}
+	return fallback
 }
 
 func (h *AddressedHub) dropWaiter(id string, ch chan ApprovalItem) {
@@ -721,6 +765,7 @@ func (h *AddressedHub) resolve(ctx context.Context, it ApprovalItem, state Appro
 	cur.ResolvedAt = h.now()
 	cur.ResolvedBy = by
 	cur.Detail = detail
+	cur.Intent = nil // expired, withdrawn, refused: nothing will carry it out
 	ok, err := h.store.ResolveApproval(ctx, cur)
 	h.answerMu.Unlock()
 	if err != nil || !ok {
@@ -739,6 +784,7 @@ func (h *AddressedHub) finish(ctx context.Context, it ApprovalItem) {
 	h.mu.Lock()
 	ws := h.waiters[it.ID]
 	delete(h.waiters, it.ID)
+	delete(h.local, it.ID)
 	if it.DuplicateNotice == "" {
 		it.DuplicateNotice = h.dupNotices[it.ID]
 	}
@@ -797,6 +843,21 @@ func (h *AddressedHub) Answer(ctx context.Context, id string, ans ApprovalAnswer
 			return it, ErrApprovalBadChoice
 		}
 	}
+	// An item whose requester died with an earlier kernel run
+	// (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart): an approve is
+	// carried out by the recoverer of its intent — or, when that cannot be done
+	// safely (or at all), refused and the item withdrawn with the reason. Never
+	// "approved" with nothing run. A deny needs no requester and is recorded.
+	orphan := h.orphaned(it)
+	if orphan && ans.Approved {
+		if why := h.orphanRefusal(ctx, it); why != "" {
+			h.answerMu.Unlock()
+			res, _ := h.resolve(ctx, it, ApprovalWithdrawn, ApproverLabel(ans.By.Principal), why)
+			h.logger.Warn("approvals: approve of an approval raised by an earlier kernel run refused", "event", "approval_orphan_refused",
+				"approval", id, "kind", it.Kind, "tool", it.ToolName, "answerer", ans.By.Principal.String(), "why", why)
+			return res, fmt.Errorf("%w: %s", ErrApprovalNotCarriedOut, why)
+		}
+	}
 	var standing *StandingApproval
 	if ans.Standing {
 		if !ans.Approved || !it.AllowStanding || it.Kind == ApprovalKindChooseMachine {
@@ -819,6 +880,15 @@ func (h *AddressedHub) Answer(ctx context.Context, id string, ans ApprovalAnswer
 	it.Detail = ans.Reason
 	if standing != nil {
 		it.StandingID = standing.ID
+	}
+	recovering := orphan && it.State == ApprovalApproved
+	if recovering {
+		// The recoverer takes this decision: no later identical request may be
+		// handed it too (raise step 2), and the intent stays stored until the
+		// action is carried out, so a crash in between is finished at boot.
+		it.Consumed = true
+	} else {
+		it.Intent = nil
 	}
 	ok, err := h.store.ResolveApproval(ctx, it)
 	h.answerMu.Unlock()
@@ -844,7 +914,20 @@ func (h *AddressedHub) Answer(ctx context.Context, id string, ans ApprovalAnswer
 	if it.Async && it.State == ApprovalApproved {
 		h.runHandler(ctx, it)
 	}
+	if recovering {
+		return h.recover(ctx, it)
+	}
 	return it, nil
+}
+
+// markLocal records that a requester of this process waits on a pending sync item.
+func (h *AddressedHub) markLocal(it ApprovalItem, async bool) {
+	if async {
+		return
+	}
+	h.mu.Lock()
+	h.local[it.ID] = true
+	h.mu.Unlock()
 }
 
 func (h *AddressedHub) runHandler(ctx context.Context, it ApprovalItem) {
@@ -1250,6 +1333,7 @@ func itemFromRequest(req ApprovalRequest) ApprovalItem {
 		Machine:         req.Machine,
 		Candidates:      append([]string(nil), req.Candidates...),
 		Args:            req.Args,
+		Intent:          cloneIntent(req.Intent),
 		DuplicateNotice: req.DuplicateNotice,
 		Beneficiary:     req.Beneficiary,
 		ConversationID:  req.ConversationID,

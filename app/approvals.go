@@ -11,6 +11,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/scheduledtask"
 )
 
 // buildApprovalHub assembles THE approval hub (ADR-0142 D11): the config
@@ -39,8 +40,20 @@ func buildApprovalHub(ctx context.Context, cfg *config.Config, pool *pgxpool.Poo
 		slog.Warn("ADR-0142: approval tables missing (migration 0033 not applied); approvals are in-process only and will not survive a restart")
 		store = domain.NewMemoryApprovalStore()
 	}
+	// The ADR-0154 durable action record makes the recovered execution of an
+	// approval raised by an earlier kernel run happen once
+	// (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart). Without
+	// migration 0046 the hub keeps it in process (buildActionRecordStore logs
+	// the missing table when the tool stack is built).
+	var actions domain.ActionRecordStore
+	if pool != nil {
+		if pg := postgres.NewPgActionRecordStore(pool); pg.Ready(ctx) {
+			actions = pg
+		}
+	}
 	return domain.NewAddressedHub(domain.AddressedHubConfig{
 		Store:          store,
+		ActionRecords:  actions,
 		Policy:         policy,
 		DefaultTimeout: cfg.Approvals.DefaultTimeout(),
 		ConsentTimeout: time.Duration(cfg.MCP.WorkerConsentTimeoutMs) * time.Millisecond, // 0 ⇒ 120 s
@@ -61,4 +74,24 @@ func buildActionRecordStore(ctx context.Context, pool *pgxpool.Pool) domain.Acti
 		return nil
 	}
 	return pg
+}
+
+// wireApprovalRecovery registers the recoverers that carry out an approval
+// approved after the kernel run that raised it ended
+// (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart; owner decision
+// 2026-11-18, option A): dangerous tool calls through the executor (every
+// check runs again) and schedule proposals through the schedule gate (nil when
+// schedules are off: such an approve is then refused). directory confirms the
+// person is still a known, active principal, as a scheduled firing does.
+func wireApprovalRecovery(hub *domain.AddressedHub, exec *domain.ToolExecutor, schedules *scheduledtask.Service,
+	directory func() domain.PrincipalDirectory) {
+	if hub == nil {
+		return
+	}
+	if exec != nil {
+		hub.RecoverWith(domain.ApprovalIntentTool, exec.ApprovalRecoverer(directory))
+	}
+	if schedules != nil {
+		hub.RecoverWith(domain.ApprovalIntentSchedule, schedules.ApprovalRecoverer(directory))
+	}
 }

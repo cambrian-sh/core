@@ -12,6 +12,7 @@ package scheduledtask
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -40,20 +41,20 @@ const MaxGoalChars = 4000
 
 // Proposal is one agent's request. OwnerID comes from the lease (never the wire).
 type Proposal struct {
-	OwnerID  string
-	AgentID  string // the proposing agent
-	Title    string
-	Goal     string
-	Cron     string
-	RRule    string
-	Timezone string
+	OwnerID  string `json:"owner_id"`
+	AgentID  string `json:"agent_id,omitempty"` // the proposing agent
+	Title    string `json:"title,omitempty"`
+	Goal     string `json:"goal"`
+	Cron     string `json:"cron,omitempty"`
+	RRule    string `json:"rrule,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
 	// RunAgent is the DEPRECATED agent_id of the proposal. It was recorded and
 	// never routed — every firing runs as the owner on the chat lane — so a
 	// non-empty value is refused rather than accepted and ignored (owner decision
 	// 2026-11-15, ENG-753; the default single-agent lane, ADR-0150, has no
 	// per-task agent choice).
-	RunAgent string
-	Delivery string
+	RunAgent string `json:"run_agent,omitempty"`
+	Delivery string `json:"delivery,omitempty"`
 }
 
 // Outcome is a proposal's result. Created=false always carries a Rejection.
@@ -178,6 +179,10 @@ func (s *Service) Propose(ctx context.Context, p Proposal) (Outcome, error) {
 		// ADR-0142 D11: a person's own recurring task is their own resource, so
 		// the default policy lets them (or an operator) approve it.
 		Beneficiary: domain.PersonPrincipal(p.OwnerID),
+		// What to create if the approve lands after this kernel run ended
+		// (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart): the
+		// proposal as validated, owned by the lease's person.
+		Intent: proposalIntent(p),
 	})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("scheduledtask: approval: %w", err)
@@ -239,4 +244,94 @@ func Preview(sp domain.ScheduledTaskSpec) string {
 	}
 	return fmt.Sprintf("for %s: %q — cron %q (%s), delivery %s: %s",
 		sp.OwnerID, sp.Title, sp.Cron, tz, sp.Delivery, goal)
+}
+
+// ── approvals answered after a restart ──────────────────────────────────────
+
+// proposalIntent is the intent a schedule approval stores: the proposal, so an
+// approve that lands after the proposing kernel run ended still creates the
+// task (Service.ApprovalRecoverer).
+func proposalIntent(p Proposal) *domain.ApprovalIntent {
+	args, err := json.Marshal(p)
+	if err != nil {
+		return nil // a Proposal of strings always marshals; nil refuses after a restart
+	}
+	return &domain.ApprovalIntent{
+		Executor: domain.ApprovalIntentSchedule, AgentID: p.AgentID, Tool: "schedule_task",
+		Args: args, OnBehalfOf: p.OwnerID,
+	}
+}
+
+// ApprovalRecoverer returns the recoverer of schedule intents
+// (domain.ApprovalIntentSchedule) for AddressedHub.RecoverWith: on an approve
+// that lands after the proposing kernel run ended, the task is created for its
+// owner — once (the hub's ADR-0154 action record), only while the owner is a
+// known, active principal (directory; nil refuses, as a task's firing does) and
+// only within the caps in force now.
+func (s *Service) ApprovalRecoverer(directory func() domain.PrincipalDirectory) domain.ApprovalRecoverer {
+	return &scheduleRecoverer{s: s, directory: directory}
+}
+
+type scheduleRecoverer struct {
+	s         *Service
+	directory func() domain.PrincipalDirectory
+}
+
+func (r *scheduleRecoverer) spec(ctx context.Context, it domain.ApprovalItem) (domain.ScheduledTaskSpec, error) {
+	in := it.Intent
+	if in == nil || in.Executor != domain.ApprovalIntentSchedule {
+		return domain.ScheduledTaskSpec{}, errors.New("the approval does not name a schedule")
+	}
+	var p Proposal
+	if err := json.Unmarshal(in.Args, &p); err != nil {
+		return domain.ScheduledTaskSpec{}, fmt.Errorf("the stored proposal is unreadable: %v", err)
+	}
+	if strings.TrimSpace(p.OwnerID) == "" || p.OwnerID != in.OnBehalfOf {
+		return domain.ScheduledTaskSpec{}, errors.New("the stored proposal names no owner")
+	}
+	var dir domain.PrincipalDirectory
+	if r.directory != nil {
+		dir = r.directory()
+	}
+	if dir == nil {
+		return domain.ScheduledTaskSpec{}, fmt.Errorf("nothing can confirm that %s is still an active person", p.OwnerID)
+	}
+	if known, err := dir.KnownPrincipal(ctx, p.OwnerID); err != nil || !known {
+		return domain.ScheduledTaskSpec{}, fmt.Errorf("%s is no longer a known, active person", p.OwnerID)
+	}
+	sp, bad := spec(p)
+	if bad != "" {
+		return domain.ScheduledTaskSpec{}, errors.New(bad)
+	}
+	return sp, nil
+}
+
+// CheckRecovery: the owner is known and active, the proposal is still valid and
+// fits the owner's caps now.
+func (r *scheduleRecoverer) CheckRecovery(ctx context.Context, it domain.ApprovalItem) error {
+	sp, err := r.spec(ctx, it)
+	if err != nil {
+		return err
+	}
+	if err := r.s.store.Check(ctx, sp, r.s.limits); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Recover creates the approved task.
+func (r *scheduleRecoverer) Recover(ctx context.Context, it domain.ApprovalItem) (string, error) {
+	sp, err := r.spec(ctx, it)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", domain.ErrRecoveryRefused, err)
+	}
+	sp.ApprovedBy = it.ResolvedBy
+	task, err := r.s.store.Create(ctx, sp, r.s.limits)
+	if err != nil {
+		if _, refused := rejectionOf(err); refused {
+			return "", fmt.Errorf("%w: %v", domain.ErrRecoveryRefused, err)
+		}
+		return "", fmt.Errorf("creating the scheduled task failed: %w", err)
+	}
+	return domain.RecoverySummary(fmt.Sprintf("created scheduled task %s (%q, cron %q)", task.ID, task.Title, task.Cron)), nil
 }

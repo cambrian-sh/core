@@ -91,14 +91,39 @@ func apprFromNullTime(t *time.Time) time.Time {
 const approvalCols = `id, natural_key, round, kind, action_class, resource, scope, agent_id, tool_name, args_preview,
 	object, machine, candidates, beneficiary_id, beneficiary_kind, conversation_id, task_id, session_id, rules,
 	allow_standing, never_self, async, state, raised_at, expires_at, resolved_at, resolved_by, choice, standing_id,
-	detail, consumed`
+	detail, consumed, intent`
 
 func approvalArgs(it domain.ApprovalItem) []any {
 	return []any{it.ID, it.NaturalKey, it.Round, it.Kind, it.ActionClass, it.Resource, it.Scope, it.AgentID,
 		it.ToolName, it.ArgsPreview, it.Object, it.Machine, apprEncodeStrings(it.Candidates), it.Beneficiary.ID,
 		string(it.Beneficiary.Kind), it.ConversationID, it.TaskID, it.SessionID, apprEncodeRules(it.Rules),
 		it.AllowStanding, it.NeverSelf, it.Async, string(it.State), it.RaisedAt.UTC(), apprNullTime(it.ExpiresAt),
-		apprNullTime(it.ResolvedAt), it.ResolvedBy, it.Choice, it.StandingID, it.Detail, it.Consumed}
+		apprNullTime(it.ResolvedAt), it.ResolvedBy, it.Choice, it.StandingID, it.Detail, it.Consumed,
+		apprEncodeIntent(it.Intent)}
+}
+
+// apprEncodeIntent is the 0059 intent column: JSON text, or NULL.
+func apprEncodeIntent(in *domain.ApprovalIntent) *string {
+	if in == nil {
+		return nil
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		return nil // strings and raw JSON always marshal
+	}
+	s := string(b)
+	return &s
+}
+
+func apprDecodeIntent(s *string) (*domain.ApprovalIntent, error) {
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	var in domain.ApprovalIntent
+	if err := json.Unmarshal([]byte(*s), &in); err != nil {
+		return nil, fmt.Errorf("approvals: intent: %w", err)
+	}
+	return &in, nil
 }
 
 func scanApproval(row pgx.Row) (domain.ApprovalItem, error) {
@@ -106,11 +131,17 @@ func scanApproval(row pgx.Row) (domain.ApprovalItem, error) {
 	var cands, rules []byte
 	var benKind, state string
 	var expires, resolved *time.Time
+	var intent *string
 	err := row.Scan(&it.ID, &it.NaturalKey, &it.Round, &it.Kind, &it.ActionClass, &it.Resource, &it.Scope,
 		&it.AgentID, &it.ToolName, &it.ArgsPreview, &it.Object, &it.Machine, &cands, &it.Beneficiary.ID, &benKind,
 		&it.ConversationID, &it.TaskID, &it.SessionID, &rules, &it.AllowStanding, &it.NeverSelf, &it.Async, &state,
-		&it.RaisedAt, &expires, &resolved, &it.ResolvedBy, &it.Choice, &it.StandingID, &it.Detail, &it.Consumed)
+		&it.RaisedAt, &expires, &resolved, &it.ResolvedBy, &it.Choice, &it.StandingID, &it.Detail, &it.Consumed, &intent)
 	if err != nil {
+		return it, err
+	}
+	// An unreadable intent is an error, not a silent nil (AGENTS.md §3.2): a
+	// nil intent would refuse the approve, so say why instead.
+	if it.Intent, err = apprDecodeIntent(intent); err != nil {
 		return it, err
 	}
 	it.Beneficiary.Kind = domain.PrincipalKind(benKind)
@@ -124,7 +155,7 @@ func scanApproval(row pgx.Row) (domain.ApprovalItem, error) {
 // PutApproval upserts one item.
 func (s *PgApprovalStore) PutApproval(ctx context.Context, it domain.ApprovalItem) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO approvals (`+approvalCols+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
 		ON CONFLICT (id) DO UPDATE SET
 			kind = EXCLUDED.kind, action_class = EXCLUDED.action_class, resource = EXCLUDED.resource,
 			scope = EXCLUDED.scope, agent_id = EXCLUDED.agent_id, tool_name = EXCLUDED.tool_name,
@@ -135,7 +166,8 @@ func (s *PgApprovalStore) PutApproval(ctx context.Context, it domain.ApprovalIte
 			allow_standing = EXCLUDED.allow_standing, never_self = EXCLUDED.never_self, async = EXCLUDED.async,
 			state = EXCLUDED.state, raised_at = EXCLUDED.raised_at, expires_at = EXCLUDED.expires_at,
 			resolved_at = EXCLUDED.resolved_at, resolved_by = EXCLUDED.resolved_by, choice = EXCLUDED.choice,
-			standing_id = EXCLUDED.standing_id, detail = EXCLUDED.detail, consumed = EXCLUDED.consumed`,
+			standing_id = EXCLUDED.standing_id, detail = EXCLUDED.detail, consumed = EXCLUDED.consumed,
+			intent = EXCLUDED.intent`,
 		approvalArgs(it)...)
 	if err != nil {
 		return fmt.Errorf("approvals: put: %w", err)
@@ -146,8 +178,9 @@ func (s *PgApprovalStore) PutApproval(ctx context.Context, it domain.ApprovalIte
 // ResolveApproval CASes a pending item to its terminal state.
 func (s *PgApprovalStore) ResolveApproval(ctx context.Context, it domain.ApprovalItem) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE approvals SET state = $2, resolved_at = $3, resolved_by = $4, choice = $5,
-		standing_id = $6, detail = $7, consumed = $8 WHERE id = $1 AND state = 'pending'`,
-		it.ID, string(it.State), apprNullTime(it.ResolvedAt), it.ResolvedBy, it.Choice, it.StandingID, it.Detail, it.Consumed)
+		standing_id = $6, detail = $7, consumed = $8, intent = $9 WHERE id = $1 AND state = 'pending'`,
+		it.ID, string(it.State), apprNullTime(it.ResolvedAt), it.ResolvedBy, it.Choice, it.StandingID, it.Detail, it.Consumed,
+		apprEncodeIntent(it.Intent))
 	if err != nil {
 		return false, fmt.Errorf("approvals: resolve: %w", err)
 	}
@@ -212,7 +245,8 @@ func (s *PgApprovalStore) ListApprovals(ctx context.Context, q domain.ApprovalQu
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+approvalCols+` FROM approvals
 		WHERE (cardinality($1::text[]) = 0 OR state = ANY($1::text[]))
-		ORDER BY raised_at DESC, id LIMIT $2`, states, limit)
+		  AND (NOT $3 OR intent IS NOT NULL)
+		ORDER BY raised_at DESC, id LIMIT $2`, states, limit, q.WithIntent)
 	if err != nil {
 		return nil, fmt.Errorf("approvals: list: %w", err)
 	}

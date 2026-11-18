@@ -65,6 +65,12 @@ type ApprovalRequest struct {
 	// A request that carries them is never pre-approved by a standing approval
 	// and cannot be answered with one: a person must see the identifiers.
 	PersonalIdentifiers []OutboundIdentifier
+	// Intent is what the request does once approved, kernel-held, for a
+	// blocking request whose action a later kernel run can carry out if this
+	// run ends before the answer (approval_intent.go;
+	// T-20261118-a-sync-approval-orphaned-by-a-kernel-restart). nil means an
+	// approve after a restart is refused, never recorded with nothing run.
+	Intent *ApprovalIntent
 }
 
 // ApprovalDecision is the hub's answer to one request.

@@ -465,6 +465,13 @@ func (b *kernelBuild) buildToolExecutor() error {
 	// (kind "schedule"), stored by the premium schedule store a plugin registered
 	// at Build. nil when either is missing or execution.schedules.disabled.
 	cambrianServer.ScheduledTasks = buildScheduledTasks(cfg.Execution.Schedules, principalSchedules.get(), toolApproval)
+	// T-20261118-a-sync-approval-orphaned-by-a-kernel-restart: an approval
+	// approved after the kernel run that raised it ended is carried out by these
+	// (once, under the person's principal and the rules in force then), or
+	// refused with the reason. Registered before the transport opens.
+	wireApprovalRecovery(toolApproval, toolExecutor, cambrianServer.ScheduledTasks, func() domain.PrincipalDirectory {
+		return principalDirectoryOrRegistry(b.principalDirectory.get(), b.idStores.registry)
+	})
 	toolApproval.SetBus(eventBus) // ADR-0047 0047-19 + ADR-0142 D11: raises AND resolutions reach the feed
 	// ADR-0047 0047-17/0047-18: the executor publishes PlanStateChanged to the
 	// operator feed, and live executions register into one shared control hub so

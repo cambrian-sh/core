@@ -449,8 +449,11 @@ func TestHub_NeverSelfApprovable(t *testing.T) {
 }
 
 // Durability: a pending approval survives a restart (a new hub over the same
-// store); the new process expires it when its window passes and publishes it,
-// and an answer recorded while nobody waited is handed to the retried request.
+// store); the new process expires it when its window passes and publishes it.
+// An approve of an orphan that carries no intent is refused and the item
+// withdrawn — never "approved" with nothing run
+// (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart); a DENY recorded
+// while nobody waited is handed to the retried request.
 func TestHub_DurableAcrossRestart(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	store := NewMemoryApprovalStore()
@@ -478,12 +481,23 @@ func TestHub_DurableAcrossRestart(t *testing.T) {
 	if len(pending) != 1 || pending[0].ID != first.ID {
 		t.Fatalf("pending after restart = %+v", pending)
 	}
-	if _, err := h2.Answer(context.Background(), first.ID, ApprovalAnswer{Approved: true, By: OperatorApprover("op")}); err != nil {
-		t.Fatalf("answer after restart: %v", err)
+	// An approve: the request carried no intent, so nothing could run it.
+	res, err := h2.Answer(context.Background(), first.ID, ApprovalAnswer{Approved: true, By: OperatorApprover("op")})
+	if !errors.Is(err, ErrApprovalNotCarriedOut) || res.State != ApprovalWithdrawn ||
+		!strings.Contains(res.Detail, "earlier kernel run") {
+		t.Fatalf("approve of an intentless orphan must be refused and withdrawn: %+v %v", res, err)
+	}
+	// A deny needs no requester: recorded, and handed to the retried request.
+	second := first
+	second.ID, second.Round, second.State, second.Detail = ApprovalID(first.NaturalKey, first.Round+1), first.Round+1, ApprovalPending, ""
+	second.ResolvedAt, second.ResolvedBy = time.Time{}, ""
+	_ = store.PutApproval(context.Background(), second)
+	if _, err := h2.Answer(context.Background(), second.ID, ApprovalAnswer{Approved: false, By: OperatorApprover("op")}); err != nil {
+		t.Fatalf("deny after restart: %v", err)
 	}
 	// The retried identical request takes the recorded decision instead of asking again.
 	d, err := h2.Request(context.Background(), ApprovalRequest{AgentID: "a", ToolName: "deploy", Timeout: 10 * time.Minute})
-	if err != nil || !d.Approved || d.ApprovalID != first.ID {
+	if err != nil || d.Approved || !d.Decided || d.ApprovalID != second.ID {
 		t.Fatalf("retried request after restart: %+v %v", d, err)
 	}
 	// And it is consumed: a third identical request is a NEW round with a new id.
@@ -499,7 +513,7 @@ func TestHub_DurableAcrossRestart(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if third.ID == "" || third.ID == first.ID {
+	if third.ID == "" || third.ID == first.ID || third.ID == second.ID {
 		t.Fatalf("third request reused the consumed id: %+v", third)
 	}
 	_, _ = h2.Answer(context.Background(), third.ID, ApprovalAnswer{Approved: false, By: OperatorApprover("op")})

@@ -95,3 +95,52 @@ func TestPg_ApprovalHubDurableAcrossRestart(t *testing.T) {
 		}
 	}
 }
+
+// The 0059 intent column (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart):
+// the arguments come back byte for byte, the resolve CAS writes the intent the
+// hub keeps (or clears), and WithIntent lists only unfinished recoveries.
+func TestPg_ApprovalIntentRoundTrip(t *testing.T) {
+	st, ctx := newApprovalStore(t)
+	args := `{"b": 2,  "a":"ü"}` // not JSON-normalised: TEXT keeps the bytes
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	it := domain.ApprovalItem{ID: "apr-pgapt-intent", NaturalKey: "pgapt-intent", ToolName: "pgapt-create",
+		State: domain.ApprovalPending, RaisedAt: now, ExpiresAt: now.Add(time.Hour),
+		Intent: &domain.ApprovalIntent{Executor: domain.ApprovalIntentTool, Tool: "pgapt-create", Args: []byte(args),
+			OnBehalfOf: "alice", HasStep: true, RunID: "run-1", StepIndex: 3}}
+	if err := st.PutApproval(ctx, it); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetApproval(ctx, it.ID)
+	if err != nil || got.Intent == nil || string(got.Intent.Args) != args || got.Intent.OnBehalfOf != "alice" ||
+		!got.Intent.HasStep || got.Intent.StepIndex != 3 {
+		t.Fatalf("intent after read: %+v %v", got.Intent, err)
+	}
+	got.State, got.ResolvedAt, got.Consumed = domain.ApprovalApproved, now, true // the hub keeps it while recovering
+	if ok, err := st.ResolveApproval(ctx, got); !ok || err != nil {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	list, err := st.ListApprovals(ctx, domain.ApprovalQuery{States: []domain.ApprovalState{domain.ApprovalApproved}, WithIntent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, l := range list {
+		found = found || l.ID == it.ID
+	}
+	if !found {
+		t.Fatal("an approved item with an intent is not listed as recovering")
+	}
+	got.Intent = nil
+	if err := st.PutApproval(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = st.ListApprovals(ctx, domain.ApprovalQuery{States: []domain.ApprovalState{domain.ApprovalApproved}, WithIntent: true})
+	for _, l := range list {
+		if l.ID == it.ID {
+			t.Fatal("a finished recovery is still listed")
+		}
+	}
+	if again, _ := st.GetApproval(ctx, it.ID); again.Intent != nil {
+		t.Fatalf("intent not cleared: %+v", again.Intent)
+	}
+}

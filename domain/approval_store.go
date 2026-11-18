@@ -100,6 +100,13 @@ type ApprovalItem struct {
 	// while no requester was waiting (after a restart) is handed to the next
 	// identical request instead of being asked again.
 	Consumed bool
+	// Intent is what an approved sync request does, persisted so an approve
+	// that lands after the requester's kernel run ended is carried out by a
+	// recoverer rather than recorded with nothing run (approval_intent.go;
+	// T-20261118-a-sync-approval-orphaned-by-a-kernel-restart). nil for async
+	// items, for kinds no recoverer carries out, and once the item is resolved
+	// and carried out.
+	Intent *ApprovalIntent
 }
 
 // RuleSummary renders the item's approver rules for display.
@@ -158,7 +165,10 @@ func approvalHash(parts ...string) string {
 // ApprovalQuery filters ListApprovals. Zero values mean "any".
 type ApprovalQuery struct {
 	States []ApprovalState
-	Limit  int
+	// WithIntent keeps only items that still carry an intent (a recovery the
+	// kernel has not finished).
+	WithIntent bool
+	Limit      int
 }
 
 // StandingQuery filters ListStanding.
@@ -220,6 +230,7 @@ var _ ApprovalStore = (*MemoryApprovalStore)(nil)
 func cloneItem(it ApprovalItem) ApprovalItem {
 	it.Candidates = append([]string(nil), it.Candidates...)
 	it.Rules = append([]ApprovalRule(nil), it.Rules...)
+	it.Intent = cloneIntent(it.Intent)
 	it.Args = nil // never persisted (parity with the Postgres store)
 	return it
 }
@@ -290,6 +301,9 @@ func (m *MemoryApprovalStore) ListApprovals(_ context.Context, q ApprovalQuery) 
 	var out []ApprovalItem
 	for _, it := range m.items {
 		if len(want) > 0 && !want[it.State] {
+			continue
+		}
+		if q.WithIntent && it.Intent == nil {
 			continue
 		}
 		out = append(out, cloneItem(it))

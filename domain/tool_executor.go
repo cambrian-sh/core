@@ -697,6 +697,11 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 			argHash = hashBytes(fixed)
 		}
 	}
+	// The arguments an approval's intent stores (tool_recovery.go): validated,
+	// before CID hydration (authorize resolves references again, under the
+	// access in force when the call is carried out), and after a pre_tool
+	// rewrite below.
+	intentArgs := req.ArgsJSON
 	// ADR-0150 D2: a call on a subtask's child lease must stay inside the lease's
 	// effect ceiling (default read + egress_read). Checked here, by the kernel,
 	// before any grant, approval or dispatch, whatever the authorizer would say:
@@ -823,6 +828,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		if out.ArgsRewritten {
 			argHash = hashBytes(out.Args) // the receipt names the call that runs
 			req.ArgsJSON = out.Args
+			intentArgs = out.Args
 			g, why, ok := e.authorize(ctx, &req, tool)
 			if !ok {
 				slog.Warn("ADR-0139 D11: hook-rewritten tool call refused by policy",
@@ -882,6 +888,15 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	approver := ""
 	if tool.Dangerous && req.System && verdict == HookAllow {
 		approver = "operator:system"
+	} else if pa, recovered := preApprovedFrom(ctx); recovered && verdict == HookAsk {
+		// A call approved after the kernel that raised its approval restarted
+		// (tool_recovery.go): the person's approval covers exactly the call they
+		// were shown. Anything else asks nobody and runs nothing — a recovery
+		// has no requester to wait on a new approval.
+		if pa.tool != req.ToolName || pa.argHash != argHash {
+			return denied("the call is not the one that was approved (approval "+pa.id+"); nothing was run", argHash)
+		}
+		approver = pa.approver
 	} else if verdict == HookAsk {
 		if e.approval == nil {
 			if len(outbound) > 0 {
@@ -931,6 +946,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 			ConversationID: ConversationIDFromContext(ctx), SessionID: string(sid),
 			DuplicateNotice: notice, Subtask: subtaskLabel,
 			PersonalIdentifiers: outbound,
+			Intent:              toolIntent(ctx, req, intentArgs, subtaskLease, contrib != nil),
 		})
 		if err != nil || !dec.Approved {
 			reason := ApprovalDenyReason(dec, err)
