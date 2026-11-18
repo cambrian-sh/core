@@ -233,6 +233,12 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 			"password login is not enabled on this kernel; sign in through the identity provider (DescribeAuth)")
 	}
 	token, id, err := pl.Login(ctx, req.GetUsername(), req.GetPassword())
+	if err != nil && errors.Is(err, domain.ErrAuthUnavailable) {
+		// The password was never checked (the credential store or registry did
+		// not answer): retryable, and NOT a failed attempt — an outage must not
+		// lock a source out (ENG-2120).
+		return nil, status.Error(codes.Unavailable, "sign-in temporarily unavailable; retry")
+	}
 	if err != nil {
 		n := s.logins.Fail(source)
 		s.observeLogin(LoginAttempt{Username: req.GetUsername(), Source: source, Failures: n, At: time.Now()})

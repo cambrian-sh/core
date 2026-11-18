@@ -236,6 +236,20 @@ func unauth(format string, a ...any) error {
 	return fmt.Errorf("%w: oidc: %s", domain.ErrUnauthenticated, fmt.Sprintf(format, a...))
 }
 
+// unavailable wraps domain.ErrAuthUnavailable: the token could not be CHECKED
+// because the issuer (discovery, key set) or the principal registry did not
+// answer. Still a refusal, answered as retryable rather than as a bad token
+// (T-20261118-operator-rpcs-answer-unauthenticated-invalid-or).
+func unavailable(format string, a ...any) error {
+	return fmt.Errorf("%w: oidc: %s", domain.ErrAuthUnavailable, fmt.Sprintf(format, a...))
+}
+
+// errIssuerUnreachable marks a discovery / key-set failure that is the
+// issuer not answering (transport error, non-200), as opposed to a document
+// that answered and is wrong (issuer mismatch, no usable key) — the first is
+// ErrAuthUnavailable, the second stays ErrUnauthenticated.
+var errIssuerUnreachable = errors.New("issuer unreachable")
+
 // Resolve verifies token and maps it to a registry person.
 func (v *OIDCVerifier) Resolve(ctx context.Context, token string) (domain.Identity, error) {
 	id, err := v.resolve(ctx, token)
@@ -390,7 +404,7 @@ func (v *OIDCVerifier) keyFor(ctx context.Context, kid string) (jwk, error) {
 	if v.keys == nil || now.Sub(v.fetchedAt) > v.cfg.JWKSRefresh {
 		if !mayFetch {
 			if v.keys == nil {
-				return jwk{}, unauth("issuer keys unavailable (next fetch attempt rate-limited)")
+				return jwk{}, unavailable("issuer keys unavailable (next fetch attempt rate-limited)")
 			}
 		} else if err := v.refreshLocked(ctx, now); err != nil {
 			if v.keys == nil {
@@ -439,6 +453,9 @@ func (v *OIDCVerifier) refreshLocked(ctx context.Context, now time.Time) error {
 		uri, err := v.discover(ctx)
 		if err != nil {
 			slog.WarnContext(ctx, "oidc: discovery failed; OIDC tokens are refused until it succeeds", "issuer", v.cfg.Issuer, "err", err)
+			if errors.Is(err, errIssuerUnreachable) {
+				return unavailable("discovery: %v", err)
+			}
 			return unauth("discovery: %v", err)
 		}
 		v.jwksURI = uri
@@ -447,6 +464,9 @@ func (v *OIDCVerifier) refreshLocked(ctx context.Context, now time.Time) error {
 	if err != nil {
 		v.jwksURI = "" // the jwks_uri may have moved: re-discover next time
 		slog.WarnContext(ctx, "oidc: key set fetch failed", "issuer", v.cfg.Issuer, "err", err)
+		if errors.Is(err, errIssuerUnreachable) {
+			return unavailable("jwks: %v", err)
+		}
 		return unauth("jwks: %v", err)
 	}
 	v.keys, v.fetchedAt = keys, now
@@ -569,15 +589,15 @@ func (v *OIDCVerifier) getJSON(ctx context.Context, u string, dst any) error {
 	req.Header.Set("Accept", "application/json")
 	resp, err := v.cfg.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errIssuerUnreachable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
+		return fmt.Errorf("%w: GET %s: status %d", errIssuerUnreachable, u, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDocumentBytes+1))
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errIssuerUnreachable, err)
 	}
 	if len(body) > maxDocumentBytes {
 		return fmt.Errorf("GET %s: body exceeds %d bytes", u, maxDocumentBytes)
@@ -733,7 +753,12 @@ func (v *OIDCVerifier) person(ctx context.Context, c verifiedClaims) (domain.Pri
 		}
 	}
 	if err != nil {
-		return domain.Principal{}, err
+		if errors.Is(err, domain.ErrUnauthenticated) || errors.Is(err, domain.ErrAuthUnavailable) {
+			return domain.Principal{}, err
+		}
+		// A registry read that failed for any other reason (Postgres down): the
+		// token verified, the person could not be looked up.
+		return domain.Principal{}, unavailable("registry: %v", err)
 	}
 	if !p.Active() {
 		return domain.Principal{}, unauth("person %s is %s", p.ID, p.Status)
@@ -782,14 +807,14 @@ func (v *OIDCVerifier) linkByOID(ctx context.Context, c verifiedClaims) (domain.
 		return skip("no person provisioned under this oid")
 	}
 	if err != nil {
-		return domain.Principal{}, false, unauth("oid link: resolve: %v", err)
+		return domain.Principal{}, false, registryErr("oid link: resolve: %v", err)
 	}
 	if p.Source != domain.SourceSCIM || p.ExternalID != c.oid {
 		return skip("the oid names a person that is not a SCIM-provisioned person with that externalId")
 	}
 	scim, err := v.reg.ListPrincipals(ctx, domain.PrincipalFilter{Source: domain.SourceSCIM})
 	if err != nil {
-		return domain.Principal{}, false, unauth("oid link: list provisioned persons: %v", err)
+		return domain.Principal{}, false, registryErr("oid link: list provisioned persons: %v", err)
 	}
 	n := 0
 	for _, q := range scim {
@@ -803,11 +828,11 @@ func (v *OIDCVerifier) linkByOID(ctx context.Context, c verifiedClaims) (domain.
 	if err := v.reg.LinkIdentity(ctx, domain.ExternalIdentity{
 		Issuer: c.iss, Subject: c.sub, Email: c.email, PrincipalID: p.ID,
 	}); err != nil {
-		return domain.Principal{}, false, unauth("oid link: link identity: %v", err)
+		return domain.Principal{}, false, registryErr("oid link: link identity: %v", err)
 	}
 	p, err = v.reg.ResolveIdentity(ctx, c.iss, c.sub)
 	if err != nil {
-		return domain.Principal{}, false, unauth("oid link: re-resolve: %v", err)
+		return domain.Principal{}, false, registryErr("oid link: re-resolve: %v", err)
 	}
 	ssh := sha256.Sum256([]byte(c.sub))
 	// The audit record of the join: who (principal), by which identity (issuer and
@@ -816,6 +841,19 @@ func (v *OIDCVerifier) linkByOID(ctx context.Context, c verifiedClaims) (domain.
 		"audit", "identity_linked", "issuer", c.iss, "principal", p.ID,
 		"subject_sha256", hex.EncodeToString(ssh[:8]), "rule", "oid=scim_external_id")
 	return p, true, nil
+}
+
+// registryErr classifies a registry write/read failure on the sign-in path: a
+// conflict or invalid principal is a refusal of this identity
+// (ErrUnauthenticated); anything else is the registry not answering
+// (ErrAuthUnavailable).
+func registryErr(format string, err error) error {
+	if errors.Is(err, domain.ErrIdentityConflict) || errors.Is(err, domain.ErrInvalidPrincipal) ||
+		errors.Is(err, domain.ErrPrincipalKindClash) || errors.Is(err, domain.ErrPrincipalInactive) ||
+		errors.Is(err, domain.ErrIdentityNotFound) || errors.Is(err, domain.ErrPrincipalNotFound) {
+		return unauth(format, err)
+	}
+	return unavailable(format, err)
 }
 
 // isGUID reports whether s is a canonical 8-4-4-4-12 hex GUID (an Entra tenant id).
@@ -869,18 +907,18 @@ func (v *OIDCVerifier) firstLogin(ctx context.Context, c verifiedClaims) (domain
 		ExternalID:  c.sub,
 		Roles:       append([]string(nil), v.cfg.DefaultRoles...),
 	}); err != nil {
-		return domain.Principal{}, unauth("first login: create person: %v", err)
+		return domain.Principal{}, registryErr("first login: create person: %v", err)
 	}
 	// Linking is idempotent for the same pair → same person, so two concurrent
 	// first logins of one subject both succeed.
 	if err := v.reg.LinkIdentity(ctx, domain.ExternalIdentity{
 		Issuer: c.iss, Subject: c.sub, Email: c.email, PrincipalID: id,
 	}); err != nil {
-		return domain.Principal{}, unauth("first login: link identity: %v", err)
+		return domain.Principal{}, registryErr("first login: link identity: %v", err)
 	}
 	p, err := v.reg.ResolveIdentity(ctx, c.iss, c.sub)
 	if err != nil {
-		return domain.Principal{}, unauth("first login: re-resolve: %v", err)
+		return domain.Principal{}, registryErr("first login: re-resolve: %v", err)
 	}
 	slog.InfoContext(ctx, "oidc: first login created a registry person", "issuer", c.iss, "principal", id)
 	return p, nil

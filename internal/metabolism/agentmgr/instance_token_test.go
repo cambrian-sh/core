@@ -306,7 +306,7 @@ func strictVerifier(t *testing.T, im *InstanceManager, stored map[string]string)
 	t.Helper()
 	v, err := authz.NewAgentCredentialVerifier(
 		func(n string) (string, bool) { s, ok := stored[n]; return s, ok },
-		im.Tokens(), func(context.Context, string) bool { return true }, false)
+		im.Tokens(), func(context.Context, string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatal(err)
 	}

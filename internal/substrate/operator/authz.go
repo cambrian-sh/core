@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -150,9 +151,7 @@ func authorize(ctx context.Context, fullMethod string, idp domain.Authenticator,
 	}
 	id, err := idp.Resolve(ctx, bearerToken(ctx))
 	if err != nil || id.Principal.IsZero() {
-		// One undetailed answer for unknown, expired, badly signed, wrong-audience
-		// and suspended alike; the backend logged which.
-		return ctx, status.Error(codes.Unauthenticated, "invalid or expired token")
+		return ctx, ResolveRefusal(ctx, err)
 	}
 	principal, role := id.Principal.ID, RoleFromRoles(id.Roles)
 	// A member reaches only its own surfaces (memberMethods, or a premium method its
@@ -187,6 +186,31 @@ func authorize(ctx context.Context, fullMethod string, idp domain.Authenticator,
 	// ADR-0142 D3: the principal is the Authenticator's registry person (kind
 	// user), not a bare username re-wrapped here.
 	return domain.WithPrincipal(ctx, id.Principal), nil
+}
+
+// ResolveRefusal is the gRPC answer to a failed Authenticator.Resolve. Every
+// branch REFUSES the call (fail closed); they differ only in what the client is
+// told to do next:
+//
+//   - the token could not be checked because a store the check needs did not
+//     answer (domain.ErrAuthUnavailable — Postgres down, the IdP unreachable):
+//     Unavailable, which gRPC clients retry with backoff. Answering it as
+//     Unauthenticated told every UI/SDK to drop a session whose token was good;
+//     a 30 s Postgres stop logged everyone out
+//     (T-20261118-operator-rpcs-answer-unauthenticated-invalid-or);
+//   - the caller's own deadline or cancellation: the matching context code;
+//   - anything else, including an unknown error from a plugin Authenticator:
+//     one undetailed Unauthenticated for unknown, expired, badly signed,
+//     wrong-audience and suspended alike; the backend logged which.
+func ResolveRefusal(ctx context.Context, err error) error {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return status.FromContextError(ctx.Err()).Err()
+	case errors.Is(err, domain.ErrAuthUnavailable):
+		return status.Error(codes.Unavailable, "authentication temporarily unavailable; retry")
+	default:
+		return status.Error(codes.Unauthenticated, "invalid or expired token")
+	}
 }
 
 // memberMethods are the operator-plane RPCs a RoleMember may call (ADR-0142).

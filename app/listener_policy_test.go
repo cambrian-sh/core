@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/identity"
 )
 
@@ -240,6 +242,30 @@ func TestRequireOperatorBearer(t *testing.T) {
 		t.Fatalf("handler ran %d times, want 2 (the two operator calls)", called)
 	}
 }
+
+// ENG-2120: a token the HTTP admin gate could not CHECK (the registry did not
+// answer) is refused as 503 + Retry-After, not as a 401 that tells the caller
+// its token is bad; the handler never runs.
+func TestRequireOperatorBearer_StoreDownIsRetryable(t *testing.T) {
+	t.Parallel()
+	called := false
+	h := requireOperatorBearer(unavailableIDP{}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	rec := &recorder{header: http.Header{}}
+	req, _ := http.NewRequest(http.MethodPost, "/v1/admin/agents/a1/write-tags", nil)
+	req.Header.Set("Authorization", "Bearer good-but-unchecked")
+	h.ServeHTTP(rec, req)
+	if called || rec.code() != http.StatusServiceUnavailable || rec.header.Get("Retry-After") == "" {
+		t.Fatalf("status %d (handler ran %v, Retry-After %q), want 503 + Retry-After and no handler",
+			rec.code(), called, rec.header.Get("Retry-After"))
+	}
+}
+
+type unavailableIDP struct{}
+
+func (unavailableIDP) Resolve(context.Context, string) (domain.Identity, error) {
+	return domain.Identity{}, fmt.Errorf("%w: principal lookup: connection refused", domain.ErrAuthUnavailable)
+}
+func (unavailableIDP) Revoke(context.Context, string) error { return nil }
 
 // recorder is a minimal ResponseWriter (httptest is avoided in package app to
 // keep its test binary free of the net/http/httptest server type).

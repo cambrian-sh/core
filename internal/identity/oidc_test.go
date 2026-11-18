@@ -462,9 +462,18 @@ func TestOIDC_IdPDownThenUp(t *testing.T) {
 	f.idp.setDown(true)
 	v := f.verifier(t, func(c *OIDCConfig) { c.MinRefetch = 30 * time.Second })
 	tok := func() string { return signJWT(t, "RS256", "a", f.kA, f.claims("s1")) }
-	mustUnauth(t, v, tok())
+	// ENG-2120: the issuer not answering means the token could not be checked —
+	// refused as retryable, not as a bad token.
+	unavailableNow := func() {
+		t.Helper()
+		_, err := v.Resolve(context.Background(), tok())
+		if !errors.Is(err, domain.ErrAuthUnavailable) || errors.Is(err, domain.ErrUnauthenticated) {
+			t.Fatalf("issuer down: err = %v, want ErrAuthUnavailable only", err)
+		}
+	}
+	unavailableNow()
 	f.idp.setDown(false)
-	mustUnauth(t, v, tok()) // rate-limited: no new attempt yet
+	unavailableNow() // rate-limited: no new attempt yet
 	f.advance(31 * time.Second)
 	mustResolve(t, v, tok())
 }

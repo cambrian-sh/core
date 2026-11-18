@@ -213,6 +213,11 @@ func (l *LocalAccounts) Login(ctx context.Context, username, password string) (s
 	// Always evaluate argon2 before looking at err, so an unknown user costs the
 	// same as a wrong password.
 	ok := VerifyPassword(hash, password)
+	if err != nil && !errors.Is(err, ErrNoCredential) {
+		// The credential table did not answer: the password was never checked,
+		// so this is not "invalid credentials" (ENG-2120).
+		return "", domain.Identity{}, fmt.Errorf("%w: credential lookup: %w", domain.ErrAuthUnavailable, err)
+	}
 	if err != nil || !ok {
 		return "", domain.Identity{}, fmt.Errorf("%w: invalid credentials", domain.ErrUnauthenticated)
 	}
@@ -237,8 +242,14 @@ func (l *LocalAccounts) Login(ctx context.Context, username, password string) (s
 // the next call rather than at token expiry.
 func (l *LocalAccounts) identityOf(ctx context.Context, principalID string) (domain.Identity, error) {
 	p, err := l.reg.GetPrincipal(ctx, principalID)
-	if err != nil {
+	if errors.Is(err, domain.ErrPrincipalNotFound) {
 		return domain.Identity{}, fmt.Errorf("%w: %v", domain.ErrUnauthenticated, err)
+	}
+	if err != nil {
+		// The registry did not answer (Postgres down, a timeout): the token may be
+		// perfectly good, so it is not reported as one that is not. Still refused.
+		// T-20261118-operator-rpcs-answer-unauthenticated-invalid-or.
+		return domain.Identity{}, fmt.Errorf("%w: principal lookup: %w", domain.ErrAuthUnavailable, err)
 	}
 	if !p.Active() {
 		return domain.Identity{}, fmt.Errorf("%w: %v", domain.ErrUnauthenticated, domain.ErrPrincipalInactive)

@@ -116,13 +116,27 @@ func TestKernelSpawnedAgent(t *testing.T) {
 	reg.SetAgent(domain.AgentDefinition{ID: "chat_agent", Runtime: domain.RuntimePython})
 	reg.SetAgent(domain.AgentDefinition{ID: "remote_agent", Runtime: domain.RuntimeA2A})
 	reg.SetAgent(domain.AgentDefinition{ID: "llm:gpt", Trait: domain.TraitModel})
-	is := kernelSpawnedAgent(reg)
+	pred := kernelSpawnedAgent(reg)
 	ctx := context.Background()
-	if !is(ctx, "chat_agent") || is(ctx, "remote_agent") || is(ctx, "llm:gpt") || is(ctx, "external_sdk") {
+	is := func(id string) bool {
+		ok, err := pred(ctx, id)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		return ok
+	}
+	if !is("chat_agent") || is("remote_agent") || is("llm:gpt") || is("external_sdk") {
 		t.Fatal("kernel-spawned classification wrong")
 	}
-	if !kernelSpawnedAgent(failingLister{})(ctx, "external_sdk") {
+	// ENG-2120: an unreadable registry still fails closed (treated as
+	// kernel-spawned) AND says why, so the verifier answers Unavailable rather
+	// than "bad credential".
+	spawned, err := kernelSpawnedAgent(failingLister{})(ctx, "external_sdk")
+	if !spawned {
 		t.Fatal("an unreadable registry must fail closed (treated as kernel-spawned)")
+	}
+	if !errors.Is(err, domain.ErrAuthUnavailable) {
+		t.Fatalf("unreadable registry: err = %v, want ErrAuthUnavailable", err)
 	}
 }
 

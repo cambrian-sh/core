@@ -55,7 +55,7 @@ func TestE2E_ProposeKnowledgeNeedsTheVerbGrantThroughTheAgentPlane(t *testing.T)
 
 	secrets := map[string]string{authz.AgentTokenSecretName("planner"): "tok-planner"}
 	verifier, err := authz.NewAgentCredentialVerifier(func(n string) (string, bool) { v, ok := secrets[n]; return v, ok },
-		authz.NewInstanceTokens(), func(context.Context, string) bool { return false }, false)
+		authz.NewInstanceTokens(), func(context.Context, string) (bool, error) { return false, nil }, false)
 	if err != nil {
 		t.Fatal(err)
 	}

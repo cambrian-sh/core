@@ -19,7 +19,7 @@ import (
 // per-agent credential even with the flag set.
 func TestInsecureLocalhost_WaiverIsLoopbackOnly(t *testing.T) {
 	v, err := NewAgentCredentialVerifier(func(string) (string, bool) { return "", false }, NewInstanceTokens(),
-		func(context.Context, string) bool { return false }, true)
+		func(context.Context, string) (bool, error) { return false, nil }, true)
 	if err != nil {
 		t.Fatal(err)
 	}

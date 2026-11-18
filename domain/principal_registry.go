@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -219,17 +220,27 @@ func PersonPrincipal(id string) PrincipalRef {
 // would turn an upgrade into an outage — and so is a nil registry. A registry
 // that cannot be read fails CLOSED: lifecycle is an access decision.
 func PersonMayAct(ctx context.Context, reg PrincipalRegistry, id string) bool {
+	ok, err := PersonMayActChecked(ctx, reg, id)
+	return ok && err == nil
+}
+
+// PersonMayActChecked is PersonMayAct for a caller that must tell "this person
+// may not act" from "the registry could not be read": the latter is returned as
+// an error wrapping ErrAuthUnavailable (with ok=false — still fail closed), so a
+// door can answer it as retryable rather than as a refusal of the person
+// (T-20261118-operator-rpcs-answer-unauthenticated-invalid-or).
+func PersonMayActChecked(ctx context.Context, reg PrincipalRegistry, id string) (bool, error) {
 	if reg == nil || id == "" {
-		return true
+		return true, nil
 	}
 	p, err := reg.GetPrincipal(ctx, id)
 	if errors.Is(err, ErrPrincipalNotFound) {
-		return true
+		return true, nil
 	}
 	if err != nil {
-		return false
+		return false, fmt.Errorf("%w: principal registry: %w", ErrAuthUnavailable, err)
 	}
-	return p.Active()
+	return p.Active(), nil
 }
 
 // PrincipalAliasReader is the slice of the registry PrincipalForms reads.

@@ -282,7 +282,7 @@ func TestVerifyNamedSecret_FailsClosedOnEveryAbsence(t *testing.T) {
 func newTestVerifier(t *testing.T, resolve func(string) (string, bool), waived bool) *authz.AgentCredentialVerifier {
 	t.Helper()
 	v, err := authz.NewAgentCredentialVerifier(resolve, authz.NewInstanceTokens(),
-		func(context.Context, string) bool { return false }, waived)
+		func(context.Context, string) (bool, error) { return false, nil }, waived)
 	if err != nil {
 		t.Fatal(err)
 	}

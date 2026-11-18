@@ -113,7 +113,14 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var principal domain.PrincipalRef
 	if m.workerOwner != nil {
 		if owner, isWorker := m.workerOwner(client); isWorker && owner != "" {
-			if !domain.PersonMayAct(ctx, m.persons, owner) {
+			mayAct, err := domain.PersonMayActChecked(ctx, m.persons, owner)
+			if err != nil {
+				// The registry did not answer: refused, but retryable — "owner not
+				// active" would be a false statement about the person (ENG-2120).
+				authUnavailable(w)
+				return
+			}
+			if !mayAct {
 				// A suspended owner's machines go dark with them (ADR-0142 D5).
 				http.Error(w, "this machine's owner is not active", http.StatusForbidden)
 				return
@@ -123,7 +130,11 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if principal.IsZero() {
-		p, ok := m.principalFor(ctx, client)
+		p, ok, err := m.principalFor(ctx, client)
+		if err != nil {
+			authUnavailable(w)
+			return
+		}
 		if !ok {
 			// The credential was VALID and the sender is still refused, so this is a
 			// 403 with a reason rather than the deliberately silent 401 above: an
@@ -167,11 +178,14 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // identity (ownersFor answers only for user readers), so a person reaching
 // Cambrian over MCP could not read their own personal ingest. The guest principal
 // of a stranger policy stays an agent: it is a shared bucket, not a person.
-func (m *authMiddleware) principalFor(ctx context.Context, client string) (domain.PrincipalRef, bool) {
+//
+// A non-nil error means the person registry could not be read to decide
+// (ErrAuthUnavailable): the request is refused as retryable, never admitted.
+func (m *authMiddleware) principalFor(ctx context.Context, client string) (domain.PrincipalRef, bool, error) {
 	externalID := principalPrefix + client
 	self := domain.AgentPrincipal(externalID)
 	if m.identity == nil {
-		return self, true
+		return self, true, nil
 	}
 	// The profile carries the id resolution matches on plus the client name as a
 	// LABEL, because resolution is also the only moment the system learns this
@@ -189,7 +203,7 @@ func (m *authMiddleware) principalFor(ctx context.Context, client string) (domai
 		if binding.Blocked {
 			// Dropped at the door, which is a stronger statement than "every
 			// policy denies them" and does not depend on the policy set being right.
-			return domain.PrincipalRef{}, false
+			return domain.PrincipalRef{}, false, nil
 		}
 		// Only a `principal` binding names a principal. `group` and `room_group`
 		// bind to a GROUP — a different container, whose reach this client gets by
@@ -197,27 +211,28 @@ func (m *authMiddleware) principalFor(ctx context.Context, client string) (domai
 		// identity and the group's policy terms reach it through the decision
 		// point, exactly as they do for an internal agent.
 		if binding.BoundToKind == domain.BindPrincipal && binding.BoundToID != "" {
-			if !domain.PersonMayAct(ctx, m.persons, binding.BoundToID) {
-				return domain.PrincipalRef{}, false
+			mayAct, err := domain.PersonMayActChecked(ctx, m.persons, binding.BoundToID)
+			if err != nil || !mayAct {
+				return domain.PrincipalRef{}, false, err
 			}
-			return domain.PersonPrincipal(binding.BoundToID), true
+			return domain.PersonPrincipal(binding.BoundToID), true, nil
 		}
-		return self, true
+		return self, true, nil
 	}
 	switch pol := m.identity.StrangerPolicyFor(ctx, domain.SurfaceMCP); pol.Mode {
 	case domain.StrangerRefuseUntilBound:
-		return domain.PrincipalRef{}, false
+		return domain.PrincipalRef{}, false, nil
 	case domain.StrangerGuestPrincipal:
 		if pol.GuestPrincipalID != "" {
-			return domain.AgentPrincipal(pol.GuestPrincipalID), true
+			return domain.AgentPrincipal(pol.GuestPrincipalID), true, nil
 		}
 		// A guest mode with no guest named would otherwise silently fall back to
 		// the client's own reach, which is the opposite of what was configured.
-		return domain.PrincipalRef{}, false
+		return domain.PrincipalRef{}, false, nil
 	default:
 		// StrangerSurfaceDefault, and anything a future mode adds: the surface is
 		// the identity, which is precisely the pre-binding behaviour.
-		return self, true
+		return self, true, nil
 	}
 }
 
@@ -290,6 +305,14 @@ func bearerToken(header string) (string, bool) {
 	}
 	token := strings.TrimSpace(rest)
 	return token, token != ""
+}
+
+// authUnavailable answers a request whose credential could not be checked
+// because the person registry did not answer: 503 + Retry-After, so a client
+// retries instead of treating its token as revoked (ENG-2120).
+func authUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "authentication temporarily unavailable; retry", http.StatusServiceUnavailable)
 }
 
 // unauthorized answers a missing, malformed or unknown credential.

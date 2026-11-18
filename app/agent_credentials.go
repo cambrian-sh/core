@@ -163,26 +163,29 @@ func ensureAgentCredentials(ctx context.Context, store agentCredentialStore, reg
 // kernelSpawnedAgent is the verifier's ADR-0157 D4.5 predicate: does the kernel
 // spawn agentID itself? Read from the registry on every call, so an agent
 // registered while the kernel runs is covered at once. It fails CLOSED: when
-// the registry cannot be read it answers true, which refuses the stored-secret
-// path — an external agent is refused for that request rather than a
-// kernel-spawned one admitted on a stored secret. Only the stored-secret path
+// the registry cannot be read it answers true with an ErrAuthUnavailable error,
+// which refuses the stored-secret path as retryable Unavailable (ENG-2120) — an
+// external agent is refused for that request rather than a kernel-spawned one
+// admitted on a stored secret. Only the stored-secret path
 // asks; a live instance token never reaches it.
-func kernelSpawnedAgent(reg domain.AgentLister) func(ctx context.Context, agentID string) bool {
-	return func(ctx context.Context, agentID string) bool {
+func kernelSpawnedAgent(reg domain.AgentLister) func(ctx context.Context, agentID string) (bool, error) {
+	return func(ctx context.Context, agentID string) (bool, error) {
 		if reg == nil {
-			return true
+			return true, nil
 		}
 		defs, err := reg.GetAllAgents(ctx)
 		if err != nil {
+			// Cannot tell: the verifier refuses the stored credential as retryable
+			// Unavailable, not as a wrong token (ENG-2120). Never accepted.
 			slog.WarnContext(ctx, "ADR-0157: agent registry unreadable; refusing the stored agent credential",
 				"agent_id", agentID, "err", err)
-			return true
+			return true, fmt.Errorf("%w: agent registry: %w", domain.ErrAuthUnavailable, err)
 		}
 		for _, d := range defs {
 			if d.ID == agentID {
-				return d.SpawnedByKernel()
+				return d.SpawnedByKernel(), nil
 			}
 		}
-		return false
+		return false, nil
 	}
 }

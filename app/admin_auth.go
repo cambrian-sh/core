@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -40,6 +41,14 @@ func requireOperatorBearer(idp domain.Authenticator, next http.Handler) http.Han
 			return
 		}
 		id, err := idp.Resolve(r.Context(), strings.TrimSpace(token))
+		if errors.Is(err, domain.ErrAuthUnavailable) {
+			// The token could not be checked (Postgres or the IdP did not answer):
+			// refused, but as retryable — a 401 tells the caller its token is bad
+			// (T-20261118-operator-rpcs-answer-unauthenticated-invalid-or).
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "authentication temporarily unavailable; retry", http.StatusServiceUnavailable)
+			return
+		}
 		if err != nil || id.Principal.IsZero() {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			w.WriteHeader(http.StatusUnauthorized)

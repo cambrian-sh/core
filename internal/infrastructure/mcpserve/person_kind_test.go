@@ -2,6 +2,7 @@ package mcpserve
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -108,5 +109,40 @@ func TestPersonKind_MCPClientOwnerStaysAgent(t *testing.T) {
 	}
 	if got := domain.PersonPrincipal("alice"); got != domain.UserPrincipal("alice") {
 		t.Fatalf("PersonPrincipal(alice) = %v", got)
+	}
+}
+
+// downRegistry is a person registry that does not answer (Postgres stopped).
+type downRegistry struct{ *identity.MemRegistry }
+
+func (downRegistry) GetPrincipal(context.Context, string) (domain.Principal, error) {
+	return domain.Principal{}, errors.New("dial tcp: connection refused")
+}
+
+// ENG-2120: when the person registry cannot be read to decide whether a bound
+// person (or a worker machine's owner) may act, the request is refused as 503 +
+// Retry-After — not let through, and not a 403 that says the person is not
+// active when nobody could check.
+func TestPersonKind_RegistryDownIsRetryableNotForbidden(t *testing.T) {
+	t.Parallel()
+	reg := downRegistry{identity.NewMemRegistry()}
+	owner := func(c string) (string, bool) { return "alice", c == "laptop" }
+	for name, req := range map[string]func() *http.Request{
+		"bound person": authedRequest,
+		"worker owner": func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/", nil)
+			r.Header.Set("Authorization", "Bearer token-mmmm")
+			return r
+		},
+	} {
+		next := &capture{}
+		rec := httptest.NewRecorder()
+		personMiddleware(t, next, boundTo("alice"), reg, owner).ServeHTTP(rec, req())
+		if next.reached {
+			t.Fatalf("%s: the request went through while the registry was down", name)
+		}
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s: status %d (Retry-After %q), want 503 with Retry-After", name, rec.Code, rec.Header().Get("Retry-After"))
+		}
 	}
 }

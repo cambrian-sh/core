@@ -2,7 +2,9 @@ package authz_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -93,7 +95,7 @@ func TestInstanceTokens_Concurrent(t *testing.T) {
 
 func TestAgentCredentialVerifier_RequiresRegistryAndPredicate(t *testing.T) {
 	t.Parallel()
-	never := func(context.Context, string) bool { return false }
+	never := func(context.Context, string) (bool, error) { return false, nil }
 	if _, err := authz.NewAgentCredentialVerifier(nil, nil, never, false); err == nil {
 		t.Fatal("verifier built without an instance-token registry")
 	}
@@ -112,7 +114,7 @@ func TestAgentCredentialVerifier_InstanceAndStoredPaths(t *testing.T) {
 		authz.AgentTokenSecretName("external_agent"): "external-secret",
 	}
 	v, err := authz.NewAgentCredentialVerifier(stored.resolve, reg,
-		func(_ context.Context, id string) bool { return spawned[id] }, false)
+		func(_ context.Context, id string) (bool, error) { return spawned[id], nil }, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +161,7 @@ func TestAgentCredentialVerifier_StampsTheCallingInstance(t *testing.T) {
 	reg := authz.NewInstanceTokens()
 	stored := secretStore{authz.AgentTokenSecretName("external_agent"): "external-secret"}
 	v, err := authz.NewAgentCredentialVerifier(stored.resolve, reg,
-		func(_ context.Context, id string) bool { return id == "analyst_agent" }, false)
+		func(_ context.Context, id string) (bool, error) { return id == "analyst_agent", nil }, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,5 +183,55 @@ func TestAgentCredentialVerifier_StampsTheCallingInstance(t *testing.T) {
 	}
 	if got := instanceOf("external_agent", "external-secret"); got != "" {
 		t.Fatalf("a stored-secret caller was given an instance %q", got)
+	}
+}
+
+// ENG-2120: when the agent registry cannot be read the stored-secret path is
+// refused as retryable Unavailable — not accepted (fail closed), and not
+// Unauthenticated (the stored token may be perfectly good). A live instance
+// token never consults the registry and keeps working through the outage.
+func TestAgentCredentialVerifier_RegistryDownIsUnavailable(t *testing.T) {
+	t.Parallel()
+	const method = "/cambrian.Orchestrator/ListTools"
+	reg := authz.NewInstanceTokens()
+	stored := secretStore{authz.AgentTokenSecretName("external_agent"): "external-secret"}
+	var down atomic.Bool
+	v, err := authz.NewAgentCredentialVerifier(stored.resolve, reg,
+		func(context.Context, string) (bool, error) {
+			if down.Load() {
+				return true, fmt.Errorf("%w: agent registry: connection refused", domain.ErrAuthUnavailable)
+			}
+			return false, nil
+		}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(agent, token string) error {
+		ctx := metadata.NewIncomingContext(context.Background(),
+			metadata.Pairs("x-agent-id", agent, "authorization", "Bearer "+token))
+		_, err := v.Authenticate(ctx, method, nil)
+		return err
+	}
+	chatTok, err := reg.Mint("chat_agent", "inst-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	down.Store(true)
+	if err := call("external_agent", "external-secret"); status.Code(err) != codes.Unavailable {
+		t.Fatalf("stored secret while the registry is down: %v, want Unavailable", err)
+	}
+	if err := call("external_agent", "wrong"); status.Code(err) != codes.Unavailable {
+		// Undecidable either way: the registry decides whether this path is open.
+		t.Fatalf("wrong secret while the registry is down: %v, want Unavailable", err)
+	}
+	if err := call("chat_agent", chatTok); err != nil {
+		t.Fatalf("instance token during a registry outage: %v", err)
+	}
+	down.Store(false)
+	if err := call("external_agent", "external-secret"); err != nil {
+		t.Fatalf("stored secret after recovery: %v", err)
+	}
+	if err := call("external_agent", "wrong"); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("wrong secret after recovery: %v, want Unauthenticated", err)
 	}
 }

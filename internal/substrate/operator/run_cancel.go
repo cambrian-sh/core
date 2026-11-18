@@ -99,7 +99,7 @@ func (s *Service) WhoAmI(ctx context.Context, _ *pb.WhoAmIRequest) (*pb.WhoAmIRe
 	}
 	id, err := s.idp.Resolve(ctx, bearerToken(ctx))
 	if err != nil || id.Principal.IsZero() {
-		return nil, status.Error(codes.Unauthenticated, "invalid or expired token")
+		return nil, ResolveRefusal(ctx, err)
 	}
 	out := &pb.WhoAmIResponse{
 		Principal:  id.Principal.String(),

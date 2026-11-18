@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 
@@ -100,9 +101,11 @@ type AgentCredentialVerifier struct {
 	// instances is the kernel's in-memory registry of live per-instance tokens.
 	instances *InstanceTokens
 	// kernelSpawned reports whether the kernel spawns agentID itself (a
-	// registered agent with a process runtime). It must fail CLOSED: when it
-	// cannot tell, it answers true and the stored-secret path is refused.
-	kernelSpawned func(ctx context.Context, agentID string) bool
+	// registered agent with a process runtime). When it cannot tell (the agent
+	// registry did not answer) it returns an error and the stored-secret path is
+	// refused as retryable Unavailable — never accepted (fail closed), never
+	// reported as a bad credential (ENG-2120).
+	kernelSpawned func(ctx context.Context, agentID string) (bool, error)
 	// waived is ADR-0130 D2: server.insecure_localhost=true disables agent
 	// authentication along with the transport refusal it already disables.
 	waived bool
@@ -116,7 +119,7 @@ type AgentCredentialVerifier struct {
 // EXTERNAL agent can authenticate (the ADR-0101 store is off); kernel-spawned
 // agents still authenticate with their instance tokens.
 func NewAgentCredentialVerifier(resolve func(name string) (string, bool), instances *InstanceTokens,
-	kernelSpawned func(ctx context.Context, agentID string) bool, waived bool) (*AgentCredentialVerifier, error) {
+	kernelSpawned func(ctx context.Context, agentID string) (bool, error), waived bool) (*AgentCredentialVerifier, error) {
 	if instances == nil {
 		return nil, errors.New("agent credential verifier: instance token registry is required (ADR-0157 D4)")
 	}
@@ -151,6 +154,14 @@ func IsAgentPlaneMethod(fullMethod string, agentPlane map[string]bool) bool {
 var errAgentUnauthenticated = status.Error(codes.Unauthenticated,
 	"agent credential required: present `authorization: Bearer <token>` with `x-agent-id` naming the agent it was issued to (ADR-0130)")
 
+// errAgentAuthUnavailable answers a credential that could not be CHECKED
+// because a store the check needs did not answer. Refused (fail closed), but
+// retryable: an Unauthenticated here would tell an external agent its stored
+// token is wrong during a database restart
+// (T-20261118-operator-rpcs-answer-unauthenticated-invalid-or).
+var errAgentAuthUnavailable = status.Error(codes.Unavailable,
+	"agent credential could not be checked right now; retry")
+
 // Authenticate establishes the agent principal for an agent-plane method, or
 // refuses the call. Non-agent-plane methods pass through untouched.
 func (v *AgentCredentialVerifier) Authenticate(ctx context.Context, fullMethod string, agentPlane map[string]bool) (context.Context, error) {
@@ -179,7 +190,15 @@ func (v *AgentCredentialVerifier) Authenticate(ctx context.Context, fullMethod s
 		// the agent) and an x-agent-id with no token is the pre-ADR-0130 hole.
 		return ctx, errAgentUnauthenticated
 	}
-	instance, ok := v.verify(ctx, asserted, token)
+	instance, ok, err := v.verify(ctx, asserted, token)
+	if err != nil {
+		slog.WarnContext(ctx, "agent credential check unavailable; refusing as retryable",
+			"agent_id", asserted, "err", err)
+		if ctx.Err() != nil {
+			return ctx, status.FromContextError(ctx.Err()).Err()
+		}
+		return ctx, errAgentAuthUnavailable
+	}
 	if !ok {
 		return ctx, errAgentUnauthenticated
 	}
@@ -192,22 +211,28 @@ func (v *AgentCredentialVerifier) Authenticate(ctx context.Context, fullMethod s
 
 // verify is the credential decision for one (asserted agent, presented token)
 // pair (ADR-0157 D4.5). Every refusal is the same answer to the caller. On
-// path (a) it also returns the instance the token belongs to.
-func (v *AgentCredentialVerifier) verify(ctx context.Context, asserted, token string) (instance string, ok bool) {
+// path (a) it also returns the instance the token belongs to. A non-nil error
+// means the decision could not be made (a store did not answer); ok is then
+// false.
+func (v *AgentCredentialVerifier) verify(ctx context.Context, asserted, token string) (instance string, ok bool, err error) {
 	if id, found := v.instances.Lookup(token); found {
 		// (a) A live instance token decides by itself: it names one agent, and
 		// the header must name the same one. A token of another agent is refused
 		// here, never retried against the stored secret.
 		if id.AgentID != asserted {
-			return "", false
+			return "", false, nil
 		}
-		return id.InstanceID, true
+		return id.InstanceID, true, nil
 	}
 	// (b) The stored named secret — only for an agent the kernel does not spawn.
-	if v.kernelSpawned(ctx, asserted) {
-		return "", false
+	spawned, err := v.kernelSpawned(ctx, asserted)
+	if err != nil {
+		return "", false, err
 	}
-	return "", VerifyNamedSecret(v.resolve, AgentTokenSecretName(asserted), token)
+	if spawned {
+		return "", false, nil
+	}
+	return "", VerifyNamedSecret(v.resolve, AgentTokenSecretName(asserted), token), nil
 }
 
 // routablePeer reports whether the call came over the network from a

@@ -60,9 +60,25 @@ func (i Identity) HasRole(r string) bool {
 // deliberately undetailed toward the caller; backends log the reason.
 var ErrUnauthenticated = errors.New("unauthenticated")
 
+// ErrAuthUnavailable means the credential could not be CHECKED: a store the
+// check needs (the principal registry in Postgres, the credential table, an
+// OIDC issuer's discovery document or key set) did not answer. It says nothing
+// about the credential, so it must never be reported as ErrUnauthenticated: a
+// client following gRPC semantics drops its session on Unauthenticated, and a
+// database restart would log every operator out
+// (T-20261118-operator-rpcs-answer-unauthenticated-invalid-or). Transports
+// answer it as retryable (gRPC Unavailable, HTTP 503). It is still a refusal —
+// the access decision fails CLOSED; only the answer differs.
+//
+// An error must not wrap both sentinels.
+var ErrAuthUnavailable = errors.New("authentication unavailable")
+
 // Authenticator resolves a bearer credential to an Identity.
 type Authenticator interface {
-	// Resolve verifies token. Every failure is ErrUnauthenticated (wrapped).
+	// Resolve verifies token. A credential that does not verify is
+	// ErrUnauthenticated (wrapped); a check that could not be made because a
+	// store it needs failed is ErrAuthUnavailable (wrapped). Any other error is
+	// treated as ErrUnauthenticated by the transports (fail closed).
 	Resolve(ctx context.Context, token string) (Identity, error)
 	// Revoke ends a kernel-issued session token (Logout). Revoking an unknown
 	// token, or a token the kernel did not issue (an IdP's JWT, which only its
