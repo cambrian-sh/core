@@ -3183,6 +3183,19 @@ func (e *ConfigError) Error() string {
 // DefaultConfig returns a fully pre-filled *Config with every field set to its
 // documented default value. It is the authoritative source of defaults and is used
 // as the lowest-priority layer in the Koanf loading pipeline.
+// Infrastructure defaults (ENG-2061): the values configs/config.example.json ships,
+// so a boot without config.json does not run on empty strings.
+const (
+	DefaultAgentsDir    = "agents"
+	DefaultDataDir      = "data"
+	DefaultDBName       = "agents.db"
+	DefaultDatabaseHost = "localhost"
+	DefaultDatabasePort = "5432"
+	DefaultDatabaseUser = "cambrian"
+	DefaultDatabaseName = "cambrian_db"
+	DefaultServerPort   = "50051"
+)
+
 func DefaultConfig() *Config {
 	cfg := &Config{
 		Execution: ExecutionConfig{
@@ -3575,6 +3588,21 @@ func DefaultConfig() *Config {
 			Late:      LateChunkerConfig{Enabled: false, MaxDocTokens: 8192},
 		},
 	}
+	// ENG-2061: the infrastructure keys config.example.json carries are defaults here
+	// too, so a kernel booted with NO config.json (a container wired only through
+	// CAMBRIAN_* env vars) gets the same values instead of empty strings — an empty
+	// storage.db_name made bbolt open the data directory itself. The example file
+	// keeps them as the operator's starting point; database.password has no default
+	// (a secret: CAMBRIAN_DATABASE__PASSWORD). Relative paths resolve against the
+	// base dir (app.resolvePaths).
+	cfg.Metabolism.AgentsDir = DefaultAgentsDir
+	cfg.Storage.DataDir = DefaultDataDir
+	cfg.Storage.DBName = DefaultDBName
+	cfg.Database.Host = DefaultDatabaseHost
+	cfg.Database.Port = DefaultDatabasePort
+	cfg.Database.User = DefaultDatabaseUser
+	cfg.Database.DBName = DefaultDatabaseName
+	cfg.Server.Port = DefaultServerPort
 	// PLAT-02 / ADR-0064: migrate-on-boot is on by default (matches the historical
 	// always-run ensureSchema behavior); set storage.auto_migrate=false to opt out.
 	cfg.Storage.AutoMigrate = true

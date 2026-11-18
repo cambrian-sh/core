@@ -293,6 +293,34 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 		return nil
 	}
 
+	// Dynamic Dimension (Audit 1): ADR-0042 — embedder owns its dimensions.
+	// SAFETY (post-incident): a zero/missing embedder dimension used to silently
+	// default to 1536. On a crash-boot where the embedder config fails to load,
+	// that guessed dim can mismatch the real documents table and trigger a
+	// DESTRUCTIVE recreate (the vector-store wipe we saw). Refuse to boot rather
+	// than guess, so a config hiccup can never silently wipe the corpus.
+	dims := cfg.Embedder.Dimensions
+	if dims == 0 {
+		return nil, fmt.Errorf(
+			"embedder dimensions not configured (embedder.dimensions==0): refusing to boot with a " +
+				"guessed default to avoid a destructive documents-table recreate on a dimension mismatch; " +
+				"set embedder.dimensions explicitly (e.g. 1024 for bge-large)")
+	}
+
+	migMode, err := migrate.ParseMode(cfg.Database.Migrations.Mode)
+	if err != nil {
+		return nil, fmt.Errorf("database.migrations.mode: %w", err)
+	}
+
+	// ENG-2061: the pool's AfterConnect registers the vector types, so on a database
+	// without pgvector no pool connection can be made and the baseline that creates
+	// the extension never runs. Create it first (when this boot may change the
+	// schema) or refuse naming the SQL; see migrate.EnsureVectorExtension.
+	if err := migrate.EnsureVectorExtension(ctx, pgxCfg.ConnConfig, cfg.Storage.AutoMigrate,
+		migrationPolicy(cfg, migMode)); err != nil {
+		return nil, err
+	}
+
 	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
 	if err != nil {
 		return nil, err
@@ -326,24 +354,6 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 		c.Release()
 	}
 
-	// Dynamic Dimension (Audit 1): ADR-0042 — embedder owns its dimensions.
-	// SAFETY (post-incident): a zero/missing embedder dimension used to silently
-	// default to 1536. On a crash-boot where the embedder config fails to load,
-	// that guessed dim can mismatch the real documents table and trigger a
-	// DESTRUCTIVE recreate (the vector-store wipe we saw). Refuse to boot rather
-	// than guess, so a config hiccup can never silently wipe the corpus.
-	dims := cfg.Embedder.Dimensions
-	if dims == 0 {
-		return nil, fmt.Errorf(
-			"embedder dimensions not configured (embedder.dimensions==0): refusing to boot with a " +
-				"guessed default to avoid a destructive documents-table recreate on a dimension mismatch; " +
-				"set embedder.dimensions explicitly (e.g. 1024 for bge-large)")
-	}
-
-	migMode, err := migrate.ParseMode(cfg.Database.Migrations.Mode)
-	if err != nil {
-		return nil, fmt.Errorf("database.migrations.mode: %w", err)
-	}
 	p := &PgVectorAdapter{
 		pool:            pool,
 		dim:             dims,

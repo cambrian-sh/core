@@ -79,13 +79,20 @@ func withMigrationLock(ctx context.Context, pool *pgxpool.Pool, wait time.Durati
 // acquireMigrationLock takes the session advisory lock on a dedicated connection and
 // returns the function that releases it.
 func acquireMigrationLock(ctx context.Context, pool *pgxpool.Pool, wait time.Duration) (func(), error) {
-	if wait <= 0 {
-		wait = DefaultLockWait
-	}
 	if pool == nil {
 		return nil, errors.New("migrate: nil pool")
 	}
-	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+	return acquireMigrationLockConfig(ctx, pool.Config().ConnConfig.Copy(), wait)
+}
+
+// acquireMigrationLockConfig is acquireMigrationLock for a caller that has no pool yet
+// (EnsureVectorExtension runs before the kernel's pool exists): the lock connection
+// is opened from cc, which the caller must not share.
+func acquireMigrationLockConfig(ctx context.Context, cc *pgx.ConnConfig, wait time.Duration) (func(), error) {
+	if wait <= 0 {
+		wait = DefaultLockWait
+	}
+	conn, err := pgx.ConnectConfig(ctx, cc)
 	if err != nil {
 		return nil, fmt.Errorf("migrate: open the migration-lock connection: %w", err)
 	}
