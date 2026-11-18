@@ -129,6 +129,15 @@ func BootLanes(ctx context.Context, pool *pgxpool.Pool, p Policy, lanes []Lane) 
 	if mode == ModeOff {
 		return nil
 	}
+	// The same lock and key as Boot (lock.go): a lane chain never interleaves with
+	// core's or another binary's, and every read below happens under it.
+	return withMigrationLock(ctx, pool, p.LockWait, func() error {
+		return bootLanesLocked(ctx, pool, p, mode, lanes)
+	})
+}
+
+// bootLanesLocked is BootLanes' body; the caller holds the migration lock.
+func bootLanesLocked(ctx context.Context, pool *pgxpool.Pool, p Policy, mode Mode, lanes []Lane) error {
 	db, err := currentDatabase(ctx, pool)
 	if err != nil {
 		return err
@@ -160,13 +169,16 @@ func BootLanes(ctx context.Context, pool *pgxpool.Pool, p Policy, lanes []Lane) 
 	return applyLanes(ctx, pool, db, lanes)
 }
 
-// MigrateLanes applies every pending lane migration with no Policy (tests).
+// MigrateLanes applies every pending lane migration with no Policy (tests), under the
+// migration lock (default wait).
 func MigrateLanes(ctx context.Context, pool *pgxpool.Pool, lanes []Lane) error {
-	db, err := currentDatabase(ctx, pool)
-	if err != nil {
-		return err
-	}
-	return applyLanes(ctx, pool, db, lanes)
+	return withMigrationLock(ctx, pool, 0, func() error {
+		db, err := currentDatabase(ctx, pool)
+		if err != nil {
+			return err
+		}
+		return applyLanes(ctx, pool, db, lanes)
+	})
 }
 
 func applyLanes(ctx context.Context, pool *pgxpool.Pool, db string, lanes []Lane) error {

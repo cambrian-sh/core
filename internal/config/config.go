@@ -3582,6 +3582,9 @@ func DefaultConfig() *Config {
 	// protected); an operator protects a database by naming it in
 	// database.migrations.protected_dbnames (ADR-0064 amendment, 2026-11-04).
 	cfg.Database.Migrations.Mode = "auto"
+	// ENG-2029: a boot queued behind another binary's migration waits up to 15 minutes
+	// for the migration lock, then fails (a supervisor restarts it).
+	cfg.Database.Migrations.LockWaitSeconds = 900
 	// ENG-681: backups/ next to the config bundle, rotation 7 daily / 4 weekly / 3 monthly.
 	cfg.Backup = DefaultBackupConfig()
 	// ADR-0061 A2.8: compact the bbolt file at boot when it is over 256 MiB and

@@ -104,6 +104,10 @@ type Policy struct {
 	// destructive migrations WITHOUT the mandatory snapshot
 	// (database.migrations.allow_destructive_without_snapshot, `migrate up --skip-snapshot`).
 	AllowDestructiveWithoutSnapshot bool
+	// LockWait is how long Boot / BootLanes wait for the migration lock while another
+	// binary migrates the same database (lock.go); zero means DefaultLockWait
+	// (database.migrations.lock_wait_seconds).
+	LockWait time.Duration
 }
 
 // protects reports whether db is on the protected list.
@@ -123,6 +127,10 @@ var ErrPendingRefused = errors.New("migration policy refuses to change this data
 // is decided by reads only — before schema_migrations is created, before any migration
 // and before any concurrent index build — so a refused boot leaves the database exactly
 // as it found it.
+//
+// Everything after the ModeOff check runs under the migration lock (lock.go), so a
+// boot that waited behind another binary decides — pending set, refusal, snapshot —
+// from what that binary left behind.
 func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
 	mode := p.Mode
 	if mode == "" {
@@ -131,6 +139,13 @@ func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
 	if mode == ModeOff {
 		return nil
 	}
+	return withMigrationLock(ctx, pool, p.LockWait, func() error {
+		return bootLocked(ctx, pool, dim, p, mode)
+	})
+}
+
+// bootLocked is Boot's body; the caller holds the migration lock.
+func bootLocked(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy, mode Mode) error {
 	db, err := currentDatabase(ctx, pool)
 	if err != nil {
 		return err
@@ -177,12 +192,15 @@ func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
 // order (each in its own transaction). dim substitutes ${EMBEDDING_DIM} in the SQL.
 // It applies no Policy: it is the tests' entry point. Boot and the `migrate up` CLI
 // (postgres.RunMigrations) go through Boot, so both honour protected_dbnames.
+// It takes the migration lock like Boot (default wait).
 func Migrate(ctx context.Context, pool *pgxpool.Pool, dim int) error {
-	db, err := currentDatabase(ctx, pool)
-	if err != nil {
-		return err
-	}
-	return migrate(ctx, pool, dim, db)
+	return withMigrationLock(ctx, pool, 0, func() error {
+		db, err := currentDatabase(ctx, pool)
+		if err != nil {
+			return err
+		}
+		return migrate(ctx, pool, dim, db)
+	})
 }
 
 func migrate(ctx context.Context, pool *pgxpool.Pool, dim int, db string) error {

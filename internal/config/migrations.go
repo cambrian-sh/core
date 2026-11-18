@@ -42,6 +42,12 @@ type MigrationsConfig struct {
 	// CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_DESTRUCTIVE_WITHOUT_SNAPSHOT=true or
 	// `migrate up --skip-snapshot` — not for a file.
 	AllowDestructiveWithoutSnapshot bool `json:"allow_destructive_without_snapshot"`
+	// LockWaitSeconds is how long a boot or `migrate up` waits for the migration lock
+	// while another binary migrates the same database (internal/migrate lock.go,
+	// ENG-2029) before it fails with "timed out waiting for the migration lock".
+	// Default 900 (15 minutes: the holder may be building an index concurrently on a
+	// large table); 0 also means the runner's default; negative is refused.
+	LockWaitSeconds int `json:"lock_wait_seconds"`
 }
 
 // MigrationModes are the accepted values of database.migrations.mode. The runner
@@ -49,15 +55,20 @@ type MigrationsConfig struct {
 var MigrationModes = []string{"auto", "refuse_pending", "off"}
 
 func (m MigrationsConfig) validate() []string {
+	var errs []string
+	if m.LockWaitSeconds < 0 {
+		errs = append(errs, fmt.Sprintf("database.migrations.lock_wait_seconds %d must be >= 0 (0 = the runner's default)",
+			m.LockWaitSeconds))
+	}
 	mode := strings.ToLower(strings.TrimSpace(m.Mode))
 	if mode == "" {
-		return nil
+		return errs
 	}
 	for _, ok := range MigrationModes {
 		if mode == ok {
-			return nil
+			return errs
 		}
 	}
-	return []string{fmt.Sprintf("database.migrations.mode %q is not one of %s",
-		m.Mode, strings.Join(MigrationModes, " | "))}
+	return append(errs, fmt.Sprintf("database.migrations.mode %q is not one of %s",
+		m.Mode, strings.Join(MigrationModes, " | ")))
 }

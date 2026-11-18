@@ -53,3 +53,23 @@ func TestMigrationsConfig_RejectsUnknownMode(t *testing.T) {
 		t.Fatalf("want a validation error naming database.migrations.mode, got %v", err)
 	}
 }
+
+// database.migrations.lock_wait_seconds (ENG-2029): defaults to 15 minutes, takes a
+// file value, and refuses a negative one.
+func TestMigrationsConfig_LockWaitSeconds(t *testing.T) {
+	cfg, err := config.LoadConfig(writeMigrationsConfig(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Database.Migrations.LockWaitSeconds; got != 900 {
+		t.Fatalf("default lock_wait_seconds = %d, want 900", got)
+	}
+	cfg, err = config.LoadConfig(writeMigrationsConfig(t, `,"migrations":{"lock_wait_seconds":60}`))
+	if err != nil || cfg.Database.Migrations.LockWaitSeconds != 60 {
+		t.Fatalf("file lock_wait_seconds: %+v %v", cfg, err)
+	}
+	_, err = config.LoadConfig(writeMigrationsConfig(t, `,"migrations":{"lock_wait_seconds":-1}`))
+	if err == nil || !strings.Contains(err.Error(), "database.migrations.lock_wait_seconds") {
+		t.Fatalf("want a validation error naming database.migrations.lock_wait_seconds, got %v", err)
+	}
+}

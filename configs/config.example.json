@@ -15,7 +15,7 @@
     "user": "cambrian",
     "password": "",
     "dbname": "cambrian_db",
-    "migrations": { "mode": "auto", "protected_dbnames": [], "allow_pending": false }
+    "migrations": { "mode": "auto", "protected_dbnames": [], "allow_pending": false, "lock_wait_seconds": 900 }
   },
   "server": { "port": "50051" },
   "telemetry": {

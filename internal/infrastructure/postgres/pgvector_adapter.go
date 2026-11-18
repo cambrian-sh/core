@@ -508,6 +508,7 @@ func migrationPolicy(cfg *config.Config, mode migrate.Mode) migrate.Policy {
 		AllowPending:                    cfg.Database.Migrations.AllowPending,
 		Snapshot:                        backup.PreMigrationSnapshotter(cfg),
 		AllowDestructiveWithoutSnapshot: cfg.Database.Migrations.AllowDestructiveWithoutSnapshot,
+		LockWait:                        time.Duration(cfg.Database.Migrations.LockWaitSeconds) * time.Second,
 	}
 }
 
