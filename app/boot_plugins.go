@@ -182,6 +182,9 @@ func (b *kernelBuild) buildKernelServices() {
 	ontologyDrafts, evStore, evIngestor, credSeams := b.ontologyDrafts, b.evStore, b.evIngestor, b.credSeams
 	kernelSvc := KernelServices{
 		Principals: idStores.registry,
+		// ENG-2135: closed right before GRPC.Serve; boot-time daemon spawns wait
+		// on it through AwaitSpawnReady.
+		Serving: b.serving.C(),
 		// ADR-0085: the policy plugin owns its own tables and needs to tell a
 		// registered-but-unprofiled agent from an unknown principal, so it gets the
 		// pool, the registry existence check, and the session caller term. It gets

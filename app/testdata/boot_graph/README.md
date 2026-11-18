@@ -16,3 +16,6 @@ History of golden updates:
 
 - ENG-2138: `+ Heartbeats` and the `daemon-heartbeat-watch` lifecycle (65bfdf5,
   ENG-1348); `+ Derivations` (a202b04, ENG-2122).
+- ENG-2135: `+ serving` (Kernel) and `+ Serving` (KernelServices) — the "kernel is
+  serving" signal closed right before GRPC.Serve, which plugins' boot-time daemon
+  spawns wait on through `KernelServices.AwaitSpawnReady`.

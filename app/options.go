@@ -696,6 +696,14 @@ type KernelServices struct {
 	// configured; an empty id behaves as the deployment default.
 	GeneratorForModel func(modelID string) domain.Generator
 
+	// Serving is closed once the kernel's gRPC server serves (ENG-2135): the
+	// listener is bound early but Serve runs only after every service is
+	// registered, and a daemon spawned before that dials into the backlog and
+	// churns. A plugin that spawns a daemon at boot waits through
+	// AwaitSpawnReady, which composes this with any other spawn precondition,
+	// rather than on the channel itself. nil in tests (no gate).
+	Serving <-chan struct{}
+
 	// StoreNamedSecret / ClearNamedSecret / NamedSecretStatus are the WRITE
 	// half of the named-credential seam (ADR-0112 §13): encrypted set, clear,
 	// and presence + last-four — never a read-back RPC anywhere above them.

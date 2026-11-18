@@ -97,6 +97,9 @@ type kernelBuild struct {
 	sup          *kernel.SupervisionStack
 	eventBus     *domain.InMemoryEventBus
 	agentSockets *agentSocketServer
+	// serving is closed right before GRPC.Serve (ENG-2135); plugins see it as
+	// KernelServices.Serving.
+	serving *servingSignal
 	// approvals, watcher, sessions
 	toolApproval    *domain.AddressedHub
 	pyPackages      *pypackages.Service
@@ -186,7 +189,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	opts = composed.opts
 	lifecycles := composed.lifecycles
-	b := &kernelBuild{ctx: ctx, cfg: cfg, opts: opts, cfgStore: cfgStore, composed: composed, lifecycles: lifecycles}
+	b := &kernelBuild{ctx: ctx, cfg: cfg, opts: opts, cfgStore: cfgStore, composed: composed, lifecycles: lifecycles, serving: newServingSignal()}
 
 	// 1. Infrastructure — storage, vector DB, LLM; then the agent registry.
 	if err := b.buildInfrastructure(); err != nil {
@@ -257,6 +260,7 @@ func (b *kernelBuild) kernel(lis net.Listener) *Kernel {
 	mcpEndpoint, mcpTaskLane, mcpCoreBackends, llmGateway := b.mcpEndpoint, b.mcpTaskLane, b.mcpCoreBackends, b.llmGateway
 	return &Kernel{
 		agentSockets:    agentSockets,
+		serving:         b.serving,
 		Links:           linkStore,
 		linkReviewLane:  substrate.LinkReview(),
 		OperatorEffects: operatorEffects,

@@ -93,6 +93,9 @@ type Kernel struct {
 	// agentSockets serves the gRPC plane on the kernel-only agents' unix
 	// sockets (ADR-0157 S2); started with GRPC, stopped after it.
 	agentSockets *agentSocketServer
+	// serving is closed right before GRPC.Serve (ENG-2135), releasing the
+	// plugins' boot-time daemon spawns (KernelServices.Serving).
+	serving *servingSignal
 	// Health is the grpc.health.v1 checker (PLAT-03 / ADR-0065): SERVING once the DB is
 	// reachable, NOT_SERVING while draining. Registered on the main listener.
 	Health *health.Checker

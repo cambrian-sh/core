@@ -356,7 +356,9 @@ func serveGRPC(g *errgroup.Group, ctx context.Context, k *Kernel, operatorIDP do
 		if k.agentSockets != nil {
 			k.agentSockets.start(k.GRPC)
 		}
-		return k.GRPC.Serve(k.Listener)
+		// ENG-2135: everything is registered, so release the plugins' boot-time
+		// daemon spawns (KernelServices.AwaitSpawnReady) and serve.
+		return serveMarked(k.GRPC, k.Listener, k.serving)
 	})
 }
 

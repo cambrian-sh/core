@@ -15,6 +15,7 @@ Server: *network.Server
 Listener: *net.TCPListener
 GRPC: nil
 agentSockets: *app.agentSocketServer
+serving: *app.servingSignal
 Health: *health.Checker
 OperatorEffects: operator.CommandEffectsFuncs
 MemorySharer: *app.memorySharer
@@ -320,6 +321,7 @@ FetchEvidenceContent: func(context.Context, domain.CID) ([]uint8, error)
 ResolveNamedSecret: func(string) (string, bool)
 VerifyMachineToken: func(string, string) (domain.PrincipalRef, bool)
 GeneratorForModel: func(string) domain.Generator
+Serving: <-chan struct {}
 StoreNamedSecret: func(string, string) error
 ClearNamedSecret: func(string) error
 NamedSecretStatus: func(string) (bool, string)
