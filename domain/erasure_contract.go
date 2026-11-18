@@ -177,6 +177,8 @@ func SelectorOfCandidates(cands []ErasureCandidate) ErasureSelector {
 			s.ExperienceIDs = append(s.ExperienceIDs, c.ID)
 		case ErasureTargetEntity:
 			s.EntityRefs = append(s.EntityRefs, c.ID)
+		case ErasureTargetMemoryNote:
+			s.MemoryNoteIDs = append(s.MemoryNoteIDs, c.ID)
 		}
 	}
 	return s.Normalized()

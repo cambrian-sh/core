@@ -42,6 +42,10 @@ func (s *Server) forgetCaller(ctx context.Context) (context.Context, error) {
 		ctx = s.withTurnSurface(ctx, "")
 	}
 	ctx = s.withConversationOwner(ctx)
+	// ENG-2106: the person the agent acts for, from the presented lease (as on every
+	// tool call): whose personal memory notes the query form searches and the
+	// chokepoint lets this agent erase lines of. No lease → none, and no notes.
+	ctx = s.withRunPrincipal(ctx, callerLeaseID(ctx, nil))
 	p := domain.AgentPrincipal(agentID)
 	pred, dec := s.authorizer().ReadFilter(ctx, p, domain.SurfaceFromContextOr(ctx, domain.SurfaceRef{Kind: domain.SurfaceAgent}))
 	if pred == nil {

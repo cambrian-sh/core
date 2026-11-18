@@ -31,7 +31,7 @@ import (
 // server's notes and principal resolution, and starts the endpoint (ADR-0126)
 // — immediately before the MCP connector's ConnectAll, on purpose.
 func (b *kernelBuild) buildMCPEndpoint() error {
-	ctx, cfg, opts, composed := b.ctx, b.cfg, b.opts, b.composed
+	cfg, opts, composed := b.cfg, b.opts, b.composed
 	vec, mem, docReader, sessionMgr, authorizer := b.vec, b.mem, b.docReader, b.sessionMgr, b.authorizer
 	cambrianServer, conversations, idStores, calendar := b.cambrianServer, b.conversations, b.idStores, b.calendar
 	// ADR-0039: kernel-owned tool registry. Tools are auto-discovered from the
@@ -121,7 +121,7 @@ func (b *kernelBuild) buildMCPEndpoint() error {
 	// ADR-0139 D14: principal memory notes — one service for both planes. The run
 	// principal is resolved from kernel-held facts on the lease (conversation owner,
 	// then task beneficiary, then execution.memory_notes.default_principal).
-	cambrianServer.MemoryNotes = buildMemoryNotes(ctx, cfg.Execution.MemoryNotes, vec.Pool(), authorizer)
+	cambrianServer.MemoryNotes = b.memoryNotes // built with the memory stack (the forget service reaches it)
 	cambrianServer.MemoryNotesPrincipal = memoryNotesPrincipal(cfg.Execution.MemoryNotes.DefaultPrincipal,
 		conversations, sessionMgr, mcpTaskLane)
 	// ADR-0140 D4: the person a tool call is FOR — the SAME lease → principal

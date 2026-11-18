@@ -144,6 +144,14 @@ func (b *kernelBuild) buildMemoryStack() {
 	// ENG-1953: it runs that pass without spreading (QueryService.SearchMatches) so
 	// each hit keeps its cosine, floors hits on it (execution.erasure.preview_min_cosine)
 	// and caps the list (preview_max_candidates).
+	// ADR-0139 D14: the principal memory-notes service (one for both planes), built
+	// here because the forget service reaches it (ENG-2106): a forget of a person's
+	// fact must reach the notes a chat agent saved it in.
+	memoryNotes := buildMemoryNotes(b.ctx, cfg.Execution.MemoryNotes, vec.Pool(), authorizer)
+	var forgetNotes forget.Notes
+	if memoryNotes != nil {
+		forgetNotes = memoryNotes
+	}
 	forgetSvc := forget.New(mem.Eraser(), forget.Config{
 		PreviewTTL: cfg.Execution.Erasure.PreviewTTL(),
 		PolicyFingerprint: fmt.Sprintf("agent_erase=%t;max_targets=%d",
@@ -152,6 +160,7 @@ func (b *kernelBuild) buildMemoryStack() {
 		SnippetChars:  cfg.Execution.Erasure.PreviewSnippet(),
 		MinCosine:     cfg.Execution.Erasure.PreviewMinCos(),
 		MaxCandidates: cfg.Execution.Erasure.PreviewMaxCands(),
+		Notes:         forgetNotes,
 	})
 	if cfg.Execution.Erasure.Enabled && cfg.Execution.Erasure.AgentEraseEnabled {
 		slog.Info("ENG-1953: forget query preview bounds",
@@ -195,7 +204,7 @@ func (b *kernelBuild) buildMemoryStack() {
 	// convention, and the failure mode was a silent unfiltered read rather than an error.
 
 	b.lifecycles = lifecycles
-	b.mem, b.forgetSvc, b.artifactVault = mem, forgetSvc, artifactVault
+	b.mem, b.forgetSvc, b.artifactVault, b.memoryNotes = mem, forgetSvc, artifactVault, memoryNotes
 }
 
 // logFactLayerBoot writes the fact layer's boot line (the expect_log anchor of

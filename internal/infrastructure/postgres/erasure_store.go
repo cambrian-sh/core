@@ -143,6 +143,9 @@ type erasureRun struct {
 	// bodies are artifact-vault hashes of erased ledger entries (ADR-0157 D5.6);
 	// the worker deletes each once no surviving ledger row names it.
 	bodies map[string]bool
+	// requestID is the erase request's id: the writer of record of the revision a
+	// memory-notes erase writes (content-free, and it names the receipt).
+	requestID string
 	// ledgerChecked/hasLedger cache whether ledger_entries exists (a kernel
 	// with the ledger off may never have migrated past 0034… it always has).
 	ledgerChecked, hasLedger bool
@@ -189,7 +192,7 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 		return rec, tx.Commit(ctx)
 	}
 
-	run := &erasureRun{tx: tx, counts: map[string]int{}, cids: map[string]bool{}, bodies: map[string]bool{}}
+	run := &erasureRun{tx: tx, counts: map[string]int{}, cids: map[string]bool{}, bodies: map[string]bool{}, requestID: id}
 	matched, err := s.eraseTx(ctx, run, req.Selector)
 	if err != nil {
 		return domain.ErasureReceipt{}, err
@@ -394,6 +397,14 @@ func (s *PgErasureStore) eraseTx(ctx context.Context, run *erasureRun, sel domai
 			run.target(domain.ErasureTargetEntity, ref, "", "")
 			matched = true
 		}
+	}
+	// ENG-2106: entries of principal memory notes (erasure_memory_notes.go).
+	if len(sel.MemoryNoteIDs) > 0 {
+		m, err := s.eraseMemoryNotes(ctx, run, sel.MemoryNoteIDs, run.requestID)
+		if err != nil {
+			return false, err
+		}
+		matched = matched || m
 	}
 	return matched, nil
 }
@@ -757,7 +768,7 @@ func (s *PgErasureStore) eraseItemsWhere(ctx context.Context, run *erasureRun, w
 // (for NothingToEraseError), or "".
 func earlierErasure(ctx context.Context, q pgxQuerier, sel domain.ErasureSelector) (string, error) {
 	var ids []string
-	for _, l := range [][]string{sel.DocumentIDs, sel.ThreadIDs, sel.ChunkIDs, sel.ExperienceIDs, sel.EntityRefs} {
+	for _, l := range [][]string{sel.DocumentIDs, sel.ThreadIDs, sel.ChunkIDs, sel.ExperienceIDs, sel.EntityRefs, sel.MemoryNoteIDs} {
 		ids = append(ids, l...)
 	}
 	var id string

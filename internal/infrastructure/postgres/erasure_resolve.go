@@ -164,6 +164,11 @@ func (s *PgErasureStore) Resolve(ctx context.Context, sel domain.ErasureSelector
 			out = append(out, domain.ErasureCandidate{Kind: domain.ErasureTargetEntity, ID: ref, Via: ref})
 		}
 	}
+	notes, err := resolveMemoryNotes(ctx, q, sel.MemoryNoteIDs)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, notes...)
 	return out, nil
 }
 

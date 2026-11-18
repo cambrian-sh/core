@@ -29,6 +29,7 @@ import (
 	"unicode"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memorynotes"
 )
 
 // Config is the forget service's configuration (execution.erasure).
@@ -61,6 +62,20 @@ type Config struct {
 	// rank order (execution.erasure.preview_max_candidates); a cut sets
 	// Preview.Truncated. 0 ⇒ DefaultMaxCandidates.
 	MaxCandidates int
+	// Notes is the principal memory-notes service (ADR-0139 D14, ENG-2106): the query
+	// form also matches the run principal's own personal notes (the store a chat agent
+	// puts "remember this for me" facts in), and an executed erase of note entries
+	// drops the cached run snapshots of their owner. nil ⇒ notes are not searched by
+	// the query form (ids naming note entries still resolve through the chokepoint).
+	Notes Notes
+}
+
+// Notes is what the forget service needs of the memory-notes service
+// (memorynotes.Service): the entries of a person's personal notes that a free-text
+// forget names, and the snapshot cache to invalidate after an erase.
+type Notes interface {
+	MatchForErase(ctx context.Context, owner, query string) ([]memorynotes.EntryMatch, error)
+	DropSnapshots(owner string)
 }
 
 // The query preview's defaults (ENG-1953; execution.erasure documents the same).
@@ -213,6 +228,13 @@ func (s *Service) Preview(ctx context.Context, sel domain.ErasureSelector) (Prev
 //   - the list is capped at Config.MaxCandidates in that rank order (Truncated set
 //     when the cap cut it).
 //
+// ENG-2106: with Config.Notes composed and a run principal on ctx (the person the
+// kernel resolved from the presented lease), the lines of THAT person's personal memory
+// notes that carry every query word (memorynotes.MatchEntries) are listed too, first,
+// as memory_note candidates resolved through the same chokepoint, each with its line as
+// the snippet; the cap counts them. Notes are where a chat agent saves "remember this
+// for me", so a forget that skipped them left the fact behind.
+//
 // The token covers exactly the concrete ids listed; Forget re-authorizes them in full.
 // No candidate → domain.ErrNothingToErase. callerID is the agent id the search runs as.
 func (s *Service) PreviewQuery(ctx context.Context, query, callerID string) (Preview, error) {
@@ -224,19 +246,38 @@ func (s *Service) PreviewQuery(ctx context.Context, query, callerID string) (Pre
 	if query == "" {
 		return Preview{}, fmt.Errorf("%w: the query is empty", domain.ErrInvalidErasureRequest)
 	}
-	if s.cfg.Searcher == nil {
+	if s.cfg.Searcher == nil && s.cfg.Notes == nil {
 		return Preview{}, ErrQueryUnavailable
 	}
 	writer := domain.PrincipalFromContext(ctx).WriterID()
 	if writer == "" {
 		return Preview{}, ErrNoPrincipal
 	}
-	hits, err := s.cfg.Searcher.SearchMatches(ctx, query, callerID)
-	if err != nil {
-		return Preview{}, fmt.Errorf("forget preview: search: %w", err)
+	// ENG-2106: the run principal's own memory notes, matched by their words (notes are
+	// never embedded; memorynotes.MatchEntries). Only with a run principal — the person
+	// the kernel resolved from the presented lease — whose PERSONAL notes alone are
+	// searched; the chokepoint still resolves and authorizes every id below.
+	text := map[string]string{}
+	var noteIDs []string
+	if s.cfg.Notes != nil {
+		if owner := domain.RunPrincipalFromContext(ctx); owner != "" {
+			ms, err := s.cfg.Notes.MatchForErase(ctx, owner, query)
+			if err != nil {
+				return Preview{}, fmt.Errorf("forget preview: memory notes: %w", err)
+			}
+			for _, m := range ms {
+				noteIDs = append(noteIDs, m.ID)
+				text[m.ID] = m.Text
+			}
+		}
+	}
+	var hits []domain.SearchResult
+	if s.cfg.Searcher != nil {
+		if hits, err = s.cfg.Searcher.SearchMatches(ctx, query, callerID); err != nil {
+			return Preview{}, fmt.Errorf("forget preview: search: %w", err)
+		}
 	}
 	rank := map[string]int{}
-	text := map[string]string{}
 	var ids []string
 	for _, h := range hits {
 		id := h.Document.ID
@@ -258,33 +299,55 @@ func (s *Service) PreviewQuery(ctx context.Context, query, callerID string) (Pre
 		text[id] = h.Document.Text
 		ids = append(ids, id)
 	}
-	if len(ids) == 0 {
+	if len(ids) == 0 && len(noteIDs) == 0 {
 		return Preview{}, &domain.NothingToEraseError{}
 	}
-	cands, err := e.Resolve(ctx, domain.ErasureSelector{ChunkIDs: ids})
-	if err != nil {
-		return Preview{}, err
-	}
-	best := map[string]domain.ErasureCandidate{}
-	for _, c := range cands {
-		if c.WrittenBy == "" || c.WrittenBy != writer {
-			continue // not the caller's to erase: omitted, never listed
+	// Note entries first, in document order: the person's own explicit notes, matched on
+	// every query word. Hidden = absent (the chokepoint's Resolve).
+	var kept []domain.ErasureCandidate
+	if len(noteIDs) > 0 {
+		cands, err := e.Resolve(ctx, domain.ErasureSelector{MemoryNoteIDs: noteIDs})
+		if err != nil {
+			return Preview{}, err
 		}
-		r, ok := rank[c.Via]
-		if !ok {
-			continue // defensive: Via is always the hit chunk id that named it
+		order := map[string]int{}
+		for i, id := range noteIDs {
+			order[id] = i
 		}
-		k := SnippetKey(c)
-		if prev, dup := best[k]; dup && rank[prev.Via] <= r {
-			continue
+		sort.SliceStable(cands, func(i, j int) bool { return order[cands[i].ID] < order[cands[j].ID] })
+		for _, c := range cands {
+			if c.Kind == domain.ErasureTargetMemoryNote {
+				kept = append(kept, c)
+			}
 		}
-		best[k] = c
 	}
-	kept := make([]domain.ErasureCandidate, 0, len(best))
-	for _, c := range best {
-		kept = append(kept, c)
+	if len(ids) > 0 {
+		cands, err := e.Resolve(ctx, domain.ErasureSelector{ChunkIDs: ids})
+		if err != nil {
+			return Preview{}, err
+		}
+		best := map[string]domain.ErasureCandidate{}
+		for _, c := range cands {
+			if c.WrittenBy == "" || c.WrittenBy != writer {
+				continue // not the caller's to erase: omitted, never listed
+			}
+			r, ok := rank[c.Via]
+			if !ok {
+				continue // defensive: Via is always the hit chunk id that named it
+			}
+			k := SnippetKey(c)
+			if prev, dup := best[k]; dup && rank[prev.Via] <= r {
+				continue
+			}
+			best[k] = c
+		}
+		memory := make([]domain.ErasureCandidate, 0, len(best))
+		for _, c := range best {
+			memory = append(memory, c)
+		}
+		sort.SliceStable(memory, func(i, j int) bool { return rank[memory[i].Via] < rank[memory[j].Via] })
+		kept = append(kept, memory...)
 	}
-	sort.SliceStable(kept, func(i, j int) bool { return rank[kept[i].Via] < rank[kept[j].Via] })
 	truncated := len(kept) > s.cfg.MaxCandidates
 	if truncated {
 		kept = kept[:s.cfg.MaxCandidates]
@@ -403,7 +466,24 @@ func (s *Service) Forget(ctx context.Context, req Request) (domain.ErasureReceip
 	if err != nil {
 		return domain.ErasureReceipt{}, err
 	}
+	s.dropNoteSnapshots(sel.MemoryNoteIDs, rec)
 	return rec, nil
+}
+
+// dropNoteSnapshots invalidates the cached run snapshots of every person whose notes an
+// executed (not replayed) erase reached, so no run keeps serving the erased lines from
+// its frozen copy (ENG-2106).
+func (s *Service) dropNoteSnapshots(noteIDs []string, rec domain.ErasureReceipt) {
+	if s.cfg.Notes == nil || rec.Replayed || len(noteIDs) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	for _, id := range noteIDs {
+		if _, owner, _, ok := domain.ParseMemoryNoteEntryID(id); ok && !seen[owner] {
+			seen[owner] = true
+			s.cfg.Notes.DropSnapshots(owner)
+		}
+	}
 }
 
 // Receipt returns one receipt the caller may see (found=false otherwise).

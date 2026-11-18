@@ -93,6 +93,9 @@ const (
 	ErasureTargetExperience = "experience"
 	ErasureTargetEntity     = "entity"
 	ErasureTargetEvidence   = "evidence"
+	// ErasureTargetMemoryNote is one entry (one line) of a principal memory-notes
+	// document (ADR-0139 D14), named by MemoryNoteEntryID (ENG-2106).
+	ErasureTargetMemoryNote = "memory_note"
 )
 
 // Erasure statuses (memory_erasures.status).
@@ -135,6 +138,11 @@ type ErasureSelector struct {
 	// EntityRefs: knowledge-substrate items about, or carrying an entity value equal to,
 	// these refs (KnowledgeErasure). Chunks that merely mention an entity are NOT erased.
 	EntityRefs []string
+	// MemoryNoteIDs: entries of principal memory-notes documents (MemoryNoteEntryID,
+	// ENG-2106). The entry's line is removed from the live document and scrubbed from
+	// every history row of it; the rest of the document stays. An agent may name only
+	// entries of its run principal's own personal notes (authz.EnforcingEraser).
+	MemoryNoteIDs []string
 }
 
 // kinds returns (kind, sorted unique ids) for every non-empty selector field, in a
@@ -150,6 +158,7 @@ func (s ErasureSelector) kinds() [][2]any {
 		{ErasureTargetChunk, s.ChunkIDs},
 		{ErasureTargetExperience, s.ExperienceIDs},
 		{ErasureTargetEntity, s.EntityRefs},
+		{ErasureTargetMemoryNote, s.MemoryNoteIDs},
 	} {
 		if len(f.ids) > 0 {
 			out = append(out, [2]any{f.kind, SortedUniqueIDs(f.ids)})
@@ -194,6 +203,7 @@ func (s ErasureSelector) Normalized() ErasureSelector {
 		ChunkIDs:      norm(s.ChunkIDs),
 		ExperienceIDs: norm(s.ExperienceIDs),
 		EntityRefs:    norm(s.EntityRefs),
+		MemoryNoteIDs: norm(s.MemoryNoteIDs),
 	}
 }
 

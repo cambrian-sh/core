@@ -3,6 +3,7 @@ package forget
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,16 +66,22 @@ const toolSchema = `{
 func (t *Tool) Spec() domain.SystemTool {
 	return domain.SystemTool{
 		Name: ToolName,
-		Description: "Permanently erase memory you wrote, in two calls. First call with a query describing " +
+		Description: "Permanently erase memory you wrote, and lines of the memory notes of the person you are " +
+			"acting for, in two calls. First call with a query describing " +
 			"what to forget, or with the ids to forget (document_ids / chunk_ids / thread_ids): nothing is " +
 			"erased; you get the records that would be erased, with a short snippet for each when you used " +
 			"a query, and a preview_token. A query lists only documents that closely match it, at most a fixed " +
 			"number of them; if the result says truncated, more matched than were listed — narrow the query " +
 			"(or name ids) to reach the rest. A document a query misses can still be named by id. " +
 			"Erasure is by WHOLE DOCUMENT: if any passage of a document matches, " +
-			"the entire document (every passage of it) is listed and will be erased. Check the list against " +
+			"the entire document (every passage of it) is listed and will be erased. The person's memory " +
+			"notes (the notes shown in your instructions) are matched by their words — query with words " +
+			"that appear in the note line — and are erased line by line (kind memory_note). Check the list against " +
 			"what the person asked for; only if it matches, call again with just the preview_token to erase " +
-			"exactly those records. Irreversible. You can erase only what you wrote and can read.",
+			"exactly those records. Irreversible. You can erase only what you wrote and can read, and the " +
+			"notes of the person you act for. Tell the person something was erased ONLY when a result says " +
+			"\"erased\": true, quoting its erased_count and request_id; when a result says \"erased\": false, " +
+			"follow its tell_the_person and never say it was erased or removed.",
 		Schema: []byte(toolSchema),
 	}
 }
@@ -125,6 +132,9 @@ func (t *Tool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, er
 		default:
 			p, err = t.svc.Preview(ctx, sel)
 		}
+		if errors.Is(err, domain.ErrNothingToErase) {
+			return nothingFound()
+		}
 		if err != nil {
 			return nil, fmt.Errorf("forget_memory preview: %w", err)
 		}
@@ -133,12 +143,14 @@ func (t *Tool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, er
 			cands = append(cands, toolCandidate{Kind: c.Kind, ID: c.ID, DocumentID: c.DocumentID, Snippet: p.Snippets[SnippetKey(c)]})
 		}
 		return json.Marshal(map[string]any{
-			"erased":        false,
-			"would_erase":   cands,
-			"truncated":     p.Truncated,
-			"preview_token": p.Token,
-			"expires_at":    p.ExpiresAt.UTC().Format(time.RFC3339),
-			"next":          "nothing was erased; to erase exactly these records call forget_memory with only this preview_token",
+			"erased":          false,
+			"outcome":         "preview",
+			"would_erase":     cands,
+			"truncated":       p.Truncated,
+			"preview_token":   p.Token,
+			"expires_at":      p.ExpiresAt.UTC().Format(time.RFC3339),
+			"next":            "nothing was erased; to erase exactly these records call forget_memory with only this preview_token",
+			"tell_the_person": "Nothing has been erased yet. Show them what would be erased and erase it only if it is what they asked for.",
 		})
 	}
 	if !sel.IsEmpty() || query != "" {
@@ -149,15 +161,50 @@ func (t *Tool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, er
 		return nil, fmt.Errorf("forget_memory: %w", err)
 	}
 	rec, err := t.svc.Forget(ctx, Request{PreviewToken: a.PreviewToken, Reason: reason})
+	if errors.Is(err, domain.ErrNothingToErase) {
+		return nothingFound()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("forget_memory: %w", err)
 	}
+	return receiptResult(rec)
+}
+
+// The answer shape (ENG-2106, owner decision 2026-11-18): the agent may report an
+// erasure only from the receipt, so every result carries "erased" computed HERE from
+// the receipt — true only when this call erased at least one record (erased_count > 0,
+// not a replay) — and a tell_the_person line. "Nothing to erase" is a result, not an
+// error string: an error invited the model to paraphrase it into "it has been
+// removed" (readiness ENG-1995 phase B).
+
+func nothingFound() ([]byte, error) {
 	return json.Marshal(map[string]any{
-		"erased":     true,
+		"erased":          false,
+		"found":           false,
+		"erased_count":    0,
+		"outcome":         "nothing_found",
+		"tell_the_person": "Nothing matching that was found in the memory you can erase, so nothing was erased. Say exactly that; do not say it was erased or removed.",
+	})
+}
+
+func receiptResult(rec domain.ErasureReceipt) ([]byte, error) {
+	out := map[string]any{
 		"request_id": rec.RequestID,
 		"status":     rec.Status,
 		"targets":    rec.Targets,
 		"counts":     rec.Counts,
 		"replayed":   rec.Replayed,
-	})
+	}
+	switch {
+	case rec.Replayed:
+		out["erased"], out["erased_count"], out["outcome"] = false, 0, "already_erased"
+		out["tell_the_person"] = fmt.Sprintf("This was already erased by an earlier request (receipt %s); nothing more was erased now.", rec.RequestID)
+	case rec.Targets > 0:
+		out["erased"], out["erased_count"], out["outcome"] = true, rec.Targets, "erased"
+		out["tell_the_person"] = fmt.Sprintf("Erased %d record(s) permanently (receipt %s).", rec.Targets, rec.RequestID)
+	default:
+		out["erased"], out["erased_count"], out["outcome"] = false, 0, "nothing_erased"
+		out["tell_the_person"] = "Nothing was erased. Say exactly that; do not say it was erased or removed."
+	}
+	return json.Marshal(out)
 }

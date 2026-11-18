@@ -20,6 +20,7 @@ import (
 	"github.com/cambrian-sh/core/internal/ledger"
 	"github.com/cambrian-sh/core/internal/memory/forget"
 	"github.com/cambrian-sh/core/internal/memory/vault"
+	"github.com/cambrian-sh/core/internal/memorynotes"
 	"github.com/cambrian-sh/core/internal/ontology"
 	"github.com/cambrian-sh/core/internal/pypackages"
 	"github.com/cambrian-sh/core/internal/sandbox"
@@ -83,6 +84,7 @@ type kernelBuild struct {
 	// memory stack
 	mem           *kernel.MemoryStack
 	forgetSvc     *forget.Service
+	memoryNotes   *memorynotes.Service
 	artifactVault *vault.ArtifactVault
 	// awareness, metabolism, supervision
 	aw           *kernel.AwarenessStack

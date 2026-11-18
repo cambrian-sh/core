@@ -198,7 +198,18 @@ func (e *EnforcingEraser) admit(ctx context.Context, c eraseCaller, sel domain.E
 		if _, ok := c.pred.Check(cand.Tags); !ok {
 			continue // hidden = absent
 		}
-		if c.kind == domain.ErasureByAgent {
+		if c.kind == domain.ErasureByAgent && cand.Kind == domain.ErasureTargetMemoryNote {
+			// ENG-2106: a memory-notes entry has no writer of record — the document is
+			// co-edited by the person's agents and the operator (ADR-0139 D14). An agent
+			// may erase an entry only of its RUN PRINCIPAL's own personal notes: the
+			// person the kernel resolved from the presented lease (never a request
+			// field, INV-5), the same authority under which it may already edit those
+			// notes (propose_memory_note remove_section). No run principal, another
+			// person's notes, or org notes → denied (fail closed).
+			if reason := agentNoteEraseRefusal(ctx, cand.ID); reason != "" {
+				return domain.ErasureSelector{}, e.denyRecord(ctx, c, cand, domain.ReasonNotOwner, reason)
+			}
+		} else if c.kind == domain.ErasureByAgent {
 			if cand.WrittenBy == "" || cand.WrittenBy != c.principal.WriterID() {
 				return domain.ErasureSelector{}, e.denyRecord(ctx, c, cand, domain.ReasonNotWriter,
 					"the caller is not the record's writer of record")
@@ -220,6 +231,8 @@ func (e *EnforcingEraser) admit(ctx context.Context, c eraseCaller, sel domain.E
 			out.ExperienceIDs = append(out.ExperienceIDs, cand.ID)
 		case domain.ErasureTargetEntity:
 			out.EntityRefs = append(out.EntityRefs, cand.ID)
+		case domain.ErasureTargetMemoryNote:
+			out.MemoryNoteIDs = append(out.MemoryNoteIDs, cand.ID)
 		}
 	}
 	// Thread selectors: keep the thread itself when every document it resolves to was
@@ -249,6 +262,31 @@ func (e *EnforcingEraser) admit(ctx context.Context, c eraseCaller, sel domain.E
 		}
 	}
 	return out.Normalized(), nil
+}
+
+// memoryNotesPersonalScope is memorynotes.ScopePersonal, named here so the chokepoint
+// does not import the notes service.
+const memoryNotesPersonalScope = "personal"
+
+// agentNoteEraseRefusal says why an agent caller may not erase the memory-notes entry
+// id, "" when it may: the entry must be in the personal notes of the run principal on
+// ctx.
+func agentNoteEraseRefusal(ctx context.Context, id string) string {
+	scope, owner, _, ok := domain.ParseMemoryNoteEntryID(id)
+	switch {
+	case !ok:
+		return "malformed memory-note entry id"
+	case scope != memoryNotesPersonalScope:
+		return "only an operator erases org memory notes"
+	}
+	run := domain.RunPrincipalFromContext(ctx)
+	switch {
+	case run == "":
+		return "no run principal: an agent erases memory notes only while acting for their owner"
+	case run != owner:
+		return "the memory notes are not the run principal's"
+	}
+	return ""
 }
 
 func (e *EnforcingEraser) deny(ctx context.Context, c eraseCaller, detail string) error {

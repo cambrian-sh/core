@@ -42,7 +42,10 @@ func (f *rawEraser) Erase(_ context.Context, req domain.ErasureRequest) (domain.
 		}
 	}
 	f.erased = append(f.erased, req)
-	return domain.ErasureReceipt{RequestID: req.ID(), Principal: req.Principal, PrincipalKind: req.PrincipalKind, Reason: req.Reason}, nil
+	// One tombstone per named id, as the Postgres store records (the tool reports
+	// erased only from a receipt with targets, ENG-2106).
+	return domain.ErasureReceipt{RequestID: req.ID(), Principal: req.Principal, PrincipalKind: req.PrincipalKind, Reason: req.Reason,
+		Targets: req.Selector.Count()}, nil
 }
 
 func (f *rawEraser) Receipt(context.Context, string) (domain.ErasureReceipt, bool, error) {
