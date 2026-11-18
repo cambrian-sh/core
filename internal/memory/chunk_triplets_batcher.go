@@ -245,7 +245,8 @@ func (b *ChunkTripletsBatcher) enqueue(it tripletItem) {
 	}
 }
 
-// Start launches the drain goroutine. Idempotent: a second call is a no-op.
+// Start launches the drain goroutine. Idempotent: a second call is a no-op,
+// and so is a call after Stop.
 func (b *ChunkTripletsBatcher) Start(ctx context.Context) {
 	if b == nil {
 		return
@@ -262,12 +263,29 @@ func (b *ChunkTripletsBatcher) Start(ctx context.Context) {
 }
 
 // Stop signals the drain goroutine to flush the tail and exit. Blocks
-// until the goroutine has flushed and returned.
+// until the goroutine has flushed and returned. Safe in every state: never
+// started, started, and stopped more than once (AGENTS.md §3.3).
+//
+// A batcher that was never started has no drain goroutine to close doneCh, so
+// Stop used to block forever — any boot that failed after the memory stack was
+// built, or that never called Start, hung in Kernel.Shutdown
+// (T-20261118-kernel-shutdown-hangs-forever-when-the-kernel). Stop now claims
+// the started flag itself: if Start never ran, Stop releases whatever was
+// enqueued and closes doneCh, and a later Start is a no-op, so the batcher
+// cannot be revived after Stop.
 func (b *ChunkTripletsBatcher) Stop() {
 	if b == nil {
 		return
 	}
 	b.stopOnce.Do(func() {
+		if b.started.CompareAndSwap(false, true) {
+			// Never started: no drain goroutine exists. Mark closed and release
+			// any queued tracked items, as the drain loop's exit would.
+			close(b.stopCh)
+			b.releaseRemaining()
+			close(b.doneCh)
+			return
+		}
 		b.mu.Lock()
 		cancel := b.probeCancel
 		b.mu.Unlock()

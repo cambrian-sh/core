@@ -149,11 +149,11 @@ func TestPg_BootComposesEveryRetrievalLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrapKernel: %v", err)
 	}
-	// Not k.Shutdown: on a kernel that was bootstrapped but never started it blocks
-	// forever in ChunkTripletsBatcher.Stop
-	// (T-20261118-kernel-shutdown-hangs-forever-when-the-kernel). Close the store
-	// handle; the scratch database is dropped WITH (FORCE) at cleanup.
-	defer func() { _ = k.Store.Close() }()
+	// The real Shutdown on a kernel that was bootstrapped but never started: it
+	// used to block forever in ChunkTripletsBatcher.Stop
+	// (T-20261118-kernel-shutdown-hangs-forever-when-the-kernel), so a hang fails
+	// the test instead of the run's timeout.
+	defer shutdownWithin(t, k, 30*time.Second)
 
 	qs := k.Memory.QueryService
 	for _, name := range []string{"chunkTriplets", "rankSignals", "lexical", "sectionStore", "reranker", "planner", "decisionObs"} {
@@ -186,5 +186,21 @@ func TestPg_BootComposesEveryRetrievalLane(t *testing.T) {
 	pl, ok := fieldAny(qs, "planner").(*subnetwork.RetrievalDispatcher)
 	if !ok || pl.Caller != k.Metabolism.AgentTransport || pl.AgentID != "retrieval_agent" {
 		t.Errorf("planner = %#v, want a RetrievalDispatcher over the kernel's agent transport", fieldAny(qs, "planner"))
+	}
+}
+
+// shutdownWithin runs the kernel's real Shutdown and fails the test when it does
+// not return within d.
+func shutdownWithin(t *testing.T, k *Kernel, d time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		k.Shutdown(context.Background())
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("Kernel.Shutdown did not return within %s", d)
 	}
 }

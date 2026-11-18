@@ -86,6 +86,9 @@ type ConsentBridge struct {
 	postCtx     context.Context
 	cancelWatch func()
 
+	// started is set (under mu) by the first Start, or by Stop so a later Start
+	// is a no-op.
+	started  bool
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	done     chan struct{}
@@ -122,27 +125,43 @@ func (b *ConsentBridge) SetLogger(l *slog.Logger) {
 }
 
 // Start subscribes to the hub and runs the render loop until ctx ends or Stop.
+// Idempotent, and a no-op after Stop: a second render loop would close done
+// twice (T-20261118-kernel-shutdown-hangs-forever-when-the-kernel).
 func (b *ConsentBridge) Start(ctx context.Context) {
-	ch, cancel := b.hub.Watch()
 	b.mu.Lock()
+	if b.started {
+		b.mu.Unlock()
+		return
+	}
+	b.started = true
+	ch, cancel := b.hub.Watch()
 	b.cancelWatch = cancel
 	b.postCtx = context.WithoutCancel(ctx)
 	b.mu.Unlock()
 	go b.run(ctx, ch)
 }
 
-// Stop unsubscribes and ends the render loop. Idempotent; pending local state
-// simply ages out (the controller owns the authoritative refusals).
+// Stop unsubscribes, ends the render loop and waits for it to return (one owner
+// per goroutine, AGENTS.md §3.3). Idempotent and safe without Start; pending
+// local state simply ages out (the controller owns the authoritative refusals).
 func (b *ConsentBridge) Stop() {
 	b.stopOnce.Do(func() {
 		b.mu.Lock()
+		wasStarted := b.started
+		// Claim the start so a Start after Stop cannot launch a loop.
+		b.started = true
 		cancel := b.cancelWatch
 		b.mu.Unlock()
 		if cancel != nil {
 			cancel()
 		}
 		close(b.stopCh)
+		if !wasStarted {
+			// No render loop exists to close done.
+			close(b.done)
+		}
 	})
+	<-b.done
 }
 
 func (b *ConsentBridge) run(ctx context.Context, ch <-chan domain.ConsentPrompt) {
