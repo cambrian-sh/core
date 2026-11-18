@@ -29,12 +29,28 @@ import (
 // GRANTED it; everything else, the D1 hide-list included, is unreadable.
 //
 // How it is built (no admin, nothing left in the registry):
-//   - the token is NtCreateLowBoxToken over the kernel's own token (Chromium's
-//     lowbox path): a derived package SID per INSTANCE plus capability SIDs.
+//   - the token is kernelbase's CreateAppContainerToken over the kernel's own
+//     token: a derived package SID per INSTANCE plus capability SIDs.
 //     exec.Cmd launches it through CreateProcessAsUser (SysProcAttr.Token), so
 //     the Job Object, the suspended start and the pipes are the native runner's
 //     unchanged. No AppContainer profile is created — the package SID is only
-//     derived from a name — so there is nothing to delete afterwards;
+//     derived from a name — so there is nothing to delete afterwards (the
+//     container's named-object directory is a temporary kernel object the
+//     token keeps alive). CreateAppContainerToken is what CreateProcess itself
+//     uses for SECURITY_CAPABILITIES: it sets up the container's named-object
+//     directory (\Sessions\<n>\AppContainerNamedObjects\<package SID> with its
+//     RPC Control, Global, Local and Session entries) and whatever else the
+//     platform needs before it calls NtCreateLowBoxToken. A bare
+//     NtCreateLowBoxToken (the S5 build) skips that; in such a container the
+//     RPC runtime does not initialise, so every RPC client call fails — the
+//     DNS client service (getaddrinfo error 11001) and LSA (schannel TLS) —
+//     and a first-party agent reached IP literals but resolved no host name
+//     (T-20261118-windows-appcontainer-agents-cannot-resolve-host). Rejected:
+//     hand-made named-object directories (the RPC runtime then starts, but
+//     DnsQuery fails with ERROR_INVALID_OWNER) and a registered profile
+//     (CreateAppContainerProfile: changes nothing for a lowbox token, and
+//     leaves registry state). CreateAppContainerToken adds no capability
+//     beyond the ones passed, so the isolation is unchanged;
 //   - reads: the kernel-known runtime paths (the agent's code, the interpreter
 //     and its base installation, agents/, prompts/, skills/) are granted to ONE
 //     shared capability SID (cambrianAgentRuntime) that every agent token holds;
@@ -89,12 +105,11 @@ const (
 )
 
 var (
-	modntdll                       = windows.NewLazySystemDLL("ntdll.dll")
-	procNtCreateLowBoxToken        = modntdll.NewProc("NtCreateLowBoxToken")
 	moduserenv                     = windows.NewLazySystemDLL("userenv.dll")
 	procDeriveAppContainerSid      = moduserenv.NewProc("DeriveAppContainerSidFromAppContainerName")
 	modkernelbase                  = windows.NewLazySystemDLL("kernelbase.dll")
 	procDeriveCapabilitySidsFromNm = modkernelbase.NewProc("DeriveCapabilitySidsFromName")
+	procCreateAppContainerToken    = modkernelbase.NewProc("CreateAppContainerToken")
 	modadvapi32                    = windows.NewLazySystemDLL("advapi32.dll")
 	procAccessCheck                = modadvapi32.NewProc("AccessCheck")
 )
@@ -181,26 +196,27 @@ func newAppContainer(spec Spec, network bool) (*appContainer, error) {
 			caps = append(caps, windows.SIDAndAttributes{Sid: sid, Attributes: windows.SE_GROUP_ENABLED})
 		}
 	}
-	if ac.token, err = lowBoxToken(ac.pkg, caps); err != nil {
+	if ac.token, err = appContainerToken(ac.pkg, caps); err != nil {
 		return nil, err
 	}
 	return ac, nil
 }
 
-// objectAttributes is OBJECT_ATTRIBUTES with no name.
-type objectAttributes struct {
-	Length                   uint32
-	RootDirectory            windows.Handle
-	ObjectName               uintptr
-	Attributes               uint32
-	SecurityDescriptor       uintptr
-	SecurityQualityOfService uintptr
+// securityCapabilities is SECURITY_CAPABILITIES (winnt.h).
+type securityCapabilities struct {
+	AppContainerSid *windows.SID
+	Capabilities    *windows.SIDAndAttributes
+	CapabilityCount uint32
+	Reserved        uint32
 }
 
-// lowBoxToken is NtCreateLowBoxToken over the kernel's own primary token.
-func lowBoxToken(pkg *windows.SID, caps []windows.SIDAndAttributes) (windows.Token, error) {
-	if err := procNtCreateLowBoxToken.Find(); err != nil {
-		return 0, fmt.Errorf("NtCreateLowBoxToken unavailable: %w", err)
+// appContainerToken is kernelbase's CreateAppContainerToken over the kernel's
+// own primary token: the lowbox token CreateProcess builds for
+// SECURITY_CAPABILITIES, named-object directory included (the package comment
+// says why a bare NtCreateLowBoxToken is not enough).
+func appContainerToken(pkg *windows.SID, caps []windows.SIDAndAttributes) (windows.Token, error) {
+	if err := procCreateAppContainerToken.Find(); err != nil {
+		return 0, fmt.Errorf("CreateAppContainerToken unavailable: %w", err)
 	}
 	var cur windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(),
@@ -208,19 +224,16 @@ func lowBoxToken(pkg *windows.SID, caps []windows.SIDAndAttributes) (windows.Tok
 		return 0, err
 	}
 	defer func() { _ = cur.Close() }()
-	var lb windows.Token
-	oa := objectAttributes{Length: uint32(unsafe.Sizeof(objectAttributes{}))}
-	var capPtr uintptr
+	sc := securityCapabilities{AppContainerSid: pkg, CapabilityCount: uint32(len(caps))}
 	if len(caps) > 0 {
-		capPtr = uintptr(unsafe.Pointer(&caps[0]))
+		sc.Capabilities = &caps[0]
 	}
-	st, _, _ := procNtCreateLowBoxToken.Call(uintptr(unsafe.Pointer(&lb)), uintptr(cur),
-		uintptr(windows.TOKEN_ALL_ACCESS), uintptr(unsafe.Pointer(&oa)), uintptr(unsafe.Pointer(pkg)),
-		uintptr(len(caps)), capPtr, 0, 0)
-	if st != 0 {
-		return 0, fmt.Errorf("NtCreateLowBoxToken: NTSTATUS %#x", st)
+	var tok windows.Token
+	r, _, e := procCreateAppContainerToken.Call(uintptr(cur), uintptr(unsafe.Pointer(&sc)), uintptr(unsafe.Pointer(&tok)))
+	if r == 0 {
+		return 0, fmt.Errorf("CreateAppContainerToken: %w", e)
 	}
-	return lb, nil
+	return tok, nil
 }
 
 func derivePackageSID(name string) (*windows.SID, error) {

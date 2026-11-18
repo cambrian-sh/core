@@ -4,13 +4,16 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -248,6 +251,113 @@ func TestAppContainerRealProcess(t *testing.T) {
 	out, _ = run(net)
 	if !strings.Contains(out, "net=false") {
 		t.Errorf("a kernel-only AppContainer reached the network: %s", out)
+	}
+}
+
+// The token comes from CreateAppContainerToken, which sets up the
+// container's named-object directory (its RPC Control directory included): a
+// bare NtCreateLowBoxToken left it out, the RPC runtime in the container did
+// not start, and no host name resolved
+// (T-20261118-windows-appcontainer-agents-cannot-resolve-host). Offline check
+// of the mechanism; TestAppContainerResolvesHostNamesOnlyWithNetwork checks
+// the effect.
+func TestAppContainerTokenHasItsNamedObjectDirectory(t *testing.T) {
+	f := newACFixture(t)
+	for _, network := range []bool{true, false} {
+		_, spec := f.spec(t, TierFirstParty, "named-objects")
+		ac, err := newAppContainer(spec, network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sess uint32
+		if err := windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &sess); err != nil {
+			t.Fatal(err)
+		}
+		dir := fmt.Sprintf(`\Sessions\%d\AppContainerNamedObjects\%s\RPC Control`, sess, ac.pkg.String())
+		if st := openObjectDirectory(dir); st != 0 {
+			t.Errorf("network=%v: %s not set up for the container token (NTSTATUS %#x)", network, dir, st)
+		}
+		ac.close()
+	}
+}
+
+// openObjectDirectory opens an object-manager directory for query and
+// returns the NTSTATUS.
+func openObjectDirectory(path string) uintptr {
+	var us windows.NTUnicodeString
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 1
+	}
+	windows.RtlInitUnicodeString(&us, p)
+	oa := struct {
+		Length                   uint32
+		RootDirectory            windows.Handle
+		ObjectName               *windows.NTUnicodeString
+		Attributes               uint32
+		SecurityDescriptor       uintptr
+		SecurityQualityOfService uintptr
+	}{ObjectName: &us, Attributes: windows.OBJ_CASE_INSENSITIVE}
+	oa.Length = uint32(unsafe.Sizeof(oa))
+	var h windows.Handle
+	st, _, _ := windows.NewLazySystemDLL("ntdll.dll").NewProc("NtOpenDirectoryObject").Call(
+		uintptr(unsafe.Pointer(&h)), 0x0001 /* DIRECTORY_QUERY */, uintptr(unsafe.Pointer(&oa)))
+	if st == 0 {
+		_ = windows.CloseHandle(h)
+	}
+	return st
+}
+
+// ADR-0157 D3 on Windows, with a host NAME: a tier with the normal network
+// resolves names (it reached IP literals only before
+// T-20261118-windows-appcontainer-agents-cannot-resolve-host), a kernel-only
+// tier resolves none (the DNS client service refuses a container without a
+// network capability, so the resolver is no side channel either).
+func TestAppContainerResolvesHostNamesOnlyWithNetwork(t *testing.T) {
+	const host = "pypi.org"
+	if _, err := net.LookupHost(host); err != nil {
+		t.Skipf("this host cannot resolve %s (%v): offline", host, err)
+	}
+	f := newACFixture(t)
+	for _, tc := range []struct {
+		tier    Tier
+		network bool
+		want    string
+	}{
+		{TierFirstParty, true, "resolve=ok"},
+		{TierThirdParty, false, "resolve=fail"},
+	} {
+		p, spec := f.spec(t, tc.tier, "resolver-"+string(tc.tier))
+		tiers := map[Tier]TierPolicy{}
+		for k, v := range p.Tiers {
+			tiers[k] = v
+		}
+		tp := tiers[tc.tier]
+		tp.DenyNetwork = !tc.network
+		tiers[tc.tier] = tp
+		p.Tiers = tiers
+		c := fixture(t, "resolve", host)
+		a := *spec.Agent
+		a.Binds = append([]Bind{{Path: filepath.Dir(c.Path)}}, a.Binds...)
+		spec.Agent = &a
+		var stdout io.ReadCloser
+		l, rep, err := StartCmd(context.Background(), spec, c, func(cmd *exec.Cmd) error {
+			var perr error
+			stdout, perr = cmd.StdoutPipe()
+			return perr
+		})
+		if err != nil {
+			t.Fatalf("%s: start: %v (%s)", tc.tier, err, rep.Summary())
+		}
+		out, _ := io.ReadAll(stdout)
+		_ = l.Cmd.Wait()
+		l.Release()
+		if !slices.Contains(rep.Mechanisms, MechanismAppContainer) {
+			t.Fatalf("%s: not in the AppContainer: %s", tc.tier, rep.Summary())
+		}
+		if !strings.Contains(string(out), tc.want) {
+			t.Errorf("%s (network=%v): want %s, got %q", tc.tier, tc.network, tc.want, out)
+		}
 	}
 }
 

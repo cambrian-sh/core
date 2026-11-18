@@ -17,7 +17,7 @@ import (
 
 // networkProbePy is the probe agent: it serves its --socket (so the kernel's
 // boot wait sees it), tries the external host (and, when given, a public
-// --internet host and a --secret file), and reports over the kernel
+// --internet / --internet-name host and a --secret file), and reports over the kernel
 // connection the SDK builds from --substrate-addr.
 const networkProbePy = `
 import socket, sys, time
@@ -41,17 +41,20 @@ try:
 except OSError as e:
     external = "blocked(" + type(e).__name__ + ")"
 
-# Optional (the Windows AppContainer e2e): a public host, and a kernel file the
-# agent must not be able to read.
+# Optional (the Windows AppContainer e2e): a public host by address and one by
+# NAME (the name proves the resolver works too), and a kernel file the agent
+# must not be able to read.
 extra = ""
-inet = arg("--internet")
-if inet:
+for flag, key in (("--internet", "internet"), ("--internet-name", "internet_name")):
+    inet = arg(flag)
+    if not inet:
+        continue
     h, p = inet.rsplit(":", 1)
     try:
         socket.create_connection((h, int(p)), timeout=3).close()
-        extra += ";internet=reached"
+        extra += ";%s=reached" % key
     except OSError as e:
-        extra += ";internet=blocked(" + type(e).__name__ + ")"
+        extra += ";%s=blocked(%s)" % (key, type(e).__name__)
 secret = arg("--secret")
 if secret:
     try:

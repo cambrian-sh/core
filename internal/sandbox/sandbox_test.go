@@ -87,6 +87,12 @@ func runFixture(mode string, args []string) int {
 		}
 		fmt.Printf("net=%v\n", err == nil)
 		_, _ = io.Copy(io.Discard, os.Stdin)
+	case "resolve": // resolve args[0] through the system resolver
+		if _, err := net.LookupHost(args[0]); err != nil {
+			fmt.Printf("resolve=fail(%v)\n", err)
+		} else {
+			fmt.Println("resolve=ok")
+		}
 	case "read": // try to read each args path; one "path=ok|denied" line each
 		for _, p := range args {
 			if _, err := os.ReadFile(p); err == nil {

@@ -33,8 +33,11 @@ import (
 //   - the kernel's config.db is unreadable from the agent;
 //   - this host's own non-loopback address is unreachable;
 //   - third-party and kernel_only_all first-party: a public host is
-//     unreachable; per_tier first-party: reachable when this test process can
-//     reach it (the internetClient capability).
+//     unreachable, by address and by NAME; per_tier first-party: reachable by
+//     both when this test process can reach it (the internetClient
+//     capability; by name it needs the DNS client service too, which a bare
+//     NtCreateLowBoxToken container could not reach,
+//     T-20261118-windows-appcontainer-agents-cannot-resolve-host).
 //
 // It runs on the kernel-managed sandbox Python env (ADR-0157 D7 P2): the
 // kernel owns that tree, so it can always grant it, and every case refuses on
@@ -44,6 +47,7 @@ import (
 //
 //	KERNEL_ONLY_E2E_PY  the managed env's interpreter (python-env status prints it)
 //	KERNEL_ONLY_E2E_INTERNET  optional public host:port (default 1.1.1.1:443)
+//	KERNEL_ONLY_E2E_INTERNET_NAME  optional public NAME:port (default pypi.org:443)
 func TestE2E_AppContainerNetworkAndStateByTier(t *testing.T) {
 	py := os.Getenv("KERNEL_ONLY_E2E_PY")
 	if py == "" {
@@ -53,11 +57,19 @@ func TestE2E_AppContainerNetworkAndStateByTier(t *testing.T) {
 	if internet == "" {
 		internet = "1.1.1.1:443"
 	}
-	hostOnline := false
-	if c, err := net.DialTimeout("tcp", internet, 3*time.Second); err == nil {
-		_ = c.Close()
-		hostOnline = true
+	internetName := os.Getenv("KERNEL_ONLY_E2E_INTERNET_NAME")
+	if internetName == "" {
+		internetName = "pypi.org:443"
 	}
+	reachable := func(addr string) bool {
+		c, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err == nil {
+			_ = c.Close()
+		}
+		return err == nil
+	}
+	online := map[string]bool{"internet": reachable(internet), "internet_name": reachable(internetName)}
+	targets := map[string]string{"internet": internet, "internet_name": internetName}
 	extIP := nonLoopbackIPv4(t)
 	ext, err := net.Listen("tcp", net.JoinHostPort(extIP, "0"))
 	if err != nil {
@@ -135,7 +147,7 @@ func TestE2E_AppContainerNetworkAndStateByTier(t *testing.T) {
 			id := "probe_" + strings.NewReplacer("/", "_", "-", "_").Replace(tc.name)
 			def := &domain.AgentDefinition{ID: id, Runtime: domain.RuntimePython, ExecPath: "probe.py", Dir: code,
 				TrustTier: tc.tier, LaunchArgs: []string{"--external", ext.Addr().String(), "--probe-id", id,
-					"--internet", internet, "--secret", configDB}}
+					"--internet", internet, "--internet-name", internetName, "--secret", configDB}}
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			start := time.Now()
@@ -159,13 +171,15 @@ func TestE2E_AppContainerNetworkAndStateByTier(t *testing.T) {
 			if !strings.Contains(got, "external=blocked") {
 				t.Errorf("%s reached this host's own address: %s", id, got)
 			}
-			switch {
-			case !tc.wantInternet && !strings.Contains(got, "internet=blocked"):
-				t.Errorf("%s reached the internet: %s", id, got)
-			case tc.wantInternet && hostOnline && !strings.Contains(got, "internet=reached"):
-				t.Errorf("%s (normal network) could not reach %s: %s", id, internet, got)
-			case tc.wantInternet && !hostOnline:
-				t.Logf("this host is offline (%s unreachable): first-party internet not asserted", internet)
+			for _, key := range []string{"internet", "internet_name"} {
+				switch {
+				case !tc.wantInternet && !strings.Contains(got, ";"+key+"=blocked"):
+					t.Errorf("%s reached the internet (%s %s): %s", id, key, targets[key], got)
+				case tc.wantInternet && online[key] && !strings.Contains(got, ";"+key+"=reached"):
+					t.Errorf("%s (normal network) could not reach %s: %s", id, targets[key], got)
+				case tc.wantInternet && !online[key]:
+					t.Logf("this host cannot reach %s: first-party %s not asserted", targets[key], key)
+				}
 			}
 		})
 	}
