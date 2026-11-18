@@ -4045,7 +4045,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 						// into the model's context next turn and a failed turn stops
 						// storing nothing.
 						if k.Progress != nil {
-							k.Progress.Progress(context.Background(), domain.ProgressUpdate{
+							k.Progress.Progress(runCtx, domain.ProgressUpdate{
 								ConversationID: sessionID,
 								Final:          true,
 								Note:           chatFailureNote(err),

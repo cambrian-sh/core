@@ -1,0 +1,11 @@
+package main
+
+import (
+	"context"
+
+	"example.com/core/internal/infrastructure/postgres"
+)
+
+func main() {
+	_ = postgres.NewPgVectorAdapter(context.Background(), nil)
+}

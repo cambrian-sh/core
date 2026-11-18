@@ -1,0 +1,18 @@
+package domain
+
+import (
+	"context"
+
+	"example.com/core/internal/feature"
+	"github.com/cambrian-sh/cambrian-premium/plugins"
+)
+
+var _ = feature.X
+var _ = plugins.Y
+
+// Store is a port whose Load does I/O without a ctx: a planted violation.
+type Store interface {
+	Load(id string) (string, error)
+	Save(ctx context.Context, id string) error
+	Name() string
+}

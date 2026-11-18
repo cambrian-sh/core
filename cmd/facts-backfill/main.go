@@ -101,7 +101,8 @@ func run() error {
 
 	// The adapter is the substrate's pool and the memory stack's raw tier; it is handed
 	// to kernel.NewMemoryStack, which composes the enforcing tiers over it (AGENTS.md
-	// §2.1). Nothing below reads or writes through it directly.
+	// §2.1). Nothing below reads or writes through it directly. An operator-run tool,
+	// it serves no principal; ADR-0136 A1.7 is the backfill it runs (§2.2).
 	vec, err := postgres.NewPgVectorAdapter(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("pgvector: %w", err)

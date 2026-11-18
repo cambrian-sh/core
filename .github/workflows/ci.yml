@@ -1,7 +1,7 @@
 # Per-PR verification gate.
 #
 # This runs the same checks as `make per-pr`:
-#   proto-check proto-breaking vet-tagged test-race separability integration chaos
+#   proto-check proto-breaking vet-tagged archlint test-race separability integration chaos
 #
 # bench-micro is NOT part of per-pr: it needs the gitignored internal/benchmarks/
 # (ADR-0057) and is run by hand where that directory exists (see the note further down).
@@ -117,6 +117,9 @@ jobs:
 
       - name: Gate — open-core boundary + OTel isolation
         run: make separability
+
+      - name: Gate — architecture rules (layering, constructors, ctx)
+        run: make archlint
 
       # PG_TEST_DSN is deliberately NOT set here. `make test-race` runs every
       # package in parallel, and the two Postgres-backed packages are destructive

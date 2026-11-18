@@ -1,0 +1,20 @@
+package feature
+
+import (
+	"context"
+
+	"example.com/core/app"
+	"example.com/core/internal/authz"
+	"example.com/core/internal/infrastructure/postgres"
+	"example.com/core/internal/kernel"
+)
+
+var X = 1
+var _ = app.A
+var _ = kernel.K
+
+func Serve() {
+	_ = postgres.NewPgVectorAdapter(nil, nil)
+	_ = authz.NewEnforcingVectorStore(nil, nil)
+	_ = context.Background()
+}

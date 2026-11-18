@@ -1,0 +1,5 @@
+package pgx
+
+import "example.com/core/internal/memory"
+
+var _ = memory.Z

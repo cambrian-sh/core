@@ -1,0 +1,10 @@
+package kernel
+
+import "example.com/core/internal/authz"
+
+var K = 1
+
+func build() {
+	_ = authz.NewEnforcingVectorStore(nil, nil)
+	_ = authz.NewEnforcingStoreWriter(nil, nil, nil)
+}

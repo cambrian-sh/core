@@ -7,7 +7,7 @@
         leak leak-integration \
         bench-micro bench-macro bench-compare \
         fuzz fuzz-release \
-        separability \
+        separability archlint \
         lint lint-new deadcode \
         proto-sync proto-sync-check \
         per-pr nightly release-gate
@@ -21,6 +21,7 @@ help:
 	@echo "  FAST (no external deps)"
 	@echo "    make test              Unit tests, all packages                  ~30s"
 	@echo "    make separability      OTel / premium import gate                 ~1s"
+	@echo "    make archlint          Architecture rules (layering, ctors, ctx)  ~5s"
 	@echo "    make lint              golangci-lint, full report (advisory)      ~40s"
 	@echo "    make lint-new          golangci-lint vs $(LINT_BASE) (the gate)     ~40s"
 	@echo "    make deadcode          Unreachable funcs across all binaries      ~20s"
@@ -132,6 +133,19 @@ separability:
 	else \
 		powershell -NoProfile -File scripts/check-separability.ps1; \
 	fi
+
+# ─── Architecture Gate ───────────────────────────────────────────────────────
+
+# The AGENTS.md §1.3/§2.1/§2.2/§2.7 rules that used to be review-only (ENG-1484):
+# import layering, the restricted memory-stack constructors, ctx-first I/O methods
+# on domain ports, and context.Background outside an explicit allowlist. The rules
+# are go/parser tests in internal/archlint (the pattern of the existing guards such
+# as TestKernelArtifactStoreCallSites), each proven against a planted violation in
+# internal/archlint/testdata/planted; exceptions live in its allowlist_test.go,
+# each citing a ticket or ADR. test-race runs the package too; this target is the
+# named gate so a failure says which rule broke.
+archlint:
+	go test -count=1 ./internal/archlint/
 
 # ─── Integration Tests (SystemHarness, no external deps) ─────────────────────
 
@@ -289,7 +303,7 @@ fuzz-release:
 # control rules while being wired into no pipeline at all — the reason a contract
 # change once reached main unbumped was that nothing ran the check, not that
 # someone bypassed it.
-per-pr: proto-check proto-breaking vet-tagged test-race separability integration chaos
+per-pr: proto-check proto-breaking vet-tagged archlint test-race separability integration chaos
 	@echo ""
 	@echo "=== Per-PR pipeline complete ==="
 

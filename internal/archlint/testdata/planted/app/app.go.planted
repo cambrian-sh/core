@@ -1,0 +1,14 @@
+package app
+
+import (
+	"context"
+
+	"example.com/core/internal/infrastructure/postgres"
+)
+
+var A = 1
+
+func boot(ctx context.Context) {
+	// The one raw adapter (AGENTS.md §2.1).
+	_ = postgres.NewPgVectorAdapter(ctx, nil)
+}
