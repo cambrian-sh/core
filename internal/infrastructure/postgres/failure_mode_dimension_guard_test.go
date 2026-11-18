@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,9 +15,11 @@ import (
 // Embedding-dimension failure modes (R9 in the debugging playbook;
 // T-20261031-documented-production-failure-modes-have-no). Two guards exist
 // after the 5882-chunk wipe incident: a zero embedder dimension refuses to
-// boot (NewPgVectorAdapter), and a dimension mismatch on a populated table
-// refuses the destructive recreate (ensureSchema). The first two tests need no
-// database; the third is PG_TEST_DSN-gated like the other TestPg_* tests.
+// boot (NewPgVectorAdapter), and a dimension mismatch without the ADR-0107
+// projection refuses to boot (ensureSchema; since ENG-2002 whatever the document
+// count — the destructive recreate is retired). The first two tests need no
+// database; the third is PG_TEST_DSN-gated like the other TestPg_* tests, and the
+// end-to-end boot cases on scratch databases are in dimension_change_e2e_pg_test.go.
 
 // closedPort returns a loopback port nothing listens on, so a connection
 // attempt fails immediately (ECONNREFUSED) instead of hanging.
@@ -83,12 +84,10 @@ func TestFailureMode_RunMigrations_RefusesZeroEmbedderDimensions(t *testing.T) {
 	}
 }
 
-// Guards pgvector_adapter.go ensureSchema:
-// `if memDocs > 0 && !allowDestructive { return fmt.Errorf("REFUSING to recreate …") }`.
-// A populated chunks table at one dimension plus a config at another must
-// refuse to boot and leave the rows untouched. The destructive opt-in branch
-// (ALLOW_DESTRUCTIVE_DIM_MIGRATION=1) is deliberately NOT exercised: it would
-// wipe the shared PG_TEST_DSN database for every other test.
+// Guards pgvector_adapter.go ensureSchema: a dimension mismatch without the
+// projection returns "REFUSING to boot …". A populated chunks table at one
+// dimension plus a config at another must refuse and leave the rows untouched —
+// also with the retired ALLOW_DESTRUCTIVE_DIM_MIGRATION=1 set (ENG-2002).
 func TestPg_FailureMode_DimensionMismatchRefusesDestructiveRecreate(t *testing.T) {
 	adapter, cleanup := newTestAdapter(t) // skips without PG_TEST_DSN
 	defer cleanup()
@@ -118,20 +117,18 @@ func TestPg_FailureMode_DimensionMismatchRefusesDestructiveRecreate(t *testing.T
 	}
 	t.Cleanup(func() { _, _ = adapter.pool.Exec(ctx, "DELETE FROM "+TableChunks+" WHERE id = $1", id) })
 
-	if os.Getenv("ALLOW_DESTRUCTIVE_DIM_MIGRATION") == "1" {
-		t.Skip("ALLOW_DESTRUCTIVE_DIM_MIGRATION=1 is set in this environment; the guard is opted out")
-	}
+	t.Setenv("ALLOW_DESTRUCTIVE_DIM_MIGRATION", "1") // retired: must not open a destructive path
 
 	mismatched := &PgVectorAdapter{pool: adapter.pool, dim: colDim * 2, autoMigrate: true}
 	err := mismatched.ensureSchema(ctx)
 	if err == nil {
-		t.Fatal("ensureSchema must REFUSE a dimension mismatch while memory documents exist")
+		t.Fatal("ensureSchema must REFUSE a dimension mismatch without the projection")
 	}
-	if !strings.Contains(err.Error(), "REFUSING to recreate") {
-		t.Fatalf("expected the destructive-recreate refusal, got: %v", err)
+	if !strings.Contains(err.Error(), "REFUSING to boot") {
+		t.Fatalf("expected the dimension refusal, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "ALLOW_DESTRUCTIVE_DIM_MIGRATION=1") {
-		t.Fatalf("the refusal must name the explicit opt-in, got: %v", err)
+	if !strings.Contains(err.Error(), "embedding_projection_read") {
+		t.Fatalf("the refusal must name the ADR-0107 way to change models, got: %v", err)
 	}
 
 	// The corpus must be exactly as it was.

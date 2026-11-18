@@ -410,26 +410,27 @@ func (p *PgVectorAdapter) Close() {
 }
 
 func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
-	// REDEMPTION: uses p.dim instead of a hardcoded dimension.
-
-	// Detect dimension mismatch (e.g. switching from 1536 to 768). Dimension rules:
-	// ADR-0107 (per-model coexistence) and card.core.db-migrations.
-	// pgvector does not support ALTER COLUMN on VECTOR types; the only migration
-	// path is destructive recreation.
+	// Detect an embedder dimension that differs from the store's. Dimension rules:
+	// ADR-0107 (per-model coexistence) and card.core.db-migrations. pgvector cannot
+	// ALTER a VECTOR column, and the chunks/tools/skills/agent_profiles (0007) and
+	// memory_facts (0020) columns are all typed at the dimension the store was
+	// migrated with.
 	//
-	// SAFETY GUARD (post-incident): an embedder dim change — OR a misconfigured
-	// dim (a zero dim no longer reaches here: NewPgVectorAdapter refuses to boot
-	// on embedder.dimensions==0 instead of guessing 1536) — must never SILENTLY
-	// destroy the corpus. A restart once wiped 5882 ingested
-	// chunks this way. So a mismatch is only allowed to recreate when it cannot
-	// lose real data:
-	//   - No memory documents present (only system-seeded tool/skill/agent_profile,
-	//     which the boot path recreates anyway) ⇒ recreate freely.
-	//   - Memory documents present ⇒ REFUSE TO BOOT with a loud, actionable error,
-	//     UNLESS the operator explicitly opts in via ALLOW_DESTRUCTIVE_DIM_MIGRATION=1.
-	// This makes a destructive migration an explicit operator decision, never a
-	// silent side effect of a normal restart.
+	// A mismatch is never a migration (ENG-2002). With the projection read on it is
+	// ADR-0107 coexistence; without it boot REFUSES, whatever the document count.
+	// The destructive recreate that used to run here (drop the corpus tables and
+	// schema_migrations, re-apply the chain; ALLOW_DESTRUCTIVE_DIM_MIGRATION=1 with
+	// documents present) is retired: on any schema past 0007 it failed re-applying
+	// 0001 and left the database unmigratable, it re-ran the shipped destructive
+	// migrations over the tables it had not dropped with no snapshot (an emptied
+	// schema_migrations reads as "no history" to guardDestructive), and memory_facts
+	// stayed at the old dimension. Rejected: widening the drop list (grows with every
+	// vector column, still re-runs destructive migrations) and recreating only the
+	// dropped tables at HEAD (a second hand-kept copy of the schema, ADR-0064).
+	// Before that, a restart with a misconfigured dimension once wiped 5882 ingested
+	// chunks; a zero dimension never reaches here (NewPgVectorAdapter refuses it).
 	var existingDim int
+	// best-effort: no chunks table (a fresh database) leaves 0, which is "no mismatch".
 	_ = p.pool.QueryRow(ctx, `
 		SELECT atttypmod
 		FROM pg_attribute
@@ -450,51 +451,17 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		return p.runMigrations(ctx)
 	}
 	if existingDim != 0 && existingDim != p.dim {
-		// Count documents that a drop would DESTROY — exclude system-seeded types
-		// (tool/skill/agent_profile), which are recreated on every boot regardless.
-		var memDocs int
-		// SAFETY: if the count itself fails (e.g. a degraded DB right after a
-		// disk-full crash), do NOT treat that as "empty" and wipe — refuse. A
-		// swallowed error here is exactly how a crash could silently drop a
-		// populated corpus.
-		if err := p.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT count(*) FROM %s`,
-			TableChunks,
-		)).Scan(&memDocs); err != nil {
-			return fmt.Errorf(
-				"REFUSING to recreate %s: embedding dimension mismatch (table=%d, configured=%d) and "+
-					"could not verify the document count (%w) — refusing a destructive recreate that could "+
-					"wipe the corpus; retry once the database is healthy",
-				TableChunks, existingDim, p.dim, err)
+		if os.Getenv("ALLOW_DESTRUCTIVE_DIM_MIGRATION") != "" {
+			slog.Warn("ALLOW_DESTRUCTIVE_DIM_MIGRATION is retired and ignored (ENG-2002): a dimension change never recreates tables")
 		}
-
-		allowDestructive := os.Getenv("ALLOW_DESTRUCTIVE_DIM_MIGRATION") == "1"
-		if memDocs > 0 && !allowDestructive {
-			return fmt.Errorf(
-				"REFUSING to recreate %s: embedding dimension mismatch (table=%d, configured=%d) "+
-					"with %d memory document(s) present — dropping would DESTROY the corpus. "+
-					"Make the embedder dimension in config match the table (e.g. the table is %d), "+
-					"or re-embed the corpus at the new dimension. To intentionally wipe and recreate, "+
-					"restart once with ALLOW_DESTRUCTIVE_DIM_MIGRATION=1.",
-				TableChunks, existingDim, p.dim, memDocs, existingDim,
-			)
-		}
-
-		slog.Warn("🔧 Substrate: VECTOR dimension changed; recreating documents table",
-			"old_dim", existingDim, "new_dim", p.dim, "mem_docs_dropped", memDocs, "explicit_opt_in", allowDestructive)
-		if _, err := p.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE;", TableEdges)); err != nil {
-			return fmt.Errorf("drop edges table for dimension migration: %w", err)
-		}
-		if _, err := p.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s, %s, %s, %s CASCADE;", TableChunks, TableTools, TableSkills, TableAgentProfiles)); err != nil {
-			return fmt.Errorf("drop documents table for dimension migration: %w", err)
-		}
-		// PLAT-02 / ADR-0064: the corpus tables were just dropped for a dimension
-		// change; forget the recorded migrations so the runner re-applies the baseline
-		// (0001) — and any deltas — to recreate them at the new dimension. The
-		// migrations are idempotent, so the re-apply is safe.
-		if _, err := p.pool.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations;"); err != nil {
-			return fmt.Errorf("reset schema_migrations for dimension migration: %w", err)
-		}
+		return fmt.Errorf(
+			"REFUSING to boot: the store's embedding dimension is %d but embedder.dimensions is %d, and "+
+				"a vector column cannot change dimension in place. Either set embedder.dimensions back to %d; or "+
+				"switch models side by side (ADR-0107): set embedder.model, enable "+
+				"execution.retrieval.embedding_projection_write and embedding_projection_read, and run "+
+				"cmd/embed-backfill for the new model; or, for a disposable store, point the kernel at a new "+
+				"database. Nothing was changed",
+			existingDim, p.dim, existingDim)
 	}
 
 	return p.runMigrations(ctx)
