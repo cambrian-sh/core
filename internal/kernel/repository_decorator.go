@@ -22,7 +22,6 @@ var (
 	_ executer.TaskEventWriter   = (*AgentRepoDecorator)(nil)
 	_ session.SessionRepository  = (*AgentRepoDecorator)(nil)
 	_ domain.PlanEventWriter     = (*AgentRepoDecorator)(nil)
-	_ domain.TraversalLogger     = (*AgentRepoDecorator)(nil)
 	_ domain.ContradictionLogger = (*AgentRepoDecorator)(nil)
 )
 
@@ -281,17 +280,6 @@ func (d *AgentRepoDecorator) ListRunsForSession(ctx context.Context, sessionID d
 func (d *AgentRepoDecorator) WritePlanEvent(_ context.Context, event domain.PlanEvent) error {
 	rec := d.mapper.PlanEventToRecord(event)
 	return d.store.WritePlanEventRecord(rec)
-}
-
-// ── domain.TraversalLogger ───────────────────────────────────────────────────
-
-func (d *AgentRepoDecorator) LogTraversal(_ context.Context, entry domain.TraversalLogEntry) error {
-	rec := d.mapper.TraversalLogEntryToRecord(entry)
-	return d.store.WriteTraversalLogEntryRecord(rec)
-}
-
-func (d *AgentRepoDecorator) UpdatePlanOutcome(_ context.Context, entryID string, planID string, outcome domain.PlanOutcome) error {
-	return d.store.UpdateTraversalLogPlanOutcome(entryID, planID, string(outcome))
 }
 
 // ── domain.ContradictionLogger ───────────────────────────────────────────────

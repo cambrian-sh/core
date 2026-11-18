@@ -27,7 +27,6 @@ type SpreadingEngine struct {
 	// stale Hebbian link contributes less over time without any background sweep.
 	// 0 (or ≥1) disables decay. Compute-only — the stored weight is not rewritten.
 	HebbianDecayPerDay float64
-	TraversalLogger    domain.TraversalLogger // ADR-0021: may be nil
 }
 
 // NewSpreadingEngine creates a SpreadingEngine with optional config overrides.
@@ -152,23 +151,6 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 			energy := (baseCosine + transferred) * decay * as
 			if energy < s.EnergyFloor {
 				continue
-			}
-
-			// ADR-0021: Log graph traversal for deferred Thompson Sampling data collection.
-			if s.TraversalLogger != nil {
-				entry := domain.TraversalLogEntry{
-					EntryID:           fmt.Sprintf("trav-%s-%s-%d", edge.SourceID, edge.TargetID, time.Now().UnixNano()),
-					SourceID:          edge.SourceID,
-					TargetID:          edge.TargetID,
-					EdgeType:          string(edge.EdgeType),
-					EdgeWeight:        float64(weight),
-					TransferredEnergy: transferred,
-					Depth:             level + 1,
-					Timestamp:         time.Now(),
-				}
-				if err := s.TraversalLogger.LogTraversal(ctx, entry); err != nil {
-					slog.Warn("SpreadingEngine: failed to log traversal", "err", err)
-				}
 			}
 
 			if _, seen := energies[edge.TargetID]; !seen {

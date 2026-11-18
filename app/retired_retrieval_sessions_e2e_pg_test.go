@@ -11,10 +11,11 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-// ENG-2052 through the real boot path: a kernel whose agents.db an earlier build
-// wrote — with the retired ADR-0021 retrieval_sessions bucket holding a query —
-// boots (kernel.BuildStorage → storage.NewBBoltAdapterNoScan) and the bucket is
-// gone afterwards.
+// ENG-2052 and ENG-2069 through the real boot path: a kernel whose agents.db an
+// earlier build wrote — with the retired ADR-0021 retrieval_sessions bucket holding
+// a query and the retired traversal_log bucket holding an entry — boots
+// (kernel.BuildStorage → storage.NewBBoltAdapterNoScan) and both buckets are gone
+// afterwards.
 func TestPg_BootDropsTheRetiredRetrievalSessionsBucket(t *testing.T) {
 	cfg := retrievalScratchConfig(t)
 	if err := os.MkdirAll(cfg.Storage.DataDir, 0o755); err != nil {
@@ -30,7 +31,14 @@ func TestPg_BootDropsTheRetiredRetrievalSessionsBucket(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return b.Put([]byte("ret-1"), []byte(`{"session_id":"ret-1","query":"what did alice say"}`))
+		if err := b.Put([]byte("ret-1"), []byte(`{"session_id":"ret-1","query":"what did alice say"}`)); err != nil {
+			return err
+		}
+		tl, err := tx.CreateBucket([]byte("traversal_log"))
+		if err != nil {
+			return err
+		}
+		return tl.Put([]byte("trav-a-b-1"), []byte(`{"entry_id":"trav-a-b-1","source_id":"a","target_id":"b"}`))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +67,9 @@ func TestPg_BootDropsTheRetiredRetrievalSessionsBucket(t *testing.T) {
 	if err := after.View(func(tx *bbolt.Tx) error {
 		if tx.Bucket([]byte("retrieval_sessions")) != nil {
 			t.Error("the retired retrieval_sessions bucket survived the boot")
+		}
+		if tx.Bucket([]byte("traversal_log")) != nil {
+			t.Error("the retired traversal_log bucket survived the boot")
 		}
 		if tx.Bucket([]byte("agents")) == nil {
 			t.Error("the boot left the store without its live buckets")

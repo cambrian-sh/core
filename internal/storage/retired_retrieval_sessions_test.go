@@ -110,8 +110,8 @@ func TestRetrievalSessionsBucket_DroppedWhenAnOldStoreOpens(t *testing.T) {
 	}
 }
 
-// dropRetiredRetrievalSessions is a no-op on a store without the bucket.
-func TestDropRetiredRetrievalSessions_IdempotentWithoutTheBucket(t *testing.T) {
+// dropRetiredBuckets is a no-op on a store without the retired buckets.
+func TestDropRetiredBuckets_IdempotentWithoutTheBuckets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "none.db")
 	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: time.Second})
 	if err != nil {
@@ -119,7 +119,7 @@ func TestDropRetiredRetrievalSessions_IdempotentWithoutTheBucket(t *testing.T) {
 	}
 	defer db.Close()
 	for i := 0; i < 2; i++ {
-		if err := dropRetiredRetrievalSessions(db); err != nil {
+		if err := dropRetiredBuckets(db); err != nil {
 			t.Fatalf("drop #%d without the bucket: %v", i+1, err)
 		}
 	}

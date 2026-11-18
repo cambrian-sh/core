@@ -43,26 +43,6 @@ type PlanEventWriter interface {
 	WritePlanEvent(ctx context.Context, event PlanEvent) error
 }
 
-// TraversalLogEntry records a single BFS edge traversal by SpreadingEngine.
-type TraversalLogEntry struct {
-	EntryID           string      `json:"entry_id"`
-	SourceID          string      `json:"source_id"`
-	TargetID          string      `json:"target_id"`
-	EdgeType          string      `json:"edge_type"`
-	EdgeWeight        float64     `json:"edge_weight"`
-	TransferredEnergy float64     `json:"transferred_energy"`
-	Depth             int         `json:"depth"`
-	PlanID            string      `json:"plan_id,omitempty"`
-	PlanOutcome       PlanOutcome `json:"plan_outcome,omitempty"`
-	Timestamp         time.Time   `json:"timestamp"`
-}
-
-// TraversalLogger logs graph BFS edge traversals and retroactively updates plan outcomes.
-type TraversalLogger interface {
-	LogTraversal(ctx context.Context, entry TraversalLogEntry) error
-	UpdatePlanOutcome(ctx context.Context, entryID string, planID string, outcome PlanOutcome) error
-}
-
 // ContradictionResolution captures the feature vector of an LLM-arbitrated contradiction.
 type ContradictionResolution struct {
 	ResolutionID           string    `json:"resolution_id"`

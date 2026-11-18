@@ -325,38 +325,6 @@ func (m *AgentMapper) PlanEventToDomain(rec storage.PlanEventRecord) domain.Plan
 	}
 }
 
-// TraversalLogEntryToRecord converts a domain TraversalLogEntry to a storage TraversalLogEntryRecord.
-func (m *AgentMapper) TraversalLogEntryToRecord(entry domain.TraversalLogEntry) storage.TraversalLogEntryRecord {
-	return storage.TraversalLogEntryRecord{
-		EntryID:           entry.EntryID,
-		SourceID:          entry.SourceID,
-		TargetID:          entry.TargetID,
-		EdgeType:          entry.EdgeType,
-		EdgeWeight:        entry.EdgeWeight,
-		TransferredEnergy: entry.TransferredEnergy,
-		Depth:             entry.Depth,
-		PlanID:            entry.PlanID,
-		PlanOutcome:       string(entry.PlanOutcome),
-		Timestamp:         entry.Timestamp.Format(time.RFC3339Nano),
-	}
-}
-
-// TraversalLogEntryToDomain converts a storage TraversalLogEntryRecord to a domain TraversalLogEntry.
-func (m *AgentMapper) TraversalLogEntryToDomain(rec storage.TraversalLogEntryRecord) domain.TraversalLogEntry {
-	return domain.TraversalLogEntry{
-		EntryID:           rec.EntryID,
-		SourceID:          rec.SourceID,
-		TargetID:          rec.TargetID,
-		EdgeType:          rec.EdgeType,
-		EdgeWeight:        rec.EdgeWeight,
-		TransferredEnergy: rec.TransferredEnergy,
-		Depth:             rec.Depth,
-		PlanID:            rec.PlanID,
-		PlanOutcome:       domain.PlanOutcome(rec.PlanOutcome),
-		Timestamp:         parseTime(rec.Timestamp),
-	}
-}
-
 // ContradictionResolutionToRecord converts a domain ContradictionResolution to a storage ContradictionResolutionRecord.
 func (m *AgentMapper) ContradictionResolutionToRecord(res domain.ContradictionResolution) storage.ContradictionResolutionRecord {
 	return storage.ContradictionResolutionRecord{

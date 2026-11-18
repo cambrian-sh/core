@@ -45,6 +45,5 @@ var allowBackground = map[string]string{
 // "<file> <func> <target> #<k-th hit for that target in that func>".
 var allowClockIDs = map[string]string{
 	// Known defects, each tracked by its ticket, which deletes the entry.
-	"internal/memory/query.go QueryService.emitDecision queryID #1":         "known defect, T-20261118-retrieval-decision-queryid-is-minted-from-time: minted receipt QueryID persisted by premium receipts",
-	"internal/memory/spreading_engine.go SpreadingEngine.Spread EntryID #1": "known defect, T-20261118-traversal-log-entryid-is-clock-derived-time-now: persisted ADR-0021 traversal log entry id",
+	"internal/memory/query.go QueryService.emitDecision queryID #1": "known defect, T-20261118-retrieval-decision-queryid-is-minted-from-time: minted receipt QueryID persisted by premium receipts",
 }

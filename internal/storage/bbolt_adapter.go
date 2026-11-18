@@ -77,9 +77,18 @@ var planEventBucket = []byte("plan_events")
 // log, was never wired and is deleted (ADR-0021 deprecated, owner 2026-10-31). A
 // store created earlier has it dropped at open, whatever it holds — at most query
 // text from a pre-git build, which no ADR-0137 erasure reaches (owner decision
-// 2026-11-18, ENG-2052; dropRetiredRetrievalSessions).
+// 2026-11-18, ENG-2052; dropRetiredBuckets).
 var retiredRetrievalSessionsBucket = []byte("retrieval_sessions")
-var traversalLogBucket = []byte("traversal_log")
+
+// retiredTraversalLogBucket is the ADR-0021 traversal log's bucket. It is no longer
+// created (ENG-2069): its writer, SpreadingEngine's TraversalLogger hook, was never
+// assigned and nothing read the log, so the lane is deleted rather than given a
+// natural-key entry id (AGENTS.md §2.6). Every store created earlier has it (empty:
+// it was created at every open) and has it dropped at open (dropRetiredBuckets).
+var retiredTraversalLogBucket = []byte("traversal_log")
+
+// retiredBuckets are dropped at open, whatever they hold (dropRetiredBuckets).
+var retiredBuckets = [][]byte{retiredRetrievalSessionsBucket, retiredTraversalLogBucket}
 var contradictionResolutionBucket = []byte("contradiction_resolutions")
 var descRegex = regexp.MustCompile(`AGENT_DESCRIPTION\s*=\s*(?:"|')([^"']+)(?:"|')`)
 var manifestRegex = regexp.MustCompile(`(?s)AGENT_MANIFEST\s*=\s*'''([\s\S]*?)'''`)
@@ -122,7 +131,7 @@ func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id stri
 		db.Close()
 		return nil, err
 	}
-	if err := dropRetiredRetrievalSessions(db); err != nil {
+	if err := dropRetiredBuckets(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -153,7 +162,7 @@ func NewBBoltAdapterNoScan(dbPath string) (*BBoltAdapter, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := dropRetiredRetrievalSessions(db); err != nil {
+	if err := dropRetiredBuckets(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -212,7 +221,7 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 func createBuckets(tx *bbolt.Tx) error {
 	for _, name := range [][]byte{
 		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket, runBucket,
-		planEventBucket, traversalLogBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
+		planEventBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
 		// REACT-01 (ADR-0061): durable reactive-execution buckets. The journal is
 		// the A2 per-stream parent; the legacy flat bucket is never created, only
 		// migrated (migrateReactiveJournal).
@@ -1328,46 +1337,6 @@ func (b *BBoltAdapter) ReadPlanEventRecord(planID string) (*PlanEventRecord, err
 	return &rec, nil
 }
 
-// ── TraversalLogEntry ────────────────────────────────────────────────────────
-
-func (b *BBoltAdapter) WriteTraversalLogEntryRecord(entry TraversalLogEntryRecord) error {
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("traversal_log_entry marshal: %w", err)
-	}
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(traversalLogBucket)
-		if bucket == nil {
-			return fmt.Errorf("traversal_log bucket not found")
-		}
-		return bucket.Put([]byte(entry.EntryID), data)
-	})
-}
-
-func (b *BBoltAdapter) UpdateTraversalLogPlanOutcome(entryID, planID, outcome string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(traversalLogBucket)
-		if bucket == nil {
-			return fmt.Errorf("traversal_log bucket not found")
-		}
-		data := bucket.Get([]byte(entryID))
-		if data == nil {
-			return nil
-		}
-		var rec TraversalLogEntryRecord
-		if err := json.Unmarshal(data, &rec); err != nil {
-			return err
-		}
-		rec.PlanID = planID
-		rec.PlanOutcome = outcome
-		updated, err := json.Marshal(rec)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(entryID), updated)
-	})
-}
-
 // ── ContradictionResolution ──────────────────────────────────────────────────
 
 func (b *BBoltAdapter) WriteContradictionResolutionRecord(res ContradictionResolutionRecord) error {
@@ -1582,21 +1551,24 @@ func titleSeparator(r rune) bool {
 	return unicode.IsSpace(r)
 }
 
-// dropRetiredRetrievalSessions deletes the retired retrieval_sessions bucket if a
-// store an earlier build created still has it (ENG-2052). Idempotent: a store
-// without it — every fresh one, and an old one after its first open — is left
-// untouched and logs nothing. Whatever the bucket holds goes with it.
-func dropRetiredRetrievalSessions(db *bbolt.DB) error {
+// dropRetiredBuckets deletes each retired ADR-0021 bucket (retiredBuckets) a store
+// an earlier build created still has (retrieval_sessions ENG-2052, traversal_log
+// ENG-2069). Idempotent: a store without them — every fresh one, and an old one
+// after its first open — is left untouched and logs nothing. Whatever a bucket
+// holds goes with it.
+func dropRetiredBuckets(db *bbolt.DB) error {
 	return db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(retiredRetrievalSessionsBucket)
-		if b == nil {
-			return nil
+		for _, name := range retiredBuckets {
+			b := tx.Bucket(name)
+			if b == nil {
+				continue
+			}
+			records := b.Stats().KeyN
+			if err := tx.DeleteBucket(name); err != nil {
+				return fmt.Errorf("drop the retired %s bucket: %w", name, err)
+			}
+			slog.Info("DB (BBOLT): dropped a retired ADR-0021 bucket", "bucket", string(name), "records", records)
 		}
-		records := b.Stats().KeyN
-		if err := tx.DeleteBucket(retiredRetrievalSessionsBucket); err != nil {
-			return fmt.Errorf("drop the retired retrieval_sessions bucket: %w", err)
-		}
-		slog.Info("DB (BBOLT): dropped the retired ADR-0021 retrieval_sessions bucket (ENG-2052)", "records", records)
 		return nil
 	})
 }

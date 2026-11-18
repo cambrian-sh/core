@@ -142,20 +142,6 @@ type PlanEventRecord struct {
 	PlannerPromptVersion  string  `json:"planner_prompt_version,omitempty"`
 }
 
-// TraversalLogEntryRecord is the raw JSON shape stored in the bbolt traversal_log bucket.
-type TraversalLogEntryRecord struct {
-	EntryID           string  `json:"entry_id"`
-	SourceID          string  `json:"source_id"`
-	TargetID          string  `json:"target_id"`
-	EdgeType          string  `json:"edge_type"`
-	EdgeWeight        float64 `json:"edge_weight"`
-	TransferredEnergy float64 `json:"transferred_energy"`
-	Depth             int     `json:"depth"`
-	PlanID            string  `json:"plan_id,omitempty"`
-	PlanOutcome       string  `json:"plan_outcome,omitempty"`
-	Timestamp         string  `json:"timestamp"`
-}
-
 // WatchConfigRecord is the raw JSON shape stored in the bbolt watch_configs bucket.
 // It mirrors domain.WatchConfig — all fields are flat strings/primitives or JSON-safe maps.
 // ADR-0032.
