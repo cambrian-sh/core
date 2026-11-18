@@ -14,6 +14,8 @@ to a landed change is a wiring regression, not a golden to regenerate.
 
 History of golden updates:
 
+- ENG-2164: `+ PythonEnv` (KernelServices), added by a0d6c62 (ENG-2137, plugin
+  daemon spawns wait until the Python env is ready) without regenerating the goldens.
 - ENG-2138: `+ Heartbeats` and the `daemon-heartbeat-watch` lifecycle (65bfdf5,
   ENG-1348); `+ Derivations` (a202b04, ENG-2122).
 - ENG-2135: `+ serving` (Kernel) and `+ Serving` (KernelServices) — the "kernel is

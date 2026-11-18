@@ -322,6 +322,7 @@ ResolveNamedSecret: func(string) (string, bool)
 VerifyMachineToken: func(string, string) (domain.PrincipalRef, bool)
 GeneratorForModel: func(string) domain.Generator
 Serving: <-chan struct {}
+PythonEnv: app.PythonSpawnReadiness
 StoreNamedSecret: func(string, string) error
 ClearNamedSecret: func(string) error
 NamedSecretStatus: func(string) (bool, string)
