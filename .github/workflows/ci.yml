@@ -190,6 +190,114 @@ jobs:
       # which .gitignore keeps out of the OSS repo (ADR-0057; decisions/no-benchmark-in-oss).
       # A clean checkout cannot have them, so the step could only ever fail.
 
+  # ADR-0157 Linux agent sandbox, end to end (ENG-1962). These tests launch
+  # real agents under bubblewrap through the real boot path; without bwrap,
+  # unprivileged user namespaces and a Python with the agent SDK they t.Skip
+  # (or, for the agentmgr probe, assert only the "no read confinement" branch),
+  # so in `verify` they had never run in CI: S1 hide_state/write confinement,
+  # S1 shipped agents under confinement, S2 network by trust tier, S3
+  # per-instance tokens (sandboxed), S4 artifacts through the kernel (needs a
+  # migrated Postgres, hence the service). S5 is Windows/macOS and is not here.
+  # The docker runner for agents (internal/sandbox/docker_agent.go) is NOT
+  # exercised: it needs a Linux docker host sharing host paths and sockets.
+  #
+  # As in the Postgres step above, a SKIP is a failure: the step fails if any
+  # of these tests did not PASS, and it first proves bwrap can create a user
+  # and network namespace, so the agentmgr probe takes its bubblewrap branch.
+  sandbox-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: cambrian
+          POSTGRES_PASSWORD: cambrian
+          POSTGRES_DB: cambrian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cambrian -d cambrian_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout cambrian-core
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # The agents speak the SDK's current channel (unix: kernel sockets, S2;
+      # CAMBRIAN_AGENT_TOKEN, S3), so the SDK comes from its repository, not
+      # an older release. Same token rule as proto-sync: fail loudly, never skip.
+      - name: Checkout the Python agent SDK
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: cambrian-sh/agent-sdk-python
+          path: .sdk
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Ubuntu 24.04 runners restrict unprivileged user namespaces through
+      # AppArmor; bwrap (not setuid) needs them. The sysctls that do not exist
+      # on a given kernel are ignored.
+      - name: Install bubblewrap and allow unprivileged user namespaces
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap python3-venv
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          bwrap --version
+          bwrap --ro-bind / / --unshare-user --unshare-net --dev /dev --proc /proc -- /bin/true
+          echo "bubblewrap can create user and network namespaces"
+
+      - name: Build a venv with the agent SDK
+        run: |
+          python3 -m venv "$RUNNER_TEMP/agent-venv"
+          "$RUNNER_TEMP/agent-venv/bin/pip" install -q ./.sdk
+          "$RUNNER_TEMP/agent-venv/bin/python" -c 'import cambrian_agent_sdk.channel'
+          echo "AGENT_PY=$RUNNER_TEMP/agent-venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Apply migrations to the test database
+        env:
+          CAMBRIAN_DATABASE__HOST: localhost
+          CAMBRIAN_DATABASE__PORT: "5432"
+          CAMBRIAN_DATABASE__USER: cambrian
+          CAMBRIAN_DATABASE__PASSWORD: cambrian
+          CAMBRIAN_DATABASE__DBNAME: cambrian_test
+          CAMBRIAN_EMBEDDER__DIMENSIONS: "1536"
+        run: go run ./cmd/orchestrator migrate up
+
+      # AGENTMGR_E2E_KERNEL is this checkout: it holds agents/, prompts/,
+      # skills/ and configs/, the layout a kernel directory has.
+      - name: Gate — ADR-0157 Linux agent sandbox e2e
+        shell: bash
+        env:
+          AGENTMGR_E2E_KERNEL: ${{ github.workspace }}
+          PG_TEST_DSN: postgres://cambrian:cambrian@localhost:5432/cambrian_test?sslmode=disable
+        run: |
+          export AGENTMGR_E2E_PY="$AGENT_PY" KERNEL_ONLY_E2E_PY="$AGENT_PY" \
+                 TOKEN_E2E_PY="$AGENT_PY" TOKEN_E2E_SANDBOX=1 ARTIFACT_E2E_PY="$AGENT_PY"
+          tests='TestBwrapAgentCannotReadKernelState|TestLinuxBubblewrapConfinesWrites'
+          tests+='|TestE2E_SandboxedAgentBootsConfined|TestE2E_ProfileAgentDeclaredPathInsideTheCapBoots'
+          tests+='|TestE2E_ShippedAgentsServeUnderConfinement|TestE2E_NetworkByTrustTier'
+          tests+='|TestE2E_PerInstanceAgentTokens|TestE2E_ArtifactsLeaveOnlyThroughTheKernel'
+          go test -race -p 1 -count=1 -v -run "^(${tests})\$" \
+            ./internal/sandbox/ ./internal/metabolism/agentmgr/ ./app/ 2>&1 \
+            | tee "$RUNNER_TEMP/go-test-sandbox.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          fail=0
+          for t in ${tests//|/ }; do
+            if ! grep -qE "^\s*--- PASS: ${t} " "$RUNNER_TEMP/go-test-sandbox.log"; then
+              echo "FAIL: ${t} did not pass (skipped or not run)"
+              fail=1
+            fi
+          done
+          test "$fail" -eq 0
+          echo "PASS: every ADR-0157 Linux sandbox e2e ran and passed"
+
   # Tell premium that a new core landed on main, so premium's bump-core workflow
   # moves premium's go.mod pin to this commit and opens (or updates) one PR there
   # (decision premium-core-pin-moves-by-bot-pr). Before this, the pin moved only
