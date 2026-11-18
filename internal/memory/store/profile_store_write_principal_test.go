@@ -153,7 +153,10 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 	cfg.Database.User = u.User.Username()
 	cfg.Database.Password, _ = u.User.Password()
 	cfg.Database.DBName = u.Path[1:]
-	cfg.Embedder.Dimensions = 1536
+	// The default embedder dimension, like every other test on the shared
+	// database: a different one sends NewPgVectorAdapter down its dimension
+	// change path, which recreated the corpus tables and left cambrian_test
+	// unmigratable (ENG-1832).
 
 	vec, err := postgres.NewPgVectorAdapter(context.Background(), cfg)
 	if err != nil {
@@ -176,7 +179,7 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 		_ = vec.Delete(bypass, judicialID)
 	})
 
-	emb := make([]float32, 1536)
+	emb := make([]float32, cfg.Embedder.Dimensions)
 	emb[0] = 1
 	// No principal on the context: the ProfileSeeder's condition.
 	if err := ps.SaveProfile(context.Background(), agent, "h1", emb, domain.AgentProfile{AgentID: agent, SourceHash: "h1"}); err != nil {
