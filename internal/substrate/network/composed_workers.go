@@ -90,10 +90,19 @@ func (s *Server) composedFor(ctx context.Context, agentID string) (comp domain.W
 			}
 		}
 	}
-	if s.ComposedRuntimeID != "" && agentID == s.ComposedRuntimeID {
+	if s.isComposedRuntime(agentID) {
 		return domain.WorkerComposition{}, false, true
 	}
 	return domain.WorkerComposition{}, false, false
+}
+
+// isComposedRuntime reports whether agentID is one of the composed runtimes:
+// the shared one or the third-party one (ENG-2083).
+func (s *Server) isComposedRuntime(agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	return agentID == s.ComposedRuntimeID || agentID == s.ComposedThirdPartyRuntimeID
 }
 
 // composedToolRefusal is ExecuteTool's D12 refusal: the composed runtime calling

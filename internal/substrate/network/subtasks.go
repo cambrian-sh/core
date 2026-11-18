@@ -67,6 +67,16 @@ func (s *Server) RunSubtask(ctx context.Context, d domain.SubtaskDispatch) (out 
 	if !known {
 		return domain.SubtaskOutcome{}, fmt.Errorf("%w: the parent's lease is not known", domain.ErrSubtaskUnavailable)
 	}
+	// A parent running on the third-party runtime fans out on it too (ENG-2083):
+	// its children hold a slice of a composition with a third-party profession,
+	// so they never move to the shared system-tier runtime.
+	if s.ComposedThirdPartyRuntimeID != "" {
+		if parent.AgentID == s.ComposedThirdPartyRuntimeID {
+			runtime = s.ComposedThirdPartyRuntimeID
+		} else if pc, ok := s.Compositions.For(string(d.Binding.ParentLease)); ok && pc.Runtime == s.ComposedThirdPartyRuntimeID {
+			runtime = s.ComposedThirdPartyRuntimeID
+		}
+	}
 
 	child, err := s.LLMGateway.Acquire(ctx, domain.StepAllocation{}, StepLeaseTokenLimit, StepLeaseDuration)
 	if err != nil {

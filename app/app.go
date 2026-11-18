@@ -848,7 +848,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// profile (agents/profiles/*.yaml), validated against the skills this kernel
 	// serves (the same "skills" directory LoadRegistry reads below).
 	builtinSource := newBuiltinFilesystemAgentSource(cfg.Metabolism.AgentsDir).withSkillTools(profileSkillIndex("skills")).
-		withComposedRuntime(composedRuntimeID(cfg.Execution.Workers)) // ADR-0145 D12, "" when off
+		withComposedRuntime(composedRuntimeID(cfg.Execution.Workers), composedThirdPartyRuntimeID(cfg.Execution.Workers)) // ADR-0145 D12, "" when off
 	registeredAgents := registerAgentSources(ctx, reg, append([]AgentSource{builtinSource}, composed.agentSources...))
 	profiles := collectProfileAgents(registeredAgents)
 	reconcileProfileAgents(ctx, reg, registeredAgents)

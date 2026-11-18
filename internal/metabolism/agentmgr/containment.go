@@ -51,8 +51,14 @@ func (im *InstanceManager) SetAgentContainment(c AgentContainment) { im.containm
 // agent manifest's — discovery refuses a manifest that would raise privilege,
 // ENG-2085) is kept; a local agent with no declared tier is first-party (it
 // runs from the deployment's own agents directory).
+//
+// An explicit third-party tier wins over system status (ENG-2083): it only
+// lowers privilege, and it is how the kernel's own third-party composed runtime
+// — System so selection never picks it — launches at the third-party tier.
 func agentTrustTier(def *domain.AgentDefinition) string {
 	switch {
+	case def.TrustTier == agentTierThirdParty:
+		return agentTierThirdParty
 	case domain.IsSystemDefinition(*def):
 		return agentTierSystem
 	case def.TrustTier == agentTierSystem, def.TrustTier == "":

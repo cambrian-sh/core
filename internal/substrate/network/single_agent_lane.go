@@ -24,6 +24,10 @@ import (
 // RequestComposer composes the worker of a whole request (compose.Composer).
 type RequestComposer interface {
 	ComposeRequest(ctx context.Context, lease domain.LeaseID, brief string, in *domain.Handoff) (string, domain.WorkerComposition, error)
+	// ComposeTurnRequest composes for a lease whose process is already chosen
+	// (the chat turn's merged agent): third-party professions are left out
+	// (ENG-2083).
+	ComposeTurnRequest(ctx context.Context, lease domain.LeaseID, brief string) (domain.WorkerComposition, error)
 }
 
 // singleAgentDelegationRefusal is the lane's refusal of delegate_to_planner,
@@ -275,6 +279,8 @@ func (s *Server) ComposeLease(ctx context.Context, lease domain.LeaseID, brief s
 	if s.ledgerOn() {
 		cctx = domain.WithLedgerProvenance(cctx, s.toolCallProvenance(cctx, lease))
 	}
-	_, _, err := s.RequestComposer.ComposeRequest(cctx, lease, brief, nil)
+	// The turn's agent is the chat agent, whose tier the composition cannot
+	// lower: third-party professions stay out of it (ENG-2083).
+	_, err := s.RequestComposer.ComposeTurnRequest(cctx, lease, brief)
 	return err
 }

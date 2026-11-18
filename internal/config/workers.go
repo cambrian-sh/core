@@ -63,6 +63,19 @@ func (c WorkersConfig) RuntimeID() string {
 	return DefaultComposedRuntimeAgentID
 }
 
+// ThirdPartyRuntimeSuffix names the third-party composed runtime: RuntimeID()
+// plus this suffix (ThirdPartyRuntimeID).
+const ThirdPartyRuntimeSuffix = "_third_party"
+
+// ThirdPartyRuntimeID is the id of the SECOND composed runtime, the one launched
+// at the ADR-0139 D8 third-party tier (kernel-only network, low privilege, the
+// third-party memory cap; ADR-0157 D3). A composition holding a third-party
+// profession runs on it, never on the shared runtime (owner decision
+// 2026-11-18, ENG-2083). Derived from RuntimeID, so it needs no key of its own.
+func (c WorkersConfig) ThirdPartyRuntimeID() string {
+	return c.RuntimeID() + ThirdPartyRuntimeSuffix
+}
+
 // SkillCap is MaxSkills with its default applied.
 func (c WorkersConfig) SkillCap() int {
 	if c.MaxSkills > 0 {
@@ -86,6 +99,9 @@ func (c WorkersConfig) validate(ledgerOn bool) []string {
 	}
 	if c.RuntimeAgentID != "" && !agentIDPattern.MatchString(c.RuntimeAgentID) {
 		errs = append(errs, fmt.Sprintf("execution.workers.runtime_agent_id %q must match %s", c.RuntimeAgentID, agentIDPattern))
+	} else if c.Composed && !agentIDPattern.MatchString(c.ThirdPartyRuntimeID()) {
+		errs = append(errs, fmt.Sprintf("execution.workers.runtime_agent_id %q is too long: the third-party runtime %q must match %s",
+			c.RuntimeAgentID, c.ThirdPartyRuntimeID(), agentIDPattern))
 	}
 	if c.Composed && !ledgerOn {
 		errs = append(errs, "execution.workers.composed requires execution.ledger.enabled: every composition is recorded in the run ledger")

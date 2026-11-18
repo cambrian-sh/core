@@ -60,3 +60,21 @@ func TestADR0150Defaults_LoadAndOptOut(t *testing.T) {
 			e.Workers.Composed, e.Ledger.Enabled, e.Chat.TranscriptBudgetTokens)
 	}
 }
+
+// ENG-2083: the third-party composed runtime's id derives from the runtime id,
+// and a runtime id too long to carry the suffix is refused while composed.
+func TestWorkersConfig_ThirdPartyRuntimeID(t *testing.T) {
+	if got := (WorkersConfig{}).ThirdPartyRuntimeID(); got != "composed_worker_third_party" {
+		t.Fatalf("default third-party runtime id = %q", got)
+	}
+	if got := (WorkersConfig{RuntimeAgentID: "rt"}).ThirdPartyRuntimeID(); got != "rt_third_party" {
+		t.Fatalf("derived id = %q", got)
+	}
+	long := "a" + strings.Repeat("b", 55) // a valid 56-char id; with the suffix it is 68
+	if errs := (WorkersConfig{Composed: true, RuntimeAgentID: long}).validate(true); len(errs) != 1 || !strings.Contains(errs[0], "third-party runtime") {
+		t.Fatalf("a runtime id that cannot carry the suffix must be refused: %v", errs)
+	}
+	if errs := (WorkersConfig{RuntimeAgentID: long}).validate(true); len(errs) != 0 {
+		t.Fatalf("composed off: no third-party runtime, nothing to refuse: %v", errs)
+	}
+}

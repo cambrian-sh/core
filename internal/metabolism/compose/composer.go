@@ -17,6 +17,8 @@ package compose
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -77,9 +79,14 @@ type ScopeCheck func(ctx context.Context, agentID string, tool domain.SystemTool
 type Composer struct {
 	// RuntimeID is the composed runtime's agent id (execution.workers.runtime_agent_id).
 	RuntimeID string
-	Agents    AgentLookup
-	Manifests ManifestReader
-	Tools     ToolCatalogue
+	// ThirdPartyRuntimeID is the third-party composed runtime's agent id
+	// (config.WorkersConfig.ThirdPartyRuntimeID, ENG-2083): a composition holding
+	// a third-party profession runs on it — launched at the third-party tier —
+	// never on the shared RuntimeID. "" ⇒ such a composition is refused.
+	ThirdPartyRuntimeID string
+	Agents              AgentLookup
+	Manifests           ManifestReader
+	Tools               ToolCatalogue
 	// Scope is the act-for person's scope check. nil admits every tool.
 	Scope ScopeCheck
 	// Skills drops index entries the kernel does not serve. nil keeps every name.
@@ -142,12 +149,6 @@ func (c *Composer) Compose(ctx context.Context, task *domain.DispatchTask, winne
 			"task", task.ID, "winner", winner.Agent.ID)
 		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false, nil
 	}
-	runtime, err := c.Agents.GetAgentByName(ctx, c.RuntimeID)
-	if err != nil || runtime == nil {
-		slog.ErrorContext(ctx, "ADR-0145 D12: composed runtime agent is not registered; step runs on the selected agent",
-			"runtime", c.RuntimeID, "task", task.ID, "winner", winner.Agent.ID, "err", err)
-		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false, nil
-	}
 	if prior, bound := c.Leases.For(lease); bound {
 		// The lease already carries the step's composition: a retry of the step (the
 		// self-healer re-dispatches on the same lease) or a yield sub-goal dispatched
@@ -156,7 +157,14 @@ func (c *Composer) Compose(ctx context.Context, task *domain.DispatchTask, winne
 		// mid-step, and the composed path never falls back to a pre-built agent
 		// (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent: a heal retry
 		// that fell through to the selected profile agent took the lease from the
-		// worker still running the step). Nothing new is recorded.
+		// worker still running the step). Nothing new is recorded. The runtime is
+		// the composition's own — the third-party one for a composition holding a
+		// third-party profession (ENG-2083) — never re-chosen.
+		runtime, err := c.Agents.GetAgentByName(ctx, prior.Runtime)
+		if err != nil || runtime == nil {
+			return domain.ScoredCandidate{}, domain.WorkerComposition{}, false,
+				fmt.Errorf("compose: the runtime %q of the lease's composition %s is not registered: %w", prior.Runtime, prior.ID(), errRuntimeMissing(err))
+		}
 		in.Context[domain.HandoffKeyComposition] = prior.Encode()
 		in.Context[HandoffKeyCompositionID] = prior.ID()
 		slog.InfoContext(ctx, "ADR-0145 D12: step re-dispatched under its lease's existing composition",
@@ -165,6 +173,25 @@ func (c *Composer) Compose(ctx context.Context, task *domain.DispatchTask, winne
 	}
 
 	professions := c.professions(ctx, task, winner, scored)
+	runtimeID, thirdParty := c.runtimeFor(professions)
+	if runtimeID == "" {
+		// Fail closed: a third-party profession never runs in the shared
+		// system-tier runtime, and falling back to the selected agent would run
+		// the step outside a composition.
+		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false,
+			fmt.Errorf("compose: step %s holds third-party professions %v but no third-party composed runtime is configured (ENG-2083)", task.ID, thirdParty)
+	}
+	runtime, err := c.Agents.GetAgentByName(ctx, runtimeID)
+	if err != nil || runtime == nil {
+		if len(thirdParty) > 0 {
+			return domain.ScoredCandidate{}, domain.WorkerComposition{}, false,
+				fmt.Errorf("compose: step %s holds third-party professions %v but the third-party composed runtime %q is not registered: %w",
+					task.ID, thirdParty, runtimeID, errRuntimeMissing(err))
+		}
+		slog.ErrorContext(ctx, "ADR-0145 D12: composed runtime agent is not registered; step runs on the selected agent",
+			"runtime", runtimeID, "task", task.ID, "winner", winner.Agent.ID, "err", err)
+		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false, nil
+	}
 	var skills, allow []string
 	for _, p := range professions {
 		m, mErr := c.Manifests.GetManifest(ctx, p.ID)
@@ -212,8 +239,38 @@ func (c *Composer) Compose(ctx context.Context, task *domain.DispatchTask, winne
 	slog.InfoContext(ctx, "ADR-0145 D12: step composed",
 		"task", task.ID, "composition", comp.ID(), "runtime", comp.Runtime,
 		"professions", comp.Professions, "skills", len(comp.Skills), "tools", len(comp.Tools),
-		"selected", winner.Agent.ID)
+		"selected", winner.Agent.ID, "third_party_professions", thirdParty)
 	return domain.ScoredCandidate{Agent: *runtime, Score: winner.Score}, comp, true, nil
+}
+
+// tierThirdParty is the ADR-0139 D8 tier a profession declares to run with
+// the least privilege (agentprofile.TrustTiers).
+const tierThirdParty = "third-party"
+
+// runtimeFor picks the runtime a composition of professions runs on: the
+// LOWEST tier among them decides (owner decision 2026-11-18, ENG-2083). One
+// third-party profession puts the whole composition — every profession's skills
+// and tools, one process — on the third-party runtime, launched kernel-only;
+// otherwise the shared runtime. thirdParty lists the third-party professions;
+// runtimeID is "" when one exists but no third-party runtime is configured.
+func (c *Composer) runtimeFor(professions []domain.AgentDefinition) (runtimeID string, thirdParty []string) {
+	for _, p := range professions {
+		if p.TrustTier == tierThirdParty {
+			thirdParty = append(thirdParty, p.ID)
+		}
+	}
+	if len(thirdParty) == 0 {
+		return c.RuntimeID, nil
+	}
+	return c.ThirdPartyRuntimeID, thirdParty
+}
+
+// errRuntimeMissing is the cause of a missing runtime registration.
+func errRuntimeMissing(err error) error {
+	if err != nil {
+		return err
+	}
+	return errors.New("not found")
 }
 
 // leaseComposition is the composition already bound to the handoff's step lease.

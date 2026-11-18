@@ -49,6 +49,13 @@ type DiscoverOptions struct {
 	// no grant of its own, and marked System so selection never picks it — the
 	// dispatcher calls it with a composition bound to the step lease. "" ⇒ none.
 	ComposedRuntimeID string
+	// ComposedThirdPartyRuntimeID, when set beside ComposedRuntimeID, also
+	// registers the THIRD-PARTY composed runtime under this id
+	// (config.WorkersConfig.ThirdPartyRuntimeID, ENG-2083): the same runtime file
+	// and launch, System (never selected), at trust tier third-party — the one a
+	// composition holding a third-party profession runs on. Registered only when
+	// a valid third-party profile exists. "" ⇒ none.
+	ComposedThirdPartyRuntimeID string
 	// OnRefused, when set, is told the id of every agent discovery found but
 	// REFUSED to register (today: a manifest trust_tier the kernel will not apply
 	// as written, ENG-2085), so the registrar can drop an earlier registration
@@ -158,8 +165,19 @@ func profileAgentRecords(agentsDir string, isSystemAgent func(string) bool, opt 
 			},
 		})
 	}
-	if rt, ok := composedRuntimeRecord(agentsDir, opt.ComposedRuntimeID, runtime, taken, len(out)); ok {
+	thirdParty := 0
+	for _, da := range out {
+		if da.Agent.TrustTier == "third-party" {
+			thirdParty++
+		}
+	}
+	if rt, ok := composedRuntimeRecord(agentsDir, opt.ComposedRuntimeID, "", runtime, taken, len(out)); ok {
 		out = append(out, rt)
+		if opt.ComposedThirdPartyRuntimeID != "" {
+			if tp, ok := composedRuntimeRecord(agentsDir, opt.ComposedThirdPartyRuntimeID, "third-party", runtime, taken, thirdParty); ok {
+				out = append(out, tp)
+			}
+		}
 	}
 	return out
 }
@@ -167,10 +185,14 @@ func profileAgentRecords(agentsDir string, isSystemAgent func(string) bool, opt 
 // ComposedRuntimeVersion is the composed runtime's manifest version.
 const ComposedRuntimeVersion = "1.0.0"
 
-// composedRuntimeRecord builds the ADR-0145 D12 runtime agent: registered only when
+// composedRuntimeRecord builds an ADR-0145 D12 runtime agent: registered only when
 // an id is configured, at least one valid profile exists (with none there is no
-// profession to compose from), and the id is not already taken.
-func composedRuntimeRecord(agentsDir, id string, runtime []byte, taken map[string]bool, profiles int) (DiscoveredAgent, bool) {
+// profession to compose from; for the third-party runtime: no third-party
+// profession), and the id is not already taken. tier "" is the shared runtime
+// (first-party, run as system); "third-party" is the third-party runtime
+// (ENG-2083), which agentmgr launches at the third-party tier although it is
+// System (never selected): an explicit third-party tier only lowers privilege.
+func composedRuntimeRecord(agentsDir, id, tier string, runtime []byte, taken map[string]bool, profiles int) (DiscoveredAgent, bool) {
 	if id == "" || profiles == 0 {
 		return DiscoveredAgent{}, false
 	}
@@ -179,11 +201,19 @@ func composedRuntimeRecord(agentsDir, id string, runtime []byte, taken map[strin
 		return DiscoveredAgent{}, false
 	}
 	taken[id] = true
+	name, desc, trust := "Composed Worker",
+		"Composed worker runtime (ADR-0145 D12): runs plan steps with the skills and tools the kernel composes for each step; never selected by capability.",
+		"first-party"
+	if tier == "third-party" {
+		name, desc, trust = "Composed Worker (third-party)",
+			"Third-party composed worker runtime (ADR-0145 D12, ENG-2083): runs compositions holding a third-party profession at the third-party tier; never selected by capability.",
+			"third-party"
+	}
 	return DiscoveredAgent{
 		Agent: AgentRecord{
 			ID:              id,
-			Name:            "Composed Worker",
-			Description:     "Composed worker runtime (ADR-0145 D12): runs plan steps with the skills and tools the kernel composes for each step; never selected by capability.",
+			Name:            name,
+			Description:     desc,
 			Runtime:         "python",
 			ExecPath:        ProfileRuntimeFile,
 			Dir:             filepath.ToSlash(agentsDir),
@@ -194,7 +224,7 @@ func composedRuntimeRecord(agentsDir, id string, runtime []byte, taken map[strin
 			// granted here, by the kernel's own discovery of its own runtime file.
 			System:     true,
 			LaunchArgs: []string{"--composed", "--agent-id", id},
-			TrustTier:  "first-party",
+			TrustTier:  trust,
 		},
 		Manifest: ManifestRecord{
 			Version:          ComposedRuntimeVersion,

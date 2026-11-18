@@ -81,11 +81,15 @@ func collectProfileAgents(registered []DiscoveredAgent) []profileAgent {
 		for _, p := range out {
 			tiers = append(tiers, p.ID+"="+p.TrustTier)
 		}
-		// Say at boot what each declared tier means at launch (ADR-0139 D8 stage 1:
-		// third-party agents are refused, or run degraded, until the launch path
-		// confines writes, network and identity; agentmgr containment.go).
-		slog.Info("agent profiles: trust_tier decides launch containment (first-party/system: env allowlist + SEC-01 cap; "+
-			"third-party: refused unless execution.agents.sandbox.third_party.on_unavailable=degrade)",
+		// Say at boot what each declared tier means at launch. With the agent
+		// sandbox on (the default, ADR-0157 S7) a third-party profile runs kernel-only
+		// and low-privilege — its steps on the third-party composed runtime
+		// (ENG-2083) — where this host can contain it, and is refused where it
+		// cannot unless on_unavailable is degrade; with the sandbox off it is
+		// refused unless degrade (ADR-0139 D8 stage 1; agentmgr containment.go).
+		slog.Info("agent profiles: trust_tier decides launch containment (execution.agents.sandbox on, the default — first-party/system: D1 confinement, normal network; "+
+			"third-party: kernel-only network + low privilege + the third-party memory cap, its composed steps on the third-party runtime; "+
+			"refused where this host cannot contain it unless execution.agents.sandbox.third_party.on_unavailable=degrade)",
 			"profiles", strings.Join(tiers, ","))
 	}
 	return out

@@ -210,10 +210,16 @@ Ticket `T-20261105-agent-stack-v2-worker-agent-runtime-plus`, part B.
    `worker_agent.py` needs only the agents, prompts and skills directories, which the kernel
    shows every agent, and model weights go to the shared model cache
    (`execution.agents.model_cache_dir`, default `<kernel dir>/runtime/models`; writable for
-   first-party and system agents, read-only for third-party). Known gap: a profile step is
-   composed into the `composed_worker` runtime (ADR-0145 D12), which runs at the system
-   tier, so a `third-party` profile does not get third-party containment there (ticket
-   T-20261118-third-party-profile-steps-run-in-the-system).
+   first-party and system agents, read-only for third-party). Composed work (ADR-0145 D12)
+   keeps the tier (ENG-2083): a composition that holds a `third-party` profession runs on a
+   separate runtime, `<runtime_agent_id>_third_party` (default
+   `composed_worker_third_party`), launched at the third-party tier — kernel-only network,
+   low privilege where the host has it, the third-party memory cap — never in the shared
+   `composed_worker`. The lowest tier among a composition's professions decides, so a step
+   mixing a `third-party` profession with first-party ones runs third-party, and so does a
+   single-agent-lane request while any `third-party` profile is registered (that lane
+   composes every profession). A chat turn's composition, whose agent cannot change tier,
+   leaves `third-party` professions out.
 
 Only profiles get allowlist grants. A `tool_allowlist` in an ordinary agent's own
 `AGENT_MANIFEST` is not turned into grants: that would be a self-asserted privilege.

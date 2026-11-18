@@ -313,6 +313,10 @@ type Server struct {
 	// workers are off. That agent holds nothing of its own: without a composed
 	// lease it gets no tool, no menu and no skill (composed_workers.go).
 	ComposedRuntimeID string
+	// ComposedThirdPartyRuntimeID is the third-party composed runtime's agent id
+	// (ENG-2083); "" when composed workers are off. It holds nothing of its own
+	// either, and a subtask of a lease running on it runs on it too.
+	ComposedThirdPartyRuntimeID string
 	// RequestComposer composes the single-agent lane's worker for a whole request
 	// when execution.lane.single_agent.agent_id is empty (ADR-0150 D1;
 	// compose.Composer.ComposeRequest). nil (composed workers off) ⇒ an empty

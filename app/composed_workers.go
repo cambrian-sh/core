@@ -20,6 +20,15 @@ func composedRuntimeID(c config.WorkersConfig) string {
 	return c.RuntimeID()
 }
 
+// composedThirdPartyRuntimeID is the third-party composed runtime's id
+// (ENG-2083), or "" when execution.workers.composed is off.
+func composedThirdPartyRuntimeID(c config.WorkersConfig) string {
+	if !c.Composed {
+		return ""
+	}
+	return c.ThirdPartyRuntimeID()
+}
+
 // composerAgents is what the composer reads about registered agents.
 type composerAgents interface {
 	compose.AgentLookup
@@ -71,16 +80,18 @@ func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, 
 	}
 	server.Compositions = leases
 	server.ComposedRuntimeID = w.RuntimeID()
+	server.ComposedThirdPartyRuntimeID = w.ThirdPartyRuntimeID()
 
 	c := &compose.Composer{
-		RuntimeID: w.RuntimeID(),
-		Agents:    agents,
-		Manifests: agents,
-		Tools:     te,
-		Scope:     te.ScopeAllows,
-		MaxSkills: w.SkillCap(),
-		Leases:    leases,
-		Overlay:   te.Overlay,
+		RuntimeID:           w.RuntimeID(),
+		ThirdPartyRuntimeID: w.ThirdPartyRuntimeID(),
+		Agents:              agents,
+		Manifests:           agents,
+		Tools:               te,
+		Scope:               te.ScopeAllows,
+		MaxSkills:           w.SkillCap(),
+		Leases:              leases,
+		Overlay:             te.Overlay,
 	}
 	if server.SkillRegistry != nil {
 		c.Skills = server.SkillRegistry
@@ -106,6 +117,7 @@ func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, 
 	// ADR-0150 D1: the single-agent lane composes a whole request on the same
 	// runtime when execution.lane.single_agent.agent_id is empty.
 	server.RequestComposer = c
-	slog.Info("ADR-0145 D12: composed workers ON", "runtime", w.RuntimeID(), "max_skills", w.SkillCap(),
+	slog.Info("ADR-0145 D12: composed workers ON", "runtime", w.RuntimeID(),
+		"third_party_runtime", w.ThirdPartyRuntimeID(), "max_skills", w.SkillCap(),
 		"ledger", c.Ledger != nil)
 }

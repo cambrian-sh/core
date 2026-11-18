@@ -31,6 +31,9 @@ type FilesystemAgentSource struct {
 	// composedRuntimeID registers the ADR-0145 D12 composed runtime under this id
 	// (storage.DiscoverOptions.ComposedRuntimeID); "" ⇒ not registered.
 	composedRuntimeID string
+	// composedThirdPartyRuntimeID registers the third-party composed runtime
+	// (storage.DiscoverOptions.ComposedThirdPartyRuntimeID, ENG-2083); "" ⇒ not.
+	composedThirdPartyRuntimeID string
 	// refused holds the ids the last DiscoverAgents refused to register
 	// (storage.DiscoverOptions.OnRefused, ENG-2085); RefusedAgentIDs reads it.
 	refused []string
@@ -43,8 +46,10 @@ func (s *FilesystemAgentSource) RefusedAgentIDs() []string { return s.refused }
 
 // withComposedRuntime registers the composed-worker runtime (execution.workers.composed)
 // under id beside the profile agents. Only the kernel's own source calls it.
-func (s *FilesystemAgentSource) withComposedRuntime(id string) *FilesystemAgentSource {
-	s.composedRuntimeID = id
+// thirdPartyID is the third-party composed runtime registered beside it when a
+// third-party profile exists (ENG-2083).
+func (s *FilesystemAgentSource) withComposedRuntime(id, thirdPartyID string) *FilesystemAgentSource {
+	s.composedRuntimeID, s.composedThirdPartyRuntimeID = id, thirdPartyID
 	return s
 }
 
@@ -99,7 +104,8 @@ func (s *FilesystemAgentSource) DiscoverAgents(_ context.Context) ([]DiscoveredA
 	s.refused = nil
 	discovered, err := storage.DiscoverFilesystemAgentsWith(s.dir, s.isSystemAgent, storage.DiscoverOptions{
 		SkillTools: s.skillTools, ComposedRuntimeID: s.composedRuntimeID,
-		OnRefused: func(id string) { s.refused = append(s.refused, id) }})
+		ComposedThirdPartyRuntimeID: s.composedThirdPartyRuntimeID,
+		OnRefused:                   func(id string) { s.refused = append(s.refused, id) }})
 	if err != nil {
 		return nil, err
 	}

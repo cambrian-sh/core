@@ -184,10 +184,12 @@ func Eligible(def domain.AgentDefinition, includeSystem bool) (bool, string) {
 // "system" is granted only by the composition root (domain.IsSystemDefinition),
 // exactly as discovery logs it; a local agent with no declared tier is
 // first-party (it runs from the deployment's own agents directory); a remote
-// A2A agent is always third-party.
+// A2A agent is always third-party. A declared third-party tier wins over system
+// status, as at launch (agentmgr.agentTrustTier, ENG-2083): it only lowers
+// privilege.
 func TrustTier(def domain.AgentDefinition) string {
 	switch {
-	case def.Runtime == domain.RuntimeA2A:
+	case def.Runtime == domain.RuntimeA2A, def.TrustTier == TierThirdParty:
 		return TierThirdParty
 	case domain.IsSystemDefinition(def):
 		return TierSystem
