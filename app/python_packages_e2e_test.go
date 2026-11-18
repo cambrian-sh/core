@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,11 +21,14 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/pypackages"
+	"github.com/cambrian-sh/core/internal/sandbox"
 )
 
 // packageProbePy is a probe agent: it serves its --socket, imports --module
 // (reporting the directory it came from), optionally tries to list --peek (a
-// path it must not be able to read), and reports over the kernel connection.
+// path it must not be able to read), tries to write into the imported
+// module's directory (its layer) and into the base generation's stdlib (both
+// must be read-only), and reports over the kernel connection.
 const packageProbePy = `
 import os, sys, time
 from concurrent import futures
@@ -44,12 +49,22 @@ try:
 except Exception as e:
     imp = "failed(" + type(e).__name__ + ")"
 extra = ""
+def tryw(d):
+    try:
+        with open(os.path.join(d, ".probe-write"), "w") as f:
+            f.write("x")
+        return "written"
+    except OSError as e:
+        return "denied(" + type(e).__name__ + ")"
+if imp.startswith("ok@"):
+    extra += ";layerwrite=" + tryw(os.path.dirname(os.path.abspath(m.__file__)))
+extra += ";basewrite=" + tryw(os.path.dirname(os.__file__))
 if peek:
     try:
         os.listdir(peek)
-        extra = ";peek=read"
+        extra += ";peek=read"
     except OSError as e:
-        extra = ";peek=denied(" + type(e).__name__ + ")"
+        extra += ";peek=denied(" + type(e).__name__ + ")"
 report = "probe=%s;import=%s%s" % (pid, imp, extra)
 raw = report.encode()
 def varint(n):
@@ -92,6 +107,14 @@ time.sleep(600)
 // Optional: PYPKG_E2E_PACKAGE (name==version), PYPKG_E2E_MODULE and
 // PYPKG_E2E_OTHER_VERSION (default python-dateutil==2.9.0.post0, dateutil,
 // 2.8.2); PYPKG_E2E_WHEELHOUSE resolves and installs offline from a directory.
+//
+// PYPKG_E2E_DOCKER_IMAGE (Linux only) runs the agents under the DOCKER runner
+// instead (ENG-2065): an image with /bin/sh and a glibc (debian:trixie-slim);
+// the base generation and the agent's layer are bind-mounted read-only at their
+// own paths, PYTHONPATH reaches the container through the forwarded names, and
+// the other agent gets no mount of the layer. It needs a Linux docker host that
+// shares the kernel's filesystem (not Docker Desktop), and runs as a non-root
+// kernel too (the scratch comes back through the reclaim container, ENG-2031).
 func TestE2E_PythonPackageLayerThroughOperatorApproval(t *testing.T) {
 	kernelDir, dsn := os.Getenv("PYPKG_E2E_KERNEL"), os.Getenv("PG_TEST_DSN")
 	if kernelDir == "" || dsn == "" {
@@ -134,6 +157,10 @@ func TestE2E_PythonPackageLayerThroughOperatorApproval(t *testing.T) {
 	if wh := os.Getenv("PYPKG_E2E_WHEELHOUSE"); wh != "" {
 		cfg.Execution.Agents.Python.Wheelhouse = []string{wh}
 		cfg.Execution.Agents.Python.Offline = true
+	}
+	dockerImage := os.Getenv("PYPKG_E2E_DOCKER_IMAGE")
+	if dockerImage != "" && runtime.GOOS != "linux" {
+		t.Skip("PYPKG_E2E_DOCKER_IMAGE needs a Linux docker host that shares this filesystem")
 	}
 	envRoot := cfg.Execution.Agents.Python.ResolvedRoot(absOr(kernelDir))
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(envRoot, "layers")) })
@@ -196,7 +223,12 @@ func TestE2E_PythonPackageLayerThroughOperatorApproval(t *testing.T) {
 		if svc == nil {
 			t.Fatal("python package service not wired (is PG_TEST_DSN migrated through 0057?)")
 		}
+		runner := ""
+		if dockerImage != "" {
+			runner = sandbox.RunnerDocker
+		}
 		sb := agentmgr.NewAgentSandbox(agentmgr.AgentSandboxOptions{
+			Runner: runner, DockerImage: dockerImage,
 			WorkRoot:  filepath.Join(work, "w"),
 			KernelDir: hidden,
 			// As anchorAgentSandboxPaths: a root outside the kernel dir is kernel state.
@@ -285,6 +317,13 @@ func TestE2E_PythonPackageLayerThroughOperatorApproval(t *testing.T) {
 	}
 	t.Logf("spawn with layer: %s", time.Since(start).Round(time.Millisecond))
 	defer k2.im.EvictInstance(inst.ID)
+	if dockerImage != "" {
+		// The agent really runs in a container of the docker runner.
+		out, err := exec.Command("docker", "ps", "-q", "--filter", "label=cambrian.sandbox=agent").Output()
+		if err != nil || len(strings.Fields(string(out))) == 0 {
+			t.Fatalf("no cambrian.sandbox=agent container is running (docker runner not used?): %v %q", err, out)
+		}
+	}
 	got := rec.waitFor(bctx, "probe="+holder+";")
 	t.Logf("report: %s", got)
 	layers := filepath.Join(envRoot, "layers")
@@ -293,6 +332,10 @@ func TestE2E_PythonPackageLayerThroughOperatorApproval(t *testing.T) {
 		t.Fatalf("the agent must import %s from its own layer under %s: %s", module, layers, got)
 	}
 	layerDir := filepath.Dir(filepath.Clean(strings.TrimPrefix(imp, "ok@"))) // <layer>/site-packages → <layer>
+	// The layer and the base generation are shown read-only (ENG-2065).
+	if !strings.Contains(got, ";layerwrite=denied(") || !strings.Contains(got, ";basewrite=denied(") {
+		t.Fatalf("the agent's layer and the base generation must be read-only to it: %s", got)
+	}
 
 	// 4. Another agent: no import, no read of the layer.
 	inst2, err := k2.im.GetOrBootInstance(bctx, def(other, "--peek", layerDir), "")

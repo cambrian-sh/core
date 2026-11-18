@@ -201,8 +201,10 @@ jobs:
   # S1 shipped agents under confinement, S2 network by trust tier, S3
   # per-instance tokens (sandboxed), S4 artifacts through the kernel (needs a
   # migrated Postgres, hence the service). S5 is Windows/macOS and is not here.
-  # The docker runner for agents (internal/sandbox/docker_agent.go) is NOT
-  # exercised: it needs a Linux docker host sharing host paths and sockets.
+  # The docker runner for agents (internal/sandbox/docker_agent.go) runs in its
+  # own step below, against the runner's dockerd (it needs a Linux docker host
+  # sharing host paths and sockets), with the probe agent and a Python agent
+  # with a per-agent package layer.
   #
   # As in the Postgres step above, a SKIP is a failure: the step fails if any
   # of these tests did not PASS, and it first proves bwrap can create a user
@@ -327,15 +329,21 @@ jobs:
       # and its scratch comes back through the reclaim container (ENG-2031):
       # out/ collected, scratch and containers gone. The probe is this test
       # binary, so the image needs only /bin/sh and a glibc at least the
-      # runner's (Debian trixie: 2.41).
+      # runner's (Debian trixie: 2.41). Then the per-agent Python package layer
+      # under the docker runner (ADR-0157 D7 P3, ENG-2065): the managed base
+      # generation and the agent's layer bind-mounted read-only, the agent
+      # imports from its layer, another agent can neither import nor see it.
       - name: Gate — ADR-0157 docker agent runner e2e (non-root kernel)
         shell: bash
+        env:
+          PG_TEST_DSN: postgres://cambrian:cambrian@localhost:5432/cambrian_test?sslmode=disable
+          PYPKG_E2E_KERNEL: /opt/cambrian-pyenv
         run: |
           test "$(id -u)" -ne 0
           docker pull -q debian:trixie-slim
-          tests='TestE2E_DockerRunnerAgentBootsConfined'
-          AGENTMGR_E2E_DOCKER_IMAGE=debian:trixie-slim \
-            go test -race -count=1 -v -run "^(${tests})\$" ./internal/metabolism/agentmgr/ 2>&1 \
+          tests='TestE2E_DockerRunnerAgentBootsConfined|TestE2E_PythonPackageLayerThroughOperatorApproval'
+          AGENTMGR_E2E_DOCKER_IMAGE=debian:trixie-slim PYPKG_E2E_DOCKER_IMAGE=debian:trixie-slim \
+            go test -race -p 1 -count=1 -v -run "^(${tests})\$" ./internal/metabolism/agentmgr/ ./app/ 2>&1 \
             | tee "$RUNNER_TEMP/go-test-docker.log"
           test "${PIPESTATUS[0]}" -eq 0
           fail=0
