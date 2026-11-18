@@ -107,6 +107,119 @@ func TestAwaitSpawnReady(t *testing.T) {
 	})
 }
 
+// ENG-2137: the one gate waits for the kernel serving AND the sandbox Python
+// env being ready; either half absent is no wait for that half; it stops
+// waiting on an env that settled unusable; ctx ends a wait; an open gate
+// answers nil even on a done ctx (the non-blocking probe).
+func TestAwaitSpawnReady_WaitsForServingAndPython(t *testing.T) {
+	returnsWithin := func(t *testing.T, got <-chan error, d time.Duration) (error, bool) {
+		t.Helper()
+		select {
+		case err := <-got:
+			return err, true
+		case <-time.After(d):
+			return nil, false
+		}
+	}
+	done := func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+
+	t.Run("waits for both, in either order", func(t *testing.T) {
+		for _, pythonFirst := range []bool{false, true} {
+			sig := newServingSignal()
+			ready, settled := make(chan struct{}), make(chan struct{})
+			svc := KernelServices{Serving: sig.C(), PythonEnv: PythonSpawnReadiness{Ready: ready, Settled: settled}}
+			got := make(chan error, 1)
+			go func() { got <- svc.AwaitSpawnReady(context.Background()) }()
+			first, second := func() { sig.markServing() }, func() { close(ready) }
+			if pythonFirst {
+				first, second = second, first
+			}
+			first()
+			if err, ok := returnsWithin(t, got, 50*time.Millisecond); ok {
+				t.Fatalf("pythonFirst=%v: returned with one half open: %v", pythonFirst, err)
+			}
+			second()
+			if err, ok := returnsWithin(t, got, 2*time.Second); !ok || err != nil {
+				t.Fatalf("pythonFirst=%v: want nil once both are open, got %v (returned=%v)", pythonFirst, err, ok)
+			}
+		}
+	})
+	t.Run("nil Serving waits only for Python", func(t *testing.T) {
+		ready := make(chan struct{})
+		svc := KernelServices{PythonEnv: PythonSpawnReadiness{Ready: ready, Settled: make(chan struct{})}}
+		if err := svc.AwaitSpawnReady(done()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Python building: want the ctx error, got %v", err)
+		}
+		close(ready)
+		if err := svc.AwaitSpawnReady(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("zero PythonEnv waits only for serving", func(t *testing.T) {
+		sig := newServingSignal()
+		svc := KernelServices{Serving: sig.C()}
+		sig.markServing()
+		if err := svc.AwaitSpawnReady(done()); err != nil {
+			t.Fatalf("serving and no managed env: want nil, got %v", err)
+		}
+	})
+	t.Run("an env that settled unusable stops the wait", func(t *testing.T) {
+		settled := make(chan struct{})
+		svc := KernelServices{PythonEnv: PythonSpawnReadiness{Ready: make(chan struct{}), Settled: settled}}
+		got := make(chan error, 1)
+		go func() { got <- svc.AwaitSpawnReady(context.Background()) }()
+		if err, ok := returnsWithin(t, got, 50*time.Millisecond); ok {
+			t.Fatalf("returned while the env still builds: %v", err)
+		}
+		close(settled) // the build failed: ReadyC never closes
+		if err, ok := returnsWithin(t, got, 2*time.Second); !ok || err != nil {
+			t.Fatalf("want nil once the env settled, got %v (returned=%v)", err, ok)
+		}
+	})
+	t.Run("ctx cancel ends a Python wait", func(t *testing.T) {
+		sig := newServingSignal()
+		sig.markServing()
+		svc := KernelServices{Serving: sig.C(), PythonEnv: PythonSpawnReadiness{Ready: make(chan struct{}), Settled: make(chan struct{})}}
+		ctx, cancel := context.WithCancel(context.Background())
+		got := make(chan error, 1)
+		go func() { got <- svc.AwaitSpawnReady(ctx) }()
+		if err, ok := returnsWithin(t, got, 50*time.Millisecond); ok {
+			t.Fatalf("returned before ready: %v", err)
+		}
+		cancel()
+		if err, ok := returnsWithin(t, got, 2*time.Second); !ok || !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (returned=%v)", err, ok)
+		}
+	})
+	t.Run("an open gate answers nil on a done ctx", func(t *testing.T) {
+		sig := newServingSignal()
+		sig.markServing()
+		ready := make(chan struct{})
+		close(ready)
+		svc := KernelServices{Serving: sig.C(), PythonEnv: PythonSpawnReadiness{Ready: ready, Settled: make(chan struct{})}}
+		for i := 0; i < 50; i++ { // select picks at random among ready cases
+			if err := svc.AwaitSpawnReady(done()); err != nil {
+				t.Fatalf("probe of an open gate: %v", err)
+			}
+		}
+	})
+}
+
+// pythonSpawnReadinessOf hands plugins the env's two signals, and nothing for
+// no env or an env unavailable on this host (no wait; the launch gate refuses).
+func TestPythonSpawnReadinessOf(t *testing.T) {
+	if got := pythonSpawnReadinessOf(nil); got.Ready != nil || got.Settled != nil {
+		t.Fatal("nil env must be no Python wait")
+	}
+	if got := pythonSpawnReadinessOf(refusedPythonEnv{err: errors.New("unpinned platform")}); got.Ready != nil {
+		t.Fatal("an unavailable env must be no Python wait")
+	}
+}
+
 // daemonDial is a stand-in for a boot-spawned daemon's first contact: it dials
 // the kernel address with a short connect timeout (the SDK's behaviour — a
 // connection that never gets HTTP/2 SETTINGS is abandoned and redialled), makes

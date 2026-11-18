@@ -185,6 +185,9 @@ func (b *kernelBuild) buildKernelServices() {
 		// ENG-2135: closed right before GRPC.Serve; boot-time daemon spawns wait
 		// on it through AwaitSpawnReady.
 		Serving: b.serving.C(),
+		// ENG-2137: and, after it, the sandbox Python env's readiness, so the
+		// same gate holds a Python daemon spawn until the env can launch it.
+		PythonEnv: pythonSpawnReadinessOf(b.pyEnv),
 		// ADR-0085: the policy plugin owns its own tables and needs to tell a
 		// registered-but-unprofiled agent from an unknown principal, so it gets the
 		// pool, the registry existence check, and the session caller term. It gets

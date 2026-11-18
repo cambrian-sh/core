@@ -69,10 +69,13 @@ type delayedPythonEnv struct {
 	pi     pyenv.Interpreter
 	readyC chan struct{}
 	once   sync.Once
+	// settledC closes when the build ends, healthy or failed (ENG-2137).
+	settledC    chan struct{}
+	settledOnce sync.Once
 }
 
 func newDelayedPythonEnv(pi pyenv.Interpreter) *delayedPythonEnv {
-	return &delayedPythonEnv{pi: pi, readyC: make(chan struct{})}
+	return &delayedPythonEnv{pi: pi, readyC: make(chan struct{}), settledC: make(chan struct{})}
 }
 
 func (e *delayedPythonEnv) Interpreter() (pyenv.Interpreter, error) {
@@ -89,17 +92,25 @@ func (e *delayedPythonEnv) Interpreter() (pyenv.Interpreter, error) {
 
 func (e *delayedPythonEnv) ReadyC() <-chan struct{} { return e.readyC }
 
+// SettledC, Builder and Stop complete pythonEnvGate, so the fake also feeds the
+// plugins' spawn gate through pythonSpawnReadinessOf (ENG-2137).
+func (e *delayedPythonEnv) SettledC() <-chan struct{} { return e.settledC }
+func (e *delayedPythonEnv) Builder() *pyenv.Builder   { return nil }
+func (e *delayedPythonEnv) Stop()                     {}
+
 func (e *delayedPythonEnv) finish() {
 	e.mu.Lock()
 	e.ready = true
 	e.mu.Unlock()
 	e.once.Do(func() { close(e.readyC) })
+	e.settledOnce.Do(func() { close(e.settledC) })
 }
 
 func (e *delayedPythonEnv) fail(err error) {
 	e.mu.Lock()
 	e.failed = err
 	e.mu.Unlock()
+	e.settledOnce.Do(func() { close(e.settledC) })
 }
 
 func waitChatUntil(t *testing.T, what string, cond func() bool) {

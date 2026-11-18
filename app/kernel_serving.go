@@ -52,22 +52,63 @@ func serveMarked(srv grpcServer, lis net.Listener, sig *servingSignal) error {
 	return srv.Serve(lis)
 }
 
+// PythonSpawnReadiness is the sandbox Python env's half of the spawn gate
+// (ENG-2137). Ready closes once Python agents may start (pyenv.Env.ReadyC);
+// Settled closes once no env build is running or pending (pyenv.Env.SettledC).
+// Settled without Ready means the env will not become ready by itself — a
+// failed build, or nothing built with build_on_boot off — so a waiting spawn
+// goes ahead and the launch gate refuses it with the reason and the fix,
+// rather than the spawn waiting silently until shutdown. A nil Ready is no
+// Python wait (no managed env, or the env is unavailable on this host).
+type PythonSpawnReadiness struct {
+	Ready   <-chan struct{}
+	Settled <-chan struct{}
+}
+
 // AwaitSpawnReady blocks until a daemon spawned now would be served on its
-// first dial, or ctx ends (its error is returned). It is the ONE gate a
-// plugin's boot-time daemon spawn waits on (a restored ingress, say), so every
-// readiness condition a spawn needs composes here rather than at each caller:
-// today the kernel serving; the sandbox Python env's readiness is meant to join
-// it here (ENG-2137) without any plugin changing.
+// first dial and could launch, or ctx ends (its error is returned). It is the
+// ONE gate a plugin's boot-time daemon spawn waits on (a restored ingress, a
+// reactive watch's stream daemon), so every readiness condition a spawn needs
+// composes here rather than at each caller: the kernel serving (ENG-2135),
+// then the sandbox Python env ready (ENG-2137; see PythonSpawnReadiness for
+// when it stops waiting on an env that will not become ready).
 //
-// A nil Serving channel — KernelServices{} in tests, or a kernel built without
-// the signal — is no gate, which is the behaviour before ENG-2135. This orders
-// startup; it is not an access control, so absent means "do not wait".
+// An open gate answers nil even when ctx is already done, so a caller can ask
+// "would a spawn go now?" without blocking by passing a cancelled context —
+// the reactive watch handler does, to spawn synchronously when it can.
+//
+// A nil Serving channel / zero PythonEnv — KernelServices{} in tests, or a
+// kernel built without the signal — is no gate, which is the behaviour before
+// ENG-2135. This orders startup; it is not an access control, so absent means
+// "do not wait".
 func (s KernelServices) AwaitSpawnReady(ctx context.Context) error {
-	if s.Serving == nil {
-		return ctx.Err()
+	if err := awaitEither(ctx, s.Serving, nil); err != nil {
+		return err
+	}
+	if s.PythonEnv.Ready == nil {
+		return nil
+	}
+	return awaitEither(ctx, s.PythonEnv.Ready, s.PythonEnv.Settled)
+}
+
+// awaitEither returns nil once a or b is closed — at once when one already is,
+// whatever ctx says — else ctx's error when ctx ends first. Both nil is no gate.
+// A nil channel never fires in a select, so a single gate passes b == nil.
+func awaitEither(ctx context.Context, a, b <-chan struct{}) error {
+	if a == nil && b == nil {
+		return nil
 	}
 	select {
-	case <-s.Serving:
+	case <-a:
+		return nil
+	case <-b:
+		return nil
+	default:
+	}
+	select {
+	case <-a:
+		return nil
+	case <-b:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

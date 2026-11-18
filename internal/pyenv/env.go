@@ -38,11 +38,18 @@ type Env struct {
 	// waits on instead of polling (ENG-2105).
 	readyC    chan struct{}
 	readyOnce sync.Once
+	// settledC is closed once no build is in progress or pending: the boot
+	// check needed none, or the background build ended (healthy or failed).
+	// A spawn waiting for the env stops waiting there — the env will not
+	// become ready by itself, and the spawn's refusal names the fix (ENG-2137).
+	settledC   chan struct{}
+	settleOnce sync.Once
 }
 
 // NewEnv wraps a builder. buildOnBoot is execution.agents.python.build_on_boot.
 func NewEnv(b *Builder, buildOnBoot bool) *Env {
-	return &Env{b: b, buildOnBoot: buildOnBoot, status: Status{State: StateMissing, Reason: "not checked yet"}, readyC: make(chan struct{})}
+	return &Env{b: b, buildOnBoot: buildOnBoot, status: Status{State: StateMissing, Reason: "not checked yet"},
+		readyC: make(chan struct{}), settledC: make(chan struct{})}
 }
 
 // Root is the env root.
@@ -64,6 +71,9 @@ func (e *Env) Start(ctx context.Context) {
 	e.status = st
 	e.markReadyLocked()
 	e.mu.Unlock()
+	if st.State == StateHealthy || !e.buildOnBoot {
+		e.settle() // no build follows this check
+	}
 	switch {
 	case st.State == StateHealthy:
 		slog.Info("ADR-0157 D7: sandbox Python env healthy", "generation", st.Generation, "interpreter", st.Interpreter, "packages", st.Packages)
@@ -86,6 +96,7 @@ func (e *Env) Start(ctx context.Context) {
 	e.mu.Unlock()
 	go func() {
 		defer close(done)
+		defer e.settle()
 		e.runBuild(bctx)
 	}()
 }
@@ -156,6 +167,17 @@ func (e *Env) Status() Status {
 // failing for good or polling (ENG-2105: the chat pool started 6 s into a
 // 2 min first-boot build and never retried).
 func (e *Env) ReadyC() <-chan struct{} { return e.readyC }
+
+// SettledC is closed once the env's readiness is decided for this run: at the
+// boot check when no build follows it (healthy, or build_on_boot off), else when
+// the background build ends — healthy or failed, or cancelled by Stop. With
+// ReadyC it is what a boot-time spawn waits on (KernelServices.AwaitSpawnReady,
+// ENG-2137): ReadyC closing means go, SettledC closing without it means waiting
+// longer cannot help, so the spawn proceeds and the launch gate refuses it with
+// the reason and the fix rather than the spawn hanging until shutdown.
+func (e *Env) SettledC() <-chan struct{} { return e.settledC }
+
+func (e *Env) settle() { e.settleOnce.Do(func() { close(e.settledC) }) }
 
 // markReadyLocked closes readyC the first time the status is usable. e.mu held.
 func (e *Env) markReadyLocked() {

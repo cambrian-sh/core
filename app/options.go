@@ -704,6 +704,13 @@ type KernelServices struct {
 	// rather than on the channel itself. nil in tests (no gate).
 	Serving <-chan struct{}
 
+	// PythonEnv is the sandbox Python env's readiness (ENG-2137): on a fresh
+	// install the env builds in the background for minutes after the kernel
+	// serves, and a Python daemon spawned meanwhile is refused with
+	// pyenv.ErrBuilding. AwaitSpawnReady waits on it after Serving, so a plugin
+	// keeps calling the one gate. Zero value (tests, no managed env): no wait.
+	PythonEnv PythonSpawnReadiness
+
 	// StoreNamedSecret / ClearNamedSecret / NamedSecretStatus are the WRITE
 	// half of the named-credential seam (ADR-0112 §13): encrypted set, clear,
 	// and presence + last-four — never a read-back RPC anywhere above them.

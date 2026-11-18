@@ -88,6 +88,10 @@ type pythonEnvGate interface {
 	// boot-time Python agent start refused with pyenv.ErrBuilding waits on
 	// (ENG-2105). nil (never ready) when the env is unavailable on this host.
 	ReadyC() <-chan struct{}
+	// SettledC is closed once no env build is running or pending
+	// (pyenv.Env.SettledC): with ReadyC still open it means the env will not
+	// become ready by itself (ENG-2137). nil when the env is unavailable.
+	SettledC() <-chan struct{}
 	Stop()
 }
 
@@ -96,9 +100,21 @@ type refusedPythonEnv struct{ err error }
 func (r refusedPythonEnv) Interpreter() (pyenv.Interpreter, error) {
 	return pyenv.Interpreter{}, fmt.Errorf("sandbox Python env unavailable: %w", r.err)
 }
-func (refusedPythonEnv) Stop()                   {}
-func (refusedPythonEnv) Builder() *pyenv.Builder { return nil }
-func (refusedPythonEnv) ReadyC() <-chan struct{} { return nil }
+func (refusedPythonEnv) Stop()                     {}
+func (refusedPythonEnv) Builder() *pyenv.Builder   { return nil }
+func (refusedPythonEnv) ReadyC() <-chan struct{}   { return nil }
+func (refusedPythonEnv) SettledC() <-chan struct{} { return nil }
+
+// pythonSpawnReadinessOf is the env's half of the plugins' spawn gate
+// (KernelServices.PythonEnv, ENG-2137). A kernel with no managed env, or one
+// unavailable on this host (nil ReadyC), yields the zero value: no Python wait,
+// so a spawn proceeds and the launch gate refuses it with the reason.
+func pythonSpawnReadinessOf(env pythonEnvGate) PythonSpawnReadiness {
+	if env == nil || env.ReadyC() == nil {
+		return PythonSpawnReadiness{}
+	}
+	return PythonSpawnReadiness{Ready: env.ReadyC(), Settled: env.SettledC()}
+}
 
 // pythonInterpreterPath adapts the env to the Python system tools' resolver
 // (toolproc.ProcessHandler.Interpreter): the same managed interpreter as the

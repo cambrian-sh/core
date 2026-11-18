@@ -677,6 +677,75 @@ func TestEnvReadyCSignalsTheBuiltEnv(t *testing.T) {
 	}
 }
 
+// ENG-2137: SettledC closes once the env's readiness is decided — open while
+// the background build runs, closed when it ends (healthy or failed), and closed
+// at the boot check when no build follows it — so a boot-time spawn waiting on
+// ReadyC-or-SettledC never hangs on an env that will not become ready.
+func TestEnvSettledCSignalsTheEndOfTheBuild(t *testing.T) {
+	isClosed := func(c <-chan struct{}) bool {
+		select {
+		case <-c:
+			return true
+		default:
+			return false
+		}
+	}
+	f := newFixture(t)
+	release := make(chan struct{})
+	b := f.builder(t)
+	b.run = func(ctx context.Context, env []string, name string, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "pip install") {
+			<-release
+		}
+		return f.run(ctx, env, name, args...)
+	}
+	e := NewEnv(b, true)
+	if isClosed(e.SettledC()) {
+		t.Fatal("SettledC closed before the boot check")
+	}
+	e.Start(context.Background())
+	if isClosed(e.SettledC()) {
+		t.Fatal("SettledC closed while the env is still building")
+	}
+	close(release)
+	select {
+	case <-e.SettledC():
+	case <-time.After(10 * time.Second):
+		t.Fatal("SettledC not closed after the background build finished")
+	}
+	if !isClosed(e.ReadyC()) {
+		t.Fatal("a healthy build settled without signalling ready")
+	}
+
+	// Healthy at the boot check: settled at once.
+	again := NewEnv(f.builder(t), true)
+	again.Start(context.Background())
+	if !isClosed(again.SettledC()) {
+		t.Fatal("a healthy env at the boot check must be settled at once")
+	}
+
+	// Nothing built and build_on_boot off: settled (unusable) at once.
+	off := NewEnv(newFixture(t).builder(t), false)
+	off.Start(context.Background())
+	if !isClosed(off.SettledC()) || isClosed(off.ReadyC()) {
+		t.Fatal("build_on_boot off with no env: want settled and not ready")
+	}
+
+	// A failed build: settled, not ready.
+	f2 := newFixture(t)
+	f2.failNext = "pip install"
+	bad := NewEnv(f2.builder(t), true)
+	bad.Start(context.Background())
+	select {
+	case <-bad.SettledC():
+	case <-time.After(10 * time.Second):
+		t.Fatal("SettledC not closed after a failed build")
+	}
+	if isClosed(bad.ReadyC()) {
+		t.Fatal("a failed build signalled ready")
+	}
+}
+
 // ADR-0157 D7.7.5 (P2): PrepareGeneration runs on the generation's build
 // directory while it is still EMPTY — before the interpreter is extracted or
 // anything installed — so an inheritable grant on it reaches every file; the
