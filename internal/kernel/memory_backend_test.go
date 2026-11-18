@@ -42,12 +42,12 @@ func TestNewMemoryBackend_NilAdapterIsRefusedAtBoot(t *testing.T) {
 // stack leaves those features off instead of probing the vector store for them.
 func TestMemoryBackend_PartialBackendNamesItsGapsAndStackLeavesThemOff(t *testing.T) {
 	b := MemoryBackend{Vector: plainVec{}}
-	want := []string{"Graph", "Experience", "ChunkTriplets", "Lexical", "Documents"}
+	want := []string{"Graph", "Experience", "ChunkTriplets", "Lexical", "Documents", "RankSignals", "Sections"}
 	if got := b.Missing(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Missing() = %v, want %v", got, want)
 	}
 	cfg := config.DefaultConfig()
-	mem := NewMemoryStack(b, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	mem := NewMemoryStack(b, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 	if mem.ChunkTripletsBatcher != nil || mem.DocumentStore != nil || mem.Agent.ExperienceStore != nil {
 		t.Fatalf("absent capabilities must leave their features off: batcher=%v docs=%v exp=%v",
 			mem.ChunkTripletsBatcher, mem.DocumentStore, mem.Agent.ExperienceStore)
@@ -61,5 +61,5 @@ func TestNewMemoryStack_NilVectorIsRefused(t *testing.T) {
 		}
 	}()
 	cfg := config.DefaultConfig()
-	NewMemoryStack(MemoryBackend{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	NewMemoryStack(MemoryBackend{}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 }

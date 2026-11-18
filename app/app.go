@@ -950,7 +950,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		postgres.WithErasureTailSteps(erasureTailStepNames(erasureTails)...),
 		postgres.WithErasureObserver(opts.ErasureObserver))
 	memBackend.Eraser = erasureStore
-	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
+	// ENG-1320: every config-and-store recall lane is composed inside NewMemoryStack;
+	// app.go hands over the plugin hooks and the embedder identity only.
+	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate,
+		kernel.RetrievalDeps{
+			DecisionObserver:    opts.DecisionObserver,
+			SubstrateConsultant: opts.SubstrateConsultant,
+			EmbedModel:          cfg.Embedder.Model,
+		})
 	// ADR-0137 S6 (ENG-411 stage C): the two-phase forget service every forget door
 	// shares (agent-plane PreviewForget/Forget, operator-plane PreviewForgetMemory/
 	// ForgetMemory, the forget_memory MCP tool). Built over MemoryStack.Eraser() — the
@@ -999,16 +1006,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			"async_deadline", cfg.Execution.Erasure.AsyncDeadline(),
 			"tombstone_retention_days", cfg.Execution.Erasure.TombstoneRetentionDays)
 	}
-	// ADR-0103 D3/D7: wire the decision-provenance seam. nil observer (the OSS default)
-	// leaves the emit site a nil check. The fingerprint is computed ONCE here, not per
-	// query: it describes configuration that cannot change without a restart, so hashing
-	// it on the retrieval path would be pure cost. The embedder is identified by model
-	// name — its dimension is implied by the model and enforced by the pgvector schema,
-	// so there is no separate dimension field to fold in.
-	mem.QueryService.SetDecisionObserver(opts.DecisionObserver, cfg.Execution.RetrievalFingerprint(cfg.Embedder.Model))
-	// ADR-0118 D5: the fact-lane substrate consultant. nil (the OSS default)
-	// leaves the consult site a nil check and behaviour bit-identical.
-	mem.QueryService.SetSubstrateConsultant(opts.SubstrateConsultant)
 	// ADR-0048 #1: let Tier-2 commit offload a promoted fact's full body to CAS so
 	// recall serves {summary + content_cid} instead of the full text.
 	mem.Agent.ContentStore = storeHandle.ContentStore
@@ -1191,105 +1188,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// (premium authz.Authorizer.Sessions), so there is nothing to wire here: the
 	// session manager is handed to the plugin, not to the query path.
 
-	// ADR-0053 Phase 0: KG²RAG one-hop chunk expansion (config-gated). The
-	// pgvector adapter doubles as the ChunkTripletsStore (per-chunk h, r, t
-	// extracted at write time or via the offline chunk-fill CLI). The
-	// pipeline walks per-chunk triplets from the seed chunks, pulls in
-	// chunks that share entities, and feeds them into the same cosine
-	// re-rank. Opt-in via `execution.kg2rag_enabled` in config.json so the
-	// A/B test (KG²RAG on vs off) is a config flip, not a rebuild. The
-	// max-hops / max-expanded / max-entities knobs bound the expansion.
-	if cfg.Execution.Retrieval.KG2RAGEnabled {
-		mem.QueryService.EnableKG2RAG(memBackend.ChunkTriplets,
-			cfg.Execution.Retrieval.KG2RAGMaxHops,
-			cfg.Execution.Retrieval.KG2RAGMaxExpanded,
-			cfg.Execution.Retrieval.KG2RAGMaxEntities,
-			cfg.Execution.Retrieval.KG2RAGPerEntity,
-		)
-		// LLM-free, structure-aware recall: seed kgExpand from entities extracted
-		// from the query text (ADR-0053). Needs KG²RAG (the chunk_triplets store).
-		if cfg.Execution.Retrieval.QueryEntitySeedingEnabled {
-			mem.QueryService.EnableQueryEntitySeeding()
-			slog.Info("ADR-0053: query-entity seeding ENABLED (LLM-free recall)")
-		}
-		// Document-local anchor promotion (companion to the deterministic anchor
-		// tier). Also needs the chunk_triplets store; LLM-free. ADR-0053.
-		if cfg.Execution.Retrieval.AnchorConstraintEnabled {
-			mem.QueryService.EnableAnchorConstraint()
-			slog.Info("ADR-0053: anchor constraint ENABLED (document-local anchor promotion)")
-		}
-	} else {
-		slog.Info("ADR-0053: KG²RAG expansion DISABLED via config (kg2rag_enabled=false)")
-	}
-
-	// ADR-0054 Stage A: multi-signal blend re-rank (cosine + recency + confidence
-	// + pagerank + activation). On by default; `execution.retrieval.blend_enabled`
-	// = false turns it off. Reads
-	// chunk_pagerank (kept fresh by the pagerank-recompute worker) + per-chunk
-	// confidence; bge cross-encoder (Stage B) is a separate, later flag.
-	if cfg.Execution.Retrieval.BlendEnabled {
-		w := memory.BlendWeights{
-			Cosine:         cfg.Execution.Retrieval.BlendWeightCosine,
-			Recency:        cfg.Execution.Retrieval.BlendWeightRecency,
-			Confidence:     cfg.Execution.Retrieval.BlendWeightConfidence,
-			PageRank:       cfg.Execution.Retrieval.BlendWeightPageRank,
-			Activation:     cfg.Execution.Retrieval.BlendWeightActivation,
-			Lexical:        cfg.Execution.Retrieval.BlendWeightLexical,
-			GraphCoherence: cfg.Execution.Retrieval.BlendWeightCoherence,
-		}
-		if (w == memory.BlendWeights{}) {
-			w = memory.DefaultBlendWeights() // all-unset ⇒ ADR defaults
-		}
-		blender := memory.NewBlender(w)
-		mem.QueryService.EnableBlend(&blender, vec) // *PgVectorAdapter implements RankSignalStore
-		curve := memory.RecencyCurve{
-			Decay:    cfg.Execution.Retrieval.BlendRecencyMode == "decay",
-			HalfLife: time.Duration(cfg.Execution.Retrieval.BlendRecencyHalfLifeHours * float64(time.Hour)),
-		}
-		mem.QueryService.SetRecencyCurve(curve)
-		slog.Info("ADR-0054: Stage-A multi-signal blend ENABLED", "weights", w,
-			"recency_mode", map[bool]string{false: "minmax", true: "decay"}[curve.Decay],
-			"recency_half_life_h", cfg.Execution.Retrieval.BlendRecencyHalfLifeHours)
-	}
-
-	// ADR-0136 ranking v2 (Phase 0): D1 calibrated Stage A and D3 query-conditioned
-	// time (D2, a per-document cap, was rejected by the owner 2026-11-03 and removed).
-	// Wired unconditionally — every switch defaults off and the zero RankingV2 is the
-	// old ranking — so the boot line below states the EFFECTIVE value of each, which
-	// is what an experiment arm's expect_log checks. D1 and the D3 features act inside
-	// Stage A, so they need blend_enabled; D3's explicit window acts without it. The
-	// line says which applies.
 	rv2 := cfg.Execution.Retrieval
 	fc := cfg.Execution.Facts
-	mem.QueryService.SetRankingV2(memory.RankingV2{
-		Calibrated:         rv2.StageACalibrated,
-		LexicalSaturationK: rv2.LexicalSaturationK,
-		TemporalIntent:     rv2.TemporalIntentEnabled,
-		TemporalFitWeight:  rv2.TemporalFitWeight,
-		// ADR-0136 D4/D5: the fact lane and its features (execution.facts).
-		FactLane:     fc.LaneEnabled,
-		FactLaneTopK: fc.LaneTopK,
-		// ADR-0136 A4: the document-scoped lane (0 = off). Acts only inside the lane.
-		FactLaneScopedDocuments: fc.LaneScopedDocuments,
-		FactLaneScopedTopK:      fc.LaneScopedTopK,
-		FactMatchWeight:         fc.FactMatchWeight,
-		Supersession:            fc.SupersessionEnabled,
-		CurrentFactWeight:       fc.CurrentFactWeight,
-		// ENG-432: fact-reached chunks rank on max(own, matched fact) cosine. Off by
-		// default (owner 2026-11-15) until its A/B/A.
-		FactChunkCosineMax: fc.LaneChunkCosineMax,
-	})
-	slog.Info(fmt.Sprintf("ranking v2: stage_a_calibrated=%t temporal_intent_enabled=%t",
-		rv2.StageACalibrated, rv2.TemporalIntentEnabled),
-		"lexical_saturation_k", rv2.LexicalSaturationK,
-		"temporal_fit_weight", rv2.TemporalFitWeight,
-		"blend_enabled", rv2.BlendEnabled)
-	if (rv2.StageACalibrated || rv2.TemporalIntentEnabled) && !rv2.BlendEnabled {
-		slog.Warn("ranking v2: stage_a_calibrated / temporal_intent_enabled change Stage-A scoring, which is OFF (blend_enabled=false); only the explicit-range window of temporal intent applies")
-	}
-	if rv2.TemporalIntentEnabled && rv2.BlendWeightRecency == 0 {
-		slog.Info("ranking v2: temporal intent order (latest/current/earliest) sets the recency direction, but blend_weight_recency=0, so only the temporal-fit feature and explicit windows take effect")
-	}
 	// ADR-0136 D4/D5: the fact layer's boot line, the expect_log anchor of the fact arms.
 	// It states the EFFECTIVE switches: extraction needs the adapter's fact store, the
 	// lane needs the fact reader, so a switch that cannot act is logged false with why.
@@ -1361,43 +1261,27 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		slog.Info("ranking v2: calibrated PageRank is the interim corpus-relative scale x*N/(x*N+1), not a global percentile (T-20261103-adr-0136-d1-pagerank-feature-is-an-interim-x-n)")
 	}
 
-	// ADR-0054 hybrid retrieval: fuse dense (vector) + sparse (lexical/full-text)
-	// via RRF so exact-token chunks the embedder misses enter the pool. Opt-in via
-	// execution.hybrid_search_enabled. The lexical half is the typed MemoryBackend
-	// field (ENG-1504), not a runtime probe of the adapter.
-	if cfg.Execution.Retrieval.HybridSearchEnabled {
-		mem.QueryService.EnableHybrid(memBackend.Lexical, cfg.Execution.Retrieval.HybridRRFK)
-		mem.QueryService.SetLexicalWeight(cfg.Execution.Retrieval.HybridLexicalWeight)
-		slog.Info("ADR-0054: hybrid dense+lexical retrieval ENABLED", "rrf_k", cfg.Execution.Retrieval.HybridRRFK, "lexical_weight", cfg.Execution.Retrieval.HybridLexicalWeight)
-	}
-
-	// ADR-0054 Stage B: cross-encoder rerank of the top-K Stage-A candidates via
-	// the warm reranker_agent system organ (bge cross-encoder), invoked DIRECTLY
-	// through the agent transport (no selection) — the same privileged-organ pattern as
-	// the kg_extractor. Opt-in via execution.reranker_enabled. Fail-soft: a
-	// down/erroring agent leaves the Stage-A order intact. The model id is the
-	// agent's RERANK_MODEL env (large = ceiling, base/v2-m3 = CPU edge).
-	if cfg.Execution.Retrieval.NeighborWindowEnabled {
-		mem.QueryService.EnableNeighborWindow()
-		slog.Info("ADR-0060: neighbor-window expansion ENABLED")
-	}
-	if cfg.Execution.Retrieval.DocumentCompletionEnabled {
-		mem.QueryService.EnableDocumentCompletion(cfg.Execution.Retrieval.DocumentCompletionDocuments, cfg.Execution.Retrieval.DocumentCompletionMaxChunks)
-		slog.Info("ENG-430: document/session completion ENABLED",
-			"documents", cfg.Execution.Retrieval.DocumentCompletionDocuments, "max_chunks", cfg.Execution.Retrieval.DocumentCompletionMaxChunks)
-	}
-	if cfg.Execution.Retrieval.ChronologicalContextEnabled {
-		mem.QueryService.EnableChronologicalContext()
-		slog.Info("ADR-0134 D5a: chronological answer context ENABLED (passages ordered and dated by event time)")
-	}
-	if cfg.Execution.Retrieval.RerankerEnabled {
-		mem.QueryService.EnableReranker(
-			&subnetwork.RerankerDispatcher{Caller: meta.AgentTransport, AgentID: "reranker_agent"},
-			cfg.Execution.Retrieval.RerankerTopK,
-			cfg.Execution.Retrieval.RerankerWeight,
-		)
-		slog.Info("ADR-0054: Stage-B cross-encoder rerank ENABLED",
-			"top_k", cfg.Execution.Retrieval.RerankerTopK, "w_bge", cfg.Execution.Retrieval.RerankerWeight)
+	// ENG-1320: the recall lanes that call system agents through the agent transport
+	// (Stage-B rerank via the reranker_agent, the agentic query-planner via the
+	// retrieval_agent). The transport belongs to the metabolism stack, which is built
+	// from the memory stack, so they are attached here, once, by the kernel; every
+	// other lane was composed inside NewMemoryStack. Each dispatcher is used only when
+	// its flag is on (ComposeLateRetrieval reads execution.retrieval).
+	kernel.ComposeLateRetrieval(mem, cfg.Execution, kernel.LateRetrievalDeps{
+		Reranker: &subnetwork.RerankerDispatcher{Caller: meta.AgentTransport, AgentID: "reranker_agent"},
+		Planner: &subnetwork.RetrievalDispatcher{
+			Caller:  meta.AgentTransport,
+			AgentID: "retrieval_agent",
+			Gateway: llmGateway,
+			// An explicit generator id overrides; "" (default) ⇒ the retrieval_planner
+			// role, falling back to memory, read per call (ENG-329). A FAST model
+			// matters on the hot path.
+			Model:     cfg.Execution.Retrieval.AgenticPlannerModel,
+			RoleModel: retrievalPlannerRole(llmProvider),
+		},
+	})
+	if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
+		warnUndeclaredPlannerModel(cfg.Execution.Retrieval.AgenticPlannerModel, cfg.LLMProvider.Generators)
 	}
 
 	// Experiential memory removed: the EpisodicExtractor + MemoryLifecycleManager
@@ -2194,7 +2078,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 				&subnetwork.DoclingDispatcher{Caller: meta.AgentTransport},
 				vec.StructureGraphStore(),
 			)
-			mem.QueryService.EnableSectionScopedRetrieval(vec)
+			// The query-side section boost is composed in NewMemoryStack (ENG-1320).
 			slog.Info("ADR-0060: structure-aware ingestion ENABLED (docling parse -> structure graph)")
 		}
 		// ADR-0105: the knowledge substrate's evidence foundation. Opt-in. Every
@@ -2684,29 +2568,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Tier 0: see the AGENTS.md §2.2 note on toolIndexer above (ADR-0044 D3).
 	cambrianServer.ToolExecutor.Retriever = domain.VectorToolRetriever{
 		Store: toolIndexStore, Embedder: embedder, Floor: cfg.Execution.Tools.ToolRetrievalFloor,
-	}
-
-	// AGENTIC_RETRIEVAL_SPEC Phase 2a: wire the LLM query-planner (retrieval_agent)
-	// as the QueryService's Planner — invoked directly via the agent transport (no
-	// selection) with a managed LLM session, the same privileged-organ + session
-	// privileged-organ pattern. Default off; fail-open to the single pass when the
-	// agent is unreachable or the config flag is unset.
-	if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
-		mem.QueryService.EnableAgenticRetrieval(&subnetwork.RetrievalDispatcher{
-			Caller:  meta.AgentTransport,
-			AgentID: "retrieval_agent",
-			Gateway: llmGateway,
-			// An explicit generator id overrides; "" (default) ⇒ the retrieval_planner
-			// role, falling back to memory, read per call (ENG-329). A FAST model
-			// matters on the hot path.
-			Model:     cfg.Execution.Retrieval.AgenticPlannerModel,
-			RoleModel: retrievalPlannerRole(llmProvider),
-		}, cfg.Execution.Retrieval.AgenticMaxHops)
-		mem.QueryService.SetDecomposeEnabled(cfg.Execution.Retrieval.AgenticDecomposeEnabled)
-		mem.QueryService.SetSubQuestionConcurrency(cfg.Execution.Retrieval.AgenticSubQuestionConcurrency)
-		mem.QueryService.SetAdaptiveRoutesEnabled(cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled) // ADR-0135
-		warnUndeclaredPlannerModel(cfg.Execution.Retrieval.AgenticPlannerModel, cfg.LLMProvider.Generators)
-		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled, "subquestion_concurrency", cfg.Execution.Retrieval.AgenticSubQuestionConcurrency, "adaptive_routes", cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled)
 	}
 
 	// ADR-0053 D2 (revised): route write-time chunk-triplet extraction through the

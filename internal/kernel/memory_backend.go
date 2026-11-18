@@ -42,6 +42,10 @@ type MemoryBackend struct {
 	Lexical memory.LexicalSearcher
 	// Documents is the ADR-0093 source-document row store (wrapped, never handed over).
 	Documents domain.DocumentStore
+	// RankSignals backs the ADR-0054 Stage-A blend (chunk PageRank, mean confidence).
+	RankSignals memory.RankSignalStore
+	// Sections backs the ADR-0060 section-scoped recall boost (structure graph).
+	Sections memory.SectionScopedStore
 	// Eraser is the RAW ADR-0137 memory eraser (postgres.PgErasureStore): one transaction
 	// that deletes documents, experiences, chunks, substrate items and evidence and leaves
 	// a content-free receipt. It is not bound by NewMemoryBackend because it is built over
@@ -67,6 +71,8 @@ func NewMemoryBackend(a *postgres.PgVectorAdapter) MemoryBackend {
 		ChunkTriplets: a,
 		Lexical:       a,
 		Documents:     a,
+		RankSignals:   a,
+		Sections:      a,
 	}
 }
 
@@ -92,6 +98,12 @@ func (b MemoryBackend) Missing() []string {
 	if b.Documents == nil {
 		out = append(out, "Documents")
 	}
+	if b.RankSignals == nil {
+		out = append(out, "RankSignals")
+	}
+	if b.Sections == nil {
+		out = append(out, "Sections")
+	}
 	return out
 }
 
@@ -104,6 +116,7 @@ func (b MemoryBackend) reportMissing() {
 	}
 	slog.Error("memory backend lacks required capabilities; their features are OFF "+
 		"(Graph: spreading/Hebbian/KG triplets; Experience: episode parents; ChunkTriplets: KG triplets/KG²RAG; "+
-		"Lexical: hybrid retrieval; Documents: ADR-0093 document rows)",
+		"Lexical: hybrid retrieval; Documents: ADR-0093 document rows; RankSignals: Stage-A blend; "+
+		"Sections: section-scoped recall)",
 		"missing", strings.Join(missing, ","))
 }

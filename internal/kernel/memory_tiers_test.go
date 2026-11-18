@@ -26,7 +26,7 @@ var (
 func TestMemoryStack_AccessorsHandOutTheTiers(t *testing.T) {
 	cfg := config.DefaultConfig()
 	raw := &docVec{}
-	mem := NewMemoryStack(MemoryBackend{Vector: raw}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	mem := NewMemoryStack(MemoryBackend{Vector: raw}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 
 	if _, ok := mem.Reader().(*authz.EnforcingVectorStore); !ok {
 		t.Errorf("Reader() is %T, want the tier-1 *authz.EnforcingVectorStore", mem.Reader())
@@ -48,7 +48,7 @@ func TestMemoryStack_AccessorsHandOutTheTiers(t *testing.T) {
 
 func TestMemoryStack_KernelArtifactStoreRequiresAnADR(t *testing.T) {
 	cfg := config.DefaultConfig()
-	mem := NewMemoryStack(MemoryBackend{Vector: &docVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	mem := NewMemoryStack(MemoryBackend{Vector: &docVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 	for _, reason := range []domain.ADRRef{"", "because", "adr-0044"} {
 		func() {
 			defer func() {
@@ -89,7 +89,7 @@ func TestPg_MemoryTiers_WritesClassifiedReadsEnforced(t *testing.T) {
 
 	const classified = "eng1476-classified"
 	mem := NewMemoryStack(NewMemoryBackend(vec), nil, nil, cfg.Execution, classifyAs{tags: []string{classified}},
-		cfg.Chunker, nil, FactSubstrate{})
+		cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 
 	stamp := time.Now().UTC().Format("150405.000000")
 	idWriter, idManager := "eng1476-writer-"+stamp, "eng1476-manager-"+stamp

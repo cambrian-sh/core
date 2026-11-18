@@ -46,7 +46,7 @@ type docCompletion struct {
 }
 
 // EnableDocumentCompletion turns completion on (execution.retrieval.
-// document_completion_*, wired in app.go). documents ≤ 0 ⇒ 1; maxChunks ≤ 0 ⇒ 24.
+// document_completion_*, wired in kernel.NewMemoryStack). documents ≤ 0 ⇒ 1; maxChunks ≤ 0 ⇒ 24.
 func (q *QueryService) EnableDocumentCompletion(documents, maxChunks int) {
 	if documents <= 0 {
 		documents = defaultCompletionDocuments

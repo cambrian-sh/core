@@ -70,7 +70,7 @@ func TestPg_Composition_EveryCapabilityTypedAndSessionCeilingEnforced(t *testing
 	if m := backend.Missing(); len(m) != 0 {
 		t.Fatalf("production backend lacks %v", m)
 	}
-	mem := NewMemoryStack(backend, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	mem := NewMemoryStack(backend, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 	if mem.Agent.ExperienceStore == nil {
 		t.Error("Experience capability did not reach the memory agent")
 	}

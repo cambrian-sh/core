@@ -139,7 +139,7 @@ func run() error {
 			EmbedModelID:   cfg.Embedder.Model,
 			AssessorModel:  assessor,
 			GeneratorModel: kernel.FactsGeneratorModel(cfg.LLMProvider, llmProvider.Roles()),
-		})
+		}, kernel.RetrievalDeps{})
 	if mem.FactBackfill == nil {
 		return memory.ErrFactBackfillUnavailable
 	}

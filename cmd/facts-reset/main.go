@@ -98,7 +98,7 @@ func run() error {
 		Store:    ks,
 		Reader:   postgres.NewPgFactItemReader(ks, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions),
 		Resetter: ks,
-	})
+	}, kernel.RetrievalDeps{})
 	if mem.FactReset == nil {
 		return errors.New("no fact reset in this memory stack")
 	}

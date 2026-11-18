@@ -125,7 +125,7 @@ const defaultCalibratedHalfLife = 2160 * time.Hour
 // scored 1 however weakly it was connected.
 const coherenceCap = 1.0
 
-// SetRankingV2 installs the ADR-0136 switches. Set once at composition (app.go,
+// SetRankingV2 installs the ADR-0136 switches. Set once at composition (kernel.NewMemoryStack,
 // next to EnableBlend), before the service serves; a ranking option, not a
 // control, so a post-construction setter is the existing pattern here
 // (SetRecencyCurve), not an AGENTS.md §2.3 enforcement seam.

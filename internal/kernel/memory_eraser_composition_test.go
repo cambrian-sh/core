@@ -41,12 +41,12 @@ func TestNewMemoryStack_ExposesOnlyTheEnforcingEraser(t *testing.T) {
 	if cfg.Execution.Erasure.Enabled {
 		t.Fatal("execution.erasure.enabled must default to false (ADR-0137 D10)")
 	}
-	if NewMemoryStack(b, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}).Eraser() != nil {
+	if NewMemoryStack(b, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{}).Eraser() != nil {
 		t.Fatal("erasure off must mean no eraser")
 	}
 
 	cfg.Execution.Erasure.Enabled = true
-	mem := NewMemoryStack(b, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	mem := NewMemoryStack(b, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 	if _, ok := mem.Eraser().(*authz.EnforcingEraser); !ok {
 		t.Fatalf("Eraser() = %T, want the enforcing decorator", mem.Eraser())
 	}
@@ -68,7 +68,7 @@ func TestNewMemoryStack_ExposesOnlyTheEnforcingEraser(t *testing.T) {
 			}
 		}
 	}
-	if NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}).Eraser() != nil {
+	if NewMemoryStack(MemoryBackend{Vector: plainVec{}}, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{}).Eraser() != nil {
 		t.Fatal("no backend eraser must mean no eraser")
 	}
 }

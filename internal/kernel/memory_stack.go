@@ -105,7 +105,13 @@ type MemoryStack struct {
 // domain.VectorStore for the graph, experience, triplet and document capabilities
 // (ENG-1504): an absent capability is now a compile error in production and an Error
 // line for a hand-built partial backend, never a silent feature switch-off.
-func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig, authorizer domain.Authorizer, chunkerCfg config.ChunkerConfig, factGen domain.Generator, facts FactSubstrate) *MemoryStack {
+//
+// retrieval carries the recall lanes' remaining dependencies (the plugin hooks and the
+// embedder identity). Every QueryService lane whose inputs are configuration, a backend
+// capability or a RetrievalDeps hook is composed HERE (composeRetrieval, ENG-1320);
+// only the lanes that call system agents through the agent transport, which is built
+// after this stack, are attached later by ComposeLateRetrieval.
+func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig, authorizer domain.Authorizer, chunkerCfg config.ChunkerConfig, factGen domain.Generator, facts FactSubstrate, retrieval RetrievalDeps) *MemoryStack {
 	// ADR-0085: every read passes the fail-closed read chokepoint and every write
 	// passes the classification chokepoint — including LLM-driven writes. There is
 	// no "trusted in-process" carve-out: process membership does not constrain a
@@ -280,6 +286,10 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 				execCfg.Retrieval.HebbianDecayPerDay, execCfg.Retrieval.HebbianBaseWeight, execCfg.Retrieval.HebbianTopN)
 		}
 	}
+	// ENG-1320: the remaining config-and-store recall lanes (decision observer,
+	// substrate consultant, KG²RAG, Stage-A blend, ranking v2, hybrid, neighbour
+	// window, document completion, chronological context, section scoping).
+	composeRetrieval(queryService, execCfg, backend, retrieval)
 
 	// ADR-0028: ingestion pipeline. (Its SceneGenerator was deleted 2026-11-05 with
 	// scenes — decisions/scenes-cancelled.md.)

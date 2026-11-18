@@ -18,7 +18,7 @@ import (
 // an evidence-bound reader can hurt it (failure archaeology E7), so it is turned on
 // only with a recorded A/B (ADR-0134 D5).
 
-// EnableChronologicalContext turns D5a on (wired from config in app.go).
+// EnableChronologicalContext turns D5a on (wired from config in kernel.NewMemoryStack).
 func (q *QueryService) EnableChronologicalContext() { q.chronoContext = true }
 
 // synthesisContext returns the rows the reader will cite, in the order it sees them,

@@ -69,7 +69,7 @@ func TestPg_Forget_EndToEndThroughBothPlanes(t *testing.T) {
 	backend := NewMemoryBackend(vec)
 	backend.Eraser = postgres.NewPgErasureStore(postgres.NewPgDocumentLifecycle(postgres.NewPgKnowledgeStore(vec.Pool(), nil)),
 		postgres.WithErasureObserver(obs))
-	mem := NewMemoryStack(backend, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{})
+	mem := NewMemoryStack(backend, nil, nil, cfg.Execution, nil, cfg.Chunker, nil, FactSubstrate{}, RetrievalDeps{})
 	if mem.Eraser() == nil {
 		t.Fatal("erasure enabled but MemoryStack.Eraser() is nil")
 	}
@@ -304,7 +304,7 @@ func newGateWith(t *testing.T, eraserOpts ...postgres.ErasureStoreOption) *gate 
 	backend.Eraser = eraser
 	emb := hashEmbedder{dim: cfg.Embedder.Dimensions}
 	mem := NewMemoryStack(backend, nil, emb, cfg.Execution, nil, cfg.Chunker, nil,
-		FactSubstrate{Store: ks, Reader: reader, Inspector: reader, EmbedModelID: "gate-model", Documents: lifecycle})
+		FactSubstrate{Store: ks, Reader: reader, Inspector: reader, EmbedModelID: "gate-model", Documents: lifecycle}, RetrievalDeps{})
 	if mem.Eraser() == nil || mem.FactReader == nil || mem.FactWriter == nil || mem.FactInspector == nil {
 		t.Fatal("the composed stack lacks the eraser or the fact chokepoints")
 	}
