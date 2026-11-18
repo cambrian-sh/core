@@ -90,5 +90,4 @@ func (b *Bridge) OnSchemaMismatch(agentID, kind string) {
 }
 
 func (b *Bridge) OnPlanCompleted(_ domain.PlanEvent)                       {}
-func (b *Bridge) OnRetrievalCompleted(_ domain.RetrievalSession)           {}
 func (b *Bridge) OnContradictionResolved(_ domain.ContradictionResolution) {}

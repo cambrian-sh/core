@@ -14,17 +14,16 @@ import (
 
 // Compile-time interface assertions.
 var (
-	_ domain.AgentRegistry          = (*AgentRepoDecorator)(nil)
-	_ LegacyArtifactSource          = (*AgentRepoDecorator)(nil)
-	_ domain.AgentUpdater           = (*AgentRepoDecorator)(nil)
-	_ domain.AgentPruner            = (*AgentRepoDecorator)(nil)
-	_ aggregator.TaskEventReader    = (*AgentRepoDecorator)(nil)
-	_ executer.TaskEventWriter      = (*AgentRepoDecorator)(nil)
-	_ session.SessionRepository     = (*AgentRepoDecorator)(nil)
-	_ domain.PlanEventWriter        = (*AgentRepoDecorator)(nil)
-	_ domain.RetrievalSessionLogger = (*AgentRepoDecorator)(nil)
-	_ domain.TraversalLogger        = (*AgentRepoDecorator)(nil)
-	_ domain.ContradictionLogger    = (*AgentRepoDecorator)(nil)
+	_ domain.AgentRegistry       = (*AgentRepoDecorator)(nil)
+	_ LegacyArtifactSource       = (*AgentRepoDecorator)(nil)
+	_ domain.AgentUpdater        = (*AgentRepoDecorator)(nil)
+	_ domain.AgentPruner         = (*AgentRepoDecorator)(nil)
+	_ aggregator.TaskEventReader = (*AgentRepoDecorator)(nil)
+	_ executer.TaskEventWriter   = (*AgentRepoDecorator)(nil)
+	_ session.SessionRepository  = (*AgentRepoDecorator)(nil)
+	_ domain.PlanEventWriter     = (*AgentRepoDecorator)(nil)
+	_ domain.TraversalLogger     = (*AgentRepoDecorator)(nil)
+	_ domain.ContradictionLogger = (*AgentRepoDecorator)(nil)
 )
 
 // AgentRepoDecorator wraps storage.BBoltAdapter and maps DTOs to domain entities.
@@ -282,17 +281,6 @@ func (d *AgentRepoDecorator) ListRunsForSession(ctx context.Context, sessionID d
 func (d *AgentRepoDecorator) WritePlanEvent(event domain.PlanEvent) error {
 	rec := d.mapper.PlanEventToRecord(event)
 	return d.store.WritePlanEventRecord(rec)
-}
-
-// ── domain.RetrievalSessionLogger ────────────────────────────────────────────
-
-func (d *AgentRepoDecorator) LogRetrieval(session domain.RetrievalSession) error {
-	rec := d.mapper.RetrievalSessionToRecord(session)
-	return d.store.WriteRetrievalSessionRecord(rec)
-}
-
-func (d *AgentRepoDecorator) LinkToPlanOutcome(sessionID string, planID string, outcome domain.PlanOutcome) error {
-	return d.store.UpdateRetrievalSessionPlanOutcome(sessionID, planID, string(outcome))
 }
 
 // ── domain.TraversalLogger ───────────────────────────────────────────────────

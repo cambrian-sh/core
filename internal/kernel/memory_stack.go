@@ -208,7 +208,7 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 
 	// ADR-0016: Cross-session workspace enrichment.
 	// ENG-465: priming reads as the planning principal through the QueryService.
-	ws := memory.NewWorkspaceStage(queryService, embed, gen,
+	ws := memory.NewWorkspaceStage(queryService, gen,
 		execCfg.Workspace.WorkspacePlanningSlots, execCfg.Workspace.WorkspaceExecutionSlots,
 		execCfg.Retrieval.RetrievalFloor)
 

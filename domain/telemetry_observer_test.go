@@ -29,11 +29,6 @@ func TestNoopTelemetryObserver_AllMethodsNoPanic(t *testing.T) {
 		Outcome: domain.PlanOutcomeSuccess,
 	})
 
-	obs.OnRetrievalCompleted(domain.RetrievalSession{
-		SessionID: "ret-1",
-		Query:     "test query",
-	})
-
 	obs.OnContradictionResolved(domain.ContradictionResolution{
 		ResolutionID: "cr-1",
 		DocAID:       "doc-a",

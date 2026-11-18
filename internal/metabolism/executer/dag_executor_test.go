@@ -1161,7 +1161,6 @@ func (o *testObserver) OnSessionEvicted(_ string)                               
 func (o *testObserver) OnConwipWait(_ int64)                                     {}
 func (o *testObserver) OnSchemaMismatch(_, _ string)                             {}
 func (o *testObserver) OnPlanCompleted(_ domain.PlanEvent)                       {}
-func (o *testObserver) OnRetrievalCompleted(_ domain.RetrievalSession)           {}
 func (o *testObserver) OnContradictionResolved(_ domain.ContradictionResolution) {}
 
 func TestDAGExecutor_ObserverOnTaskCompletedCalled(t *testing.T) {

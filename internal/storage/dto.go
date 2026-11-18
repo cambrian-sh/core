@@ -131,32 +131,6 @@ type PlanEventRecord struct {
 	PlannerPromptVersion  string  `json:"planner_prompt_version,omitempty"`
 }
 
-// RetrievedDocRecord is a single retrieved document in a RetrievalSessionRecord.
-type RetrievedDocRecord struct {
-	DocID              string  `json:"doc_id"`
-	Score              float64 `json:"score"`
-	ActivationStrength float64 `json:"activation_strength"`
-	DocType            string  `json:"doc_type"`
-	Rank               int     `json:"rank"`
-}
-
-// RetrievalSessionRecord is the raw JSON shape stored in the bbolt retrieval_sessions bucket.
-type RetrievalSessionRecord struct {
-	SessionID      string    `json:"session_id"`
-	Query          string    `json:"query"`
-	QueryEmbedding []float32 `json:"query_embedding,omitempty"`
-	Caller         string    `json:"caller"`
-	// `scene_hits` removed 2026-11-05 with scene priming; stored records keep the key,
-	// which decoding ignores.
-	FactHits        int                  `json:"fact_hits"`
-	RetrievedDocs   []RetrievedDocRecord `json:"retrieved_docs"`
-	Truncated       bool                 `json:"truncated"`
-	PlanID          string               `json:"plan_id,omitempty"`
-	PlanOutcome     string               `json:"plan_outcome,omitempty"`
-	ExplorationSlot bool                 `json:"exploration_slot"`
-	Timestamp       string               `json:"timestamp"`
-}
-
 // TraversalLogEntryRecord is the raw JSON shape stored in the bbolt traversal_log bucket.
 type TraversalLogEntryRecord struct {
 	EntryID           string  `json:"entry_id"`

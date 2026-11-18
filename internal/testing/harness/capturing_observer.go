@@ -14,7 +14,6 @@ type CapturingTelemetryObserver struct {
 	ConwipWaits              []int64
 	SchemaMismatches         []struct{ AgentID, Kind string }
 	PlanCompletedEvents      []domain.PlanEvent
-	RetrievalSessions        []domain.RetrievalSession
 	ContradictionResolutions []domain.ContradictionResolution
 }
 
@@ -46,12 +45,6 @@ func (o *CapturingTelemetryObserver) OnPlanCompleted(evt domain.PlanEvent) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.PlanCompletedEvents = append(o.PlanCompletedEvents, evt)
-}
-
-func (o *CapturingTelemetryObserver) OnRetrievalCompleted(session domain.RetrievalSession) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.RetrievalSessions = append(o.RetrievalSessions, session)
 }
 
 func (o *CapturingTelemetryObserver) OnContradictionResolved(res domain.ContradictionResolution) {

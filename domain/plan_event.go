@@ -40,39 +40,6 @@ type PlanEventWriter interface {
 	WritePlanEvent(event PlanEvent) error
 }
 
-// RetrievedDoc is a single document retrieved during a WorkspaceStage query.
-type RetrievedDoc struct {
-	DocID              string  `json:"doc_id"`
-	Score              float64 `json:"score"`
-	ActivationStrength float64 `json:"activation_strength"`
-	DocType            string  `json:"doc_type"`
-	Rank               int     `json:"rank"`
-}
-
-// RetrievalSession captures the full state of a WorkspaceStage retrieval,
-// including query embedding, retrieved documents, and retroactive plan linkage.
-type RetrievalSession struct {
-	SessionID      string    `json:"session_id"`
-	Query          string    `json:"query"`
-	QueryEmbedding []float32 `json:"query_embedding,omitempty"`
-	Caller         string    `json:"caller"` // "planning" or "execution"
-	// SceneHits (`scene_hits`) was removed 2026-11-05 with the WorkspaceStage scene
-	// priming; sessions logged before carry it and decode without it.
-	FactHits        int            `json:"fact_hits"`
-	RetrievedDocs   []RetrievedDoc `json:"retrieved_docs"`
-	Truncated       bool           `json:"truncated"`
-	PlanID          string         `json:"plan_id,omitempty"`      // linked post-execution
-	PlanOutcome     PlanOutcome    `json:"plan_outcome,omitempty"` // retroactively updated
-	ExplorationSlot bool           `json:"exploration_slot"`
-	Timestamp       time.Time      `json:"timestamp"`
-}
-
-// RetrievalSessionLogger logs retrieval sessions and retroactively links them to plan outcomes.
-type RetrievalSessionLogger interface {
-	LogRetrieval(session RetrievalSession) error
-	LinkToPlanOutcome(sessionID string, planID string, outcome PlanOutcome) error
-}
-
 // TraversalLogEntry records a single BFS edge traversal by SpreadingEngine.
 type TraversalLogEntry struct {
 	EntryID           string      `json:"entry_id"`

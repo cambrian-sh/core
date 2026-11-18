@@ -71,7 +71,7 @@ func planningCtx() context.Context {
 func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(2)}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForPlanning(planningCtx(), "auth deployment")
 	if err != nil {
@@ -89,7 +89,7 @@ func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
 func TestWorkspaceStage_LanesReadUnderTheDecidedScopes(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(1)}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
 	if _, err := ws.PrimeForPlanning(planningCtx(), "auth deployment"); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestWorkspaceStage_LanesReadUnderTheDecidedScopes(t *testing.T) {
 func TestWorkspaceStage_NoPrincipalNoPriming(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(3)}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
 	got, err := ws.PrimeForPlanning(context.Background(), "auth deployment")
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func TestWorkspaceStage_NegativesInEnrichment(t *testing.T) {
 		domain.DocTypeMnemonicFact: factDocs(1),
 		domain.DocTypeNegativeEdge: negs,
 	}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForPlanning(planningCtx(), "some query")
 	if err != nil {
@@ -172,7 +172,7 @@ func TestWorkspaceStage_FloorsTestRawCosineOnly(t *testing.T) {
 		{Document: domain.Document{ID: "lexical"}, RawScore: 0},
 	}
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: hits}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.3)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.3)
 	ws.MinFactCosine = 0.6
 	got, err := ws.PrimeForPlanning(planningCtx(), "q")
 	if err != nil {
@@ -191,7 +191,7 @@ func TestWorkspaceStage_FloorsTestRawCosineOnly(t *testing.T) {
 func TestWorkspaceStage_SlotLimit(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(8)}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 3, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 3, 0.2)
 
 	result, err := ws.PrimeForExecution(planningCtx(), &domain.ExecutionPlan{Subject: "test"}, nil)
 	if err != nil {
@@ -207,7 +207,7 @@ func TestWorkspaceStage_SlotLimit(t *testing.T) {
 func TestWorkspaceStage_EmptyAndFailingLanes(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{failType: domain.DocTypeNegativeEdge}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForPlanning(planningCtx(), "unknown query")
 	if err != nil {
@@ -222,7 +222,7 @@ func TestWorkspaceStage_EmptyAndFailingLanes(t *testing.T) {
 func TestWorkspaceStage_ExecutionSlots(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(10)}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForExecution(planningCtx(), &domain.ExecutionPlan{Subject: "test"}, nil)
 	if err != nil {
@@ -237,7 +237,7 @@ func TestWorkspaceStage_ExecutionSlots(t *testing.T) {
 func TestWorkspaceStage_NoScenePriming(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(2)}}
-	ws := NewWorkspaceStage(rec, &fakeEmbedder{}, nil, 10, 5, 0.2)
+	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
 	if _, err := ws.PrimeForPlanning(planningCtx(), "auth deployment"); err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
 	}

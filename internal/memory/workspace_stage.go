@@ -2,11 +2,8 @@ package memory
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"log/slog"
-	"math/big"
-	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -37,15 +34,11 @@ type PrincipalRecall interface {
 // that those two kinds must hold no personal content. (Scenes, the fourth lane the
 // decision names, were deleted 2026-11-05.)
 type WorkspaceStageImpl struct {
-	Recall PrincipalRecall
-	// Embedder embeds the query for the ADR-0021 retrieval-session log only
-	// (QueryEmbedding), through the shared embedQuery helper.
-	Embedder               domain.Embedder
-	Generator              domain.Generator
-	PlanningSlots          int
-	ExecutionSlots         int
-	RetrievalFloor         float64
-	RetrievalSessionLogger domain.RetrievalSessionLogger // ADR-0021: may be nil
+	Recall         PrincipalRecall
+	Generator      domain.Generator
+	PlanningSlots  int
+	ExecutionSlots int
+	RetrievalFloor float64
 	// MinFactCosine is the minimum raw cosine similarity (pre-floor-multiplier) a FACT
 	// document must have against the query to be injected into the Planner prompt.
 	// Default 0.60; wired from config.WorkspaceMinFactCosine at composition root.
@@ -66,7 +59,6 @@ type WorkspaceStageImpl struct {
 // NewWorkspaceStage creates a new WorkspaceStageImpl.
 func NewWorkspaceStage(
 	recall PrincipalRecall,
-	embedder domain.Embedder,
 	gen domain.Generator,
 	planningSlots, executionSlots int,
 	retrievalFloor float64,
@@ -82,7 +74,6 @@ func NewWorkspaceStage(
 	}
 	return &WorkspaceStageImpl{
 		Recall:         recall,
-		Embedder:       embedder,
 		Generator:      gen,
 		PlanningSlots:  planningSlots,
 		ExecutionSlots: executionSlots,
@@ -256,41 +247,10 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 			"workspace_slots_truncated", true, "available_docs", len(results), "slots", slots, "caller", caller)
 	}
 
-	// ADR-0021: Log retrieval session for deferred LTR / nDCG@K data collection.
-	if w.RetrievalSessionLogger != nil {
-		retrievedDocs := make([]domain.RetrievedDoc, len(results))
-		for i, r := range results {
-			retrievedDocs[i] = domain.RetrievedDoc{
-				DocID:              r.Document.ID,
-				Score:              r.Score,
-				ActivationStrength: r.Document.ActivationStrength,
-				DocType:            r.Document.DocumentType,
-				Rank:               i + 1,
-			}
-		}
-		isExploration := false
-		if n, err := rand.Int(rand.Reader, big.NewInt(100)); err == nil && n.Int64() < 5 {
-			isExploration = true
-		}
-		var queryVec []float32
-		if w.Embedder != nil {
-			queryVec, _ = embedQuery(ctx, w.Embedder, query) // best-effort: the log row is kept without it
-		}
-		session := domain.RetrievalSession{
-			SessionID:       fmt.Sprintf("ret-%d", time.Now().UnixNano()),
-			Query:           query,
-			QueryEmbedding:  queryVec,
-			Caller:          caller,
-			FactHits:        factHits,
-			RetrievedDocs:   retrievedDocs,
-			Truncated:       truncated,
-			ExplorationSlot: isExploration,
-			Timestamp:       time.Now(),
-		}
-		if err := w.RetrievalSessionLogger.LogRetrieval(session); err != nil {
-			slog.Warn("WorkspaceStage: failed to log retrieval session", "caller", caller, "err", err)
-		}
-	}
+	// The ADR-0021 retrieval-session log (query text, its embedding and the retrieved
+	// doc ids, for deferred LTR) was deleted 2026-11-18 (ENG-2019): its logger was
+	// never wired, ADR-0021 is deprecated (owner, 2026-10-31), and a log of query text
+	// would be one more store outside ADR-0137 erasure.
 
 	slog.Info("WorkspaceStage: enrichment complete",
 		"caller", caller, "workspace_cold_start", false, "fact_hits", len(results))

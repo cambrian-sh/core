@@ -9,7 +9,6 @@ type TelemetryObserver interface {
 	OnConwipWait(durationMs int64)
 	OnSchemaMismatch(agentID, kind string)
 	OnPlanCompleted(event PlanEvent)
-	OnRetrievalCompleted(session RetrievalSession)
 	OnContradictionResolved(resolution ContradictionResolution)
 }
 
@@ -22,7 +21,6 @@ func (NoopTelemetryObserver) OnSessionEvicted(_ string)                         
 func (NoopTelemetryObserver) OnConwipWait(_ int64)                              {}
 func (NoopTelemetryObserver) OnSchemaMismatch(_, _ string)                      {}
 func (NoopTelemetryObserver) OnPlanCompleted(_ PlanEvent)                       {}
-func (NoopTelemetryObserver) OnRetrievalCompleted(_ RetrievalSession)           {}
 func (NoopTelemetryObserver) OnContradictionResolved(_ ContradictionResolution) {}
 
 var _ TelemetryObserver = NoopTelemetryObserver{}

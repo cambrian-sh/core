@@ -301,60 +301,6 @@ func (m *AgentMapper) PlanEventToDomain(rec storage.PlanEventRecord) domain.Plan
 	}
 }
 
-// RetrievalSessionToRecord converts a domain RetrievalSession to a storage RetrievalSessionRecord.
-func (m *AgentMapper) RetrievalSessionToRecord(session domain.RetrievalSession) storage.RetrievalSessionRecord {
-	docs := make([]storage.RetrievedDocRecord, len(session.RetrievedDocs))
-	for i, d := range session.RetrievedDocs {
-		docs[i] = storage.RetrievedDocRecord{
-			DocID:              d.DocID,
-			Score:              d.Score,
-			ActivationStrength: d.ActivationStrength,
-			DocType:            d.DocType,
-			Rank:               d.Rank,
-		}
-	}
-	return storage.RetrievalSessionRecord{
-		SessionID:       session.SessionID,
-		Query:           session.Query,
-		QueryEmbedding:  session.QueryEmbedding,
-		Caller:          session.Caller,
-		FactHits:        session.FactHits,
-		RetrievedDocs:   docs,
-		Truncated:       session.Truncated,
-		PlanID:          session.PlanID,
-		PlanOutcome:     string(session.PlanOutcome),
-		ExplorationSlot: session.ExplorationSlot,
-		Timestamp:       session.Timestamp.Format(time.RFC3339Nano),
-	}
-}
-
-// RetrievalSessionToDomain converts a storage RetrievalSessionRecord to a domain RetrievalSession.
-func (m *AgentMapper) RetrievalSessionToDomain(rec storage.RetrievalSessionRecord) domain.RetrievalSession {
-	docs := make([]domain.RetrievedDoc, len(rec.RetrievedDocs))
-	for i, d := range rec.RetrievedDocs {
-		docs[i] = domain.RetrievedDoc{
-			DocID:              d.DocID,
-			Score:              d.Score,
-			ActivationStrength: d.ActivationStrength,
-			DocType:            d.DocType,
-			Rank:               d.Rank,
-		}
-	}
-	return domain.RetrievalSession{
-		SessionID:       rec.SessionID,
-		Query:           rec.Query,
-		QueryEmbedding:  rec.QueryEmbedding,
-		Caller:          rec.Caller,
-		FactHits:        rec.FactHits,
-		RetrievedDocs:   docs,
-		Truncated:       rec.Truncated,
-		PlanID:          rec.PlanID,
-		PlanOutcome:     domain.PlanOutcome(rec.PlanOutcome),
-		ExplorationSlot: rec.ExplorationSlot,
-		Timestamp:       parseTime(rec.Timestamp),
-	}
-}
-
 // TraversalLogEntryToRecord converts a domain TraversalLogEntry to a storage TraversalLogEntryRecord.
 func (m *AgentMapper) TraversalLogEntryToRecord(entry domain.TraversalLogEntry) storage.TraversalLogEntryRecord {
 	return storage.TraversalLogEntryRecord{

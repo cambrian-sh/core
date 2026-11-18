@@ -71,7 +71,11 @@ var watchConfigBucket = []byte("watch_configs")
 // definition to keep in step. Core's job here is durability, not meaning.
 var pipelineBucket = []byte("pipelines")
 var planEventBucket = []byte("plan_events")
-var retrievalSessionBucket = []byte("retrieval_sessions")
+
+// The ADR-0021 retrieval_sessions bucket is no longer created (ENG-2019): its
+// writer, the WorkspaceStage retrieval-session log, was never wired and is deleted
+// (ADR-0021 deprecated, owner 2026-10-31). A store created earlier keeps the
+// bucket, empty and unread; nothing else reads or writes that name.
 var traversalLogBucket = []byte("traversal_log")
 var contradictionResolutionBucket = []byte("contradiction_resolutions")
 var descRegex = regexp.MustCompile(`AGENT_DESCRIPTION\s*=\s*(?:"|')([^"']+)(?:"|')`)
@@ -197,8 +201,7 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 func createBuckets(tx *bbolt.Tx) error {
 	for _, name := range [][]byte{
 		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket, runBucket,
-		planEventBucket, retrievalSessionBucket,
-		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
+		planEventBucket, traversalLogBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
 		// REACT-01 (ADR-0061): durable reactive-execution buckets. The journal is
 		// the A2 per-stream parent; the legacy flat bucket is never created, only
 		// migrated (migrateReactiveJournal).
@@ -1312,70 +1315,6 @@ func (b *BBoltAdapter) ReadPlanEventRecord(planID string) (*PlanEventRecord, err
 		return nil, nil
 	}
 	return &rec, nil
-}
-
-// ── RetrievalSession ─────────────────────────────────────────────────────────
-
-func (b *BBoltAdapter) WriteRetrievalSessionRecord(session RetrievalSessionRecord) error {
-	data, err := json.Marshal(session)
-	if err != nil {
-		return fmt.Errorf("retrieval_session marshal: %w", err)
-	}
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(retrievalSessionBucket)
-		if bucket == nil {
-			return fmt.Errorf("retrieval_sessions bucket not found")
-		}
-		return bucket.Put([]byte(session.SessionID), data)
-	})
-}
-
-func (b *BBoltAdapter) ReadRetrievalSessionRecord(sessionID string) (*RetrievalSessionRecord, error) {
-	var rec RetrievalSessionRecord
-	found := false
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(retrievalSessionBucket)
-		if bucket == nil {
-			return nil
-		}
-		data := bucket.Get([]byte(sessionID))
-		if data == nil {
-			return nil
-		}
-		found = true
-		return json.Unmarshal(data, &rec)
-	})
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, nil
-	}
-	return &rec, nil
-}
-
-func (b *BBoltAdapter) UpdateRetrievalSessionPlanOutcome(sessionID, planID, outcome string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(retrievalSessionBucket)
-		if bucket == nil {
-			return fmt.Errorf("retrieval_sessions bucket not found")
-		}
-		data := bucket.Get([]byte(sessionID))
-		if data == nil {
-			return nil
-		}
-		var rec RetrievalSessionRecord
-		if err := json.Unmarshal(data, &rec); err != nil {
-			return err
-		}
-		rec.PlanID = planID
-		rec.PlanOutcome = outcome
-		updated, err := json.Marshal(rec)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(sessionID), updated)
-	})
 }
 
 // ── TraversalLogEntry ────────────────────────────────────────────────────────
