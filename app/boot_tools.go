@@ -437,6 +437,9 @@ func (b *kernelBuild) buildToolExecutor() error {
 	// ADR-0145 D4: calculation tools (execution.tools.calc_tools, default on since 2026-11-15),
 	// after the ledger so they read and record through it.
 	wireCalcTools(cfg, cambrianServer, cambrianServer.Calendar)
+	// ENG-2117: company_records, the read-only look-up of the company's typed records
+	// (execution.tools.company_records, default on), over the substrate's query plane.
+	wireCompanyRecords(cfg.Execution.Tools.CompanyRecords, cambrianServer, b.substrate)
 	// ADR-0137 D9 (ENG-411 stage C): forget_memory, the agent-facing two-phase forget
 	// over the same service as the PreviewForget/Forget RPCs. Offered on menus only with
 	// execution.erasure.enabled AND agent_erase_enabled (both default off).

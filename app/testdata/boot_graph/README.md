@@ -14,6 +14,9 @@ to a landed change is a wiring regression, not a golden to regenerate.
 
 History of golden updates:
 
+- ENG-2117: `KernelTools len=9` -> `len=10` and `+ company_records *records.tool`
+  (both goldens), the read-only company-records kernel tool wired by
+  `wireCompanyRecords` (execution.tools.company_records, default on).
 - ENG-2164: `+ PythonEnv` (KernelServices), added by a0d6c62 (ENG-2137, plugin
   daemon spawns wait until the Python env is ready) without regenerating the goldens.
 - ENG-2138: `+ Heartbeats` and the `daemon-heartbeat-watch` lifecycle (65bfdf5,

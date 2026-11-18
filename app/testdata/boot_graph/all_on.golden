@@ -214,7 +214,7 @@ Hooks: *domain.HookChain
 History: *domain.ActionHistory
 leaseCeiling: domain.leaseCeilings
 Ledger: *ledger.EvidenceNotifier
-KernelTools: []domain.KernelTool len=9
+KernelTools: []domain.KernelTool len=10
 argValidator: toolargs.Validator
 idempotency: nil
 ReturnLedgerRef: false
@@ -245,6 +245,7 @@ calc_date_add calc.dateAddTool
 calc_working_days calc.workingDaysTool
 calc_aggregate calc.aggregateTool
 calc_compare calc.compareTool
+company_records *records.tool
 forget_memory *forget.Tool
 run_subtasks *subtasks.Tool
 

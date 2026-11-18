@@ -1607,11 +1607,31 @@ type ToolsConfig struct {
 	// deadlines, totals and rule checks must not be computed by the model); an
 	// explicit false in any layer turns it off.
 	CalcTools bool `json:"calc_tools,omitempty"`
+	// CompanyRecords serves company_records (internal/records, ENG-2117): the
+	// read-only kernel tool over the company's typed records — observations,
+	// events and declared objects an ingress mapped (orders, deviations) —
+	// looked up by id, type and simple filters under the caller's own read
+	// predicate, on every agent's menu (no grant; it changes nothing).
+	CompanyRecords CompanyRecordsConfig `json:"company_records"`
 	// StagedInputs is how an execution tool (a tool whose MCP policy says
 	// staged_inputs, e.g. the code sandbox) sees a person's files: per call, in a
 	// temporary read-only folder of exactly the inputs the call named, each read
 	// under the caller's access (owner decision 2026-11-10, option C).
 	StagedInputs StagedInputsConfig `json:"staged_inputs"`
+}
+
+// CompanyRecordsConfig is execution.tools.company_records (internal/records,
+// ENG-2117, owner decision 2026-11-18). Every bound uses 0 ⇒ the tool's default.
+type CompanyRecordsConfig struct {
+	// Enabled puts company_records on every agent's menu (default true). No
+	// omitempty: an explicit false must survive a merge over the true default.
+	Enabled bool `json:"enabled"`
+	// MaxRows bounds one find listing (0 ⇒ 50; at most 1000).
+	MaxRows int `json:"max_rows,omitempty"`
+	// MaxEvents bounds the events one answer returns (0 ⇒ 50; at most 1000).
+	MaxEvents int `json:"max_events,omitempty"`
+	// MaxAttributes bounds the attributes one get reads (0 ⇒ 40).
+	MaxAttributes int `json:"max_attributes,omitempty"`
 }
 
 // OutboundIdentifierGuardConfig is execution.tools.outbound_identifier_guard.
@@ -3596,6 +3616,9 @@ func DefaultConfig() *Config {
 				// ADR-0145 D4 calculation tools, on by default (owner decision
 				// 2026-11-15, ENG-897; no prior A/B/A).
 				CalcTools: true,
+				// ENG-2117 company_records, on by default (owner decision
+				// 2026-11-18): a read under the caller's own predicate.
+				CompanyRecords: CompanyRecordsConfig{Enabled: true},
 			},
 			Supervision: SupervisionConfig{
 				ProfileAggregatorIntervalSeconds: 300,
@@ -4349,6 +4372,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Tools.RepeatedFailureStop < 0 {
 		errs = append(errs, "repeated_failure_stop must be >= 0 (0 or 1 disables it)")
+	}
+	if cr := c.Tools.CompanyRecords; cr.MaxRows < 0 || cr.MaxRows > 1000 || cr.MaxEvents < 0 || cr.MaxEvents > 1000 || cr.MaxAttributes < 0 {
+		errs = append(errs, "tools.company_records: max_rows and max_events must be in [0, 1000] and max_attributes >= 0 (0 uses the default)")
 	}
 	if c.Plan.CallerDeadlineReserveMs < 0 {
 		errs = append(errs, "caller_deadline_reserve_ms must be >= 0 (0 disables it)")
