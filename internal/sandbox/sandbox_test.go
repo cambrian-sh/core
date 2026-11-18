@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,28 @@ func runFixture(mode string, args []string) int {
 		}
 		fmt.Printf("started=%d pids=%s\n", started, strings.Join(pids, ","))
 		_, _ = io.Copy(io.Discard, os.Stdin)
+	case "forkhold": // ENG-2112: spawn sleepers like a fork bomb, then stay alive
+		for i := 0; i < 40; i++ {
+			c := exec.Command(os.Args[0], "fixture", "sleep")
+			_ = c.Start()
+			time.Sleep(20 * time.Millisecond)
+		}
+		time.Sleep(60 * time.Second)
+	case "fill": // ENG-2112: write args[0] MiB to TEMP in 1 MiB chunks, then stay alive
+		mb, _ := strconv.Atoi(args[0])
+		f, err := os.Create(filepath.Join(os.TempDir(), "fill.bin"))
+		if err != nil {
+			return 3
+		}
+		chunk := make([]byte, 1<<20)
+		for i := 0; i < mb; i++ {
+			if _, err := f.Write(chunk); err != nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		_ = f.Close()
+		time.Sleep(60 * time.Second)
 	case "net": // try to reach the internet
 		c, err := net.DialTimeout("tcp", "1.1.1.1:53", 3*time.Second)
 		if err == nil {

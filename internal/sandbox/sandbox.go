@@ -36,6 +36,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Tier is a containment tier. "system" (the kernel itself) is never a tier a
@@ -89,6 +90,10 @@ const (
 	// key file, data directories, the journal, the vault, other instances' work
 	// directories) cannot be READ (ADR-0157 D1). Wanted by the agent tiers only.
 	ControlHideState Control = "hide_state"
+	// ControlScratch: the instance's scratch directory (its workdir) is held
+	// under a size quota; reaching it kills the tree (ENG-2112). Watched by
+	// size accounting on every runner, for agent launches (StartCmd) only.
+	ControlScratch Control = "scratch_quota"
 )
 
 // on_unavailable values.
@@ -140,6 +145,25 @@ type TierPolicy struct {
 	CPUTimeSec      int
 	StallTimeoutSec int
 	MaxMessageKB    int
+	// MaxTasks is the Linux hard task ceiling (cgroup pids.max, `ulimit -u` in
+	// bubblewrap's user namespace, docker --pids-limit), which counts THREADS as
+	// well as processes: a torch agent runs dozens of threads in one process.
+	// 0 ⇒ MaxProcesses, as before (the MCP tiers). Agents set it apart from
+	// MaxProcesses, which the sandbox then holds as a PROCESS count — the
+	// Windows job's active-process limit, and the agent limit watch on Linux
+	// (ENG-2112).
+	MaxTasks int
+	// ScratchMB is the scratch (workdir) quota in MiB; 0 ⇒ none. Reaching it
+	// kills the tree (agent launches only, limits_watch.go; ENG-2112).
+	ScratchMB int
+}
+
+// taskCeiling is the Linux hard task ceiling: MaxTasks, else MaxProcesses.
+func (tp TierPolicy) taskCeiling() int {
+	if tp.MaxTasks > 0 {
+		return tp.MaxTasks
+	}
+	return tp.MaxProcesses
 }
 
 // ServerSpec is what one server declares about its own containment (config
@@ -200,6 +224,9 @@ type Policy struct {
 	// CgroupParent is a delegated cgroup v2 directory (Linux) under which each
 	// server gets its own cgroup (memory.max, pids.max). "" ⇒ none.
 	CgroupParent string
+	// LimitPoll is how often an agent launch's limit watch samples its scratch
+	// size (and, on Linux, its process tree) — limits_watch.go. 0 ⇒ 1 s.
+	LimitPoll time.Duration
 }
 
 // DefaultPolicy is the built-in policy: the documented config defaults. It is
@@ -392,6 +419,9 @@ func (tp TierPolicy) wanted() []Control {
 	}
 	if tp.HideState {
 		w = append(w, ControlHideState)
+	}
+	if tp.ScratchMB > 0 {
+		w = append(w, ControlScratch)
 	}
 	return w
 }

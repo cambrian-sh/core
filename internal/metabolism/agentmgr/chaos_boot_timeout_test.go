@@ -58,6 +58,12 @@ func TestMain(m *testing.M) {
 		runWorkRootKernel()
 		return
 	}
+	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "abuse" {
+		// ENG-2112 e2e: an agent that exceeds its sandbox limits
+		// (resource_limits_e2e_test.go).
+		runAbuseAgent()
+		return
+	}
 	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "token" {
 		// ADR-0157 S3: an agent that reports how its credential arrived
 		// (instance_token_test.go).

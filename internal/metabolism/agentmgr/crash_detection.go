@@ -76,7 +76,14 @@ func (m *AgentManager) handleDaemonExit(inst *domain.Instance, streamID string, 
 	if m.RestartPolicy == nil {
 		return // no restart policy → pre-REACT-04 behavior (stays down)
 	}
-	m.scheduleRestart(inst.AgentID, streamID, params, "crash-loop")
+	// ENG-2112: an instance the sandbox killed over a resource limit restarts
+	// under the same policy; the reason names the limit, so a quarantine says
+	// which one the daemon kept hitting.
+	reason := "crash-loop"
+	if lim := m.InstanceManager.limitKillOf(inst.ID); lim != "" {
+		reason = "sandbox limit: " + lim
+	}
+	m.scheduleRestart(inst.AgentID, streamID, params, reason)
 }
 
 // restartLifecycle owns the pending auto-restart goroutines (AGENTS.md §3.3: one

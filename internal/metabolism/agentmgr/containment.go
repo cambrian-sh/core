@@ -28,6 +28,10 @@ type AgentContainment struct {
 	ThirdPartyDegrade bool
 	// ThirdPartyMemoryMB is the third-party memory cap; 0 ⇒ 2048.
 	ThirdPartyMemoryMB int
+	// FirstPartyMemoryMB is the first-party (and system) memory cap under the
+	// agent sandbox (execution.agents.sandbox.first_party.memory_mb, ENG-2112);
+	// 0 ⇒ 8192. Without the sandbox the first-party launch is unchanged.
+	FirstPartyMemoryMB int
 	// Sandbox, when non-nil (execution.agents.sandbox.enabled), launches every
 	// agent of every tier through internal/sandbox with ADR-0157 D1
 	// confinement (agent_sandbox.go). nil keeps the launch exactly as before.
@@ -39,6 +43,22 @@ func (c AgentContainment) thirdPartyMemoryMB() int {
 		return c.ThirdPartyMemoryMB
 	}
 	return 2048
+}
+
+func (c AgentContainment) firstPartyMemoryMB() int {
+	if c.FirstPartyMemoryMB > 0 {
+		return c.FirstPartyMemoryMB
+	}
+	return 8192
+}
+
+// capAt is a tier cap with a smaller manifest or global limit applied: the
+// smaller wins, a larger one never lifts the tier's cap.
+func capAt(tierMB, ownMB int) int {
+	if ownMB > 0 && ownMB < tierMB {
+		return ownMB
+	}
+	return tierMB
 }
 
 // SetAgentContainment configures the per-tier agent containment.
@@ -81,8 +101,11 @@ func (im *InstanceManager) thirdPartyMissing() []string {
 }
 
 // admitLaunch decides whether an agent may start under its tier's containment
-// and returns its memory cap. First-party and system agents are unchanged
-// (the SEC-01 cap: manifest limit, else the global default). A third-party agent
+// and returns its memory cap. First-party and system agents get the SEC-01 cap
+// (manifest limit, else the global default; system organs uncapped) and, with
+// the agent sandbox on, the first-party tier cap above it (ENG-2112, owner
+// decision 2026-11-18: long-lived first-party workers are capped too; a
+// smaller SEC-01 limit still applies). A third-party agent
 // is refused while controls are missing, unless the operator chose degrade; then
 // it runs with the env allowlist and the tier memory cap (a smaller manifest
 // limit still applies; a larger one cannot lift the tier's).
@@ -95,17 +118,20 @@ func (im *InstanceManager) thirdPartyMissing() []string {
 // S5; network and hidden reads when it falls back to low integrity).
 func (im *InstanceManager) admitLaunch(ctx context.Context, def *domain.AgentDefinition) (memMB int, err error) {
 	if agentTrustTier(def) != agentTierThirdParty {
-		return im.spawnMemLimitMB(ctx, def), nil
+		own := im.spawnMemLimitMB(ctx, def)
+		if im.containment.Sandbox == nil {
+			return own, nil
+		}
+		if goruntime.GOOS == "linux" && domain.IsJSRuntime(def.Runtime) {
+			return 0, nil // RLIMIT_AS kills V8 at boot (spawnMemLimitMB)
+		}
+		return capAt(im.containment.firstPartyMemoryMB(), own), nil
 	}
 	if im.containment.Sandbox != nil {
 		if goruntime.GOOS == "linux" && domain.IsJSRuntime(def.Runtime) {
 			return 0, nil // RLIMIT_AS kills V8 at boot (spawnMemLimitMB)
 		}
-		memMB = im.containment.thirdPartyMemoryMB()
-		if m := im.spawnMemLimitMB(ctx, def); m > 0 && m < memMB {
-			memMB = m
-		}
-		return memMB, nil
+		return capAt(im.containment.thirdPartyMemoryMB(), im.spawnMemLimitMB(ctx, def)), nil
 	}
 	missing := im.thirdPartyMissing()
 	if !im.containment.ThirdPartyDegrade {

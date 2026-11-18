@@ -243,8 +243,8 @@ func dockerAgentArgs(p *Policy, spec Spec, tp TierPolicy, c Command, workdir str
 		m := strconv.Itoa(tp.MemoryMB) + "m"
 		args = append(args, "--memory", m, "--memory-swap", m)
 	}
-	if tp.MaxProcesses > 0 {
-		args = append(args, "--pids-limit", strconv.Itoa(tp.MaxProcesses))
+	if n := tp.taskCeiling(); n > 0 {
+		args = append(args, "--pids-limit", strconv.Itoa(n))
 	}
 	if tp.CPUTimeSec > 0 {
 		s := strconv.Itoa(tp.CPUTimeSec)

@@ -100,6 +100,10 @@ type InstanceManager struct {
 	// ID; taken exactly once (takeCapCleanup) by whichever comes first: a
 	// teardown path (detachLocked) or the process's exit (watchExitThen).
 	capCleanups map[string]func()
+	// limitKills holds why the sandbox killed an instance over a resource limit
+	// until its Wait goroutine moves it onto the processExit (ENG-2112). Lazily
+	// made; guarded by mu.
+	limitKills map[string]string
 	// outputs collects an exited sandboxed instance's out/ into the run ledger
 	// (ADR-0157 D5.1, agent_outputs.go). nil ⇒ out/ goes with the scratch.
 	outputs domain.AgentOutputCollector

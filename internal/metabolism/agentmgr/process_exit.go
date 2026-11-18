@@ -29,6 +29,9 @@ type processExit struct {
 	// Wait goroutine starts and never written again.
 	cmd     *exec.Cmd
 	agentID string
+	// limitKill is why the sandbox killed the child over a resource limit
+	// ("" if it did not; ENG-2112). Set before done closes, never after.
+	limitKill string
 }
 
 // watchExit starts the child's Wait goroutine and registers it under instanceID.
@@ -63,6 +66,7 @@ func (im *InstanceManager) watchExitThen(agentID, instanceID string, cmd *exec.C
 		if after != nil {
 			after()
 		}
+		pe.limitKill = im.takeLimitKill(instanceID)
 		close(pe.done)
 		im.mu.Lock()
 		if im.children[instanceID] == pe {
@@ -71,6 +75,39 @@ func (im *InstanceManager) watchExitThen(agentID, instanceID string, cmd *exec.C
 		im.mu.Unlock()
 	}()
 	return pe
+}
+
+// noteLimitKill records why the sandbox killed an instance over a resource
+// limit (ENG-2112). The sandboxed cleanup calls it; the instance's Wait
+// goroutine moves it onto its processExit (takeLimitKill) before the exit is
+// observable, so the map holds an entry only for that short window.
+func (im *InstanceManager) noteLimitKill(instanceID, reason string) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if im.limitKills == nil {
+		im.limitKills = map[string]string{}
+	}
+	im.limitKills[instanceID] = reason
+}
+
+func (im *InstanceManager) takeLimitKill(instanceID string) string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	r := im.limitKills[instanceID]
+	delete(im.limitKills, instanceID)
+	return r
+}
+
+// limitKillOf is why the sandbox killed an exited instance over a resource
+// limit ("" if it did not, or the exit is no longer tracked). Read it after
+// the exit channel closed.
+func (im *InstanceManager) limitKillOf(instanceID string) string {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if pe := im.exits[instanceID]; pe != nil {
+		return pe.limitKill
+	}
+	return ""
 }
 
 // forgetExit drops the registration after a failed boot (the goroutine itself

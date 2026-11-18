@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -113,6 +114,8 @@ func NewMetabolismStack(
 	manager.SetAgentContainment(agentmgr.AgentContainment{
 		ThirdPartyDegrade:  !agentSandbox.Refuses(),
 		ThirdPartyMemoryMB: agentSandbox.Memory(),
+		// ENG-2112: applied only with the agent sandbox on (containment.go).
+		FirstPartyMemoryMB: cfg.Execution.Agents.Sandbox.FirstParty.Memory(),
 		Sandbox:            sandboxed,
 	})
 	slog.Info("ADR-0139 D8: agent containment by trust tier",
@@ -303,6 +306,11 @@ func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
 		CgroupParent:     cfg.MCP.Sandbox.CgroupParent,
 		KernelOnlyAll:    sb.KernelOnlyAll(),
 		ModelCache:       cfg.Execution.Agents.ModelCache,
+		// ENG-2112: per-tier resource limits; exceeding one kills the instance.
+		FirstPartyLimits: agentmgr.AgentTierLimits{MaxProcesses: sb.FirstParty.Processes(),
+			MaxTasks: sb.FirstParty.Tasks(), ScratchMB: sb.FirstParty.Scratch()},
+		ThirdPartyLimits: agentmgr.AgentTierLimits{MaxProcesses: sb.ThirdParty.Processes(),
+			MaxTasks: sb.ThirdParty.Tasks(), ScratchMB: sb.ThirdParty.Scratch()},
 	})
 	p := s.Policy()
 	slog.Info("ADR-0157 S1: agents launch through the sandbox (D1 confinement, every tier)",
@@ -313,7 +321,12 @@ func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
 		// kernel's unix socket (execution.agents.sandbox.network).
 		"network", sb.NetworkOrDefault(), "kernel_only_tiers", s.KernelOnlyTiers(),
 		// ADR-0157 S7: writable for first-party and system agents, read-only for third-party.
-		"model_cache", cfg.Execution.Agents.ModelCache)
+		"model_cache", cfg.Execution.Agents.ModelCache,
+		// ENG-2112: the tiers' resource limits.
+		"first_party_limits", fmt.Sprintf("memory_mb=%d max_processes=%d max_tasks=%d scratch_mb=%d",
+			sb.FirstParty.Memory(), sb.FirstParty.Processes(), sb.FirstParty.Tasks(), sb.FirstParty.Scratch()),
+		"third_party_limits", fmt.Sprintf("memory_mb=%d max_processes=%d max_tasks=%d scratch_mb=%d",
+			sb.ThirdParty.Memory(), sb.ThirdParty.Processes(), sb.ThirdParty.Tasks(), sb.ThirdParty.Scratch()))
 	ownAgentWorkRoot(s, cfg)
 	return s
 }

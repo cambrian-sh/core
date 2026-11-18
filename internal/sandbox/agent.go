@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -79,6 +80,9 @@ type Launched struct {
 	workdir string
 	remove  bool
 	once    sync.Once
+	// watch is the agent limit watch (limits_watch.go, ENG-2112); nil when
+	// the launch has nothing for it to watch.
+	watch *limitWatch
 }
 
 // Report is the launch's effective containment.
@@ -90,8 +94,15 @@ func (l *Launched) Workdir() string { return l.workdir }
 // Kill stops the whole contained tree. Idempotent.
 func (l *Launched) Kill() error { return l.h.kill() }
 
-// KillReason is why OS-level containment killed the tree ("" if it did not).
-func (l *Launched) KillReason() string { return l.h.limitReason() }
+// KillReason is why the sandbox killed the tree over a limit ("" if it did
+// not): the limit watch's reason (scratch quota; on Linux the process count or
+// tree memory), else the OS's (a Windows job memory, CPU-time or process limit).
+func (l *Launched) KillReason() string {
+	if r := l.watch.killReason(); r != "" {
+		return r
+	}
+	return l.h.limitReason()
+}
 
 // scratchReclaimer is a handle whose runner leaves the instance's scratch
 // with files the kernel's uid may not read or remove (the docker runner as a
@@ -123,6 +134,7 @@ func (l *Launched) Reclaim(ctx context.Context) error {
 // the process has exited (or to end it). Idempotent.
 func (l *Launched) Release() {
 	l.once.Do(func() {
+		l.watch.close()
 		if err := l.h.kill(); err != nil {
 			slog.Debug("sandbox: kill on release", "agent", l.report.ServerID, "err", err)
 		}
@@ -186,6 +198,13 @@ func StartCmd(ctx context.Context, spec Spec, c Command, prepare func(*exec.Cmd)
 			return err
 		}
 		l = &Launched{Cmd: cmd, h: h, report: rep, workdir: workdir, remove: spec.Agent.Ephemeral}
+		// ENG-2112: exceeding a limit kills the instance. The scratch quota is
+		// watched only where the plan reports it enforced.
+		wtp := tp
+		if !slices.Contains(rep.Enforced, ControlScratch) {
+			wtp.ScratchMB = 0
+		}
+		l.watch = startLimitWatch(wtp, workdir, cmd.Process.Pid, p.LimitPoll, h.kill)
 		return nil
 	}
 	if err := runnerStart(ctx, runner, p, spec, tp, c, workdir, start); err != nil {

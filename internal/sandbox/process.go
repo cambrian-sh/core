@@ -44,7 +44,7 @@ type osHandle interface {
 	// release frees OS resources (job handle, cgroup) after the tree is gone.
 	release()
 	// limitReason is why the OS-level containment killed the tree ("" if it
-	// did not): a Windows job memory or CPU-time limit.
+	// did not): a Windows job memory, CPU-time or (agents) process limit.
 	limitReason() string
 }
 
@@ -236,6 +236,16 @@ func choose(ctx context.Context, spec Spec, p *Policy, c Command) (string, Repor
 	default:
 		return runner, Report{ServerID: spec.ServerID, Tier: spec.Tier, TierSource: spec.TierSource,
 			Runner: runner, Refused: true, Missing: []string{"runner: unknown runner " + runner}}, tp
+	}
+	if tp.ScratchMB > 0 {
+		// ENG-2112: the scratch quota is size accounting on the host workdir,
+		// which every runner has (docker mounts it at /work); the watch runs in
+		// StartCmd, so only an agent launch gets it.
+		if spec.Agent != nil {
+			capab.enforced[ControlScratch] = "scratch_watch"
+		} else {
+			capab.missing[ControlScratch] = "the scratch quota is watched for agent launches (StartCmd) only"
+		}
 	}
 	return runner, plan(spec, tp, capab), tp
 }

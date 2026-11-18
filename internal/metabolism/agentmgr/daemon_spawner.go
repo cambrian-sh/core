@@ -154,7 +154,8 @@ func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string
 			unexpected := !m.isExpectedStop(instanceID)
 			if unexpected {
 				slog.Warn("daemon crashed unexpectedly",
-					"agent_id", agentID, "stream_id", streamID, "instance_id", instanceID)
+					"agent_id", agentID, "stream_id", streamID, "instance_id", instanceID,
+					"sandbox_limit", m.InstanceManager.limitKillOf(instanceID))
 			}
 			m.handleDaemonExit(&domain.Instance{AgentID: agentID, ID: instanceID}, streamID, unexpected)
 		}()

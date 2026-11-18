@@ -102,10 +102,49 @@ type AgentFirstPartySandbox struct {
 	// missing) or "refuse". "" ⇒ degrade: ADR-0157 Q2, owner 2026-11-16 —
 	// degrade with a WARN on development platforms that cannot hide reads.
 	OnUnavailable string `json:"on_unavailable,omitempty"`
+
+	// Resource limits (ENG-2112, owner decision 2026-11-18): first-party and
+	// system agents are capped too — their chat and daemon workers are
+	// long-lived. Exceeding a limit kills the instance into the restart /
+	// quarantine policy with the reason logged. 0 ⇒ the default. Defaults are
+	// sized from the shipped agents' measured peaks on Windows (ENG-2112 log):
+	// the reranker (torch, bge-reranker-v2-m3) 5.8 GB committed, kg_extractor
+	// (spaCy) 0.8 GB, docling 0.8 GB, each ONE process.
+	//
+	// MemoryMB caps the agent's process tree (Windows: job committed memory;
+	// Linux: cgroup memory.max, else a per-process data limit plus the tree's
+	// resident total watched; docker --memory). A smaller manifest
+	// memory_limit_mb (or agent_memory_limit_mb) still applies; a larger one
+	// does not lift it. 0 ⇒ 8192.
+	MemoryMB int `json:"memory_mb,omitempty"`
+	// MaxProcesses is the tree's process count (Windows: the job's active
+	// process limit; Linux: the limit watch). 0 ⇒ 32.
+	MaxProcesses int `json:"max_processes,omitempty"`
+	// MaxTasks is the Linux hard ceiling on processes AND threads (cgroup
+	// pids.max, ulimit -u in bubblewrap's user namespace, docker
+	// --pids-limit): torch runs dozens of threads in one process, so it is set
+	// apart from MaxProcesses. Unused on Windows and macOS. 0 ⇒ 1024.
+	MaxTasks int `json:"max_tasks,omitempty"`
+	// ScratchMB is the instance's scratch directory quota (size accounting,
+	// every OS). Model weights live in execution.agents.model_cache_dir, not in
+	// the scratch. 0 ⇒ 4096.
+	ScratchMB int `json:"scratch_mb,omitempty"`
 }
 
 // Refuses reports whether a missing control refuses a first-party launch.
 func (t AgentFirstPartySandbox) Refuses() bool { return t.OnUnavailable == "refuse" }
+
+// Memory is MemoryMB with its default applied.
+func (t AgentFirstPartySandbox) Memory() int { return orDefault(t.MemoryMB, 8192) }
+
+// Processes is MaxProcesses with its default applied.
+func (t AgentFirstPartySandbox) Processes() int { return orDefault(t.MaxProcesses, 32) }
+
+// Tasks is MaxTasks with its default applied.
+func (t AgentFirstPartySandbox) Tasks() int { return orDefault(t.MaxTasks, 1024) }
+
+// Scratch is ScratchMB with its default applied.
+func (t AgentFirstPartySandbox) Scratch() int { return orDefault(t.ScratchMB, 4096) }
 
 // AgentTierSandbox is one tier's agent containment.
 type AgentTierSandbox struct {
@@ -114,6 +153,12 @@ type AgentTierSandbox struct {
 	// MemoryMB is the tier's memory cap; a smaller per-agent manifest
 	// memory_limit_mb still applies, a larger one does not lift it. 0 ⇒ 2048.
 	MemoryMB int `json:"memory_mb,omitempty"`
+	// MaxProcesses, MaxTasks and ScratchMB mean what they mean for the first
+	// party (AgentFirstPartySandbox), with tighter defaults: 16 processes,
+	// 512 tasks, a 1024 MiB scratch (ENG-2112).
+	MaxProcesses int `json:"max_processes,omitempty"`
+	MaxTasks     int `json:"max_tasks,omitempty"`
+	ScratchMB    int `json:"scratch_mb,omitempty"`
 }
 
 // Refuses reports whether a missing control refuses the launch.
@@ -121,6 +166,15 @@ func (t AgentTierSandbox) Refuses() bool { return t.OnUnavailable != "degrade" }
 
 // Memory is MemoryMB with its default applied.
 func (t AgentTierSandbox) Memory() int { return orDefault(t.MemoryMB, 2048) }
+
+// Processes is MaxProcesses with its default applied.
+func (t AgentTierSandbox) Processes() int { return orDefault(t.MaxProcesses, 16) }
+
+// Tasks is MaxTasks with its default applied.
+func (t AgentTierSandbox) Tasks() int { return orDefault(t.MaxTasks, 512) }
+
+// Scratch is ScratchMB with its default applied.
+func (t AgentTierSandbox) Scratch() int { return orDefault(t.ScratchMB, 1024) }
 
 // Agent network policies (execution.agents.sandbox.network).
 const (
@@ -160,8 +214,22 @@ func (c AgentSandboxConfig) validate() []string {
 	default:
 		errs = append(errs, fmt.Sprintf("execution.agents.sandbox.first_party.on_unavailable must be \"refuse\" or \"degrade\" (got %q)", c.FirstParty.OnUnavailable))
 	}
-	if c.ThirdParty.MemoryMB < 0 {
-		errs = append(errs, "execution.agents.sandbox.third_party.memory_mb must be >= 0 (0 = 2048)")
+	for _, l := range []struct {
+		key string
+		v   int
+	}{
+		{"third_party.memory_mb", c.ThirdParty.MemoryMB},
+		{"third_party.max_processes", c.ThirdParty.MaxProcesses},
+		{"third_party.max_tasks", c.ThirdParty.MaxTasks},
+		{"third_party.scratch_mb", c.ThirdParty.ScratchMB},
+		{"first_party.memory_mb", c.FirstParty.MemoryMB},
+		{"first_party.max_processes", c.FirstParty.MaxProcesses},
+		{"first_party.max_tasks", c.FirstParty.MaxTasks},
+		{"first_party.scratch_mb", c.FirstParty.ScratchMB},
+	} {
+		if l.v < 0 {
+			errs = append(errs, fmt.Sprintf("execution.agents.sandbox.%s must be >= 0 (0 = the default)", l.key))
+		}
 	}
 	switch c.Runner {
 	case "", "native", "docker":

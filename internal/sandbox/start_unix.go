@@ -55,7 +55,11 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		c.enforced[ControlProcesses] = "cgroup"
 		c.enforced[ControlKillTree] = "cgroup"
 	} else {
-		if tp.MemoryMB > 0 {
+		switch {
+		case tp.MemoryMB > 0 && spec.Agent != nil && runtime.GOOS == "linux":
+			// ENG-2112: the agent limit watch adds the tree total (limits_watch.go).
+			c.notes = append(c.notes, "memory: per-process data-segment limit (ulimit -d); the tree's resident total is watched and kills at the cap")
+		case tp.MemoryMB > 0:
 			c.notes = append(c.notes, "memory: per-process data-segment limit (ulimit -d), not a tree total")
 		}
 		c.missing[ControlProcesses] = "needs a delegated cgroup v2 parent (mcp.sandbox.cgroup_parent: " + why + ") or bubblewrap with a user namespace"
@@ -249,8 +253,8 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 	// In bwrap's fresh user namespace RLIMIT_NPROC counts only the sandbox's
 	// own processes; outside one it would count every process of the uid.
 	unprivNS := useBwrap && (!root || dropUID)
-	if tp.MaxProcesses > 0 && unprivNS {
-		lim = append(lim, "ulimit -u "+strconv.Itoa(tp.MaxProcesses))
+	if n := tp.taskCeiling(); n > 0 && unprivNS {
+		lim = append(lim, "ulimit -u "+strconv.Itoa(n))
 	}
 	script := strings.Join(append(lim, `exec "$@"`), "; ")
 	argv := append([]string{"/bin/sh", "-c", script, "sh", path}, c.Args...)

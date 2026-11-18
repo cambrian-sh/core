@@ -105,3 +105,35 @@ func TestAgentSandbox_S7DefaultOnExplicitOffSurvives(t *testing.T) {
 		t.Fatalf("an explicit false must survive a marshal (no omitempty): %s %v", b, err)
 	}
 }
+
+// ENG-2112: the tiers' resource limits default to bounded values (sized from
+// the shipped agents' measured peaks), an explicit value wins, a negative one
+// is refused at load, and the defaults config stays valid.
+func TestAgentSandbox_ResourceLimitDefaults(t *testing.T) {
+	d := DefaultConfig().Execution.Agents.Sandbox
+	if d.FirstParty.Memory() != 8192 || d.FirstParty.Processes() != 32 || d.FirstParty.Tasks() != 1024 || d.FirstParty.Scratch() != 4096 {
+		t.Fatalf("first-party defaults: mem=%d procs=%d tasks=%d scratch=%d",
+			d.FirstParty.Memory(), d.FirstParty.Processes(), d.FirstParty.Tasks(), d.FirstParty.Scratch())
+	}
+	if d.ThirdParty.Memory() != 2048 || d.ThirdParty.Processes() != 16 || d.ThirdParty.Tasks() != 512 || d.ThirdParty.Scratch() != 1024 {
+		t.Fatalf("third-party defaults: mem=%d procs=%d tasks=%d scratch=%d",
+			d.ThirdParty.Memory(), d.ThirdParty.Processes(), d.ThirdParty.Tasks(), d.ThirdParty.Scratch())
+	}
+	var c AgentSandboxConfig
+	if err := json.Unmarshal([]byte(`{"first_party":{"memory_mb":12000,"max_processes":64,"max_tasks":2048,"scratch_mb":100},`+
+		`"third_party":{"max_processes":4,"max_tasks":128,"scratch_mb":50}}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if errs := c.validate(); len(errs) != 0 {
+		t.Fatalf("valid limits refused: %v", errs)
+	}
+	if c.FirstParty.Memory() != 12000 || c.FirstParty.Processes() != 64 || c.FirstParty.Tasks() != 2048 || c.FirstParty.Scratch() != 100 ||
+		c.ThirdParty.Processes() != 4 || c.ThirdParty.Tasks() != 128 || c.ThirdParty.Scratch() != 50 {
+		t.Fatalf("explicit limits not kept: %+v %+v", c.FirstParty, c.ThirdParty)
+	}
+	bad := AgentSandboxConfig{FirstParty: AgentFirstPartySandbox{MemoryMB: -1, MaxProcesses: -1, MaxTasks: -1, ScratchMB: -1},
+		ThirdParty: AgentTierSandbox{MaxProcesses: -1, MaxTasks: -1, ScratchMB: -1}}
+	if errs := bad.validate(); len(errs) != 7 {
+		t.Fatalf("want 7 errors (every negative limit), got %v", errs)
+	}
+}

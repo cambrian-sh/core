@@ -178,7 +178,7 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 		if err := windows.AssignProcessToJobObject(job, ph); err != nil {
 			return nil, fmt.Errorf("sandbox: assign to job: %w", err)
 		}
-		h, err := newJobHandle(job, tp)
+		h, err := newJobHandle(job, tp, spec.Agent != nil)
 		if err != nil {
 			_ = windows.TerminateJobObject(job, 1)
 			return nil, fmt.Errorf("sandbox: job limit watcher: %w", err)
@@ -247,9 +247,10 @@ type jobHandle struct {
 
 // Job completion-port messages (winnt.h).
 const (
-	jobMsgEndOfJobTime   = 1
-	jobMsgJobMemoryLimit = 10
-	jobMsgStop           = 0xC0DE // our own: stop the watcher
+	jobMsgEndOfJobTime       = 1
+	jobMsgActiveProcessLimit = 3
+	jobMsgJobMemoryLimit     = 10
+	jobMsgStop               = 0xC0DE // our own: stop the watcher
 )
 
 type jobAssocPort struct {
@@ -257,7 +258,12 @@ type jobAssocPort struct {
 	CompletionPort windows.Handle
 }
 
-func newJobHandle(job windows.Handle, tp TierPolicy) (*jobHandle, error) {
+// newJobHandle starts the job's limit watcher. killOnProcessLimit (agent
+// launches, ENG-2112): reaching the active-process limit kills the tree, so a
+// fork-bombing agent dies into the restart policy instead of living on at the
+// ceiling with every CreateProcess failing; an MCP server keeps the old
+// behaviour (the spawn fails, the server lives).
+func newJobHandle(job windows.Handle, tp TierPolicy, killOnProcessLimit bool) (*jobHandle, error) {
 	port, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
 	if err != nil {
 		return nil, err
@@ -269,11 +275,11 @@ func newJobHandle(job windows.Handle, tp TierPolicy) (*jobHandle, error) {
 		return nil, err
 	}
 	h := &jobHandle{job: job, port: port, done: make(chan struct{})}
-	go h.watch(tp)
+	go h.watch(tp, killOnProcessLimit)
 	return h, nil
 }
 
-func (h *jobHandle) watch(tp TierPolicy) {
+func (h *jobHandle) watch(tp TierPolicy, killOnProcessLimit bool) {
 	defer close(h.done)
 	for {
 		var msg uint32
@@ -288,6 +294,11 @@ func (h *jobHandle) watch(tp TierPolicy) {
 		case jobMsgJobMemoryLimit:
 			h.setReason(fmt.Sprintf("memory: the process tree reached its %d MiB limit", tp.MemoryMB))
 			_ = h.kill()
+		case jobMsgActiveProcessLimit:
+			if killOnProcessLimit {
+				h.setReason(fmt.Sprintf("processes: the process tree reached its %d-process limit", tp.MaxProcesses))
+				_ = h.kill()
+			}
 		case jobMsgEndOfJobTime:
 			h.setReason(fmt.Sprintf("cpu_time: the process tree used its %d s of CPU", tp.CPUTimeSec))
 		}

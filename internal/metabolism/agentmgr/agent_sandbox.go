@@ -79,13 +79,29 @@ type AgentSandboxOptions struct {
 	// to every instance at its own path, writable for first-party and system
 	// agents, read-only for third-party. "" ⇒ none.
 	ModelCache string
+	// FirstPartyLimits / ThirdPartyLimits are each tier's process, task and
+	// scratch limits (execution.agents.sandbox.<tier>.max_processes,
+	// max_tasks, scratch_mb; ENG-2112). The memory cap travels per launch
+	// (admitLaunch, then sandbox.ServerSpec.MemoryMB) because a manifest may
+	// lower it.
+	FirstPartyLimits, ThirdPartyLimits AgentTierLimits
+}
+
+// AgentTierLimits is one agent tier's resource limits (ENG-2112). Exceeding
+// one kills the instance (the internal/sandbox limit watch, the Windows job).
+// 0 leaves that limit off; the composition root always passes the config's
+// defaulted values.
+type AgentTierLimits struct {
+	MaxProcesses int
+	MaxTasks     int
+	ScratchMB    int
 }
 
 // NewAgentSandbox builds the agent tiers' sandbox policy.
 //
 // Tiers (D1, D3): first-party (system agents run at it too) wants the env
-// allowlist, a workdir, a killable tree, the memory cap, write confinement and
-// hidden kernel state — and, when the kernel runs as root on Unix, a separate
+// allowlist, a workdir, a killable tree, the memory cap, the process and
+// scratch limits (ENG-2112), write confinement and hidden kernel state — and, when the kernel runs as root on Unix, a separate
 // uid (D2.2). Third-party additionally always wants a low-privilege identity
 // and the network denied: it is KERNEL-ONLY (ADR-0157 S2), reaching the kernel
 // through a unix socket in its own socket directory (kernelSocketPath) and
@@ -112,9 +128,13 @@ func NewAgentSandbox(o AgentSandboxOptions) *AgentSandbox {
 		DefaultTier: sandbox.TierThirdParty,
 		Tiers: map[sandbox.Tier]sandbox.TierPolicy{
 			sandbox.TierFirstParty: {OnUnavailable: onUnavail(o.FirstPartyRefuse), Runner: runner,
-				ConfineFS: true, HideState: true, LowPrivilege: rootUnix, DenyNetwork: o.KernelOnlyAll},
+				ConfineFS: true, HideState: true, LowPrivilege: rootUnix, DenyNetwork: o.KernelOnlyAll,
+				MaxProcesses: o.FirstPartyLimits.MaxProcesses, MaxTasks: o.FirstPartyLimits.MaxTasks,
+				ScratchMB: o.FirstPartyLimits.ScratchMB},
 			sandbox.TierThirdParty: {OnUnavailable: onUnavail(o.ThirdPartyRefuse), Runner: runner,
-				ConfineFS: true, HideState: true, LowPrivilege: true, DenyNetwork: true},
+				ConfineFS: true, HideState: true, LowPrivilege: true, DenyNetwork: true,
+				MaxProcesses: o.ThirdPartyLimits.MaxProcesses, MaxTasks: o.ThirdPartyLimits.MaxTasks,
+				ScratchMB: o.ThirdPartyLimits.ScratchMB},
 		},
 		WorkRoot:     workRoot,
 		WorkdirEnv:   agentWorkdirEnv(goruntime.GOOS),
@@ -595,6 +615,14 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	agentID, instanceID := def.ID, inst.ID
 	cleanup := func() {
 		_ = l.Kill() // normally already exited; the collection must see no writer
+		// ENG-2112: a limit the sandbox killed the instance over (scratch
+		// quota, process count, memory) is named here and handed to the exit
+		// observers (the daemon crash watcher's restart / quarantine).
+		if reason := l.KillReason(); reason != "" {
+			slog.WarnContext(collectCtx, "ADR-0157: agent instance killed by its sandbox limit",
+				"agent", agentID, "instance", instanceID, "tier", agentTrustTier(def), "reason", reason)
+			im.noteLimitKill(instanceID, reason)
+		}
 		// The docker runner's agent uid is not the kernel's (ENG-2031): its
 		// files come back to the kernel before out/ is read. A failure keeps
 		// the scratch on disk and says so; out/ is collected as far as it can.

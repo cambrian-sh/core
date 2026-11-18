@@ -64,8 +64,8 @@ func newCgroup(parent, id string, tp TierPolicy) (*cgroup, error) {
 	if tp.MemoryMB > 0 {
 		err = errors.Join(err, write("memory.max", strconv.Itoa(tp.MemoryMB<<20)), write("memory.swap.max", "0"))
 	}
-	if tp.MaxProcesses > 0 {
-		err = errors.Join(err, write("pids.max", strconv.Itoa(tp.MaxProcesses)))
+	if n := tp.taskCeiling(); n > 0 {
+		err = errors.Join(err, write("pids.max", strconv.Itoa(n)))
 	}
 	if err != nil {
 		_ = os.Remove(dir)
