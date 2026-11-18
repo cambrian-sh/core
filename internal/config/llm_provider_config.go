@@ -63,6 +63,17 @@ type GeneratorConfig struct {
 	// API requires max_tokens: ApplyGeneratorDefaults fills AnthropicDefaultMaxTokens.
 	// This replaces the 4096 the Anthropic adapter used to hardcode.
 	MaxTokens int `json:"max_tokens,omitempty"`
+	// ContextWindowTokens is the model's context window in tokens (input and
+	// output together), as the provider documents it — e.g. 200000 for Claude
+	// Haiku 4.5. When set, the Provider checks every request before sending it:
+	// estimated prompt tokens + the output cap + the llm_provider.context_margin_ratio
+	// share of the window must fit, or the call fails with domain.ErrContextOverflow
+	// (gateway: OutOfRange, deterministic) WITHOUT reaching the endpoint
+	// (T-20261112-pre-send-context-window-check-per-model-with). 0 = unknown: no
+	// pre-send check, the provider's own refusal is the only signal (the behaviour
+	// before this field). The window is config, not a built-in table, because the
+	// same model id is served with different windows by different endpoints.
+	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
 	// RequestCapabilities overrides, per field, the C1 capability levels the adapter
 	// declares (ADR-0139 C1): keys are RequestCapabilityKeys, values "enforced",
 	// "best_effort" or "unsupported". Needed because an OpenAI-COMPATIBLE endpoint is
@@ -221,6 +232,24 @@ type LLMProviderConfig struct {
 	// SaveGenerator/RemoveGenerator does not change it); an id that names no
 	// generator is tolerated with a warning, like a role.
 	EquivalentGenerators [][]string `json:"equivalent_generators,omitempty"`
+
+	// ContextMarginRatio is the share of a generator's context_window_tokens the
+	// pre-send check keeps free on top of the estimated prompt and the output cap:
+	// the estimate has no tokenizer, so a prompt right at the window may still be
+	// refused by the provider. 0 = DefaultContextMarginRatio (5%); must be in
+	// [0, 1). Read by llm.NewProvider. Ignored for a generator with no window.
+	ContextMarginRatio float64 `json:"context_margin_ratio,omitempty"`
+}
+
+// DefaultContextMarginRatio is ContextMarginRatio's default.
+const DefaultContextMarginRatio = 0.05
+
+// ContextMargin is ContextMarginRatio with its default applied.
+func (c LLMProviderConfig) ContextMargin() float64 {
+	if c.ContextMarginRatio <= 0 {
+		return DefaultContextMarginRatio
+	}
+	return c.ContextMarginRatio
 }
 
 // DefaultGenerator returns the generator marked as the global default, or nil
@@ -264,6 +293,11 @@ func (c LLMProviderConfig) validate(embedder EmbedderConfig) []string {
 		if g.MaxTokens < 0 {
 			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].max_tokens must be >= 0", i))
 		}
+		if g.ContextWindowTokens < 0 {
+			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].context_window_tokens must be >= 0 (0 = unknown, no pre-send check)", i))
+		} else if g.ContextWindowTokens > 0 && g.MaxTokens >= g.ContextWindowTokens {
+			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].max_tokens (%d) must be below context_window_tokens (%d): no prompt would fit", i, g.MaxTokens, g.ContextWindowTokens))
+		}
 
 		// api_key_env is NO LONGER REQUIRED (ADR-0101 D5).
 		//
@@ -305,6 +339,10 @@ func (c LLMProviderConfig) validate(embedder EmbedderConfig) []string {
 				errs = append(errs, fmt.Sprintf("llm_provider.equivalent_generators[%d][%d] is empty", i, j))
 			}
 		}
+	}
+
+	if c.ContextMarginRatio < 0 || c.ContextMarginRatio >= 1 {
+		errs = append(errs, fmt.Sprintf("llm_provider.context_margin_ratio %v must be in [0, 1) (0 = the default %v)", c.ContextMarginRatio, DefaultContextMarginRatio))
 	}
 
 	if embedder.Model == "" {

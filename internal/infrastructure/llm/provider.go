@@ -99,6 +99,11 @@ type Provider struct {
 	// generator may serve a call its first choice could not.
 	fallback fallbackPolicy
 
+	// contextMargin is llm_provider.context_margin_ratio with its default: the
+	// share of a generator's context window the pre-send check keeps free
+	// (contextGuardGenerator, ENG-1050).
+	contextMargin float64
+
 	log *slog.Logger
 }
 
@@ -171,12 +176,13 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger, opts ...Provide
 	log.Info("llm provider: fallback policy", "pinned", cfg.Pinned, "equivalence_groups", len(cfg.EquivalentGenerators),
 		"rule", "a failed or unhealthy first choice falls back only to a generator marked equivalent; pinned: never")
 	p := &Provider{
-		fallback: newFallbackPolicy(cfg.Pinned, cfg.EquivalentGenerators),
-		breaker:  NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
-		ledger:   SeedPriceLedger(cfg.Generators),
-		roles:    roles,
-		sem:      sem,
-		log:      log,
+		fallback:      newFallbackPolicy(cfg.Pinned, cfg.EquivalentGenerators),
+		contextMargin: cfg.ContextMargin(),
+		breaker:       NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
+		ledger:        SeedPriceLedger(cfg.Generators),
+		roles:         roles,
+		sem:           sem,
+		log:           log,
 		// The defaults live with the config keys (execution.step_output).
 		finalAnswerTool: config.StepOutputConfig{}.FinalAnswerToolName(),
 		finalAnswerArg:  config.StepOutputConfig{}.FinalAnswerArgName(),
@@ -280,7 +286,7 @@ func (p *Provider) acquire(ctx context.Context, req domain.LLMRequest, excluded 
 	if purpose == "" {
 		purpose = "model"
 	}
-	return p.decorate(id, entry.Generator, string(req.Purpose), purpose, true), id, nil
+	return p.decorate(entry, string(req.Purpose), purpose, true), id, nil
 }
 
 // decorate builds the Provider's decorator stack around one registered client. It
@@ -290,7 +296,8 @@ func (p *Provider) acquire(ctx context.Context, req domain.LLMRequest, excluded 
 // metered=false omits the spend-meter layer for a caller that books the call
 // itself against a lease (the gateway: ADR-0131 D3 admission and the per-request
 // tally are lease-scoped, and metering here too would book every call twice).
-func (p *Provider) decorate(id string, client domain.Generator, tracePurpose, meterPurpose string, metered bool) domain.Generator {
+func (p *Provider) decorate(entry GeneratorEntry, tracePurpose, meterPurpose string, metered bool) domain.Generator {
+	id, client := entry.ID, entry.Generator
 	// Health-recording (inner) so the breaker sees outcomes; tracing (outer) so
 	// every call is observed by purpose. Tracing is a no-op when unset.
 	gen := newHealthGenerator(id, client, p.breaker)
@@ -306,6 +313,12 @@ func (p *Provider) decorate(id string, client domain.Generator, tracePurpose, me
 	// call, so a burst of direct system-organ calls cannot flood the provider.
 	if p.sem != nil {
 		gen = &concurrencyGenerator{inner: gen, sem: p.sem}
+	}
+	// The pre-send context-window check (ENG-1050): outside the cap so a refused
+	// call never holds a slot, inside the meter so it is never booked.
+	if entry.ContextWindowTokens > 0 {
+		gen = &contextGuardGenerator{inner: gen, id: id, window: entry.ContextWindowTokens,
+			maxTokens: entry.MaxTokens, margin: p.contextMargin, log: p.log}
 	}
 	// Outermost of all: the ADR-0131 spend meter. Outside the concurrency cap so
 	// a call refused at the session ceiling never occupies a slot; at Acquire so

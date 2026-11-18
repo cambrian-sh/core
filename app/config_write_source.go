@@ -533,10 +533,12 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 			if entry.APIKeyEnv == "" {
 				entry.APIKeyEnv = list[i].APIKeyEnv
 			}
-			// The ADR-0139 C1 fields (max_tokens, request_capabilities) are not on
-			// the operator wire yet (wave 1c), so a console save must not erase
-			// what a file declares for them -- same rule as the cost fields.
+			// The ADR-0139 C1 fields (max_tokens, request_capabilities) and the
+			// context window (context_window_tokens, ENG-1050) are not on the
+			// operator wire yet (wave 1c), so a console save must not erase what
+			// a file declares for them -- same rule as the cost fields.
 			entry.MaxTokens = list[i].MaxTokens
+			entry.ContextWindowTokens = list[i].ContextWindowTokens
 			entry.RequestCapabilities = list[i].RequestCapabilities
 			list[i] = entry
 			replaced = true

@@ -17,6 +17,10 @@ type GeneratorEntry struct {
 	Generator    domain.Generator
 	Provider     string
 	Capabilities []string
+	// ContextWindowTokens and MaxTokens feed the pre-send context-window check
+	// (contextGuardGenerator); 0 window = unknown, no check.
+	ContextWindowTokens int
+	MaxTokens           int
 }
 
 // GeneratorRegistry holds one client per generator id — replacing the legacy
@@ -40,6 +44,9 @@ func NewGeneratorRegistry(generators []config.GeneratorConfig) (*GeneratorRegist
 			Generator:    gen,
 			Provider:     g.Provider,
 			Capabilities: g.Capabilities,
+
+			ContextWindowTokens: g.ContextWindowTokens,
+			MaxTokens:           g.MaxTokens,
 		}
 		r.order = append(r.order, g.ID)
 	}

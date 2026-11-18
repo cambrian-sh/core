@@ -70,10 +70,25 @@ type ContentConfig struct {
 }
 
 // CharsPerToken is the estimate the kernel and the SDK both use to turn a token
-// budget into a size (llm.EstimateTokens, sdk context_engine.CHARS_PER_TOKEN). It
-// under-counts high-entropy text such as base64 two to three times; content-aware
-// estimation is T-20261112-pre-send-context-window-check-per-model-with.
+// budget into a size (llm.EstimateTokens, sdk context_engine.CHARS_PER_TOKEN) for
+// ordinary text. High-entropy runs are counted at HighEntropyCharsPerToken.
 const CharsPerToken = 4
+
+// HighEntropyCharsPerToken and HighEntropyMinRun make the token estimate
+// content-aware (T-20261112-pre-send-context-window-check-per-model-with): a
+// maximal run of at least HighEntropyMinRun characters of the base64 / base64url /
+// hex alphabet that mixes at least two of lower case, upper case and digits is
+// counted at 1.3 characters per token instead of 4. len/4 under-counted base64
+// 2-3x (run 20261112T132056Z p06: 100011 estimated, ~278483 counted by the
+// provider, i.e. ~1.44 chars/token); 1.3 errs on the high side, which is the safe
+// side for the gateway's pre-send context-window check. A provider count_tokens
+// call was rejected: it is a network round-trip on every call's hot path and
+// OpenAI-compatible endpoints have none. The SDK mirrors both constants
+// (cambrian_sdk context_engine.HIGH_ENTROPY_*), with the same test vectors.
+const (
+	HighEntropyCharsPerToken = 1.3
+	HighEntropyMinRun        = 64
+)
 
 // Inline is InlineResultBytes with its default applied.
 func (c ContentConfig) Inline() int { return orDefault(c.InlineResultBytes, 65536) }

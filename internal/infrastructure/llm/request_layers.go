@@ -610,7 +610,7 @@ func (p *Provider) chainAcquirer(candidates []string) func(excluded map[string]b
 				skipped = append(skipped, id+": circuit open")
 				continue
 			}
-			return p.decorate(id, entry.Generator, string(domain.PurposeAgentStep), "", false), id, nil
+			return p.decorate(entry, string(domain.PurposeAgentStep), "", false), id, nil
 		}
 		return nil, "", fmt.Errorf("%w: candidates %v (%s)", ErrNoHealthyModel, candidates, strings.Join(skipped, "; "))
 	}
