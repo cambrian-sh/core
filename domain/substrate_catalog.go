@@ -161,10 +161,10 @@ type SubstrateOverview struct {
 	// does NOT include them — pending is the work that will still happen (due,
 	// backing off, or held) — so the two never double-count (owner decision
 	// 2026-11-13, T-20261113-substrate-overview-has-no-separate-dead-letter).
-	OutboxDead                                  int64
-	Earliest, Latest                           time.Time // zero when nothing is readable
-	Sources                                     []CatalogSource
-	Kinds                                       []CatalogKindCount
+	OutboxDead       int64
+	Earliest, Latest time.Time // zero when nothing is readable
+	Sources          []CatalogSource
+	Kinds            []CatalogKindCount
 }
 
 // CatalogSource is one evidence source with the distinct classification tags

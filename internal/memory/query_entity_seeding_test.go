@@ -41,6 +41,7 @@ func (f *fakeVecStore) SaveBatch(context.Context, []*domain.Document) error { re
 func (f *fakeVecStore) Search(context.Context, []float32, domain.SearchOptions) ([]domain.SearchResult, error) {
 	return nil, nil
 }
+
 // GetBatch returns the known ids, like a real store (the promotion lanes read
 // missing ids in one batch since ENG-83).
 func (f *fakeVecStore) GetBatch(_ context.Context, ids []string) ([]domain.Document, error) {

@@ -299,4 +299,3 @@ func TestVerifierPool_Select_OnlySystemAgents_ReturnsError(t *testing.T) {
 		t.Errorf("Select = (%v, %v); want ErrNoVerifierAvailable when only system organs exist", got, err)
 	}
 }
-

@@ -84,7 +84,12 @@ func TestFacts_DefaultsEnvValidationFingerprint(t *testing.T) {
 	}
 
 	// A lane-OFF baseline (the shipped default has it on since ENG-1496).
-	laneOff := func() ExecutionConfig { e := DefaultConfig().Execution; e.Facts.LaneEnabled = false; e.Facts.ExtractEnabled = false; return e }
+	laneOff := func() ExecutionConfig {
+		e := DefaultConfig().Execution
+		e.Facts.LaneEnabled = false
+		e.Facts.ExtractEnabled = false
+		return e
+	}
 	base := laneOff()
 	same := laneOff()
 	same.Facts.ExtractEnabled = true // the corpus changes, not the ranking function

@@ -108,15 +108,15 @@ type Result struct {
 
 // Service is the bridge. Construct with New.
 type Service struct {
-	store  domain.KnowledgeStore
-	kinds  domain.KindSource
-	authz  domain.Authorizer
-	hub    Hub
-	links  LinkWriter
+	store domain.KnowledgeStore
+	kinds domain.KindSource
+	authz domain.Authorizer
+	hub   Hub
+	links LinkWriter
 	// evidence resolves cited evidence for the readability check (citedEvidence).
 	evidence EvidenceReader
 	now      func() time.Time
-	logger *slog.Logger
+	logger   *slog.Logger
 }
 
 // New builds the bridge and registers its approval handler on hub. store is the
