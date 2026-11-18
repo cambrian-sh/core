@@ -118,6 +118,7 @@ var (
 const (
 	eraseDocuments        = "documents"
 	eraseDocumentVersions = "document_versions"
+	eraseDerivationJobs   = TableDerivationJobs
 	eraseDocumentsLegacy  = "documents_legacy"
 	eraseExperiences      = "experiences"
 	eraseEvidence         = "evidence"
@@ -511,6 +512,12 @@ func (s *PgErasureStore) eraseDocuments(ctx context.Context, run *erasureRun, do
 		return false, err
 	}
 	if err := run.exec(ctx, eraseDocumentVersions, `DELETE FROM document_versions WHERE document_id = ANY($1)`, docs); err != nil {
+		return false, err
+	}
+	// ENG-2122: the derivation journal's rows carry the document's source metadata
+	// (title, author); a pending fact or triplet job of an erased document has nothing
+	// left to derive.
+	if err := run.exec(ctx, eraseDerivationJobs, `DELETE FROM `+TableDerivationJobs+` WHERE document_id = ANY($1)`, docs); err != nil {
 		return false, err
 	}
 	if hasLegacy {

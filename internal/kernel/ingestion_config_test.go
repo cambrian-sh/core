@@ -72,3 +72,20 @@ func TestChunkTripletsBatcherConfigFrom_Threads(t *testing.T) {
 		t.Fatal("kg_triplets_llm_format=completion selected the structured format")
 	}
 }
+
+// ENG-2122: every derivation_* key reaches the derivation journal (AGENTS.md §3.4), and
+// the journal is on by default.
+func TestDerivationJournalConfigFrom_Threads(t *testing.T) {
+	got := derivationJournalConfigFrom(config.IngestionConfig{
+		DerivationRecoveryIntervalMs: 1500, DerivationRecoveryBatch: 7, DerivationRetryBaseMs: 2000,
+		DerivationRetryMaxMs: 9000, DerivationMaxAttempts: 4, DerivationLeaseMs: 60000,
+	})
+	if got.RecoveryInterval != 1500*time.Millisecond || got.RecoveryBatch != 7 || got.RetryBase != 2*time.Second ||
+		got.RetryMax != 9*time.Second || got.MaxAttempts != 4 || got.Lease != time.Minute {
+		t.Fatalf("derivationJournalConfigFrom = %+v", got)
+	}
+	if d := config.DefaultConfig().Execution.Ingestion; !d.DerivationJournalEnabled || d.DerivationMaxAttempts != 8 ||
+		d.DerivationRecoveryIntervalMs != 30000 || d.DerivationLeaseMs != 600000 {
+		t.Fatalf("defaults = %+v", d)
+	}
+}

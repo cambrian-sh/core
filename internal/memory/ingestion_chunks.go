@@ -320,17 +320,34 @@ func (im *IngestionManager) persistChunksTracked(
 		}
 		return outcome, nil
 	}
-	tSave := time.Now()
-	if err := im.agent.Manager.SaveBatch(ctx, docs); err != nil {
-		clock.Since(StageChunkSave, tSave)
-		return outcome, fmt.Errorf("ingestion manager: save chunk batch: %w", err)
-	}
-	clock.Since(StageChunkSave, tSave)
 	// ENG-501 (ADR-0137 D5 / ADR-0138 D3): the async jobs below are keyed by chunk id,
 	// which a later revision of this document reuses. They carry the version they were
 	// extracted from on ctx, and the store refuses their writes once the document's
 	// content digest has moved on (domain.ErrSourceVersionRetired).
 	jobCtx := domain.WithSourceVersion(ctx, domain.SourceVersion{DocumentID: documentID, ContentDigest: ident.ContentDigest})
+	// A2.1: the source's metadata travels as data — its type, title, author (else the
+	// writing principal) and reference time with its basis (the stated event time,
+	// else this ingest's clock, labelled "ingested").
+	src := domain.SourceMetaOf(doc, ingestedAt, domain.PrincipalFromContext(ctx).ID)
+	// ENG-2122: journal the derivations BEFORE the chunks are saved, so no crash
+	// between the save and the enqueue can lose them; the recovery loop re-feeds a job
+	// a restart, an LLM failure or a full queue interrupted. A failed save deletes them.
+	var journaled *derivationSubmission
+	if im.derivations != nil {
+		savedIDs := make([]string, len(docs))
+		for i, d := range docs {
+			savedIDs[i] = d.ID
+		}
+		journaled = im.derivations.recordIngest(jobCtx, documentID, ident.ContentDigest, savedIDs, src,
+			im.tripletsBatcher != nil, im.factExtractor != nil)
+	}
+	tSave := time.Now()
+	if err := im.agent.Manager.SaveBatch(ctx, docs); err != nil {
+		clock.Since(StageChunkSave, tSave)
+		journaled.abandon()
+		return outcome, fmt.Errorf("ingestion manager: save chunk batch: %w", err)
+	}
+	clock.Since(StageChunkSave, tSave)
 	// ADR-0053: enqueue each saved chunk for per-chunk (h, r, t) + anchor
 	// extraction. Non-blocking + nil-safe; the chunk doc is already persisted, so
 	// a dropped enqueue only loses KG enrichment, never the chunk itself.
@@ -339,7 +356,9 @@ func (im *IngestionManager) persistChunksTracked(
 	// enqueues untracked exactly as before.
 	if im.tripletsBatcher != nil {
 		t := time.Now()
-		if trackKG {
+		if hook := journaled.hook(domain.DerivationKGTriplets); hook != nil {
+			outcome.KGWait = im.tripletsBatcher.enqueueDocument(jobCtx, docs, trackKG, hook)
+		} else if trackKG {
 			outcome.KGWait = im.tripletsBatcher.EnqueueTracked(jobCtx, docs)
 		} else {
 			for _, d := range docs {
@@ -350,13 +369,10 @@ func (im *IngestionManager) persistChunksTracked(
 	}
 	// ADR-0136 D4: queue the stored document for fact extraction - async LLM calls (one
 	// per A2.3 window), never on this path. Non-blocking and nil-safe (nil = the fact
-	// layer is off). A2.1: the source's metadata travels as data — its type, title,
-	// author (else the writing principal) and reference time with its basis (the stated
-	// event time, else this ingest's clock, labelled "ingested").
+	// layer is off).
 	if im.factExtractor != nil {
 		t := time.Now()
-		src := domain.SourceMetaOf(doc, ingestedAt, domain.PrincipalFromContext(ctx).ID)
-		outcome.FactsWait = im.factExtractor.Enqueue(jobCtx, documentID, src, docs, trackFacts)
+		outcome.FactsWait = im.factExtractor.enqueue(jobCtx, documentID, src, docs, trackFacts, journaled.hook(domain.DerivationFacts))
 		clock.Since(StageFactsEnqueue, t)
 	}
 	// ADR-0060: build the document-structure graph and stamp each chunk with its

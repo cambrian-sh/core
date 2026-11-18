@@ -456,31 +456,7 @@ func (r *backfillRun) finish(ctx context.Context, apply func(*FactBackfillReport
 // is on ctx) and returns them in the listed order — the order the extractor's turn
 // indexes and content hash use.
 func (b *FactBackfill) readChunks(ctx context.Context, ids []string) ([]*domain.Document, error) {
-	var (
-		docs []domain.Document
-		err  error
-	)
-	if cb, ok := b.reader.(interface {
-		ChunksByIDs(context.Context, []string) ([]domain.Document, error)
-	}); ok {
-		docs, err = cb.ChunksByIDs(ctx, ids)
-	} else {
-		docs, err = b.reader.GetBatch(ctx, ids)
-	}
-	if err != nil {
-		return nil, err
-	}
-	byID := make(map[string]*domain.Document, len(docs))
-	for i := range docs {
-		byID[docs[i].ID] = &docs[i]
-	}
-	out := make([]*domain.Document, 0, len(ids))
-	for _, id := range ids {
-		if d, ok := byID[id]; ok && d.Text != "" {
-			out = append(out, d)
-		}
-	}
-	return out, nil
+	return readChunksInOrder(ctx, b.reader, ids)
 }
 
 func reportAttrs(r FactBackfillReport) []any {

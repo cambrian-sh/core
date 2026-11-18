@@ -46,6 +46,10 @@ type MemoryBackend struct {
 	RankSignals memory.RankSignalStore
 	// Sections backs the ADR-0060 section-scoped recall boost (structure graph).
 	Sections memory.SectionScopedStore
+	// Derivations is the ENG-2122 derivation journal (derivation_jobs): fact and KG
+	// triplet jobs survive a restart, an LLM failure or a full queue. Kernel-internal
+	// bookkeeping of identifiers, never read by a principal.
+	Derivations domain.DerivationJournal
 	// Eraser is the RAW ADR-0137 memory eraser (postgres.PgErasureStore): one transaction
 	// that deletes documents, experiences, chunks, substrate items and evidence and leaves
 	// a content-free receipt. It is not bound by NewMemoryBackend because it is built over
@@ -73,6 +77,7 @@ func NewMemoryBackend(a *postgres.PgVectorAdapter) MemoryBackend {
 		Documents:     a,
 		RankSignals:   a,
 		Sections:      a,
+		Derivations:   a,
 	}
 }
 
@@ -104,6 +109,9 @@ func (b MemoryBackend) Missing() []string {
 	if b.Sections == nil {
 		out = append(out, "Sections")
 	}
+	if b.Derivations == nil {
+		out = append(out, "Derivations")
+	}
 	return out
 }
 
@@ -117,6 +125,6 @@ func (b MemoryBackend) reportMissing() {
 	slog.Error("memory backend lacks required capabilities; their features are OFF "+
 		"(Graph: spreading/Hebbian/KG triplets; Experience: episode parents; ChunkTriplets: KG triplets/KG²RAG; "+
 		"Lexical: hybrid retrieval; Documents: ADR-0093 document rows; RankSignals: Stage-A blend; "+
-		"Sections: section-scoped recall)",
+		"Sections: section-scoped recall; Derivations: durable fact/KG jobs)",
 		"missing", strings.Join(missing, ","))
 }

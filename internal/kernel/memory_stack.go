@@ -72,6 +72,11 @@ type MemoryStack struct {
 	// through FactExtractor (cmd/facts-backfill). nil exactly when FactExtractor is nil
 	// or no lister was handed in.
 	FactBackfill *memory.FactBackfill
+	// Derivations journals the fact and KG triplet jobs of every ingest and recovers
+	// the ones a restart, an LLM failure or a full queue interrupted (ENG-2122). nil
+	// when execution.ingestion.derivation_journal_enabled is off, the backend has no
+	// journal, or neither queue exists.
+	Derivations *memory.DerivationJournaler
 	// FactReset is the ADR-0136 A2-Q3 hard reset of the fact layer for a re-run
 	// (cmd/facts-reset): FactSubstrate.Resetter, handed through unchanged. nil unless a
 	// maintenance command handed one in — the kernel never resets facts.
@@ -342,6 +347,21 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 			factBackfill = memory.NewFactBackfill(facts.Lister, scopedRead, factExtractor)
 		}
 	}
+	// ENG-2122: the derivation journal over the SAME extractor and batcher (no second
+	// extraction pathway). A replay reads chunk text through the enforcing read store.
+	var derivations *memory.DerivationJournaler
+	if execCfg.Ingestion.DerivationJournalEnabled && backend.Derivations != nil {
+		derivations = memory.NewDerivationJournaler(backend.Derivations, scopedRead, factExtractor, chunkTripletsBatcher,
+			derivationJournalConfigFrom(execCfg.Ingestion))
+		ingestionMgr.SetDerivationJournal(derivations)
+	}
+	if derivations != nil {
+		slog.Info("ENG-2122: derivation journal ENABLED (fact and KG triplet jobs survive restarts and failures)",
+			"facts", factExtractor != nil, "kg_triplets", chunkTripletsBatcher != nil,
+			"recovery_interval_ms", execCfg.Ingestion.DerivationRecoveryIntervalMs)
+	} else if !execCfg.Ingestion.DerivationJournalEnabled {
+		slog.Warn("ENG-2122: execution.ingestion.derivation_journal_enabled=false: fact and KG triplet jobs are queued in memory only; a restart or an LLM failure loses them")
+	}
 	// NOTE: the legacy single-directory DirectoryWatcher (ADR-0028/0031) was removed
 	// from the boot path — it delivered file events to a NoOpSignalReceiver (dead
 	// weight) and its fixed-dir fsnotify watch errored at startup when InboxDir was
@@ -388,6 +408,7 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 		FactInspector:        factInspector,
 		FactExtractor:        factExtractor,
 		FactBackfill:         factBackfill,
+		Derivations:          derivations,
 		FactReset:            facts.Resetter,
 	}
 }
@@ -441,6 +462,8 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 	}
 	// ADR-0136 D4: the fact extractor's workers (nil-safe; nil unless extract_enabled).
 	s.FactExtractor.Start(ctx)
+	// ENG-2122: after both queues, so the first recovery pass can feed them (nil-safe).
+	s.Derivations.Start(ctx)
 	// ADR-0028: start the ingestion pipeline. (The legacy DirectoryWatcher that
 	// used to start here was removed — see NewMemoryStack.)
 	if s.IngestionManager != nil {
@@ -453,6 +476,9 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 // the Kernel which owns the infrastructure handle.
 func (s *MemoryStack) Shutdown(_ context.Context) {
 	slog.Info("🧠 MemoryStack: shutdown acknowledged")
+	// ENG-2122: stop re-feeding before the queues stop; jobs they release stay
+	// journaled for the next process (nil-safe).
+	s.Derivations.Stop()
 	// ADR-0053 Phase 0: flush the ChunkTripletsBatcher's tail (Stop blocks until the
 	// drain goroutine exits and the last batch is written). Best-effort: a failed
 	// tail-flush is logged inside the batcher, not surfaced here.
@@ -543,6 +569,21 @@ func FactsGeneratorModel(p config.LLMProviderConfig, roles map[string]string) st
 		return "default"
 	}
 	return id
+}
+
+// derivationJournalConfigFrom maps execution.ingestion's derivation_* keys onto the
+// journaler's settings (ENG-2122). A function of its own so a test can prove each field
+// is read (AGENTS.md §3.4).
+func derivationJournalConfigFrom(c config.IngestionConfig) memory.DerivationJournalConfig {
+	ms := func(v int) time.Duration { return time.Duration(v) * time.Millisecond }
+	return memory.DerivationJournalConfig{
+		RecoveryInterval: ms(c.DerivationRecoveryIntervalMs),
+		RecoveryBatch:    c.DerivationRecoveryBatch,
+		RetryBase:        ms(c.DerivationRetryBaseMs),
+		RetryMax:         ms(c.DerivationRetryMaxMs),
+		MaxAttempts:      c.DerivationMaxAttempts,
+		Lease:            ms(c.DerivationLeaseMs),
+	}
 }
 
 // chunkTripletsBatcherConfigFrom maps the execution.ingestion block onto the

@@ -227,6 +227,51 @@ func (b *ChunkTripletsBatcher) EnqueueTracked(ctx context.Context, docs []*domai
 	return w
 }
 
+// enqueueDocument enqueues one document's chunks for the derivation journal
+// (ENG-2122): done learns the document's outcome once every chunk settled — done when
+// all were extracted (or fenced off for good), failed when any extraction or save
+// failed, deferred when the queue was full, released when the batcher stopped. track
+// also returns the sync ingest's TripletsWait (EnqueueTracked); untracked chunks keep
+// the async batching behaviour (a journal hook never makes the drain loop hurry).
+func (b *ChunkTripletsBatcher) enqueueDocument(ctx context.Context, docs []*domain.Document, track bool, done derivationHook) *TripletsWait {
+	n := 0
+	for _, d := range docs {
+		if d != nil {
+			n++
+		}
+	}
+	var w *TripletsWait
+	if track {
+		w = newTripletsWait(n)
+	}
+	tr := newDerivationTracker(n, done)
+	if b == nil || n == 0 {
+		w.settle(n, b != nil)
+		tr.settleAll(n, derivationDone, nil)
+		return w
+	}
+	origin, _ := domain.IngestOriginFrom(ctx)
+	version, _ := domain.SourceVersionFrom(ctx)
+	for _, d := range docs {
+		if d != nil {
+			b.enqueue(tripletItem{doc: d, wait: w, done: tr, origin: origin, version: version})
+		}
+	}
+	return w
+}
+
+// headroom is how many more chunks the batcher accepts without dropping: the free
+// queue slots, bounded by the free pending slots (the recovery loop never claims more).
+func (b *ChunkTripletsBatcher) headroom() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	pendingFree := b.maxPending - len(b.pending)
+	b.mu.Unlock()
+	return max(0, min(cap(b.queue)-len(b.queue), pendingFree))
+}
+
 func (b *ChunkTripletsBatcher) enqueue(it tripletItem) {
 	// Queue a slim copy: extraction and persistence read only ID and Text, and
 	// the full chunk Document carries its embedding (4 KB at 1024 dims) and
@@ -239,6 +284,7 @@ func (b *ChunkTripletsBatcher) enqueue(it tripletItem) {
 		// The drain loop has exited: nothing will ever read this item.
 		atomic.AddUint64(&b.dropped, 1)
 		it.wait.stop(1)
+		it.done.settle(derivationReleased, ErrTripletsBatcherStopped)
 		return
 	}
 	select {
@@ -248,7 +294,8 @@ func (b *ChunkTripletsBatcher) enqueue(it tripletItem) {
 		atomic.AddUint64(&b.dropped, 1)
 		it.wait.settle(1, false)
 		slog.Warn("ChunkTripletsBatcher: queue full, dropping enrichment",
-			"doc_id", it.doc.ID, "queue_size", cap(b.queue))
+			"doc_id", it.doc.ID, "queue_size", cap(b.queue), "journaled", it.done != nil)
+		it.done.settle(derivationDeferred, errTripletsQueueFull)
 	}
 }
 
@@ -496,6 +543,7 @@ func (b *ChunkTripletsBatcher) releaseRemaining() {
 	}
 	for _, it := range rest {
 		it.wait.stop(1)
+		it.done.settle(derivationReleased, ErrTripletsBatcherStopped)
 	}
 }
 
@@ -564,6 +612,7 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 		}
 		if len(triplets) == 0 {
 			it.wait.settle(1, true)
+			it.done.settle(derivationDone, nil)
 			continue
 		}
 		saveCtx := parentCtx
@@ -579,6 +628,7 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 				atomic.AddUint64(&b.sourceErased, 1)
 				slog.Info("ChunkTripletsBatcher: source erased; triplets dropped", "doc_id", it.doc.ID)
 				it.wait.settle(1, true)
+				it.done.settle(derivationDone, nil)
 				continue
 			}
 			if errors.Is(err, domain.ErrSourceVersionRetired) {
@@ -590,16 +640,19 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 				slog.Info("ChunkTripletsBatcher: document revised; triplets of the retired version dropped",
 					"doc_id", it.doc.ID, "stale_version_drops", atomic.LoadUint64(&b.staleVersion))
 				it.wait.settle(1, true)
+				it.done.settle(derivationDone, nil)
 				continue
 			}
 			slog.Warn("ChunkTripletsBatcher: save failed",
 				"doc_id", it.doc.ID, "err", err, "triplets", len(triplets))
 			it.wait.settle(1, false)
+			it.done.settle(derivationFailed, err)
 			continue
 		}
 		saved++
 		atomic.AddUint64(&b.triplets, uint64(len(triplets)))
 		it.wait.settle(1, true)
+		it.done.settle(derivationDone, nil)
 	}
 	slog.Info("ChunkTripletsBatcher: drained batch",
 		"batch_size", len(batch), "with_triplets", saved, "extractor", b.extractorBackend(),
@@ -652,6 +705,7 @@ func (b *ChunkTripletsBatcher) failBatch(batch []tripletItem, err error) {
 	// extractFailed=0 for chunks it had just seen fail).
 	for _, it := range failedItems {
 		it.wait.settle(1, false)
+		it.done.settle(derivationFailed, err)
 	}
 }
 

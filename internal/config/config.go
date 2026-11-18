@@ -1385,6 +1385,34 @@ type IngestionConfig struct {
 	// env allowlist; T-20261118-kg-extractor-graph-tier-cambrian-kg-graph-tier).
 	// Read only when KgExtractorEnabled routes extraction to the agent.
 	KgGraphTier string `json:"kg_graph_tier,omitempty"`
+
+	// DerivationJournalEnabled makes the post-ingest derivations durable (ENG-2122):
+	// every ingest journals its fact-extraction and KG-triplet jobs (table
+	// derivation_jobs) before it saves the chunks, and a recovery loop re-queues a job
+	// that a kernel restart, an LLM failure or a full queue interrupted — with backoff,
+	// fenced by the document version it was queued for (ENG-501). Default true
+	// (owner decision 2026-11-18: derived knowledge must not be lost); false restores
+	// the in-memory-only queues.
+	DerivationJournalEnabled bool `json:"derivation_journal_enabled"`
+	// DerivationRecoveryIntervalMs is the period of the recovery pass that re-queues
+	// orphaned and due jobs. Default 30000; 0 means the default.
+	DerivationRecoveryIntervalMs int `json:"derivation_recovery_interval_ms,omitempty"`
+	// DerivationRecoveryBatch caps the jobs one recovery pass claims per kind (never
+	// more than the queue has room for). Default 256; 0 means the default.
+	DerivationRecoveryBatch int `json:"derivation_recovery_batch,omitempty"`
+	// DerivationRetryBaseMs is the delay before a failed derivation is retried,
+	// doubled per further failure up to DerivationRetryMaxMs; a queue-full deferral
+	// waits the base. Defaults 30000 and 1800000; 0 means the default.
+	DerivationRetryBaseMs int `json:"derivation_retry_base_ms,omitempty"`
+	DerivationRetryMaxMs  int `json:"derivation_retry_max_ms,omitempty"`
+	// DerivationMaxAttempts is the failed attempts after which a derivation is no
+	// longer retried automatically (it stays in the journal, counted as dead).
+	// Default 8; 0 means the default.
+	DerivationMaxAttempts int `json:"derivation_max_attempts,omitempty"`
+	// DerivationLeaseMs is how long a claimed job is kept from another process's
+	// recovery loop (within one process an in-flight set guards instead). Default
+	// 600000; 0 means the default.
+	DerivationLeaseMs int `json:"derivation_lease_ms,omitempty"`
 }
 
 // DefaultStepTimeoutFloorMs is the default of plan.step_timeout_floor_ms.
@@ -3474,6 +3502,16 @@ func DefaultConfig() *Config {
 				KgTripletsMaxRequeues:     1,
 				KgTripletsLLMFormat:       KgTripletsFormatCompletion,
 				KgGraphTier:               KgGraphTierSVO,
+				// ENG-2122 (owner decision 2026-11-18): derived knowledge must not be
+				// lost — journal fact and KG jobs and recover them after a restart or
+				// a failure.
+				DerivationJournalEnabled:     true,
+				DerivationRecoveryIntervalMs: 30000,
+				DerivationRecoveryBatch:      256,
+				DerivationRetryBaseMs:        30000,
+				DerivationRetryMaxMs:         1800000,
+				DerivationMaxAttempts:        8,
+				DerivationLeaseMs:            600000,
 				// Drop OCR/layout junk only from Docling output; chat and other text
 				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
 				StructureJunkFilterBackends: []string{"docling"},
@@ -4467,6 +4505,12 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		name string
 		v    int
 	}{
+		{"derivation_recovery_interval_ms", c.Ingestion.DerivationRecoveryIntervalMs},
+		{"derivation_recovery_batch", c.Ingestion.DerivationRecoveryBatch},
+		{"derivation_retry_base_ms", c.Ingestion.DerivationRetryBaseMs},
+		{"derivation_retry_max_ms", c.Ingestion.DerivationRetryMaxMs},
+		{"derivation_max_attempts", c.Ingestion.DerivationMaxAttempts},
+		{"derivation_lease_ms", c.Ingestion.DerivationLeaseMs},
 		{"source_kind_max_chars", c.Ingestion.SourceKindMaxChars},
 		{"source_title_max_chars", c.Ingestion.SourceTitleMaxChars},
 		{"source_author_max_chars", c.Ingestion.SourceAuthorMaxChars},

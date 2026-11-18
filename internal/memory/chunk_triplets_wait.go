@@ -19,6 +19,9 @@ var ErrTripletsBatcherStopped = errors.New("chunk triplets batcher stopped befor
 type tripletItem struct {
 	doc  *domain.Document
 	wait *TripletsWait
+	// done aggregates the chunk outcomes of one journaled document for the derivation
+	// journal (ENG-2122); nil when the chunk is not journaled.
+	done *derivationTracker
 	// attempts counts how many times this item was re-queued after its batch
 	// failed because the extractor was unavailable (bounded by maxRequeues).
 	attempts int

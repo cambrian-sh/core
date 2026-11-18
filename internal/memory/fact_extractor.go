@@ -168,6 +168,9 @@ type factJob struct {
 	source domain.SourceMeta
 	chunks []*domain.Document
 	wait   *FactsWait
+	// done reports the job's outcome to the derivation journal (ENG-2122); nil when the
+	// job is not journaled (the journal is off, or the backfill's synchronous path).
+	done derivationHook
 }
 
 // factAssessmentPromptVersion is part of every assessment's authority_version, so a
@@ -250,49 +253,86 @@ func NewFactExtractor(gen domain.Generator, embed domain.Embedder, sink domain.F
 // returns nil. The ADR-0105 evidence id rides ctx (withIngestEvidence) and links every
 // item to its evidence.
 func (e *FactExtractor) Enqueue(ctx context.Context, documentID string, src domain.SourceMeta, chunks []*domain.Document, track bool) *FactsWait {
+	return e.enqueue(ctx, documentID, src, chunks, track, nil)
+}
+
+// enqueue is Enqueue with the derivation journal's completion hook (ENG-2122): done
+// learns whether the job finished, failed, was deferred by a full queue or released
+// by Stop. nil done = an unjournaled job.
+func (e *FactExtractor) enqueue(ctx context.Context, documentID string, src domain.SourceMeta, chunks []*domain.Document, track bool, done derivationHook) *FactsWait {
 	var w *FactsWait
 	if track {
 		w = newFactsWait()
 	}
 	if e == nil || len(chunks) == 0 {
 		w.settle(true)
+		done.fire(derivationDone, nil)
 		return w
 	}
-	if writer := domain.PrincipalFromContext(ctx); !factSourceEligible(e.cfg.ExtractionSources, writer) {
+	if !e.eligible(ctx) {
 		// The operator's cost guard: this source is not extracted. Not a failure —
 		// the chunks are stored and retrievable; a sync wait is settled at once.
 		e.sourceFiltered.Add(1)
 		slog.DebugContext(ctx, "FactExtractor: source not in execution.memory.fact_extraction_sources; not extracted",
-			"document_id", documentID, "writer", writer.String())
+			"document_id", documentID, "writer", domain.PrincipalFromContext(ctx).String())
 		w.settle(true)
+		done.fire(derivationDone, nil)
 		return w
 	}
-	job := factJob{
+	e.submit(factJob{
 		ctx:        context.WithoutCancel(ctx),
 		documentID: documentID,
 		evidenceID: ingestEvidenceFrom(ctx),
 		source:     src,
 		chunks:     slimFactChunks(chunks),
 		wait:       w,
-	}
+		done:       done,
+	})
+	return w
+}
+
+// eligible reports whether the ingest on ctx passes execution.memory.fact_extraction_sources
+// (ENG-494). The derivation journal asks it too, so a filtered source is never journaled.
+func (e *FactExtractor) eligible(ctx context.Context) bool {
+	return e != nil && factSourceEligible(e.cfg.ExtractionSources, domain.PrincipalFromContext(ctx))
+}
+
+// submit queues a built job without blocking: a stopped extractor releases it, a full
+// queue drops it (counted, WARN; a journaled job is deferred for the recovery loop).
+func (e *FactExtractor) submit(job factJob) {
 	e.closeMu.RLock()
 	defer e.closeMu.RUnlock()
 	if e.closed {
 		e.dropped.Add(1)
-		w.stop()
-		return w
+		job.wait.stop()
+		job.done.fire(derivationReleased, ErrFactExtractorStopped)
+		return
 	}
 	select {
 	case e.queue <- job:
 		e.enqueued.Add(1)
 	default:
 		e.dropped.Add(1)
-		w.settle(false)
-		slog.WarnContext(ctx, "FactExtractor: queue full, dropping fact extraction",
-			"document_id", documentID, "queue_size", cap(e.queue),
-			"effect", "the chunks are stored; this document has no facts until it is re-ingested")
+		job.wait.settle(false)
+		effect := "the chunks are stored; this document has no facts until it is re-ingested"
+		if job.done != nil {
+			effect = "the chunks are stored; the derivation journal re-queues this document's facts later"
+		}
+		slog.WarnContext(job.ctx, "FactExtractor: queue full, dropping fact extraction",
+			"document_id", job.documentID, "queue_size", cap(e.queue), "effect", effect)
+		job.done.fire(derivationDeferred, errFactQueueFull)
 	}
-	return w
+}
+
+// errFactQueueFull is the deferral cause a journaled job records when the queue is full.
+var errFactQueueFull = errors.New("fact extraction queue full")
+
+// headroom is the free capacity of the queue (the recovery loop never claims more).
+func (e *FactExtractor) headroom() int {
+	if e == nil {
+		return 0
+	}
+	return cap(e.queue) - len(e.queue)
 }
 
 // factSourceEligible is the execution.memory.fact_extraction_sources match: an
@@ -383,6 +423,7 @@ func (e *FactExtractor) Stop() {
 		select {
 		case j := <-e.queue:
 			j.wait.stop()
+			j.done.fire(derivationReleased, ErrFactExtractorStopped)
 		default:
 			return
 		}
@@ -424,11 +465,19 @@ func (e *FactExtractor) worker(ctx context.Context) {
 			_, err := e.process(j)
 			if err != nil {
 				e.failedDocs.Add(1)
+				effect := "the chunks are stored and retrievable; facts of the windows before the failure are stored, and the marker lets facts-backfill resume the rest"
+				if j.done != nil {
+					effect = "the chunks are stored and retrievable; facts of the windows before the failure are stored, and the derivation journal retries the rest with backoff"
+				}
 				slog.WarnContext(j.ctx, "FactExtractor: fact extraction failed for a document",
-					"document_id", j.documentID, "chunks", len(j.chunks), "cause", err,
-					"effect", "the chunks are stored and retrievable; facts of the windows before the failure are stored, and the marker lets facts-backfill resume the rest")
+					"document_id", j.documentID, "chunks", len(j.chunks), "cause", err, "effect", effect)
 			}
 			j.wait.settle(err == nil)
+			if err != nil {
+				j.done.fire(derivationFailed, err)
+			} else {
+				j.done.fire(derivationDone, nil)
+			}
 		}
 	}
 }

@@ -86,6 +86,10 @@ type IngestionManager struct {
 	// factExtractor queues each stored document for ADR-0136 D4 fact extraction (one
 	// async LLM call per document). nil = the fact layer is off (the default).
 	factExtractor *FactExtractor
+	// derivations journals the two queues above (ENG-2122) so a restart, an LLM
+	// failure or a full queue no longer loses a document's facts and triplets. nil =
+	// not journaled (execution.ingestion.derivation_journal_enabled off, or no store).
+	derivations *DerivationJournaler
 	// structureParser + structureStore build the document-structure graph
 	// (ADR-0060): section nodes + PART_OF/NEXT edges, and every chunk inherits
 	// its section path. Both nil = structure graph disabled.
@@ -189,6 +193,16 @@ func (im *IngestionManager) SetChunkTripletsBatcher(b *ChunkTripletsBatcher) {
 func (im *IngestionManager) SetFactExtractor(e *FactExtractor) {
 	if im != nil && e != nil {
 		im.factExtractor = e
+	}
+}
+
+// SetDerivationJournal wires the ENG-2122 derivation journal onto the ingest path
+// (kernel.NewMemoryStack composes it over the same extractor and batcher; the
+// SetFactExtractor pattern — durability for an enrichment lane, not an enforcement
+// point). Call before Start; nil is ignored.
+func (im *IngestionManager) SetDerivationJournal(d *DerivationJournaler) {
+	if im != nil && d != nil {
+		im.derivations = d
 	}
 }
 
