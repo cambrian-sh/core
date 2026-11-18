@@ -22,11 +22,13 @@ import (
 // like a plan step (session, run, acting-for, ceiling, liveness).
 
 // RequestComposer composes the worker of a whole request (compose.Composer).
+// Both methods leave third-party professions out (ENG-2096): the lane's request
+// always runs on the shared composed runtime, and a third-party profession runs
+// only when a plan step pins it.
 type RequestComposer interface {
 	ComposeRequest(ctx context.Context, lease domain.LeaseID, brief string, in *domain.Handoff) (string, domain.WorkerComposition, error)
 	// ComposeTurnRequest composes for a lease whose process is already chosen
-	// (the chat turn's merged agent): third-party professions are left out
-	// (ENG-2083).
+	// (the chat turn's merged agent).
 	ComposeTurnRequest(ctx context.Context, lease domain.LeaseID, brief string) (domain.WorkerComposition, error)
 }
 

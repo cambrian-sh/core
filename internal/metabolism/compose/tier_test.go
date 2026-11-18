@@ -1,9 +1,13 @@
 package compose
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -97,19 +101,72 @@ func TestCompose_ThirdPartyWithoutItsRuntimeIsRefused(t *testing.T) {
 	}
 }
 
-func TestComposeRequest_ThirdPartyProfessionMovesTheRequest(t *testing.T) {
+// ENG-2096 (owner decision 2026-11-18): the single-agent lane's request
+// composition leaves third-party professions out, so one installed third-party
+// profile no longer moves every request onto the third-party runtime.
+func TestComposeRequest_LeavesThirdPartyProfessionsOut(t *testing.T) {
+	logs := captureLogs(t)
 	c := tierFixture(t)
+	// The outsider alone allows the sandbox tool, so its absence shows the
+	// profession's allowlist stayed out (the researcher allows web and fs).
+	c.Agents.(fakeAgents).manifests["outsider"] = &domain.AgentManifest{Skills: []string{"summarise"}, ToolAllowlist: []string{"mcp:sandbox/*"}}
 	c.Fleet = fakeFleet{profileAgent("researcher"), thirdPartyProfile("outsider")}
-	runtime, comp, err := c.ComposeRequest(context.Background(), "lease-req", "x", &domain.Handoff{Context: map[string]string{}})
+	in := &domain.Handoff{Context: map[string]string{}}
+	runtime, comp, err := c.ComposeRequest(context.Background(), "lease-req", "x", in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime != "composed_worker_third_party" || comp.Runtime != runtime {
-		t.Fatalf("runtime = %q (composition %q), want the third-party runtime", runtime, comp.Runtime)
+	if runtime != "composed_worker" || comp.Runtime != runtime {
+		t.Fatalf("runtime = %q (composition %q), want the shared runtime", runtime, comp.Runtime)
 	}
-	c.Fleet = fakeFleet{profileAgent("researcher")}
-	if runtime, _, err := c.ComposeRequest(context.Background(), "lease-req2", "x", nil); err != nil || runtime != "composed_worker" {
-		t.Fatalf("first-party only: runtime=%q err=%v", runtime, err)
+	if !reflect.DeepEqual(comp.Professions, []string{"researcher"}) {
+		t.Fatalf("professions = %v, want the third-party profession left out", comp.Professions)
+	}
+	for _, tool := range comp.Tools {
+		if tool == "mcp:sandbox/run" {
+			t.Fatalf("the left-out profession's allowlist reached the composition: %v", comp.Tools)
+		}
+	}
+	if !strings.Contains(logs.String(), "third-party professions left out") || !strings.Contains(logs.String(), "outsider") {
+		t.Fatalf("the left-out professions must be logged by name; logs: %s", logs.String())
+	}
+	// Only third-party professions: nothing to compose a request from, and the
+	// refusal names them.
+	c.Fleet = fakeFleet{thirdPartyProfile("outsider")}
+	_, _, err = c.ComposeRequest(context.Background(), "lease-req2", "x", nil)
+	if !errors.Is(err, ErrNoProfessions) || !strings.Contains(err.Error(), "outsider") {
+		t.Fatalf("only third-party professions: err = %v, want ErrNoProfessions naming outsider", err)
+	}
+	if _, bound := c.Leases.For("lease-req2"); bound {
+		t.Fatal("a refused request composition was bound to the lease")
+	}
+}
+
+// The exclusion does not depend on a third-party runtime being configured: a
+// request composition never needs it.
+func TestComposeRequest_NeedsNoThirdPartyRuntime(t *testing.T) {
+	c := tierFixture(t)
+	c.ThirdPartyRuntimeID = ""
+	c.Fleet = fakeFleet{profileAgent("researcher"), thirdPartyProfile("outsider")}
+	if runtime, _, err := c.ComposeRequest(context.Background(), "lease-req3", "x", nil); err != nil || runtime != "composed_worker" {
+		t.Fatalf("runtime=%q err=%v, want the shared runtime", runtime, err)
+	}
+}
+
+// A pinned plan step is still the way a third-party profession runs: the same
+// composer, with the request lane excluding it, puts a pinned third-party step on
+// the third-party runtime.
+func TestComposeRequest_PinnedThirdPartyStepStillRunsOnTheThirdPartyRuntime(t *testing.T) {
+	c := tierFixture(t)
+	c.Fleet = fakeFleet{profileAgent("researcher"), thirdPartyProfile("outsider")}
+	if runtime, _, err := c.ComposeRequest(context.Background(), "lease-lane", "x", nil); err != nil || runtime != "composed_worker" {
+		t.Fatalf("request: runtime=%q err=%v", runtime, err)
+	}
+	pinned := domain.ScoredCandidate{Agent: thirdPartyProfile("outsider"), Score: 1}
+	rt, comp, ok, err := c.Compose(context.Background(), &domain.DispatchTask{ID: "t5", Description: "x", PreferredAgent: "outsider", AgentPin: domain.PinHard},
+		pinned, []domain.ScoredCandidate{pinned}, stepHandoff("lease-pin"))
+	if err != nil || !ok || rt.Agent.ID != "composed_worker_third_party" || comp.Runtime != "composed_worker_third_party" {
+		t.Fatalf("pinned step: rt=%q comp=%q ok=%v err=%v, want the third-party runtime", rt.Agent.ID, comp.Runtime, ok, err)
 	}
 }
 
@@ -126,7 +183,34 @@ func TestComposeTurnRequest_LeavesThirdPartyProfessionsOut(t *testing.T) {
 		t.Fatalf("turn composition = %+v, want researcher only on the shared runtime", comp)
 	}
 	c.Fleet = fakeFleet{thirdPartyProfile("outsider")}
-	if _, err := c.ComposeTurnRequest(context.Background(), "lease-turn2", "x"); err != ErrNoProfessions {
+	if _, err := c.ComposeTurnRequest(context.Background(), "lease-turn2", "x"); !errors.Is(err, ErrNoProfessions) {
 		t.Fatalf("only third-party professions: err = %v, want ErrNoProfessions", err)
 	}
+}
+
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// captureLogs routes slog to a buffer for the test.
+func captureLogs(t *testing.T) *lockedBuf {
+	t.Helper()
+	buf := &lockedBuf{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
 }

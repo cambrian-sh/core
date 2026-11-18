@@ -34,7 +34,8 @@ import (
 //     slate (the pinned profession alone) → compose.Composer.Compose →
 //     the dispatcher's AgentCaller;
 //   - single-agent lane: compose.Composer.ComposeRequest → the runtime id the
-//     lane calls;
+//     lane calls — the shared one, the third-party profession left out of the
+//     request (ENG-2096);
 //
 // → InstanceManager.GetOrBootInstance under the default execution.agents.sandbox
 // → sandbox.StartCmd. The caller is the AgentManager's lookup + boot (resolve the
@@ -299,32 +300,58 @@ func TestE2E_ThirdPartyProfileRunsInAThirdPartyComposedWorker(t *testing.T) {
 		t.Error("the shared worker's containment report must say tier=system")
 	}
 
-	// 3. The single-agent lane: the request composes every profession; one is
-	// third-party, so the whole request runs on the third-party runtime.
+	// 3. The single-agent lane (ENG-2096, owner decision 2026-11-18): with the
+	// third-party profile installed, a normal request leaves it OUT of its
+	// composition and runs on the shared composed_worker, which reaches what the
+	// third-party worker could not.
+	tpRep := caller.reports[tpID]
 	runtime, rc, err := comp.ComposeRequest(context.Background(), "lease-lane", "do it", &domain.Handoff{Context: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime != tpID || rc.Runtime != tpID {
-		t.Fatalf("single-agent lane runtime = %q, want %q", runtime, tpID)
+	if runtime != workers.RuntimeID() || rc.Runtime != runtime {
+		t.Fatalf("single-agent lane runtime = %q (composition %q), want the shared %q", runtime, rc.Runtime, workers.RuntimeID())
 	}
+	for _, p := range rc.Professions {
+		if p == "outsider" {
+			t.Fatalf("the request composition holds the third-party profession: %v", rc.Professions)
+		}
+	}
+	if !strings.Contains(logs.String(), "third-party professions left out") {
+		t.Error("the lane must log the third-party professions it left out")
+	}
+	delete(caller.reports, workers.RuntimeID())
 	delete(caller.reports, tpID)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	if _, err := caller.CallAgent(ctx, runtime, &domain.Handoff{Context: map[string]string{}}, ""); err != nil {
 		t.Fatalf("single-agent lane call: %v", err)
 	}
-	assertThirdPartyWorker(t, caller.reports[tpID], targets, logs.String(), tpID)
-
-	// The control: the shared (first-party network) worker reached what the
-	// third-party one could not, where this host routes it.
-	reached := 0
+	if _, ran := caller.reports[tpID]; ran {
+		t.Fatal("the single-agent lane request reached the third-party composed worker")
+	}
+	// The shared worker process already booted for step 2 serves the request
+	// (GetOrBootInstance reuses the running instance), as in the kernel.
+	lane := caller.reports[workers.RuntimeID()]
+	if lane == nil || !strings.Contains(filepath.ToSlash(lane.Temp), "/first-party/") {
+		t.Fatalf("the lane's request must run in the shared worker (first-party sandbox tier): %+v", lane)
+	}
+	// The first-party-only resource: a target the lane's worker reached and the
+	// third-party worker was denied, where this host routes one at all.
+	firstPartyOnly, sharedReached := 0, 0
 	for _, a := range targets {
 		if shared.Dial[a] == "ok" {
-			reached++
+			sharedReached++
+		}
+		if lane.Dial[a] == "ok" && tpRep.Dial[a] != "ok" {
+			firstPartyOnly++
 		}
 	}
-	if reached == 0 {
+	switch {
+	case firstPartyOnly > 0:
+	case sharedReached > 0:
+		t.Fatalf("the lane's request reached no target the third-party worker was denied: lane %v, third-party %v", lane.Dial, tpRep.Dial)
+	default:
 		t.Logf("the shared worker reached none of %v here; the third-party denials are not discriminating on this host", targets)
 	}
 }

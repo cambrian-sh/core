@@ -215,11 +215,13 @@ Ticket `T-20261105-agent-stack-v2-worker-agent-runtime-plus`, part B.
    separate runtime, `<runtime_agent_id>_third_party` (default
    `composed_worker_third_party`), launched at the third-party tier — kernel-only network,
    low privilege where the host has it, the third-party memory cap — never in the shared
-   `composed_worker`. The lowest tier among a composition's professions decides, so a step
-   mixing a `third-party` profession with first-party ones runs third-party, and so does a
-   single-agent-lane request while any `third-party` profile is registered (that lane
-   composes every profession). A chat turn's composition, whose agent cannot change tier,
-   leaves `third-party` professions out.
+   `composed_worker`. The lowest tier among a composition's professions decides, so a plan
+   step mixing a `third-party` profession with first-party ones runs
+   third-party. The single-agent lane (the default) leaves `third-party` professions OUT of
+   its compositions — a request's and a chat turn's alike — and logs which it left out
+   (ENG-2096), so installing a `third-party` profile never moves ordinary requests onto the
+   restricted runtime. There a `third-party` profile runs only when a plan step explicitly
+   pins it (`preferred_agent` / `agent_pin`), on the third-party runtime.
 
 Only profiles get allowlist grants. A `tool_allowlist` in an ordinary agent's own
 `AGENT_MANIFEST` is not turned into grants: that would be a self-asserted privilege.
