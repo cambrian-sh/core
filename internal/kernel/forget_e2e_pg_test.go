@@ -264,9 +264,15 @@ type gate struct {
 	svc   *forget.Service
 	emb   hashEmbedder
 	stamp string
+	// eraser is the raw erasure store under the stack (the erasure worker's outbox).
+	eraser *postgres.PgErasureStore
 }
 
-func newGate(t *testing.T) *gate {
+func newGate(t *testing.T) *gate { t.Helper(); return newGateWith(t) }
+
+// newGateWith composes the gate with extra erasure-store options (ENG-1966: plugin
+// tail steps).
+func newGateWith(t *testing.T, eraserOpts ...postgres.ErasureStoreOption) *gate {
 	t.Helper()
 	cfg := pgTestConfig(t)
 	cfg.Execution.Erasure.Enabled = true
@@ -294,7 +300,8 @@ func newGate(t *testing.T) *gate {
 	reader := postgres.NewPgFactItemReader(ks, gateNS, "gate-model", cfg.Embedder.Dimensions)
 	backend := NewMemoryBackend(vec)
 	lifecycle := postgres.NewPgDocumentLifecycle(ks)
-	backend.Eraser = postgres.NewPgErasureStore(lifecycle)
+	eraser := postgres.NewPgErasureStore(lifecycle, eraserOpts...)
+	backend.Eraser = eraser
 	emb := hashEmbedder{dim: cfg.Embedder.Dimensions}
 	mem := NewMemoryStack(backend, nil, emb, cfg.Execution, nil, cfg.Chunker, nil,
 		FactSubstrate{Store: ks, Reader: reader, Inspector: reader, EmbedModelID: "gate-model", Documents: lifecycle})
@@ -309,9 +316,10 @@ func newGate(t *testing.T) *gate {
 	mem.QueryService.EnableAnchorConstraint()
 	mem.QueryService.EnableNeighborWindow()
 	g := &gate{t: t, ctx: ctx, cfg: cfg, vec: vec, ks: ks, facts: reader, mem: mem,
-		svc:   forget.New(mem.Eraser(), forget.Config{PreviewTTL: time.Minute, PolicyFingerprint: "gate"}),
-		emb:   emb,
-		stamp: strings.ReplaceAll(time.Now().UTC().Format("150405.000000"), ".", "")}
+		svc:    forget.New(mem.Eraser(), forget.Config{PreviewTTL: time.Minute, PolicyFingerprint: "gate"}),
+		emb:    emb,
+		eraser: eraser,
+		stamp:  strings.ReplaceAll(time.Now().UTC().Format("150405.000000"), ".", "")}
 	g.clean()
 	t.Cleanup(g.clean)
 	return g

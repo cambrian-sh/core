@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -211,6 +212,51 @@ func (s *PgErasureStore) CIDStillReferenced(ctx context.Context, cid string) (bo
 		return false, mapError("CIDStillReferenced", err)
 	}
 	return ok, nil
+}
+
+// ErasedRecords implements domain.ErasureOutbox: the request's tombstones (ids by kind,
+// document ids) and the CIDs of its cas_delete steps, processed or not.
+func (s *PgErasureStore) ErasedRecords(ctx context.Context, requestID string) (domain.ErasedRecords, error) {
+	out := domain.ErasedRecords{RequestID: requestID, Targets: map[string][]string{}}
+	rows, err := s.l.k.pool.Query(ctx, `SELECT target_kind, target_id, COALESCE(document_id, '')
+		FROM memory_erasure_targets WHERE request_id = $1 ORDER BY target_kind, target_id`, requestID)
+	if err != nil {
+		return out, mapError("ErasedRecords", err)
+	}
+	docs := map[string]bool{}
+	for rows.Next() {
+		var kind, id, doc string
+		if err := rows.Scan(&kind, &id, &doc); err != nil {
+			rows.Close()
+			return out, mapError("ErasedRecords", err)
+		}
+		out.Targets[kind] = append(out.Targets[kind], id)
+		if doc != "" {
+			docs[doc] = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return out, mapError("ErasedRecords", err)
+	}
+	for d := range docs {
+		out.DocumentIDs = append(out.DocumentIDs, d)
+	}
+	sort.Strings(out.DocumentIDs)
+	crows, err := s.l.k.pool.Query(ctx, `SELECT ref FROM memory_erasure_outbox
+		WHERE request_id = $1 AND step = $2 ORDER BY ref`, requestID, domain.ErasureStepCASDelete)
+	if err != nil {
+		return out, mapError("ErasedRecords", err)
+	}
+	defer crows.Close()
+	for crows.Next() {
+		var c string
+		if err := crows.Scan(&c); err != nil {
+			return out, mapError("ErasedRecords", err)
+		}
+		out.CIDs = append(out.CIDs, c)
+	}
+	return out, mapError("ErasedRecords", crows.Err())
 }
 
 // VaultBodyStillReferenced implements domain.ErasureOutbox: a surviving run-ledger

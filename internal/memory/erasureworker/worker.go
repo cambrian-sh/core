@@ -32,6 +32,11 @@ type Config struct {
 	// (vault_delete steps, ADR-0157 D5.6). nil ⇒ those steps stay pending, never
 	// silently marked done.
 	Vault domain.VaultEraser
+	// TailSteps are the plugin steps of the async tail (domain.ErasureTailStep,
+	// app.Registry.AddErasureTailStep; ADR-0137 D7, ENG-1966), run by their Step()
+	// name with what the request erased. A step whose plugin is absent stays pending
+	// (unknown_step), never silently marked done.
+	TailSteps []domain.ErasureTailStep
 }
 
 // Worker is the ONE owner of the erasure outbox drain: started by Start(ctx), drained
@@ -42,6 +47,8 @@ type Worker struct {
 	cfg    Config
 	logger *slog.Logger
 	now    func() time.Time
+
+	tails map[string]domain.ErasureTailStep
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -63,7 +70,23 @@ func New(outbox domain.ErasureOutbox, cas domain.ContentEraser, cfg Config, logg
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = 5
 	}
-	return &Worker{outbox: outbox, cas: cas, cfg: cfg, logger: logger, now: time.Now}
+	tails := map[string]domain.ErasureTailStep{}
+	for _, t := range cfg.TailSteps {
+		if t == nil {
+			continue
+		}
+		name := t.Step()
+		switch {
+		case name == "" || name == domain.ErasureStepCASDelete || name == domain.ErasureStepVaultDelete:
+			logger.Warn("erasure worker: a plugin tail step with an empty or core step name is ignored", "step", name)
+			continue
+		case tails[name] != nil:
+			logger.Warn("erasure worker: a second plugin tail step with the same name is ignored", "step", name)
+			continue
+		}
+		tails[name] = t
+	}
+	return &Worker{outbox: outbox, cas: cas, cfg: cfg, logger: logger, now: time.Now, tails: tails}
 }
 
 // Stats is what one pass did.
@@ -168,7 +191,23 @@ func (w *Worker) run(ctx context.Context, r domain.ErasureOutboxRow) (shared boo
 		}
 		return false, ""
 	default:
-		return false, "unknown_step"
+		t := w.tails[r.Step]
+		if t == nil {
+			return false, "unknown_step"
+		}
+		// A plugin tail step (ADR-0137 D7): ref is the request id; the step gets what
+		// the request erased, content-free, and deletes what it derived from it.
+		erased, err := w.outbox.ErasedRecords(ctx, r.RequestID)
+		if err != nil {
+			return false, "erased_records_failed"
+		}
+		n, err := t.RunErasureStep(ctx, erased)
+		if err != nil {
+			return false, "tail_step_failed"
+		}
+		w.logger.InfoContext(ctx, "erasure worker: plugin tail step ran",
+			"request_id", r.RequestID, "step", r.Step, "removed", n)
+		return false, ""
 	}
 }
 

@@ -51,6 +51,9 @@ type PgErasureStore struct {
 	participants []domain.ErasureParticipant
 	// observer receives each executed (non-replayed) receipt after commit.
 	observer domain.ErasureObserver
+	// tailSteps are the plugin async steps (domain.ErasureTailStep names) queued once
+	// per executed request (ADR-0137 D7, ENG-1966).
+	tailSteps []string
 }
 
 // ErasureStoreOption configures a PgErasureStore.
@@ -69,6 +72,19 @@ func WithErasureParticipants(ps ...domain.ErasureParticipant) ErasureStoreOption
 		for _, p := range ps {
 			if p != nil {
 				s.participants = append(s.participants, p)
+			}
+		}
+	}
+}
+
+// WithErasureTailSteps queues one outbox row per executed request (ref = the request
+// id) for every named plugin step (app.Registry.AddErasureTailStep; ADR-0137 D7): the
+// erasure worker runs the step with what the request erased. Empty names are skipped.
+func WithErasureTailSteps(steps ...string) ErasureStoreOption {
+	return func(s *PgErasureStore) {
+		for _, st := range steps {
+			if st != "" {
+				s.tailSteps = append(s.tailSteps, st)
 			}
 		}
 	}
@@ -196,7 +212,7 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 	}
 	sort.Strings(bodies)
 	status := domain.ErasureStatusComplete
-	if len(cids)+len(bodies) > 0 {
+	if len(cids)+len(bodies)+len(s.tailSteps) > 0 {
 		status = domain.ErasureStatusPendingAsync
 	}
 	cj, _ := json.Marshal(run.counts) // map[string]int always marshals
@@ -238,13 +254,21 @@ func (s *PgErasureStore) Erase(ctx context.Context, req domain.ErasureRequest) (
 			return domain.ErasureReceipt{}, mapError("Erase: outbox", err)
 		}
 	}
+	// ADR-0137 D7 (ENG-1966): every plugin tail step runs once per request, over what
+	// the request erased (the worker reads it back by the request id).
+	for _, st := range s.tailSteps {
+		if _, err := tx.Exec(ctx, `INSERT INTO memory_erasure_outbox (request_id, step, ref)
+			VALUES ($1, $2, $1) ON CONFLICT DO NOTHING`, id, st); err != nil {
+			return domain.ErasureReceipt{}, mapError("Erase: outbox", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return domain.ErasureReceipt{}, err
 	}
 	rec := domain.ErasureReceipt{
 		RequestID: id, Principal: req.Principal, PrincipalKind: req.PrincipalKind, Reason: req.Reason,
 		SelectorKinds: req.Selector.Kinds(), Status: status, ErasedAt: erasedAt.UTC(),
-		Counts: run.counts, Targets: len(seen), PendingSteps: len(cids) + len(bodies),
+		Counts: run.counts, Targets: len(seen), PendingSteps: len(cids) + len(bodies) + len(s.tailSteps),
 	}
 	if deadline != nil {
 		rec.AsyncDeadline = deadline.UTC()

@@ -179,6 +179,11 @@ type Options struct {
 	// Registry.AddErasureObserver (fanned into one). OSS default nil — the OSS record
 	// is the memory_erasures row itself.
 	ErasureObserver domain.ErasureObserver
+	// ErasureTailSteps are plugin steps of the ADR-0137 D7 async tail (records a plugin
+	// keeps outside Postgres that derive from erased ones, e.g. the premium reactive
+	// engine's dead letters), queued once per executed request and run by the erasure
+	// worker. Plugins contribute through Registry.AddErasureTailStep. OSS default nil.
+	ErasureTailSteps []domain.ErasureTailStep
 
 	// KnowledgeKinds and ResolutionAuthorities feed the ADR-0110 kind
 	// registry, validated as a unit at boot: a malformed spec, a duplicate

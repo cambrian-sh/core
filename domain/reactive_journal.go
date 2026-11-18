@@ -44,3 +44,46 @@ type ReactiveDeadLetter struct {
 	Signal     Signal
 	FailedAt   time.Time
 }
+
+// ReferencesAny reports whether the dead letter's signal NAMES one of ids: a string
+// value anywhere in its payload (nested maps and lists included) equal to an id. It is
+// the match of the ADR-0137 D7 dead-letter erasure step (ENG-1966): a dead letter
+// keeps the whole signal, so one that names an erased document, chunk, evidence row
+// or content address (an ingress delivery's staged cid) is deleted with it. Exact
+// equality only — never a substring or similarity match.
+func (d ReactiveDeadLetter) ReferencesAny(ids map[string]bool) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	return valueReferences(d.Signal.Payload, ids, 0)
+}
+
+// valueReferences walks a decoded payload value; depth bounds a pathological nesting.
+func valueReferences(v any, ids map[string]bool, depth int) bool {
+	if depth > 32 {
+		return false
+	}
+	switch x := v.(type) {
+	case string:
+		return ids[x]
+	case []string:
+		for _, s := range x {
+			if ids[s] {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if valueReferences(e, ids, depth+1) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, e := range x {
+			if valueReferences(e, ids, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}

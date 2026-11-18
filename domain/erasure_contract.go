@@ -61,6 +61,58 @@ type ErasureParticipant interface {
 	EraseEvidence(ctx context.Context, tx ErasureTx, evidenceIDs []string) (map[string]int, error)
 }
 
+// ErasedRecords is what one executed erasure removed, content-free: ids, document ids
+// and content addresses, never text or a digest. It is what a plugin's async tail step
+// (ErasureTailStep) is handed to find the records IT derived from the erased ones.
+type ErasedRecords struct {
+	RequestID string
+	// Targets maps an erased target kind (ErasureTarget*) to the erased ids of that
+	// kind, each sorted.
+	Targets map[string][]string
+	// DocumentIDs are the documents the erased targets belonged to (sorted, unique).
+	DocumentIDs []string
+	// CIDs are the content addresses the erase queued for deletion (evidence bytes and
+	// source-document bodies, the cas_delete steps), sorted.
+	CIDs []string
+}
+
+// IDs returns every erased id of every kind plus the document ids and CIDs, as a set:
+// what a record referencing "anything this erase removed" is matched against.
+func (e ErasedRecords) IDs() map[string]bool {
+	out := map[string]bool{}
+	for _, ids := range e.Targets {
+		for _, id := range ids {
+			out[id] = true
+		}
+	}
+	for _, id := range e.DocumentIDs {
+		out[id] = true
+	}
+	for _, c := range e.CIDs {
+		out[c] = true
+	}
+	delete(out, "")
+	return out
+}
+
+// ErasureTailStep is a plugin's step of the ADR-0137 D7 async tail: it deletes records
+// the plugin keeps OUTSIDE Postgres that derive from what an erasure removed (the
+// premium reactive engine's dead letters, inventory row 26). The erase transaction
+// queues one memory_erasure_outbox row per request for every registered step (ref =
+// the request id); the erasure worker runs it with the request's ErasedRecords and
+// retries it on error. Add-many (app.Registry.AddErasureTailStep); core never names a
+// plugin's step.
+//
+// A step must be idempotent (a retried step finds nothing left to delete), delete only
+// records that reference what it is handed, and never log or return content.
+type ErasureTailStep interface {
+	// Step is the outbox step name: unique, and none of core's ErasureStep* names.
+	Step() string
+	// RunErasureStep deletes the plugin's records derived from erased and returns how
+	// many it removed.
+	RunErasureStep(ctx context.Context, erased ErasedRecords) (removed int, err error)
+}
+
 // ErasureObserver receives every executed erasure's content-free receipt after its
 // transaction committed — the seam of the premium signed ADR-0103 erasure receipt
 // (ADR-0137 D8, Q7). Not called for a replayed request (nothing was erased by it).

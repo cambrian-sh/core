@@ -102,6 +102,10 @@ type ErasureOutbox interface {
 	// VaultBodyStillReferenced reports whether a surviving run-ledger entry still
 	// names an artifact-vault body (ADR-0157 D5.6): the vault is content-addressed.
 	VaultBodyStillReferenced(ctx context.Context, hash string) (bool, error)
+	// ErasedRecords returns what request requestID erased (its tombstones and its CAS
+	// steps), the input of a plugin's ErasureTailStep. Tombstones pruned past
+	// retention are gone from it.
+	ErasedRecords(ctx context.Context, requestID string) (ErasedRecords, error)
 	// MarkStepDone marks a row processed (false when another drainer already did).
 	MarkStepDone(ctx context.Context, id int64) (bool, error)
 	// MarkStepFailed records one failed attempt with an error CLASS (never content).

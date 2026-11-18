@@ -22,6 +22,7 @@ type fakeOutbox struct {
 	failed    map[int64]string
 	completed int
 	prunedAt  time.Time
+	erased    map[string]domain.ErasedRecords
 }
 
 func (f *fakeOutbox) PendingSteps(_ context.Context, limit, maxAttempts int) ([]domain.ErasureOutboxRow, error) {
@@ -40,6 +41,12 @@ func (f *fakeOutbox) CIDStillReferenced(_ context.Context, cid string) (bool, er
 }
 func (f *fakeOutbox) VaultBodyStillReferenced(_ context.Context, hash string) (bool, error) {
 	return f.shared[hash], nil
+}
+func (f *fakeOutbox) ErasedRecords(_ context.Context, requestID string) (domain.ErasedRecords, error) {
+	if f.erased == nil {
+		return domain.ErasedRecords{RequestID: requestID}, nil
+	}
+	return f.erased[requestID], nil
 }
 func (f *fakeOutbox) MarkStepDone(_ context.Context, id int64) (bool, error) {
 	f.mu.Lock()

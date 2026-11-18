@@ -236,6 +236,7 @@ type Registry struct {
 	transformers     []domain.EvidenceTransformer
 	erasureParts     []domain.ErasureParticipant
 	erasureObs       []domain.ErasureObserver
+	erasureTails     []domain.ErasureTailStep
 	kinds            []domain.KindSpec
 	authorities      []domain.ResolutionAuthority
 	relations        []domain.RelationSpec
@@ -640,6 +641,28 @@ func (r *Registry) AddErasureObserver(o domain.ErasureObserver) {
 	if o != nil {
 		r.erasureObs = append(r.erasureObs, o)
 	}
+}
+
+// AddErasureTailStep registers a plugin step of the ADR-0137 D7 async tail: queued once
+// per executed erasure and run by the erasure worker with what it erased, to delete
+// records the plugin keeps outside Postgres that derive from them. Add-many; names
+// must be unique (a duplicate is ignored with a warning).
+func (r *Registry) AddErasureTailStep(s domain.ErasureTailStep) {
+	if s != nil {
+		r.erasureTails = append(r.erasureTails, s)
+	}
+}
+
+// erasureTailStepNames lists the steps' outbox names, the erase transaction queues one
+// row per request for each (postgres.WithErasureTailSteps).
+func erasureTailStepNames(steps []domain.ErasureTailStep) []string {
+	out := make([]string, 0, len(steps))
+	for _, s := range steps {
+		if s != nil {
+			out = append(out, s.Step())
+		}
+	}
+	return out
 }
 
 // AddKnowledgeKinds declares knowledge kinds this plugin produces (ADR-0110
@@ -1065,6 +1088,7 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	// Erasure participants and observers (ADR-0137 S7/D8): participants appended in
 	// registration order; observers fan out like the other observer seams.
 	opts.ErasureParticipants = append(opts.ErasureParticipants, reg.erasureParts...)
+	opts.ErasureTailSteps = append(opts.ErasureTailSteps, reg.erasureTails...)
 	if len(reg.erasureObs) > 0 {
 		fan := make(domain.MultiErasureObserver, 0, len(reg.erasureObs)+1)
 		if opts.ErasureObserver != nil {

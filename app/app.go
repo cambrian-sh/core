@@ -935,6 +935,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	erasureStore := postgres.NewPgErasureStore(docLifecycle,
 		postgres.WithErasureAsyncDeadline(cfg.Execution.Erasure.AsyncDeadline()),
 		postgres.WithErasureParticipants(opts.ErasureParticipants...),
+		postgres.WithErasureTailSteps(erasureTailStepNames(opts.ErasureTailSteps)...),
 		postgres.WithErasureObserver(opts.ErasureObserver))
 	memBackend.Eraser = erasureStore
 	mem := kernel.NewMemoryStack(memBackend, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
@@ -975,6 +976,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if cfg.Execution.Erasure.Enabled {
 		ew := erasureworker.New(erasureStore, storeHandle.ContentEraser, erasureworker.Config{
 			Vault:              artifactVault,
+			TailSteps:          opts.ErasureTailSteps,
 			Poll:               cfg.Execution.Erasure.WorkerPoll(),
 			MaxAttempts:        cfg.Execution.Erasure.WorkerAttempts(),
 			TombstoneRetention: cfg.Execution.Erasure.TombstoneRetention(),
