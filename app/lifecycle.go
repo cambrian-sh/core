@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cambrian-sh/core/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -86,7 +87,9 @@ func readServerPort(prefix string) string {
 				Port string `json:"port"`
 			} `json:"server"`
 		}
-		if json.Unmarshal(b, &cfg) == nil && cfg.Server.Port != "" {
+		// A BOM (Windows editors write one) must not send `stop`/`status` to the
+		// default port while the kernel listens on the configured one (ENG-2121).
+		if json.Unmarshal(config.StripBOM(b), &cfg) == nil && cfg.Server.Port != "" {
 			return cfg.Server.Port
 		}
 	}

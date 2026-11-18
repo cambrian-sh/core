@@ -160,9 +160,15 @@ func (b *kernelBuild) buildMCPEndpoint() error {
 // connector (ADR-0043, contract 0097), assembles the plugin and configured
 // server lists and the live runtime list, connects the enabled servers into the
 // tool registry, and builds the MCP handler, pricing, budget and auditor.
-func (b *kernelBuild) buildMCPConnector() {
+func (b *kernelBuild) buildMCPConnector() error {
 	ctx, cfg, opts, cfgStore, composed := b.ctx, b.cfg, b.opts, b.cfgStore, b.composed
 	credSeams, eventBus, toolReg := b.credSeams, b.eventBus, b.toolReg
+	// The integration catalog is read first so a deployment catalog that does
+	// not parse refuses boot before any MCP machinery is built (ENG-2121).
+	sbCatalog, err := loadSandboxCatalog(cfg.MCP.CatalogFile)
+	if err != nil {
+		return err
+	}
 	// ADR-0043: connect configured external MCP servers, discover their tools into
 	// the registry as mcp:<server>/<tool>, and expose the MCP handler. Opt-in —
 	// no servers configured ⇒ mcpHandler stays nil and nothing changes. A server
@@ -207,7 +213,7 @@ func (b *kernelBuild) buildMCPConnector() {
 	mcpPricingMap := domain.MapPricingSource{}
 	// ADR-0139 D8: one trust-tier containment policy (mcp.sandbox + the
 	// integration catalog's tiers), resolved onto every server built below.
-	sbPolicy := sandboxPolicyFromConfig(cfg.MCP.Sandbox, loadSandboxCatalog(cfg.MCP.CatalogFile))
+	sbPolicy := sandboxPolicyFromConfig(cfg.MCP.Sandbox, sbCatalog)
 	servers := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers)+len(composed.mcpServers))
 	// ADR-0075: plugin-contributed MCP servers connect alongside the config ones.
 	for _, s := range composed.mcpServers {
@@ -277,6 +283,7 @@ func (b *kernelBuild) buildMCPConnector() {
 
 	b.mcpConnector, b.mcpRT, b.sbPolicy, b.mcpServers = mcpConnector, mcpRT, sbPolicy, mcpServers
 	b.mcpHandler, b.mcpPricing, b.mcpBudget, b.mcpAuditor = mcpHandler, mcpPricing, mcpBudget, mcpAuditor
+	return nil
 }
 
 // buildToolExecutor builds the tool grants and the tool executor — the

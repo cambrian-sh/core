@@ -31,6 +31,9 @@ func main() {
 		var cfgErr *config.ConfigError
 		if errors.As(err, &cfgErr) {
 			slog.Error("❌ Configuration error — fix the problem and restart", "field", cfgErr.Field, "detail", cfgErr.Message)
+		} else if errors.Is(err, config.ErrMalformedConfigFile) {
+			// ENG-2121: a present config file that does not parse; err names it.
+			slog.Error("❌ Configuration file does not parse — fix or remove it and restart", "err", err)
 		} else {
 			slog.Error("❌ Kernel Panic", "err", err)
 		}

@@ -225,7 +225,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if err := b.buildMCPEndpoint(); err != nil {
 		return nil, err
 	}
-	b.buildMCPConnector()
+	if err := b.buildMCPConnector(); err != nil {
+		return nil, err
+	}
 	if err := b.buildToolExecutor(); err != nil {
 		return nil, err
 	}

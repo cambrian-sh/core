@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	stdjson "encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -595,13 +597,29 @@ func migrateJSON(b []byte, origin string) []byte {
 }
 
 // migrateFile reads a config file and returns its migrated bytes. A missing file
-// yields nil, which the caller treats as "skip this layer" exactly as before.
-func migrateFile(path string) []byte {
+// yields (nil, nil), which the caller treats as "skip this layer"; so does a file
+// holding only whitespace, which states nothing (a `touch`ed placeholder).
+//
+// A file that is present but cannot be read, or does not parse as a JSON
+// object, is an error naming the file (and the line and column when the decoder
+// reports one): it is never skipped (ENG-2121). A leading UTF-8 BOM is stripped
+// first, because the Windows tools operators edit configs with write one.
+func migrateFile(path string) ([]byte, error) {
 	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	return migrateJSON(b, path)
+	if err != nil {
+		return nil, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	b = StripBOM(b)
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, nil
+	}
+	if err := checkConfigObject(path, b); err != nil {
+		return nil, err
+	}
+	return migrateJSON(b, path), nil
 }
 
 // MigrateFileInPlace rewrites an older config file on disk to the current schema
@@ -613,13 +631,17 @@ func migrateFile(path string) []byte {
 // A file that is already v2 is left untouched and reports no moves, so running it
 // twice is safe.
 func MigrateFileInPlace(path string) ([]string, error) {
-	b, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("config migrate: read %s: %w", path, err)
 	}
+	// A BOM is accepted and kept on the rewrite, as patchFile keeps it: the
+	// operator's editor wrote it and will expect it back (ENG-2121).
+	hasBOM := bytes.HasPrefix(raw, utf8BOM)
+	b := StripBOM(raw)
 	var doc map[string]any
 	if err := stdjson.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("config migrate: parse %s: %w", path, err)
+		return nil, fmt.Errorf("config migrate: %w", MalformedJSONError(path, b, err))
 	}
 	moved := migrateConfigMap(doc)
 	// Deprecated keys are carried to their successors too: an explicit migrate
@@ -637,7 +659,11 @@ func MigrateFileInPlace(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config migrate: encode %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+	out = append(out, '\n')
+	if hasBOM {
+		out = append(append([]byte{}, utf8BOM...), out...)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
 		return nil, fmt.Errorf("config migrate: write %s: %w", path, err)
 	}
 	return moved, nil

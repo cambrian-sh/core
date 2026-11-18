@@ -3889,8 +3889,13 @@ func loadMergedReport(path string, store Store) (*Config, Provenance, []string, 
 	// The SAME list drives the ADR-0101 D8 write-time resolver
 	// (ResolveFileSetting), so the merge and "which file supplies this key" share
 	// one statement of precedence.
+	//
+	// A present file that does not parse stops the load with an error naming it
+	// (ENG-2121); only an ABSENT file is skipped.
 	for _, layer := range FileLayers(path) {
-		loadIfPresent(k, layer.Path)
+		if err := loadIfPresent(k, layer.Path); err != nil {
+			return nil, nil, nil, err
+		}
 		t.claim(scratchFile(layer.Path), layer.Source)
 	}
 
@@ -4147,11 +4152,14 @@ func (overlayStore) DeleteOverride(string) error {
 	return fmt.Errorf("config: overlay store is read-only")
 }
 
-// loadIfPresent loads the JSON file at p into k when the file exists. A missing
-// file is a silent no-op (per-layer skip, not an error). A present-but-malformed
-// file surfaces the parser error to the caller, which is the right signal — the
-// operator wrote a file but it's broken.
-// loadIfPresent merges one config file into k.
+// loadIfPresent merges the JSON file at p into k when the file exists. A missing
+// file is a no-op (per-layer skip, not an error). A present file that does not
+// parse is returned as an error naming the file, with line and column when the
+// decoder reports them — the operator wrote a file and it is broken, so boot
+// stops rather than running without it. (ENG-2121: this comment once claimed
+// that while the code discarded the error, and a providers.json saved with a
+// UTF-8 BOM booted a kernel with no LLM behind a green /healthz.) A leading BOM
+// is stripped, not refused (migrateFile).
 //
 // The bytes pass through migrateFile first, so a file still written against the
 // v1 flat `execution` schema is converted to v2 in memory before koanf sees it.
@@ -4164,12 +4172,18 @@ func (overlayStore) DeleteOverride(string) error {
 // The file on disk is never modified. Rewriting an operator's config as a side
 // effect of starting the kernel is a surprising thing for a read path to do;
 // MigrateFileInPlace exists for when that is explicitly wanted.
-func loadIfPresent(k *koanf.Koanf, p string) {
-	b := migrateFile(p)
-	if b == nil {
-		return // missing file: skip this layer
+func loadIfPresent(k *koanf.Koanf, p string) error {
+	b, err := migrateFile(p)
+	if err != nil {
+		return err
 	}
-	_ = k.Load(rawbytes.Provider(b), kjson.Parser())
+	if b == nil {
+		return nil // missing file: skip this layer
+	}
+	if err := k.Load(rawbytes.Provider(b), kjson.Parser()); err != nil {
+		return MalformedJSONError(p, b, err)
+	}
+	return nil
 }
 
 // scratchFile returns a throwaway Koanf holding ONLY the contents of the file at
@@ -4183,9 +4197,13 @@ func loadIfPresent(k *koanf.Koanf, p string) {
 // came from tuning.json, when the value in effect is keyed
 // `execution.retrieval.recall_top_k`, would make the provenance view claim a
 // source for a key that no longer exists.
+//
+// A file that does not parse yields nil like an absent one: the boot merge has
+// already refused it (loadIfPresent), and the write-time resolver must not
+// claim a key from a file it cannot read.
 func scratchFile(p string) *koanf.Koanf {
-	b := migrateFile(p)
-	if b == nil {
+	b, err := migrateFile(p)
+	if err != nil || b == nil {
 		return nil
 	}
 	sk := koanf.New(".")

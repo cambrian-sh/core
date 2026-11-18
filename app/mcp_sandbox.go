@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"log/slog"
 	"path/filepath"
 
@@ -98,18 +99,27 @@ func sandboxPolicyFromConfig(c config.MCPSandboxConfig, cat *integrations.Catalo
 }
 
 // loadSandboxCatalog loads the integration catalog for tier resolution, with
-// the same fallback the console uses: a bad deployment file leaves the
-// built-in catalog.
-func loadSandboxCatalog(path string) *integrations.Catalog {
+// the same fallback the console uses: a deployment file whose entries are
+// invalid leaves the built-in catalog.
+//
+// A deployment file that does not parse at all is a boot error instead
+// (config.ErrMalformedConfigFile, owner decision 2026-11-18, ENG-2121): a config
+// file the operator wrote is never silently dropped, and the parse fault is
+// almost always an editor accident (a trailing comma) the operator fixes in
+// seconds once the error names the file and line.
+func loadSandboxCatalog(path string) (*integrations.Catalog, error) {
 	cat, err := integrations.Load(path)
+	if errors.Is(err, config.ErrMalformedConfigFile) {
+		return nil, err
+	}
 	if err != nil {
 		slog.Error("ADR-0139 D8: integration catalog invalid; sandbox tiers use the built-in catalog only", "file", path, "err", err)
 		if cat, err = integrations.Load(""); err != nil {
 			slog.Error("ADR-0139 D8: built-in integration catalog failed to load; catalog servers launch at the default tier", "err", err)
-			return nil
+			return nil, nil
 		}
 	}
-	return cat
+	return cat, nil
 }
 
 // serverSandboxSpec maps a server's sandbox declaration.

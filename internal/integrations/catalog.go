@@ -187,6 +187,14 @@ func Load(deploymentPath string) (*Catalog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("integration catalog: read %s: %w", deploymentPath, err)
 	}
+	// A leading UTF-8 BOM (Windows tools write one) is stripped; a file that
+	// still does not decode wraps config.ErrMalformedConfigFile and names the
+	// file with line and column, so boot can refuse it (ENG-2121).
+	raw = config.StripBOM(raw)
+	var probe file
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, fmt.Errorf("integration catalog: %w", config.MalformedJSONError(deploymentPath, raw, err))
+	}
 	extra, err := parse(raw, SourceDeployment)
 	if err != nil {
 		return nil, fmt.Errorf("integration catalog %s: %w", deploymentPath, err)
