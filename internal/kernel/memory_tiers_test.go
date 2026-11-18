@@ -103,7 +103,9 @@ func TestPg_MemoryTiers_WritesClassifiedReadsEnforced(t *testing.T) {
 	doc := func(id string) *domain.Document {
 		return &domain.Document{ID: id, DocumentType: domain.DocTypeMnemonicFact, Text: "eng1476 " + id,
 			Embedding: domain.Embedding{Vector: vector}, ActivationStrength: 0.5,
-			Metadata: map[string]any{"tags": []string{"authored-tag"}}}
+			// A forged provenance stamp, not a classification request: a requested tag the
+			// decision point's answer lacks would refuse the write (ENG-2115).
+			Metadata: map[string]any{"tags": []string{"provenance:source=forged"}}}
 	}
 	wctx := domain.WithPrincipal(ctx, domain.AgentPrincipal("eng1476-agent"))
 

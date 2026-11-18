@@ -155,9 +155,14 @@ func (r *Recorder) Record(ctx context.Context, rec domain.LedgerRecord) (domain.
 // classify is the kernel write classification (ADR-0035), the vault's own
 // (authz.ClassifyArtifactWrite): the writer's principal decides, the hint (a
 // tool's domain tags — what the result came from) may only narrow, and the
-// ADR-0142 D12 owner stamp is added after. A hint the decision point rejects is
-// dropped and the principal's own classification used; a principal it refuses
-// outright gets no entry (ErrUnclassifiable).
+// ADR-0142 D12 owner stamp is added after. A hint the decision point rejects —
+// or, since ENG-2115, one it cannot carry in full (a tool tag outside the writer's
+// write ceiling) — is dropped and the principal's own classification used: a tool's
+// domain tags are not a writer's request, and the fallback is the writer's whole
+// ceiling, never a silently narrowed subset of it. A writer's OWN requested tags
+// (UploadArtifact) never reach this fallback: the RPC refuses an unhonourable
+// request first. A principal the decision point refuses outright gets no entry
+// (ErrUnclassifiable).
 func (r *Recorder) classify(ctx context.Context, rec domain.LedgerRecord) ([]string, error) {
 	tags, err := authz.ClassifyArtifactWrite(ctx, r.authorizer, rec.Writer, rec.ClassificationHint)
 	if err == nil {

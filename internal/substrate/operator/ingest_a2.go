@@ -12,6 +12,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/llmusage"
 )
 
@@ -275,6 +276,12 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 		// taken over; the operator is told why rather than handed an Internal.
 		if errors.Is(err, domain.ErrDocumentOwnedByAnotherWriter) {
 			return nil, status.Errorf(codes.PermissionDenied, "ingest memory: %v", err)
+		}
+		// ENG-2115: a classification the operator asked for that cannot be carried in
+		// full (a tag outside their write ceiling, an unknown tag) refuses the upload;
+		// the message names the tags. It is the caller's to fix, not an Internal.
+		if errors.Is(err, authz.ErrWriteDenied) {
+			return nil, status.Errorf(codes.InvalidArgument, "ingest memory: %v", err)
 		}
 		return nil, status.Errorf(codes.Internal, "ingest memory: %v", err)
 	}

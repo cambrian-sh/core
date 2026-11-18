@@ -9,10 +9,12 @@ import (
 )
 
 // ErrWriteDenied is returned when the decision point refuses a write outright
-// (e.g. a tag outside the controlled vocabulary). The RPC boundary maps it to
-// InvalidArgument. The specific reason travels in the AccessDecision, which the
-// chokepoint logs — the error itself is deliberately coarse so it cannot be used
-// to probe the vocabulary.
+// (e.g. a tag outside the controlled vocabulary) or the write's requested
+// classification cannot be honoured (ENG-2115: *UnhonouredClassificationError
+// unwraps to it). The RPC boundary maps it to InvalidArgument. The error names at
+// most the tags the writer itself sent; the decision point's detail (which may list
+// the vocabulary) travels in the AccessDecision, which the chokepoint logs, so the
+// error cannot be used to probe the vocabulary.
 var ErrWriteDenied = errors.New("authz: write denied by policy")
 
 // EnforcingStoreWriter is the write-side chokepoint. EVERY write — RPC and
@@ -25,7 +27,10 @@ var ErrWriteDenied = errors.New("authz: write denied by policy")
 // whatever the writer put on the document. In OSS the decision point returns the
 // authored tags unchanged (unscoped deployment); in a premium deployment it
 // derives them from the principal's operator-configured write classification,
-// narrowed (never broadened) by the writer's hint, and stamps provenance.
+// narrowed (never broadened) by the writer's hint, and stamps provenance. A hint
+// the answer does not fully carry — a requested tag outside the writer's write
+// ceiling, or a writer with none — refuses the write (ENG-2115,
+// ClassifyWriteStrict); it is never stored with the requested tags dropped.
 //
 // It is a domain.VectorWriter and nothing more (ENG-1476): it has no read methods,
 // so it can never become a read path that skips EnforcingVectorStore, and a consumer
@@ -126,14 +131,19 @@ func (w *EnforcingStoreWriter) classify(ctx context.Context, doc *domain.Documen
 	// ADR-0099: strip identity before classification. See domain.ClassificationHint —
 	// an identity term reaching a controlled vocabulary is rejected as coinage, which
 	// denies the write outright rather than ignoring a term that was never a label.
-	final, dec := w.authz.ClassifyWrite(ctx, principal, domain.ClassificationHint(DocTags(doc)))
-	if !dec.Allowed {
+	//
+	// ENG-2115: fail closed — a write that cannot carry every classification tag it
+	// requested is refused with an error naming them (ClassifyWriteStrict), never
+	// stored without them.
+	final, dec, err := ClassifyWriteStrict(ctx, w.authz, principal, domain.ClassificationHint(DocTags(doc)))
+	if err != nil {
 		w.logger.WarnContext(ctx, "authz: write denied",
 			slog.String("event", "authz_write_deny"),
 			slog.String("principal", principal.String()),
 			slog.String("reason", string(dec.Reason)),
-			slog.String("detail", dec.Detail))
-		return ErrWriteDenied
+			slog.String("detail", dec.Detail),
+			slog.String("error", err.Error()))
+		return err
 	}
 	// A write that ends up with no classification at all is readable only by a
 	// reader whose predicate has no positive (required / any-of) terms: an

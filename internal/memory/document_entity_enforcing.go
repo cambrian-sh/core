@@ -2,9 +2,11 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // EnforcingDocumentStore is the write-side chokepoint for the DOCUMENT ENTITY.
@@ -44,15 +46,22 @@ func (w *EnforcingDocumentStore) SaveDocument(ctx context.Context, doc domain.So
 	// ADR-0099: identity is not a classification. The caller's list carries both, and
 	// a controlled vocabulary rejects an identity term as coinage — which denied the
 	// whole write and made a document unwritable for carrying its own name.
-	final, dec := w.authz.ClassifyWrite(ctx, principal, domain.ClassificationHint(doc.Tags))
-	if !dec.Allowed {
+	//
+	// ENG-2115: fail closed — a document whose requested classification cannot be
+	// carried in full (a tag outside the writer's write ceiling, or no ceiling) is
+	// refused, never stored with those tags dropped. The error is both
+	// ErrDocumentWriteDenied and the strict refusal (which names the tags and
+	// unwraps to authz.ErrWriteDenied, so the ingest RPC maps it to InvalidArgument).
+	final, dec, err := authz.ClassifyWriteStrict(ctx, w.authz, principal, domain.ClassificationHint(doc.Tags))
+	if err != nil {
 		w.logger.WarnContext(ctx, "authz: document write denied",
 			slog.String("event", "authz_document_write_deny"),
 			slog.String("principal", principal.String()),
 			slog.String("document", doc.ID),
 			slog.String("reason", string(dec.Reason)),
-			slog.String("detail", dec.Detail))
-		return nil, ErrDocumentWriteDenied
+			slog.String("detail", dec.Detail),
+			slog.String("error", err.Error()))
+		return nil, fmt.Errorf("%w: %w", ErrDocumentWriteDenied, err)
 	}
 	// ADR-0142 D12: private to the conversation owner the work is for.
 	doc.Tags = domain.StampPrivateOwner(ctx, final)

@@ -3,9 +3,11 @@ package memory
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // recordingDocStore captures what actually reached the store.
@@ -37,15 +39,14 @@ func (a narrowingAuthorizer) ClassifyWrite(_ context.Context, _ domain.Principal
 
 // The tags an ingesting agent supplies are a REQUEST. If they were the answer, any agent
 // could classify a document however it liked simply by ingesting it — and every chunk
-// beneath that document would inherit the classification.
-func TestEnforcingDocumentStore_DecisionPointOverridesRequestedTags(t *testing.T) {
+// beneath that document would inherit the classification. A writer that requests
+// nothing gets the decision point's answer.
+func TestEnforcingDocumentStore_DecisionPointClassifiesAnUntaggedWrite(t *testing.T) {
 	t.Parallel()
 	inner := &recordingDocStore{}
 	w := NewEnforcingDocumentStore(inner, narrowingAuthorizer{classification: []string{"support"}}, nil)
 
-	stored, err := w.SaveDocument(context.Background(), domain.SourceDocument{
-		ID: "doc-a", Tags: []string{"public", "airline"},
-	})
+	stored, err := w.SaveDocument(context.Background(), domain.SourceDocument{ID: "doc-a"})
 	if err != nil {
 		t.Fatalf("SaveDocument: %v", err)
 	}
@@ -55,8 +56,31 @@ func TestEnforcingDocumentStore_DecisionPointOverridesRequestedTags(t *testing.T
 		t.Errorf("returned tags = %v, want [support]; chunks would inherit the wrong classification", stored)
 	}
 	if len(inner.got.Tags) != 1 || inner.got.Tags[0] != "support" {
-		t.Errorf("stored tags = %v, want the decision point's [support] — the agent's request must not win",
-			inner.got.Tags)
+		t.Errorf("stored tags = %v, want the decision point's [support]", inner.got.Tags)
+	}
+}
+
+// ENG-2115 (owner decision 2026-11-18, fail closed): requested tags the decision
+// point's answer does not carry refuse the write — the document is never stored with
+// them silently dropped (which, with no write ceiling, stored it unclassified). The
+// refusal is both ErrDocumentWriteDenied and authz.ErrWriteDenied (the ingest RPC maps
+// the latter to InvalidArgument) and names the tags.
+func TestEnforcingDocumentStore_UnhonouredRequestedTagsRefuseTheWrite(t *testing.T) {
+	t.Parallel()
+	inner := &recordingDocStore{}
+	w := NewEnforcingDocumentStore(inner, narrowingAuthorizer{classification: []string{"support"}}, nil)
+
+	_, err := w.SaveDocument(context.Background(), domain.SourceDocument{
+		ID: "doc-a", Tags: []string{"public", "airline"},
+	})
+	if !errors.Is(err, ErrDocumentWriteDenied) || !errors.Is(err, authz.ErrWriteDenied) {
+		t.Fatalf("want ErrDocumentWriteDenied and authz.ErrWriteDenied, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "public") || !strings.Contains(err.Error(), "airline") {
+		t.Errorf("the refusal must name the requested tags, got %q", err.Error())
+	}
+	if inner.calls != 0 {
+		t.Errorf("the store was written %d time(s) despite the refusal", inner.calls)
 	}
 }
 

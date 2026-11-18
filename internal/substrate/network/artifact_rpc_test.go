@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -87,6 +88,8 @@ func newArtifactServer(preds map[string]*domain.TagPredicate, writeTags map[stri
 }
 
 // C2: an agent cannot classify an upload as anything outside its DefaultWriteTags.
+// ENG-2115 (fail closed): the upload is REFUSED with InvalidArgument naming the tag,
+// never recorded with the tag dropped.
 func TestUploadArtifact_CannotBroaden(t *testing.T) {
 	t.Parallel()
 	s, raw := newArtifactServer(
@@ -94,16 +97,14 @@ func TestUploadArtifact_CannotBroaden(t *testing.T) {
 		map[string][]string{"support": {"public_kb"}},
 		[]string{"secrets", "public_kb"})
 
-	resp, err := s.UploadArtifact(agentCtx("support"), &pb.UploadArtifactRequest{
+	_, err := s.UploadArtifact(agentCtx("support"), &pb.UploadArtifactRequest{
 		Content: []byte("x"), Tags: []string{"secrets"}, // tries to classify as secrets
 	})
-	if err != nil {
-		t.Fatal(err)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "secrets") {
+		t.Fatalf("expected InvalidArgument naming secrets, got %v", err)
 	}
-	for _, tg := range raw.rows[resp.Hash].Tags {
-		if tg == "secrets" {
-			t.Fatalf("agent must not classify an artifact as secrets, got %v", raw.rows[resp.Hash].Tags)
-		}
+	if len(raw.rows) != 0 {
+		t.Fatalf("a refused upload was recorded: %v", raw.rows)
 	}
 }
 

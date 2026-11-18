@@ -173,9 +173,11 @@ func (w writerProcessor) ProcessSync(ctx context.Context, doc domain.ExternalDoc
 	return d.ID, nil
 }
 
-// 0035-07 e2e: an agent that hints a broadening tag still gets only the operator
-// ceiling stamped — the broaden-to-leak vector is structurally closed end-to-end.
-func TestIngestMemoryE2E_BroadeningHintClampedToCeiling(t *testing.T) {
+// 0035-07 e2e, amended by ENG-2115 (owner decision 2026-11-18, fail closed): an
+// agent that hints a tag outside its operator ceiling is REFUSED with
+// InvalidArgument naming the tag — never stored with the tag dropped. (Before, the
+// hint was clamped to the ceiling and the write landed without it.)
+func TestIngestMemoryE2E_HintOutsideCeilingIsRefused(t *testing.T) {
 	t.Parallel()
 	s, cap, _ := newIngestServer(
 		map[string]bool{"support": true},
@@ -183,20 +185,69 @@ func TestIngestMemoryE2E_BroadeningHintClampedToCeiling(t *testing.T) {
 		[]string{"public_kb", "secrets"})
 
 	_, err := s.IngestMemory(agentCtx("support"), &pb.IngestMemoryRequest{
-		Text: "sensitive content", Tags: []string{"secrets"}, // tries to broaden
+		Text: "sensitive content", Tags: []string{"secrets"},
 	})
-	if err != nil {
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for a tag outside the ceiling, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "secrets") {
+		t.Errorf("the refusal must name the tag, got %q", err.Error())
+	}
+	if len(cap.saved) != 0 {
+		t.Fatalf("a refused write must not persist; got %d docs", len(cap.saved))
+	}
+}
+
+// ENG-2115 e2e (the readiness repro): a writer with NO write ceiling that asks for
+// "confidential, finance" is refused through the live RPC, naming both tags. Before,
+// the document landed with only its provenance stamp — readable by every
+// unrestricted reader.
+func TestIngestMemoryE2E_NoCeilingWithTagsIsRefused(t *testing.T) {
+	t.Parallel()
+	s, cap, _ := newIngestServer(
+		map[string]bool{"bench_harness": true},
+		nil,
+		[]string{"confidential", "finance"})
+
+	_, err := s.IngestMemory(agentCtx("bench_harness"), &pb.IngestMemoryRequest{
+		Text: "q3 numbers", Tags: []string{"confidential", "finance"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", err)
+	}
+	for _, tg := range []string{"confidential", "finance"} {
+		if !strings.Contains(err.Error(), tg) {
+			t.Errorf("the refusal must name %q, got %q", tg, err.Error())
+		}
+	}
+	if len(cap.saved) != 0 {
+		t.Fatalf("nothing may be stored; got %d docs", len(cap.saved))
+	}
+}
+
+// ENG-2115 e2e: the cases that keep working — a hint inside the ceiling is stored
+// with exactly that tag, and an untagged write gets the ceiling (today's default).
+func TestIngestMemoryE2E_HonourableHintsAndUntaggedWritesStillLand(t *testing.T) {
+	t.Parallel()
+	s, cap, _ := newIngestServer(
+		map[string]bool{"fin": true},
+		map[string][]string{"fin": {"confidential", "finance"}},
+		[]string{"confidential", "finance"})
+
+	if _, err := s.IngestMemory(agentCtx("fin"), &pb.IngestMemoryRequest{Text: "a", Tags: []string{"finance"}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(cap.saved) != 1 {
-		t.Fatalf("expected one persisted doc, got %d", len(cap.saved))
+	if _, err := s.IngestMemory(agentCtx("fin"), &pb.IngestMemoryRequest{Text: "b"}); err != nil {
+		t.Fatal(err)
 	}
-	got := tagsOf(cap.saved[0])
-	if tagsContain(got, "secrets") {
-		t.Errorf("agent must not broaden to secrets; stored tags %v", got)
+	if len(cap.saved) != 2 {
+		t.Fatalf("want 2 docs, got %d", len(cap.saved))
 	}
-	if !tagsContain(got, "provenance:source=support") {
-		t.Errorf("expected kernel-stamped provenance, got %v", got)
+	if got := tagsOf(cap.saved[0]); !tagsContain(got, "finance") || tagsContain(got, "confidential") {
+		t.Errorf("narrowed write: %v, want finance only (+provenance)", got)
+	}
+	if got := tagsOf(cap.saved[1]); !tagsContain(got, "finance") || !tagsContain(got, "confidential") {
+		t.Errorf("untagged write: %v, want the whole ceiling", got)
 	}
 }
 
@@ -238,36 +289,24 @@ func TestIngestMemoryE2E_UnknownPrincipalIsPermissionDenied(t *testing.T) {
 	}
 }
 
-// 0035-07 e2e: a narrow-only hint that shares no tag with a non-empty DefaultWriteTags
-// collapses the write to unclassified. The write still succeeds (fails safe on
-// confidentiality) but emits a scope_write_unclassified warning so the visibility
-// collapse is diagnosable rather than a silent "nothing can read my write".
-func TestIngestMemoryE2E_NarrowToUnclassifiedLogsWarning(t *testing.T) {
+// 0035-07 e2e, amended by ENG-2115: a narrow-only hint that shares no tag with a
+// non-empty DefaultWriteTags used to collapse the write to UNCLASSIFIED and store it
+// anyway (with a warning). Fail closed: it is refused, naming the tag.
+func TestIngestMemoryE2E_HintSharingNoCeilingTagIsRefused(t *testing.T) {
 	t.Parallel()
-	s, cap, logBuf := newIngestServer(
+	s, cap, _ := newIngestServer(
 		map[string]bool{"a": true},
 		map[string][]string{"a": {"public_kb"}},
 		[]string{"public_kb", "analytics"})
 
-	// hint "analytics" is in-vocabulary but not in DefaultWriteTags → intersection ∅.
+	// hint "analytics" is in-vocabulary but not in DefaultWriteTags.
 	_, err := s.IngestMemory(agentCtx("a"), &pb.IngestMemoryRequest{
 		Text: "x", Tags: []string{"analytics"},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "analytics") {
+		t.Fatalf("expected InvalidArgument naming analytics, got %v", err)
 	}
-	if len(cap.saved) != 1 {
-		t.Fatalf("expected the unclassified write to still persist, got %d", len(cap.saved))
+	if len(cap.saved) != 0 {
+		t.Fatalf("a refused write must not persist, got %d", len(cap.saved))
 	}
-	got := tagsOf(cap.saved[0])
-	for _, tg := range got {
-		if !strings.HasPrefix(tg, "provenance:") {
-			t.Errorf("expected an unclassified write (provenance only), got classification tag %q", tg)
-		}
-	}
-	// The kernel's guarantee is that the write still lands and carries only what
-	// the decision point returned. The richer "you narrowed yourself to nothing"
-	// warning is emitted by the decision point, which owns the vocabulary — see
-	// the premium authz test of the same name.
-	_ = logBuf
 }

@@ -50,7 +50,9 @@ func hasTag(ss []string, want string) bool {
 }
 
 // The chokepoint must REPLACE the authored tags with the decision point's answer.
-// A writer's tags are a request, never the answer.
+// A writer's tags are a request, never the answer: a forged provenance stamp does
+// not survive. (A requested CLASSIFICATION tag the answer lacks refuses the write
+// instead — ENG-2115, classify_strict_test.go.)
 func TestEnforcingWriter_ReplacesAuthoredTagsWithClassification(t *testing.T) {
 	t.Parallel()
 	store := &recordingStore{}
@@ -60,12 +62,12 @@ func TestEnforcingWriter_ReplacesAuthoredTagsWithClassification(t *testing.T) {
 	w := authz.NewEnforcingStoreWriter(store, a, nil)
 
 	ctx := domain.WithPrincipal(context.Background(), domain.AgentPrincipal("analyst"))
-	doc := &domain.Document{Metadata: map[string]interface{}{"tags": []string{"secrets"}}}
+	doc := &domain.Document{Metadata: map[string]interface{}{"tags": []string{"provenance:source=forged"}}}
 	if err := w.Save(ctx, doc); err != nil {
 		t.Fatal(err)
 	}
 	got := tagsOf(store.saved[0])
-	if hasTag(got, "secrets") {
+	if hasTag(got, "provenance:source=forged") {
 		t.Errorf("authored tags must not survive classification, got %v", got)
 	}
 	if !hasTag(got, "company_wide") || !hasTag(got, "provenance:source=analyst") {

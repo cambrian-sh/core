@@ -56,7 +56,7 @@ func TestEnforcingKnowledgeWriter_ClassifiesAndRekeys(t *testing.T) {
 	raw := &recordingSubstrate{}
 	w := NewEnforcingKnowledgeWriter(raw, classifyAs{tags: []string{"final"}}, quiet())
 	f := domain.Fact{Subject: "user", Attribute: "home_city", Value: "Paris", SubjectKey: "user", AttributeKey: "home_city",
-		ValueNorm: "paris", AssertedAt: time.Now(), SourceChunkID: "c", Tags: []string{"hint"}}
+		ValueNorm: "paris", AssertedAt: time.Now(), SourceChunkID: "c"} // no requested tags: an unhonoured request is refused (ENG-2115)
 	stored, inserted, err := w.PutClassifiedItem(context.Background(), f.ToItem("default"))
 	if err != nil || !inserted {
 		t.Fatal(err)

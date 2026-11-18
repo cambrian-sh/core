@@ -187,9 +187,11 @@ func (s *Service) Propose(ctx context.Context, by, forPerson domain.PrincipalRef
 		return Result{}, fmt.Errorf("%w: %s is a designated actor of kind %q, so its word would be the committed value; "+
 			"commit through knowledge_commit instead", ErrNotProposable, actor, p.Kind)
 	}
-	final, dec := s.authz.ClassifyWrite(ctx, by, domain.ClassificationHint(p.Classification))
-	if !dec.Allowed {
-		return Result{}, fmt.Errorf("knowledge proposal for %s: %w", p.EntityID, authz.ErrWriteDenied)
+	// ENG-2115: fail closed — a proposal whose requested classification cannot be
+	// carried in full is refused (the error names the tags; it wraps ErrWriteDenied).
+	final, _, err := authz.ClassifyWriteStrict(ctx, s.authz, by, domain.ClassificationHint(p.Classification))
+	if err != nil {
+		return Result{}, fmt.Errorf("knowledge proposal for %s: %w", p.EntityID, err)
 	}
 	item.Classification = domain.StampPrivateOwner(ctx, append([]string(nil), final...))
 	id, inserted, err := s.store.PutItem(ctx, item)

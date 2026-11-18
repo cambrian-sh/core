@@ -81,14 +81,18 @@ func (w *EnforcingKnowledgeWriter) PutClassifiedItem(ctx context.Context, item d
 // memory_fact's classification-derived identity is recomputed from the final tags.
 func classifyKnowledgeItem(ctx context.Context, a domain.Authorizer, logger *slog.Logger, item domain.KnowledgeItem) (domain.KnowledgeItem, error) {
 	principal := domain.PrincipalFromContext(ctx)
-	final, dec := a.ClassifyWrite(ctx, principal, domain.ClassificationHint(item.Classification))
-	if !dec.Allowed {
+	// ENG-2115: fail closed — an item whose classification cannot be carried in full
+	// (a tag outside the writer's write ceiling, or no ceiling) is refused, never
+	// stored with those tags dropped.
+	final, dec, err := ClassifyWriteStrict(ctx, a, principal, domain.ClassificationHint(item.Classification))
+	if err != nil {
 		logger.WarnContext(ctx, "authz: knowledge item write denied",
 			slog.String("event", "authz_write_deny"),
 			slog.String("principal", principal.String()),
 			slog.String("reason", string(dec.Reason)),
-			slog.String("kind", item.Kind))
-		return domain.KnowledgeItem{}, fmt.Errorf("knowledge item %s: %w", item.ID, ErrWriteDenied)
+			slog.String("kind", item.Kind),
+			slog.String("error", err.Error()))
+		return domain.KnowledgeItem{}, fmt.Errorf("knowledge item %s: %w", item.ID, err)
 	}
 	// ADR-0142 D12: private to the conversation owner the work is for.
 	item.Classification = domain.StampPrivateOwner(ctx, append([]string(nil), final...))
