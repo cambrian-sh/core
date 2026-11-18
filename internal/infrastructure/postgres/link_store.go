@@ -456,10 +456,25 @@ func (s *PgLinkStore) LinksForRefs(ctx context.Context, namespace string, refs [
 // relation; ADR-0128 D4, owner decision 2026-11-18 Q3) is not open either,
 // whichever lane or source wrote it: "never ask me this again" holds for the
 // claim, not for one row. links_dedup's leading columns serve that probe.
+//
+// A candidate some lane FINISHED is not open either (ENG-2050, owner decision
+// 2026-11-18): a live row whose source_ref is domain.LinkAnswersSourceRef(id)
+// answers it, whatever its mechanism, state or lane — e.g. the confirmed row a
+// resolver appends for a deferred crosswalk whose target now exists. Without it
+// the finished candidate stayed open beside its own answer and the pair inbox
+// offered "already confirmed via another source; extend?" for it. Live only: a
+// retracted answer no longer answers. The marker carries no visibility of its
+// own: like the confirm: and reject: rows it decides inbox membership, and every
+// reader still sees each row only through its own fence. The repeated LIKE
+// matches the partial index idx_links_answers (internal/migrate concurrentIndexes).
 const openCandidate = `l.state = 'candidate' AND l.retracted_at IS NULL
 	AND NOT EXISTS (SELECT 1 FROM links c
 		WHERE c.namespace_id = l.namespace_id AND c.mechanism = 'human'
 		  AND c.source_ref = 'confirm:' || l.id)
+	AND NOT EXISTS (SELECT 1 FROM links an
+		WHERE an.namespace_id = l.namespace_id
+		  AND an.source_ref LIKE '` + domain.LinkAnswersSourceRefPrefix + `%' AND an.retracted_at IS NULL
+		  AND an.source_ref = '` + domain.LinkAnswersSourceRefPrefix + `' || l.id)
 	AND NOT EXISTS (SELECT 1 FROM links rj
 		WHERE rj.namespace_id = l.namespace_id AND rj.family = l.family
 		  AND rj.from_ref = l.from_ref AND rj.to_ref = l.to_ref AND rj.relation = l.relation

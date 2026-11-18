@@ -243,6 +243,31 @@ func IsPairRejection(l Link) bool {
 	return l.Mechanism == LinkMechanismHuman && strings.HasPrefix(l.SourceRef, LinkRejectionSourceRefPrefix)
 }
 
+// LinkAnswersSourceRefPrefix marks a row that FINISHES an open candidate (ENG-2050,
+// owner decision 2026-11-18): a lane that settles a candidate on its own — e.g.
+// a resolver that appends the confirmed row a deferred crosswalk could not be
+// written as, once its target exists — writes that row with source_ref
+// LinkAnswersSourceRef(candidate id). While such a row is live (unretracted) the
+// review inbox treats the candidate as answered, exactly as a person's
+// confirmation (the store's confirm:<id> row) answers it, so the pair inbox does
+// not offer "already confirmed via another source; extend?" for the candidate
+// that was itself finished. A genuinely new source writes its own candidate,
+// which no marker names, and is still offered.
+//
+// Generic on purpose: core names no lane. The marker is only a source_ref
+// convention on an ordinary link row: it carries no visibility of its own (the
+// answering row is fenced like every link, on every evidence row it rests on),
+// grants nothing, and is part of links_dedup through source_ref, so a lane that
+// re-derives the same answer writes nothing. Retracting the answering row
+// reopens the candidate (the answer is gone; a person's rejection is the
+// pair-level reject row, not this).
+const LinkAnswersSourceRefPrefix = "answers:"
+
+// LinkAnswersSourceRef is the source_ref of a row that answers candidateID.
+func LinkAnswersSourceRef(candidateID string) string {
+	return LinkAnswersSourceRefPrefix + candidateID
+}
+
 // LinkQuery filters a LinksFor read. Every field's zero value means "no filter", so the
 // common walk is LinksFor(ctx, ns, ref, LinkQuery{}).
 type LinkQuery struct {

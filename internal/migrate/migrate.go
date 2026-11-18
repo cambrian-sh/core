@@ -370,6 +370,13 @@ var concurrentIndexes = []concurrentIndex{
 	// index lookup. 0056 creates the column.
 	{name: "idx_links_supported", table: "links",
 		using: "(id) WHERE cardinality(supporting_evidence) > 0", requires: 56},
+	// The review inbox's answers probe (ENG-2050, postgres openCandidate): a live
+	// row whose source_ref is domain.LinkAnswersSourceRef(<candidate id>) answers
+	// the candidate. Partial on exactly the clause openCandidate repeats, so it
+	// holds only answering rows (none until a lane finishes a candidate) and the
+	// NOT EXISTS is one index probe per candidate.
+	{name: "idx_links_answers", table: "links",
+		using: "(namespace_id, source_ref) WHERE source_ref LIKE 'answers:%' AND retracted_at IS NULL", requires: 38},
 }
 
 // ItemEmbeddingIndexName is the per-dimension partial HNSW index of the ADR-0136 A1 item
