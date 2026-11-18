@@ -128,6 +128,7 @@ func selectorFromPB(sel *pb.ErasureSelector) domain.ErasureSelector {
 	return domain.ErasureSelector{
 		DocumentIDs: sel.GetDocumentIds(), ThreadIDs: sel.GetThreadIds(), ChunkIDs: sel.GetChunkIds(),
 		ExperienceIDs: sel.GetExperienceIds(), EntityRefs: sel.GetEntityRefs(),
+		MemoryNoteIDs: sel.GetMemoryNoteIds(),
 	}
 }
 
@@ -137,6 +138,7 @@ func receiptToPB(r domain.ErasureReceipt) *pb.ErasureReceipt {
 		Reason: string(r.Reason), SelectorKinds: r.SelectorKinds, Status: r.Status,
 		Targets: int32(r.Targets), PendingSteps: int32(r.PendingSteps), Replayed: r.Replayed,
 		Counts: map[string]int32{}, NotErasableExternal: r.NotErasableExternal,
+		RedactedMessages: r.RedactedMessages,
 	}
 	if !r.ErasedAt.IsZero() {
 		out.ErasedAt = timestamppb.New(r.ErasedAt)

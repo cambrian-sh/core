@@ -27,12 +27,30 @@ import (
 //
 // The rest of the document is untouched. Who may name which entry is decided by the
 // chokepoint (authz.EnforcingEraser), never here.
+//
+// ENG-2147 adds the operator's soft-delete journal and the subject-wide unit:
+//
+//   - an operator DeleteMemoryNotes keeps the cleared text in its operator_audit row
+//     (before_json, "a delete is recoverable"), so an erased line is scrubbed from those
+//     rows too — otherwise the journal would keep what the erase removed;
+//   - a memory_notes_owner selector (domain.ErasureSelector.MemoryNoteOwners) erases a
+//     person's WHOLE personal notes document: the live text, the text and reason of
+//     every memory_notes_history row (the rows stay, content-free: who wrote when, and
+//     which op), and the cleared text of every operator delete of it, with one
+//     memory_note tombstone (content digest) per distinct line any of them held and one
+//     memory_notes_owner tombstone naming the person. It is the compliance path that a
+//     DeleteMemoryNotes soft delete is not.
 
 // Store names of the memory-notes erasure counts.
 const (
 	eraseMemoryNotes        = "memory_notes"
 	eraseMemoryNotesHistory = "memory_notes_history"
+	eraseOperatorAudit      = "operator_audit"
 )
+
+// operatorAuditNotesTarget is the operator_audit target_type of the notes commands
+// (operator.recordNotesCommand); their target_id is memorynotes.Key.String().
+const operatorAuditNotesTarget = "memory_notes"
 
 // noteDoc groups the entry ids named in one notes document.
 type noteDoc struct {
@@ -202,6 +220,18 @@ func (s *PgErasureStore) eraseMemoryNotes(ctx context.Context, run *erasureRun, 
 				string(d.key.Scope), d.key.OwnerID, h.rev, h.content, h.reason); err != nil {
 				return false, err
 			}
+		}
+		// ENG-2147: an operator's soft delete keeps the cleared text in the journal.
+		if err := scrubNotesAudit(ctx, run, d.key, func(before, reason string) (string, string) {
+			next, _ := memorynotes.RemoveEntries(before, drop)
+			for _, t := range texts {
+				if strings.Contains(reason, t) {
+					return next, ""
+				}
+			}
+			return next, reason
+		}); err != nil {
+			return false, err
 		}
 		// The erase's own revision, content-free beyond what the document still holds.
 		if _, err := run.tx.Exec(ctx, `INSERT INTO memory_notes_history (scope, owner_id, revision, op, actor, reason, content, at)

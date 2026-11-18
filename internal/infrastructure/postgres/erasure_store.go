@@ -422,6 +422,15 @@ func (s *PgErasureStore) eraseTx(ctx context.Context, run *erasureRun, sel domai
 		}
 		matched = matched || m
 	}
+	// ENG-2147: a person's whole personal notes (the subject-wide compliance erase),
+	// after the single entries so a request naming both tombstones each line once.
+	if len(sel.MemoryNoteOwners) > 0 {
+		m, err := s.eraseMemoryNoteOwners(ctx, run, sel.MemoryNoteOwners, run.requestID)
+		if err != nil {
+			return false, err
+		}
+		matched = matched || m
+	}
 	return matched, nil
 }
 
@@ -830,7 +839,7 @@ func (s *PgErasureStore) eraseItemsWhere(ctx context.Context, run *erasureRun, w
 // (for NothingToEraseError), or "".
 func earlierErasure(ctx context.Context, q pgxQuerier, sel domain.ErasureSelector) (string, error) {
 	var ids []string
-	for _, l := range [][]string{sel.DocumentIDs, sel.ThreadIDs, sel.ChunkIDs, sel.ExperienceIDs, sel.EntityRefs, sel.MemoryNoteIDs} {
+	for _, l := range [][]string{sel.DocumentIDs, sel.ThreadIDs, sel.ChunkIDs, sel.ExperienceIDs, sel.EntityRefs, sel.MemoryNoteIDs, sel.MemoryNoteOwners} {
 		ids = append(ids, l...)
 	}
 	var id string

@@ -96,6 +96,11 @@ const (
 	// ErasureTargetMemoryNote is one entry (one line) of a principal memory-notes
 	// document (ADR-0139 D14), named by MemoryNoteEntryID (ENG-2106).
 	ErasureTargetMemoryNote = "memory_note"
+	// ErasureTargetMemoryNotesOwner is a person's WHOLE personal memory-notes document,
+	// named by the person's principal id (ENG-2147): the subject-wide compliance erase
+	// of every line it holds now and every line any history revision holds.
+	// Operator/kernel only (authz.EnforcingEraser).
+	ErasureTargetMemoryNotesOwner = "memory_notes_owner"
 	// ErasureTargetConversationMessage is an agent reply whose text an erase replaced
 	// with RedactedReplyText because it rested on an erased record (ENG-2109). A
 	// tombstone kind only, never a selector kind: replies are reached through what
@@ -148,6 +153,11 @@ type ErasureSelector struct {
 	// every history row of it; the rest of the document stays. An agent may name only
 	// entries of its run principal's own personal notes (authz.EnforcingEraser).
 	MemoryNoteIDs []string
+	// MemoryNoteOwners: principal ids whose whole PERSONAL memory-notes document is
+	// erased (ENG-2147): the live text and the text and reason of every
+	// memory_notes_history row, one memory_note tombstone per distinct line ever held.
+	// Operator and kernel only.
+	MemoryNoteOwners []string
 }
 
 // kinds returns (kind, sorted unique ids) for every non-empty selector field, in a
@@ -164,6 +174,7 @@ func (s ErasureSelector) kinds() [][2]any {
 		{ErasureTargetExperience, s.ExperienceIDs},
 		{ErasureTargetEntity, s.EntityRefs},
 		{ErasureTargetMemoryNote, s.MemoryNoteIDs},
+		{ErasureTargetMemoryNotesOwner, s.MemoryNoteOwners},
 	} {
 		if len(f.ids) > 0 {
 			out = append(out, [2]any{f.kind, SortedUniqueIDs(f.ids)})
@@ -203,12 +214,13 @@ func (s ErasureSelector) Normalized() ErasureSelector {
 		return SortedUniqueIDs(ids)
 	}
 	return ErasureSelector{
-		DocumentIDs:   norm(s.DocumentIDs),
-		ThreadIDs:     norm(s.ThreadIDs),
-		ChunkIDs:      norm(s.ChunkIDs),
-		ExperienceIDs: norm(s.ExperienceIDs),
-		EntityRefs:    norm(s.EntityRefs),
-		MemoryNoteIDs: norm(s.MemoryNoteIDs),
+		DocumentIDs:      norm(s.DocumentIDs),
+		ThreadIDs:        norm(s.ThreadIDs),
+		ChunkIDs:         norm(s.ChunkIDs),
+		ExperienceIDs:    norm(s.ExperienceIDs),
+		EntityRefs:       norm(s.EntityRefs),
+		MemoryNoteIDs:    norm(s.MemoryNoteIDs),
+		MemoryNoteOwners: norm(s.MemoryNoteOwners),
 	}
 }
 

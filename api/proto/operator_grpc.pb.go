@@ -843,8 +843,13 @@ type OperatorConsoleClient interface {
 	// SetMemoryNotes replaces a whole document. Same budget and injection scan as
 	// an agent write; a refusal is accepted=false with a rejection, never a trim.
 	SetMemoryNotes(ctx context.Context, in *SetMemoryNotesOpRequest, opts ...grpc.CallOption) (*SetMemoryNotesOpResponse, error)
-	// DeleteMemoryNotes clears a document. Audited; the cleared text is kept in
-	// the audit record, so a delete is recoverable by an operator.
+	// DeleteMemoryNotes clears a document: a SOFT delete, NOT an erasure. Audited;
+	// the cleared text is kept in the audit record and every memory_notes_history
+	// row keeps its full text, so a delete is recoverable by an operator. A
+	// right-to-erasure (KVKK/GDPR) request goes through PreviewForgetMemory /
+	// ForgetMemory instead: ErasureSelectorOp.memory_note_owners erases a person's
+	// whole personal notes (live text and all history), memory_note_ids single
+	// lines (contract 0110, ENG-2147).
 	DeleteMemoryNotes(ctx context.Context, in *DeleteMemoryNotesOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// SetMemoryNotesBudget sets a document's budget (or the scope default).
 	SetMemoryNotesBudget(ctx context.Context, in *SetMemoryNotesBudgetOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
@@ -2971,8 +2976,13 @@ type OperatorConsoleServer interface {
 	// SetMemoryNotes replaces a whole document. Same budget and injection scan as
 	// an agent write; a refusal is accepted=false with a rejection, never a trim.
 	SetMemoryNotes(context.Context, *SetMemoryNotesOpRequest) (*SetMemoryNotesOpResponse, error)
-	// DeleteMemoryNotes clears a document. Audited; the cleared text is kept in
-	// the audit record, so a delete is recoverable by an operator.
+	// DeleteMemoryNotes clears a document: a SOFT delete, NOT an erasure. Audited;
+	// the cleared text is kept in the audit record and every memory_notes_history
+	// row keeps its full text, so a delete is recoverable by an operator. A
+	// right-to-erasure (KVKK/GDPR) request goes through PreviewForgetMemory /
+	// ForgetMemory instead: ErasureSelectorOp.memory_note_owners erases a person's
+	// whole personal notes (live text and all history), memory_note_ids single
+	// lines (contract 0110, ENG-2147).
 	DeleteMemoryNotes(context.Context, *DeleteMemoryNotesOpRequest) (*CommandAck, error)
 	// SetMemoryNotesBudget sets a document's budget (or the scope default).
 	SetMemoryNotesBudget(context.Context, *SetMemoryNotesBudgetOpRequest) (*CommandAck, error)

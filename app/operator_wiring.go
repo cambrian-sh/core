@@ -866,7 +866,12 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// the confirmation?"), ConfirmLinkPair (one confirmation per readable open
 	// candidate row), RejectLinkPair (retract them + record the claim's
 	// rejection) - and LinkOp.supporting_evidence_ids. Row-level RPCs unchanged.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0109", operatorCaps
+	// 0110 (2026-11-19, additive; ENG-2147/ENG-2154): memory notes in the compliance
+	// erase - ErasureSelectorOp.memory_note_ids (single lines) and memory_note_owners
+	// (a person's whole personal notes, history included), ErasureCandidateOp.note_text
+	// (the line a memory-notes candidate erases), ErasureReceiptOp.redacted_messages;
+	// agent plane ErasureSelector.memory_note_ids and ErasureReceipt.redacted_messages.
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0110", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

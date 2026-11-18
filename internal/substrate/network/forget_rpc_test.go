@@ -243,3 +243,18 @@ func TestReceiptToPB_CarriesNotErasableExternal(t *testing.T) {
 		t.Fatalf("a receipt with nothing left behind reports %v", empty.GetNotErasableExternal())
 	}
 }
+
+// ENG-2147/ENG-2154 (contract 0110): the agent-plane selector names memory-note lines
+// (whose authority the chokepoint decides on the run principal; the end-to-end test
+// drives it with a lease), and the receipt lists the replies an erase redacted.
+func TestForgetRPC_MemoryNoteIDsAndRedactedMessagesOnTheWire(t *testing.T) {
+	id := domain.MemoryNoteEntryID("personal", "alice", "Locker code: 1")
+	sel := selectorFromPB(&pb.ErasureSelector{MemoryNoteIds: []string{id}, DocumentIds: []string{"d"}})
+	if !slices.Equal(sel.MemoryNoteIDs, []string{id}) || !slices.Equal(sel.DocumentIDs, []string{"d"}) || len(sel.MemoryNoteOwners) != 0 {
+		t.Fatalf("selector = %+v", sel)
+	}
+	got := receiptToPB(domain.ErasureReceipt{RequestID: "erase:x", RedactedMessages: []string{"m1", "m2"}})
+	if !slices.Equal(got.GetRedactedMessages(), []string{"m1", "m2"}) {
+		t.Fatalf("redacted_messages = %v", got.GetRedactedMessages())
+	}
+}

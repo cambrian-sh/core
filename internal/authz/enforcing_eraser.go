@@ -45,7 +45,8 @@ type EraserPolicy struct {
 //   - An agent principal may erase a record only when (a) the predicate admits it AND
 //     (b) its kernel-stamped writer of record equals the caller's WriterID. A record
 //     with no writer of record (legacy rows, experiences, substrate entities) is
-//     operator-only. Entity and experience selectors are operator/kernel-only.
+//     operator-only. Entity, experience and memory_notes_owner selectors are
+//     operator/kernel-only.
 //   - Every admitted record is then put to Authorizer.AuthorizeErase, which can only
 //     narrow (OSS allows; premium checks its policy).
 //   - All-or-nothing: one denied record fails the request and nothing is erased; the
@@ -127,6 +128,11 @@ func (e *EnforcingEraser) Erase(ctx context.Context, req domain.ErasureRequest) 
 		}
 		if len(req.Selector.EntityRefs) > 0 || len(req.Selector.ExperienceIDs) > 0 {
 			return domain.ErasureReceipt{}, e.deny(ctx, c, "entity and experience selectors are operator-only")
+		}
+		// ENG-2147: the subject-wide notes erase (a person's whole personal notes, all
+		// history included) is the operator's compliance act; an agent names lines.
+		if len(req.Selector.MemoryNoteOwners) > 0 {
+			return domain.ErasureReceipt{}, e.deny(ctx, c, "the memory_notes_owner selector is operator-only")
 		}
 	}
 
@@ -233,6 +239,8 @@ func (e *EnforcingEraser) admit(ctx context.Context, c eraseCaller, sel domain.E
 			out.EntityRefs = append(out.EntityRefs, cand.ID)
 		case domain.ErasureTargetMemoryNote:
 			out.MemoryNoteIDs = append(out.MemoryNoteIDs, cand.ID)
+		case domain.ErasureTargetMemoryNotesOwner:
+			out.MemoryNoteOwners = append(out.MemoryNoteOwners, cand.ID)
 		}
 	}
 	// Thread selectors: keep the thread itself when every document it resolves to was

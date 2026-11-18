@@ -466,23 +466,32 @@ func (s *Service) Forget(ctx context.Context, req Request) (domain.ErasureReceip
 	if err != nil {
 		return domain.ErasureReceipt{}, err
 	}
-	s.dropNoteSnapshots(sel.MemoryNoteIDs, rec)
+	s.dropNoteSnapshots(sel, rec)
 	return rec, nil
 }
 
 // dropNoteSnapshots invalidates the cached run snapshots of every person whose notes an
-// executed (not replayed) erase reached, so no run keeps serving the erased lines from
-// its frozen copy (ENG-2106).
-func (s *Service) dropNoteSnapshots(noteIDs []string, rec domain.ErasureReceipt) {
-	if s.cfg.Notes == nil || rec.Replayed || len(noteIDs) == 0 {
+// executed (not replayed) erase reached — single entries (ENG-2106) or a whole personal
+// document (MemoryNoteOwners, ENG-2147) — so no run keeps serving the erased lines from
+// its frozen copy.
+func (s *Service) dropNoteSnapshots(sel domain.ErasureSelector, rec domain.ErasureReceipt) {
+	if s.cfg.Notes == nil || rec.Replayed || (len(sel.MemoryNoteIDs) == 0 && len(sel.MemoryNoteOwners) == 0) {
 		return
 	}
 	seen := map[string]bool{}
-	for _, id := range noteIDs {
-		if _, owner, _, ok := domain.ParseMemoryNoteEntryID(id); ok && !seen[owner] {
+	drop := func(owner string) {
+		if owner != "" && !seen[owner] {
 			seen[owner] = true
 			s.cfg.Notes.DropSnapshots(owner)
 		}
+	}
+	for _, id := range sel.MemoryNoteIDs {
+		if _, owner, _, ok := domain.ParseMemoryNoteEntryID(id); ok {
+			drop(owner)
+		}
+	}
+	for _, owner := range sel.MemoryNoteOwners {
+		drop(owner)
 	}
 }
 

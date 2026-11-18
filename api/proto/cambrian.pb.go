@@ -981,6 +981,9 @@ type ErasureSelector struct {
 	ChunkIds      []string               `protobuf:"bytes,3,rep,name=chunk_ids,json=chunkIds,proto3" json:"chunk_ids,omitempty"`                // memory ids returned earlier
 	ExperienceIds []string               `protobuf:"bytes,4,rep,name=experience_ids,json=experienceIds,proto3" json:"experience_ids,omitempty"` // operator-only
 	EntityRefs    []string               `protobuf:"bytes,5,rep,name=entity_refs,json=entityRefs,proto3" json:"entity_refs,omitempty"`          // operator-only
+	// Entries of the caller's run principal's own personal memory notes, by their
+	// content-derived id memory-note:<scope>:<owner>#<hash> (ENG-2106; contract 0110).
+	MemoryNoteIds []string `protobuf:"bytes,6,rep,name=memory_note_ids,json=memoryNoteIds,proto3" json:"memory_note_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1050,10 +1053,17 @@ func (x *ErasureSelector) GetEntityRefs() []string {
 	return nil
 }
 
+func (x *ErasureSelector) GetMemoryNoteIds() []string {
+	if x != nil {
+		return x.MemoryNoteIds
+	}
+	return nil
+}
+
 // ErasureCandidate is one record a preview resolved to: ids only, never content.
 type ErasureCandidate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Kind  string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"` // document | chunk | experience | entity
+	Kind  string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"` // document | chunk | experience | entity | memory_note
 	Id    string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	Via   string                 `protobuf:"bytes,3,opt,name=via,proto3" json:"via,omitempty"` // the selector entry that named it (a thread id, a hit chunk
 	// id for a query preview, else id)
@@ -1149,8 +1159,11 @@ type ErasureReceipt struct {
 	// live in an external service with no delete path (e.g. premium langfuse_traces);
 	// what the erase left behind. Empty until such a step has run (contract 0108).
 	NotErasableExternal []string `protobuf:"bytes,13,rep,name=not_erasable_external,json=notErasableExternal,proto3" json:"not_erasable_external,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// The agent replies (conversation message ids, sorted) whose text the erase
+	// replaced because they rested on an erased record (ENG-2109; contract 0110).
+	RedactedMessages []string `protobuf:"bytes,14,rep,name=redacted_messages,json=redactedMessages,proto3" json:"redacted_messages,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ErasureReceipt) Reset() {
@@ -1270,6 +1283,13 @@ func (x *ErasureReceipt) GetReplayed() bool {
 func (x *ErasureReceipt) GetNotErasableExternal() []string {
 	if x != nil {
 		return x.NotErasableExternal
+	}
+	return nil
+}
+
+func (x *ErasureReceipt) GetRedactedMessages() []string {
+	if x != nil {
+		return x.RedactedMessages
 	}
 	return nil
 }
@@ -7865,7 +7885,7 @@ const file_cambrian_proto_rawDesc = "" +
 	"\bmetadata\x18\t \x03(\v2\x1f.cambrian.Handoff.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\b\"\xb8\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\b\"\xe0\x01\n" +
 	"\x0fErasureSelector\x12!\n" +
 	"\fdocument_ids\x18\x01 \x03(\tR\vdocumentIds\x12\x1d\n" +
 	"\n" +
@@ -7873,14 +7893,15 @@ const file_cambrian_proto_rawDesc = "" +
 	"\tchunk_ids\x18\x03 \x03(\tR\bchunkIds\x12%\n" +
 	"\x0eexperience_ids\x18\x04 \x03(\tR\rexperienceIds\x12\x1f\n" +
 	"\ventity_refs\x18\x05 \x03(\tR\n" +
-	"entityRefs\"\x83\x01\n" +
+	"entityRefs\x12&\n" +
+	"\x0fmemory_note_ids\x18\x06 \x03(\tR\rmemoryNoteIds\"\x83\x01\n" +
 	"\x10ErasureCandidate\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x10\n" +
 	"\x03via\x18\x03 \x01(\tR\x03via\x12\x1f\n" +
 	"\vdocument_id\x18\x04 \x01(\tR\n" +
 	"documentId\x12\x18\n" +
-	"\asnippet\x18\x05 \x01(\tR\asnippet\"\xcf\x04\n" +
+	"\asnippet\x18\x05 \x01(\tR\asnippet\"\xfc\x04\n" +
 	"\x0eErasureReceipt\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1c\n" +
@@ -7896,7 +7917,8 @@ const file_cambrian_proto_rawDesc = "" +
 	" \x01(\x05R\atargets\x12#\n" +
 	"\rpending_steps\x18\v \x01(\x05R\fpendingSteps\x12\x1a\n" +
 	"\breplayed\x18\f \x01(\bR\breplayed\x122\n" +
-	"\x15not_erasable_external\x18\r \x03(\tR\x13notErasableExternal\x1a9\n" +
+	"\x15not_erasable_external\x18\r \x03(\tR\x13notErasableExternal\x12+\n" +
+	"\x11redacted_messages\x18\x0e \x03(\tR\x10redactedMessages\x1a9\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"c\n" +

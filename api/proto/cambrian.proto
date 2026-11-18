@@ -256,11 +256,14 @@ message ErasureSelector {
   repeated string chunk_ids = 3;     // memory ids returned earlier
   repeated string experience_ids = 4; // operator-only
   repeated string entity_refs = 5;    // operator-only
+  // Entries of the caller's run principal's own personal memory notes, by their
+  // content-derived id memory-note:<scope>:<owner>#<hash> (ENG-2106; contract 0110).
+  repeated string memory_note_ids = 6;
 }
 
 // ErasureCandidate is one record a preview resolved to: ids only, never content.
 message ErasureCandidate {
-  string kind = 1;        // document | chunk | experience | entity
+  string kind = 1;        // document | chunk | experience | entity | memory_note
   string id = 2;
   string via = 3;         // the selector entry that named it (a thread id, a hit chunk
                           // id for a query preview, else id)
@@ -288,6 +291,9 @@ message ErasureReceipt {
   // live in an external service with no delete path (e.g. premium langfuse_traces);
   // what the erase left behind. Empty until such a step has run (contract 0108).
   repeated string not_erasable_external = 13;
+  // The agent replies (conversation message ids, sorted) whose text the erase
+  // replaced because they rested on an erased record (ENG-2109; contract 0110).
+  repeated string redacted_messages = 14;
 }
 
 message PreviewForgetRequest {

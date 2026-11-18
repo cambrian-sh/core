@@ -25234,8 +25234,17 @@ type ErasureSelectorOp struct {
 	ChunkIds      []string               `protobuf:"bytes,3,rep,name=chunk_ids,json=chunkIds,proto3" json:"chunk_ids,omitempty"`
 	ExperienceIds []string               `protobuf:"bytes,4,rep,name=experience_ids,json=experienceIds,proto3" json:"experience_ids,omitempty"`
 	EntityRefs    []string               `protobuf:"bytes,5,rep,name=entity_refs,json=entityRefs,proto3" json:"entity_refs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Entries (single lines) of memory-notes documents, by their content-derived id
+	// memory-note:<scope>:<owner>#<hash> (ENG-2106). The line leaves the live
+	// document and every history revision of it; the rest stays (contract 0110).
+	MemoryNoteIds []string `protobuf:"bytes,6,rep,name=memory_note_ids,json=memoryNoteIds,proto3" json:"memory_note_ids,omitempty"`
+	// Subject-wide (contract 0110, ENG-2147): principal ids whose WHOLE personal
+	// memory-notes document is erased — every line of the live text and every
+	// memory_notes_history revision's text and reason, one tombstone per line.
+	// Candidate kind memory_notes_owner, id = the principal.
+	MemoryNoteOwners []string `protobuf:"bytes,7,rep,name=memory_note_owners,json=memoryNoteOwners,proto3" json:"memory_note_owners,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ErasureSelectorOp) Reset() {
@@ -25303,13 +25312,35 @@ func (x *ErasureSelectorOp) GetEntityRefs() []string {
 	return nil
 }
 
-// ErasureCandidateOp: ids only — an operator never sees the content it erases.
+func (x *ErasureSelectorOp) GetMemoryNoteIds() []string {
+	if x != nil {
+		return x.MemoryNoteIds
+	}
+	return nil
+}
+
+func (x *ErasureSelectorOp) GetMemoryNoteOwners() []string {
+	if x != nil {
+		return x.MemoryNoteOwners
+	}
+	return nil
+}
+
+// ErasureCandidateOp: ids, kinds and counts — an operator never sees the content of
+// the memory it erases. The one exception is memory notes (contract 0110): the
+// operator already reads a notes document whole (GetMemoryNotes), so a preview shows
+// the line it would erase so the operator can check it is the right one.
 type ErasureCandidateOp struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
-	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
-	Via           string                 `protobuf:"bytes,3,opt,name=via,proto3" json:"via,omitempty"`
-	DocumentId    string                 `protobuf:"bytes,4,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Kind       string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	Id         string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Via        string                 `protobuf:"bytes,3,opt,name=via,proto3" json:"via,omitempty"`
+	DocumentId string                 `protobuf:"bytes,4,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	// kind memory_note: the line as the live document holds it now; kind
+	// memory_notes_owner: the live document's text (history-only lines are erased too
+	// but not shown). "" when the notes surface does not let this operator read the
+	// document, and for every other kind.
+	NoteText      string `protobuf:"bytes,5,opt,name=note_text,json=noteText,proto3" json:"note_text,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -25372,6 +25403,13 @@ func (x *ErasureCandidateOp) GetDocumentId() string {
 	return ""
 }
 
+func (x *ErasureCandidateOp) GetNoteText() string {
+	if x != nil {
+		return x.NoteText
+	}
+	return ""
+}
+
 type ErasureReceiptOp struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -25391,8 +25429,12 @@ type ErasureReceiptOp struct {
 	// live in an external service with no delete path; what the erase left behind
 	// (contract 0108).
 	NotErasableExternal []string `protobuf:"bytes,14,rep,name=not_erasable_external,json=notErasableExternal,proto3" json:"not_erasable_external,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// The agent replies (conversation message ids, sorted) whose text the erase
+	// replaced because they rested on an erased record (ENG-2109; contract 0110).
+	// counts.conversation_messages is their number.
+	RedactedMessages []string `protobuf:"bytes,15,rep,name=redacted_messages,json=redactedMessages,proto3" json:"redacted_messages,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ErasureReceiptOp) Reset() {
@@ -25519,6 +25561,13 @@ func (x *ErasureReceiptOp) GetOverdue() bool {
 func (x *ErasureReceiptOp) GetNotErasableExternal() []string {
 	if x != nil {
 		return x.NotErasableExternal
+	}
+	return nil
+}
+
+func (x *ErasureReceiptOp) GetRedactedMessages() []string {
+	if x != nil {
+		return x.RedactedMessages
 	}
 	return nil
 }
@@ -28270,7 +28319,7 @@ const file_operator_proto_rawDesc = "" +
 	"probe_tool\x18\x06 \x01(\tR\tprobeTool\x12\x19\n" +
 	"\bprobe_ok\x18\a \x01(\bR\aprobeOk\x12!\n" +
 	"\fprobe_output\x18\b \x01(\tR\vprobeOutput\x120\n" +
-	"\x14probe_skipped_reason\x18\t \x01(\tR\x12probeSkippedReason\"\xba\x01\n" +
+	"\x14probe_skipped_reason\x18\t \x01(\tR\x12probeSkippedReason\"\x90\x02\n" +
 	"\x11ErasureSelectorOp\x12!\n" +
 	"\fdocument_ids\x18\x01 \x03(\tR\vdocumentIds\x12\x1d\n" +
 	"\n" +
@@ -28278,13 +28327,16 @@ const file_operator_proto_rawDesc = "" +
 	"\tchunk_ids\x18\x03 \x03(\tR\bchunkIds\x12%\n" +
 	"\x0eexperience_ids\x18\x04 \x03(\tR\rexperienceIds\x12\x1f\n" +
 	"\ventity_refs\x18\x05 \x03(\tR\n" +
-	"entityRefs\"k\n" +
+	"entityRefs\x12&\n" +
+	"\x0fmemory_note_ids\x18\x06 \x03(\tR\rmemoryNoteIds\x12,\n" +
+	"\x12memory_note_owners\x18\a \x03(\tR\x10memoryNoteOwners\"\x88\x01\n" +
 	"\x12ErasureCandidateOp\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x10\n" +
 	"\x03via\x18\x03 \x01(\tR\x03via\x12\x1f\n" +
 	"\vdocument_id\x18\x04 \x01(\tR\n" +
-	"documentId\"\xed\x04\n" +
+	"documentId\x12\x1b\n" +
+	"\tnote_text\x18\x05 \x01(\tR\bnoteText\"\x9a\x05\n" +
 	"\x10ErasureReceiptOp\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1c\n" +
@@ -28301,7 +28353,8 @@ const file_operator_proto_rawDesc = "" +
 	"\rpending_steps\x18\v \x01(\x05R\fpendingSteps\x12\x1a\n" +
 	"\breplayed\x18\f \x01(\bR\breplayed\x12\x18\n" +
 	"\aoverdue\x18\r \x01(\bR\aoverdue\x122\n" +
-	"\x15not_erasable_external\x18\x0e \x03(\tR\x13notErasableExternal\x1a9\n" +
+	"\x15not_erasable_external\x18\x0e \x03(\tR\x13notErasableExternal\x12+\n" +
+	"\x11redacted_messages\x18\x0f \x03(\tR\x10redactedMessages\x1a9\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"W\n" +

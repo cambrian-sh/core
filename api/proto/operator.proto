@@ -767,8 +767,13 @@ service OperatorConsole {
   // SetMemoryNotes replaces a whole document. Same budget and injection scan as
   // an agent write; a refusal is accepted=false with a rejection, never a trim.
   rpc SetMemoryNotes(SetMemoryNotesOpRequest) returns (SetMemoryNotesOpResponse);
-  // DeleteMemoryNotes clears a document. Audited; the cleared text is kept in
-  // the audit record, so a delete is recoverable by an operator.
+  // DeleteMemoryNotes clears a document: a SOFT delete, NOT an erasure. Audited;
+  // the cleared text is kept in the audit record and every memory_notes_history
+  // row keeps its full text, so a delete is recoverable by an operator. A
+  // right-to-erasure (KVKK/GDPR) request goes through PreviewForgetMemory /
+  // ForgetMemory instead: ErasureSelectorOp.memory_note_owners erases a person's
+  // whole personal notes (live text and all history), memory_note_ids single
+  // lines (contract 0110, ENG-2147).
   rpc DeleteMemoryNotes(DeleteMemoryNotesOpRequest) returns (CommandAck);
   // SetMemoryNotesBudget sets a document's budget (or the scope default).
   rpc SetMemoryNotesBudget(SetMemoryNotesBudgetOpRequest) returns (CommandAck);
@@ -4743,14 +4748,31 @@ message ErasureSelectorOp {
   repeated string chunk_ids = 3;
   repeated string experience_ids = 4;
   repeated string entity_refs = 5;
+  // Entries (single lines) of memory-notes documents, by their content-derived id
+  // memory-note:<scope>:<owner>#<hash> (ENG-2106). The line leaves the live
+  // document and every history revision of it; the rest stays (contract 0110).
+  repeated string memory_note_ids = 6;
+  // Subject-wide (contract 0110, ENG-2147): principal ids whose WHOLE personal
+  // memory-notes document is erased — every line of the live text and every
+  // memory_notes_history revision's text and reason, one tombstone per line.
+  // Candidate kind memory_notes_owner, id = the principal.
+  repeated string memory_note_owners = 7;
 }
 
-// ErasureCandidateOp: ids only — an operator never sees the content it erases.
+// ErasureCandidateOp: ids, kinds and counts — an operator never sees the content of
+// the memory it erases. The one exception is memory notes (contract 0110): the
+// operator already reads a notes document whole (GetMemoryNotes), so a preview shows
+// the line it would erase so the operator can check it is the right one.
 message ErasureCandidateOp {
   string kind = 1;
   string id = 2;
   string via = 3;
   string document_id = 4;
+  // kind memory_note: the line as the live document holds it now; kind
+  // memory_notes_owner: the live document's text (history-only lines are erased too
+  // but not shown). "" when the notes surface does not let this operator read the
+  // document, and for every other kind.
+  string note_text = 5;
 }
 
 message ErasureReceiptOp {
@@ -4771,6 +4793,10 @@ message ErasureReceiptOp {
   // live in an external service with no delete path; what the erase left behind
   // (contract 0108).
   repeated string not_erasable_external = 14;
+  // The agent replies (conversation message ids, sorted) whose text the erase
+  // replaced because they rested on an erased record (ENG-2109; contract 0110).
+  // counts.conversation_messages is their number.
+  repeated string redacted_messages = 15;
 }
 
 message PreviewForgetMemoryOpRequest {

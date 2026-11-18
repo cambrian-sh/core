@@ -53,3 +53,22 @@ func TestErasureSelector_MemoryNoteKind(t *testing.T) {
 		t.Fatalf("SelectorOfCandidates = %+v", got)
 	}
 }
+
+// ENG-2147: the subject-wide selector kind is its own kind, normalized, part of the
+// request identity, and a memory_notes_owner candidate maps back to it.
+func TestErasureSelector_MemoryNoteOwners(t *testing.T) {
+	sel := ErasureSelector{MemoryNoteOwners: []string{"bob", "alice", "bob"}}.Normalized()
+	if !slices.Equal(sel.MemoryNoteOwners, []string{"alice", "bob"}) || sel.Count() != 2 ||
+		!slices.Equal(sel.Kinds(), []string{ErasureTargetMemoryNotesOwner}) {
+		t.Fatalf("normalized = %+v kinds %v", sel, sel.Kinds())
+	}
+	a := ErasureRequest{Principal: "ops", PrincipalKind: ErasureByOperator, Selector: ErasureSelector{MemoryNoteOwners: []string{"alice"}}}
+	b := ErasureRequest{Principal: "ops", PrincipalKind: ErasureByOperator, Selector: ErasureSelector{MemoryNoteIDs: []string{"alice"}}}
+	if a.ID() == b.ID() {
+		t.Fatal("a subject-wide erase and a line erase must not share a request id")
+	}
+	got := SelectorOfCandidates([]ErasureCandidate{{Kind: ErasureTargetMemoryNotesOwner, ID: "alice"}})
+	if !slices.Equal(got.MemoryNoteOwners, []string{"alice"}) || len(got.MemoryNoteIDs) != 0 {
+		t.Fatalf("SelectorOfCandidates = %+v", got)
+	}
+}

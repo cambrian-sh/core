@@ -216,8 +216,12 @@ func (s *Service) SetMemoryNotes(ctx context.Context, req *pb.SetMemoryNotesOpRe
 	}, nil
 }
 
-// DeleteMemoryNotes clears a document. The cleared text is kept in the audit
-// record (Before), so a delete is recoverable by an operator.
+// DeleteMemoryNotes clears a document: a SOFT delete, not an erasure. The cleared
+// text is kept in the audit record (Before) and every memory_notes_history row keeps
+// its text, so a delete is recoverable by an operator. A right-to-erasure request is
+// ForgetMemory with ErasureSelectorOp.memory_note_owners (the whole personal notes,
+// history and these audit copies included) or memory_note_ids (single lines) —
+// owner decision 2026-11-19, ENG-2147.
 func (s *Service) DeleteMemoryNotes(ctx context.Context, req *pb.DeleteMemoryNotesOpRequest) (*pb.CommandAck, error) {
 	c, err := s.notesCaller(ctx)
 	if err != nil {

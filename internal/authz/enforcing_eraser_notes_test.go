@@ -79,3 +79,53 @@ func TestEnforcingEraser_MemoryNotesFollowTheRunPrincipal(t *testing.T) {
 		t.Fatalf("operator erase = %+v", raw.erased)
 	}
 }
+
+// ownerEraser also resolves memory_notes_owner selectors (a person's whole personal
+// notes, ENG-2147) as postgres.PgErasureStore does.
+type ownerEraser struct {
+	noteEraser
+	owners map[string][]string // owner → document tags
+}
+
+func (f *ownerEraser) Resolve(ctx context.Context, sel domain.ErasureSelector) ([]domain.ErasureCandidate, error) {
+	out, _ := f.noteEraser.Resolve(ctx, sel)
+	for _, o := range sel.MemoryNoteOwners {
+		if tags, ok := f.owners[o]; ok {
+			out = append(out, domain.ErasureCandidate{Kind: domain.ErasureTargetMemoryNotesOwner, ID: o, Via: o, Tags: tags})
+		}
+	}
+	return out, nil
+}
+
+// ENG-2147: the subject-wide notes erase is the operator's compliance act. An agent is
+// refused even for its own run principal's notes (it names lines instead); an operator
+// is admitted, and the owner reaches the raw eraser as a memory_notes_owner selector.
+func TestEnforcingEraser_MemoryNotesOwnerIsOperatorOnly(t *testing.T) {
+	raw := &ownerEraser{owners: map[string][]string{
+		"alice": {"memory-notes", "memory-notes:personal", domain.OwnerTag("alice")},
+	}}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{AgentErase: true}, nil)
+	req := eraseReq(domain.ErasureSelector{MemoryNoteOwners: []string{"alice"}})
+
+	asAlice := domain.WithRunPrincipal(agentCtx("chat", domain.ScopeMaintenance), "alice")
+	if _, err := e.Erase(asAlice, req); !errors.Is(err, authz.ErrEraseDenied) {
+		t.Fatalf("agent subject-wide erase: want denied, got %v", err)
+	}
+	if len(raw.erased) != 0 {
+		t.Fatalf("a denied request reached the raw eraser: %+v", raw.erased)
+	}
+	op := domain.WithScope(domain.WithPrincipal(domain.WithPrincipalRoles(context.Background(), []string{"operator"}),
+		domain.UserPrincipal("ops")), domain.ScopeMaintenance)
+	if _, err := e.Erase(op, req); err != nil {
+		t.Fatalf("operator: %v", err)
+	}
+	got := raw.erased[0]
+	if !slices.Equal(got.Selector.MemoryNoteOwners, []string{"alice"}) || got.PrincipalKind != domain.ErasureByOperator ||
+		!slices.Equal(got.Selector.Kinds(), []string{domain.ErasureTargetMemoryNotesOwner}) {
+		t.Fatalf("erased = %+v", got)
+	}
+	// An owner with nothing left resolves to nothing: nothing to erase, not a silent success.
+	if _, err := e.Erase(op, eraseReq(domain.ErasureSelector{MemoryNoteOwners: []string{"nobody"}})); !errors.Is(err, domain.ErrNothingToErase) {
+		t.Fatalf("unknown owner: want nothing to erase, got %v", err)
+	}
+}

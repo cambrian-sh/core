@@ -15,6 +15,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/memory/forget"
+	"github.com/cambrian-sh/core/internal/memorynotes"
 )
 
 // Operator-plane memory erasure: the namespace-wide compliance erase (ADR-0137 D3/D9,
@@ -27,7 +28,11 @@ import (
 // It is handed to this path only because of the safeguards that decision names, all
 // enforced here:
 //   - the operator never sees content: previews and receipts carry ids, kinds and
-//     counts (ErasureCandidateOp has no title, snippet or tag; ErasureReceiptOp no text);
+//     counts (ErasureCandidateOp has no title, snippet or tag; ErasureReceiptOp no text).
+//     One exception, owner decision 2026-11-19 (ENG-2147): a memory-notes candidate
+//     carries its line (note_text) so the operator can check it names the right one —
+//     read through the notes service's own operator read (GetMemoryNotes), so it shows
+//     exactly what that operator can already read there and nothing else;
 //   - the act is journalled (operator audit + the chokepoint's authz_erase log line) and
 //     receipted (memory_erasures, and the premium signed receipt via ErasureObserver);
 //   - only the operator plane reaches it, behind operator-role auth: PreviewForgetMemory
@@ -64,11 +69,77 @@ func (s *Service) PreviewForgetMemory(ctx context.Context, req *pb.PreviewForget
 	out := &pb.PreviewForgetMemoryOpResponse{
 		PreviewToken: p.Token, ExpiresAt: timestamppb.New(p.ExpiresAt), CountsByKind: map[string]int32{},
 	}
+	texts := s.noteTexts(ctx, p.Candidates)
 	for _, c := range p.Candidates {
-		out.Candidates = append(out.Candidates, &pb.ErasureCandidateOp{Kind: c.Kind, Id: c.ID, Via: c.Via, DocumentId: c.DocumentID})
+		out.Candidates = append(out.Candidates, &pb.ErasureCandidateOp{Kind: c.Kind, Id: c.ID, Via: c.Via, DocumentId: c.DocumentID,
+			NoteText: texts[c.Kind+":"+c.ID]})
 		out.CountsByKind[c.Kind]++
 	}
 	return out, nil
+}
+
+// noteTexts returns, per memory-notes candidate (key kind:id), the text the preview
+// shows (ENG-2147): a memory_note entry's line, a memory_notes_owner document's live
+// text. Each document is read once, through the notes service's operator read with
+// this operator as the caller — its own access check decides, and a document it does
+// not let this operator read shows no text (the candidate still lists). Without the
+// notes surface nothing is shown.
+func (s *Service) noteTexts(ctx context.Context, cands []domain.ErasureCandidate) map[string]string {
+	out := map[string]string{}
+	if s.notes == nil {
+		return out
+	}
+	actor, _, _ := PrincipalFromContext(ctx)
+	caller := memorynotes.Caller{ID: actor}
+	docs := map[memorynotes.Key]*string{}
+	content := func(key memorynotes.Key) (string, bool) {
+		if c, ok := docs[key]; ok {
+			return derefOr(c), c != nil
+		}
+		full, err := s.notes.Get(ctx, caller, key)
+		if err != nil {
+			docs[key] = nil // unreadable or gone: no text, never an error for a preview
+			return "", false
+		}
+		docs[key] = &full.Content
+		return full.Content, true
+	}
+	for _, c := range cands {
+		switch c.Kind {
+		case domain.ErasureTargetMemoryNote:
+			scope, owner, _, ok := domain.ParseMemoryNoteEntryID(c.ID)
+			if !ok {
+				continue
+			}
+			sc, err := memorynotes.ParseScope(scope)
+			if err != nil {
+				continue
+			}
+			key := memorynotes.Key{Scope: sc, OwnerID: owner}
+			text, ok := content(key)
+			if !ok {
+				continue
+			}
+			for _, e := range memorynotes.Entries(text) {
+				if domain.MemoryNoteEntryID(string(key.Scope), key.OwnerID, e.Text) == c.ID {
+					out[c.Kind+":"+c.ID] = e.Text
+					break
+				}
+			}
+		case domain.ErasureTargetMemoryNotesOwner:
+			if text, ok := content(memorynotes.Key{Scope: memorynotes.ScopePersonal, OwnerID: c.ID}); ok {
+				out[c.Kind+":"+c.ID] = text
+			}
+		}
+	}
+	return out
+}
+
+func derefOr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // ForgetMemory executes a compliance erase. command_id + reason, audited; a retried
@@ -158,6 +229,7 @@ func selectorFromOp(sel *pb.ErasureSelectorOp) domain.ErasureSelector {
 	return domain.ErasureSelector{
 		DocumentIDs: sel.GetDocumentIds(), ThreadIDs: sel.GetThreadIds(), ChunkIDs: sel.GetChunkIds(),
 		ExperienceIDs: sel.GetExperienceIds(), EntityRefs: sel.GetEntityRefs(),
+		MemoryNoteIDs: sel.GetMemoryNoteIds(), MemoryNoteOwners: sel.GetMemoryNoteOwners(),
 	}
 }
 
@@ -167,6 +239,7 @@ func receiptToOp(r domain.ErasureReceipt, now time.Time) *pb.ErasureReceiptOp {
 		Reason: string(r.Reason), SelectorKinds: r.SelectorKinds, Status: r.Status,
 		Targets: int32(r.Targets), PendingSteps: int32(r.PendingSteps), Replayed: r.Replayed,
 		Counts: map[string]int32{}, NotErasableExternal: r.NotErasableExternal,
+		RedactedMessages: r.RedactedMessages,
 	}
 	if !r.ErasedAt.IsZero() {
 		out.ErasedAt = timestamppb.New(r.ErasedAt)

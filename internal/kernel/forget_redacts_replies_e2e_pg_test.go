@@ -19,6 +19,8 @@ import (
 	"github.com/cambrian-sh/core/internal/memory/forget"
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 )
 
 // ENG-2109 end to end, the readiness repro (ENG-1995 phase B block 5) through the real
@@ -272,6 +274,18 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 		t.Fatalf("agent forget = %v, want the visit reply redacted and said so", done)
 	}
 	check(convs, quoting.ID, visit.ID)
+
+	// ENG-2154 (contract 0110): both planes carry the redacted reply ids on the wire —
+	// the operator's GetErasure receipt and the agent's ListMyErasures receipt.
+	opSvc := operatortest.New(t, nil, func(_ *operator.Deps, o *operator.Options) { o.Forget = svcForget })
+	wire, err := opSvc.GetErasure(opCtx, &pb.GetErasureOpRequest{RequestId: rec.RequestID})
+	if err != nil || !reflect.DeepEqual(wire.GetReceipt().GetRedactedMessages(), []string{quoting.ID}) {
+		t.Fatalf("operator GetErasure redacted_messages = %v, %v; want [%s]", wire.GetReceipt().GetRedactedMessages(), err, quoting.ID)
+	}
+	mine, err := srv.ListMyErasures(agentCtx(string(l)), &pb.ListMyErasuresRequest{})
+	if err != nil || len(mine.GetReceipts()) == 0 || !reflect.DeepEqual(mine.GetReceipts()[0].GetRedactedMessages(), []string{visit.ID}) {
+		t.Fatalf("agent ListMyErasures = %+v, %v; want the visit reply listed", mine.GetReceipts(), err)
+	}
 
 	// Restart: a fresh adapter, conversation store and eraser over the same database.
 	vec2, err := postgres.NewPgVectorAdapter(ctx, cfg)

@@ -169,6 +169,11 @@ func (s *PgErasureStore) Resolve(ctx context.Context, sel domain.ErasureSelector
 		return nil, err
 	}
 	out = append(out, notes...)
+	owners, err := resolveMemoryNoteOwners(ctx, q, sel.MemoryNoteOwners)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, owners...)
 	return out, nil
 }
 

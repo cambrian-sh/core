@@ -198,3 +198,50 @@ func TestForgetTool_ReportsOnlyFromTheReceipt(t *testing.T) {
 		t.Fatalf("unknown token = %v", err)
 	}
 }
+
+// ENG-2147: an executed subject-wide erase (MemoryNoteOwners) drops the owner's cached
+// run snapshots too, so no run keeps serving the erased notes from its frozen copy.
+func TestForget_MemoryNoteOwnersDropsTheOwnersSnapshots(t *testing.T) {
+	raw := &ownerRaw{}
+	notes := &notesFake{}
+	e := authz.NewEnforcingEraser(raw, domain.AllowAllAuthorizer{}, authz.EraserPolicy{}, nil)
+	svc := forget.New(e, forget.Config{PreviewTTL: time.Minute, PolicyFingerprint: "fp", Notes: notes})
+	op := domain.WithScope(domain.WithPrincipal(domain.WithPrincipalRoles(context.Background(), []string{"operator"}),
+		domain.UserPrincipal("ops")), domain.ScopeMaintenance)
+	p, err := svc.Preview(op, domain.ErasureSelector{MemoryNoteOwners: []string{"alice"}})
+	if err != nil || len(p.Candidates) != 1 || p.Candidates[0].Kind != domain.ErasureTargetMemoryNotesOwner {
+		t.Fatalf("preview = %+v, %v", p, err)
+	}
+	if _, err := svc.Forget(op, forget.Request{PreviewToken: p.Token, Reason: domain.ErasureReasonCompliance}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(notes.dropped, []string{"alice"}) {
+		t.Fatalf("dropped snapshots = %v, want [alice]", notes.dropped)
+	}
+}
+
+// ownerRaw resolves every named owner to a memory_notes_owner candidate.
+type ownerRaw struct{ erased []domain.ErasureRequest }
+
+func (f *ownerRaw) Resolve(_ context.Context, sel domain.ErasureSelector) ([]domain.ErasureCandidate, error) {
+	var out []domain.ErasureCandidate
+	for _, o := range sel.MemoryNoteOwners {
+		out = append(out, domain.ErasureCandidate{Kind: domain.ErasureTargetMemoryNotesOwner, ID: o, Via: o,
+			Tags: []string{"memory-notes", domain.OwnerTag(o)}})
+	}
+	return out, nil
+}
+
+func (f *ownerRaw) Erase(_ context.Context, req domain.ErasureRequest) (domain.ErasureReceipt, error) {
+	f.erased = append(f.erased, req)
+	return domain.ErasureReceipt{RequestID: req.ID(), Principal: req.Principal, PrincipalKind: req.PrincipalKind,
+		Status: domain.ErasureStatusComplete, SelectorKinds: req.Selector.Kinds()}, nil
+}
+
+func (f *ownerRaw) Receipt(context.Context, string) (domain.ErasureReceipt, bool, error) {
+	return domain.ErasureReceipt{}, false, nil
+}
+
+func (f *ownerRaw) ListReceipts(context.Context, domain.ErasureReceiptFilter) ([]domain.ErasureReceipt, error) {
+	return nil, nil
+}
