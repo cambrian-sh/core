@@ -61,7 +61,12 @@ for d in app cmd; do
     [ -d "$d" ] && premium_scan+=("$d")
 done
 
-hits="$(grep -rn --include='*.go' -F "$premium_mod" "${premium_scan[@]}" 2>/dev/null || true)"
+# internal/archlint is excluded: it is the architecture analyzer (ENG-1484) and names the
+# premium module path ON PURPOSE, as rule data and planted violations, to prove that its own
+# import rule rejects a premium import. It imports nothing from premium, and that same
+# archlint rule forbids premium imports everywhere in core, so the boundary stays covered.
+# Excluding it here keeps this grep from flagging the rule that enforces it (ENG-2070).
+hits="$(grep -rn --include='*.go' -F "$premium_mod" "${premium_scan[@]}" 2>/dev/null         | grep -v '^internal/archlint/' || true)"
 if [ -n "$hits" ]; then
     echo "FAIL: core imports the premium module ($premium_mod)"
     echo "$hits" | sed 's/^/  /'
