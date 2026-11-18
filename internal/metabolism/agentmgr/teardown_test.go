@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +27,14 @@ type teardownProbe struct {
 	underLock atomic.Int32
 }
 
+// probeLockCheck serialises the probes' own TryLock/Unlock of im.mu.
+// KillAllAgents runs its teardowns concurrently, outside the lock; without
+// this, one probe's momentary TryLock hold made a sibling probe's TryLock
+// fail and count a false "ran under the lock" (ENG-1984: 79 of 500 runs of
+// the KillAllAgents subtest under -race). With the checks serialised, a
+// failed TryLock can only mean the teardown path itself holds im.mu.
+var probeLockCheck sync.Mutex
+
 // placeInstance registers a fake instance with a socket file and a cap
 // cleanup that records whether im.mu was held while it ran.
 func placeInstance(t *testing.T, im *InstanceManager, agentID string, mode domain.InstanceMode, p *teardownProbe) *domain.Instance {
@@ -44,6 +53,8 @@ func placeInstance(t *testing.T, im *InstanceManager, agentID string, mode domai
 	im.agentIndex[agentID] = append(im.agentIndex[agentID], inst.ID)
 	im.capCleanups[inst.ID] = func() {
 		p.calls.Add(1)
+		probeLockCheck.Lock()
+		defer probeLockCheck.Unlock()
 		if im.mu.TryLock() {
 			im.mu.Unlock()
 		} else {
