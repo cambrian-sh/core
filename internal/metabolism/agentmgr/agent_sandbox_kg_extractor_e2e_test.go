@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -30,19 +31,40 @@ import (
 // the payload KgExtractorDispatcher sends (internal/substrate/network; that
 // package imports this one, so the test rebuilds its request here).
 //
-// It runs only when the env and a kernel directory are named, like
-// TestE2E_ShippedAgentsServeUnderConfinement:
+// It needs a managed env WITH spaCy, so it has its own variable, the one the
+// app sibling TestE2E_KgGraphTierFromConfigReachesSandboxedAgent reads — not
+// AGENTMGR_E2E_PY, which core CI and the other sandbox e2es point at the
+// SDK-only env (T-20261118-teste2e: there this test failed instead of skipping):
 //
-//	AGENTMGR_E2E_PY      the managed env's interpreter (`python-env status`),
+//	KGTIER_E2E_PY        the managed env's interpreter (`python-env status`),
 //	                     built from a lock that contains spacy (the release
 //	                     lock, or an SDK + spaCy slice of it) and the
 //	                     embedded model-asset table
-//	AGENTMGR_E2E_KERNEL  a kernel directory holding agents/, prompts/, skills/
-//	                     and configs/
+//	AGENTMGR_E2E_KERNEL  optional: a kernel directory holding agents/,
+//	                     prompts/, skills/ and configs/; defaults to this
+//	                     checkout, which has that layout
+//
+// When the named env cannot load en_core_web_sm the test skips and says why.
 func TestE2E_KgExtractorExtractsOnManagedEnvUnderSandbox(t *testing.T) {
-	py, kernel := os.Getenv("AGENTMGR_E2E_PY"), os.Getenv("AGENTMGR_E2E_KERNEL")
-	if py == "" || kernel == "" {
-		t.Skip("set AGENTMGR_E2E_PY and AGENTMGR_E2E_KERNEL to run kg_extractor on the managed env under the sandbox")
+	py := os.Getenv("KGTIER_E2E_PY")
+	if py == "" {
+		t.Skip("set KGTIER_E2E_PY to a kernel-managed env with spaCy to run kg_extractor on the managed env under the sandbox")
+	}
+	kernel := os.Getenv("AGENTMGR_E2E_KERNEL")
+	if kernel == "" {
+		abs, err := filepath.Abs(filepath.Join("..", "..", ".."))
+		if err != nil {
+			t.Fatal(err)
+		}
+		kernel = abs
+	}
+	interp := managedInterpreterForTest(t, py) // a non-managed interpreter is a setup error, not a skip
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelProbe()
+	if out, err := exec.CommandContext(probeCtx, interp.Path, "-I", "-c",
+		"import spacy; spacy.load('en_core_web_sm')").CombinedOutput(); err != nil {
+		t.Skipf("KGTIER_E2E_PY=%s cannot load spaCy's en_core_web_sm (build the env from a lock with spacy): %v: %s",
+			py, err, lastLines(string(out), 3))
 	}
 	root := e2eRoot(t)
 	sb := NewAgentSandbox(AgentSandboxOptions{
@@ -64,7 +86,7 @@ func TestE2E_KgExtractorExtractsOnManagedEnvUnderSandbox(t *testing.T) {
 		Dir: filepath.Join(kernel, "agents", "system", agentID), System: true,
 	}
 	im := NewInstanceManager("127.0.0.1:1")
-	im.SetPythonEnv(fixedPythonEnv{pi: managedInterpreterForTest(t, py)})
+	im.SetPythonEnv(fixedPythonEnv{pi: interp})
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetAgentBootTimeout(90 * time.Second)
@@ -129,4 +151,14 @@ func TestE2E_KgExtractorExtractsOnManagedEnvUnderSandbox(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lastLines keeps a skip reason readable: a Python traceback's last lines name
+// the missing module.
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
 }
