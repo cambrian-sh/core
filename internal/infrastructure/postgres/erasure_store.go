@@ -135,6 +135,11 @@ const (
 	// eraseConversationMessages counts agent replies REDACTED in place (ENG-2109),
 	// not deleted: the transcript keeps the row.
 	eraseConversationMessages = "conversation_messages"
+	// eraseConversationSummaries counts the chat lane's rolling conversation summaries
+	// (domain.LedgerToolConversationSummary ledger entries) deleted because they
+	// condensed a reply resting on an erased record (ENG-2155). They are ledger entries,
+	// so ledger_entries counts them too; this names them apart on the receipt.
+	eraseConversationSummaries = "conversation_summaries"
 )
 
 // erasureTarget is one tombstone row (content-free).
@@ -735,9 +740,12 @@ func (s *PgErasureStore) eraseQuoters(ctx context.Context, run *erasureRun, refs
 // earlier erase redacted is not counted again. It cannot come back: the text is
 // overwritten in this transaction, and a later turn cannot recall the erased record.
 //
-// Not reached (ADR-0137 inventory): a reply that quotes memory its turn did not
-// recall — a later reply repeating an earlier one from the transcript, a message
-// emitted outside a turn (a watch, a scheduled task) — records no sources.
+// Reach (ENG-2155): a reply records what its turn recalled AND what it was given — the
+// transcript's replies, the rolling summary, the turn index — so a later reply that
+// repeats an earlier one's value is redacted with it, and a message the consent bridge
+// posts during a turn records that turn's sources. Not reached (ADR-0137 inventory):
+// a message emitted with no turn running records none; a reply stored before
+// migration 0060 whose turn's ledger entries had expired by 0061's backfill.
 func (s *PgErasureStore) redactReplies(ctx context.Context, run *erasureRun, refs []string) error {
 	if len(refs) == 0 {
 		return nil
@@ -785,18 +793,29 @@ func (s *PgErasureStore) eraseLedger(ctx context.Context, run *erasureRun, refs 
 	if !run.hasLedger {
 		return nil
 	}
-	hashes, err := collectIDs(ctx, run.tx,
-		`DELETE FROM ledger_entries WHERE source_refs ?| $1::text[] RETURNING body_hash`, refs)
+	rows, err := run.tx.Query(ctx,
+		`DELETE FROM ledger_entries WHERE source_refs ?| $1::text[] RETURNING body_hash, tool_name`, refs)
 	if err != nil {
 		return fmt.Errorf("erase %s: %w", eraseLedgerEntries, err)
 	}
-	if len(hashes) > 0 {
-		run.counts[eraseLedgerEntries] += len(hashes)
-	}
-	for _, h := range hashes {
-		if h != "" {
-			run.bodies[h] = true
+	defer rows.Close()
+	for rows.Next() {
+		var hash, tool string
+		if err := rows.Scan(&hash, &tool); err != nil {
+			return fmt.Errorf("erase %s: %w", eraseLedgerEntries, err)
 		}
+		run.counts[eraseLedgerEntries]++
+		// ENG-2155: a rolling summary that condensed a quoting reply goes with it; the
+		// chat lane folds the redacted transcript again on the next turn.
+		if tool == domain.LedgerToolConversationSummary {
+			run.counts[eraseConversationSummaries]++
+		}
+		if hash != "" {
+			run.bodies[hash] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("erase %s: %w", eraseLedgerEntries, err)
 	}
 	return nil
 }

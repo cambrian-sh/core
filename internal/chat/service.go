@@ -206,10 +206,15 @@ func (s *TurnService) SetDelegationEnder(d DelegationEnder) { s.delegations = d 
 type activeTurn struct {
 	cancel context.CancelFunc
 	closed atomic.Bool
+	// turnID is the message the turn answers and given the refs of what it was
+	// given (turnContext.givenRefs): a message Emit posts into the conversation
+	// while the turn runs rests on them (ENG-2155).
+	turnID string
+	given  []string
 }
 
-func (s *TurnService) trackActive(conversationID string, cancel context.CancelFunc) (*activeTurn, func()) {
-	at := &activeTurn{cancel: cancel}
+func (s *TurnService) trackActive(conversationID, turnID string, given []string, cancel context.CancelFunc) (*activeTurn, func()) {
+	at := &activeTurn{cancel: cancel, turnID: turnID, given: given}
 	s.activeMu.Lock()
 	if s.active == nil {
 		s.active = map[string]map[*activeTurn]struct{}{}
@@ -460,8 +465,40 @@ func (s *TurnService) RunTurn(ctx context.Context, conversationID, text, clientI
 // The stored message is the source of truth and is durable BEFORE delivery is
 // attempted, so a delivery failure never loses what was said. The returned error
 // is therefore a DELIVERY error: the message is valid whether or not it is nil.
+//
+// The message records the memory records it may rest on (domain.Message.SourceRefs,
+// ENG-2155): posted while a turn runs in the conversation — the consent bridge's
+// machine prompt, built from a step of that turn — it rests on whatever that turn
+// has recalled and been given so far, so forgetting any of it redacts the message
+// too. Posted with no turn running, it was built from nothing the chat lane
+// recalled and records none. (Scheduled tasks and watches speak through a whole
+// turn, RunOwnedTurn, so their replies carry the turn's sources.)
 func (s *TurnService) Emit(ctx context.Context, conversationID, text string) (domain.Message, error) {
-	return s.emit(ctx, conversationID, text, nil)
+	return s.emit(ctx, conversationID, text, s.runningTurnRefs(ctx, conversationID))
+}
+
+// runningTurnRefs is the union of the sources of the turns running in the
+// conversation: each one's ledger entries so far and what it was given.
+func (s *TurnService) runningTurnRefs(ctx context.Context, conversationID string) []string {
+	s.activeMu.Lock()
+	running := make([]*activeTurn, 0, len(s.active[conversationID]))
+	for at := range s.active[conversationID] {
+		running = append(running, at)
+	}
+	s.activeMu.Unlock()
+	var sets [][]string
+	for _, at := range running {
+		sets = append(sets, s.replyRefs(ctx, conversationID, at.turnID, at.given))
+	}
+	return unionRefs(sets...)
+}
+
+// replyRefs is what a reply of the turn rests on (owner's broad rule, ENG-2109 and
+// ENG-2155): every record the turn recalled or called (turnSourceRefs) and every
+// record behind what it was given (turnContext.givenRefs) — a reply that repeats an
+// earlier reply's value from the transcript is redacted with it.
+func (s *TurnService) replyRefs(ctx context.Context, conversationID, turnID string, given []string) []string {
+	return unionRefs(s.turnSourceRefs(ctx, conversationID, turnID), given)
 }
 
 // emit is Emit with the memory records the message rests on (domain.Message.
@@ -602,7 +639,9 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	var history []domain.Message
 	tc := &turnContext{}
 	if s.Grounding.TranscriptBudgetTokens > 0 {
-		history, tc.summary, err = s.loadBudgetedHistory(ctx, conv, userMsg.Seq, userMsg.ID)
+		var sum conversationSummary
+		history, sum, err = s.loadBudgetedHistory(ctx, conv, userMsg.Seq, userMsg.ID)
+		tc.summary, tc.givenRefs = sum.Text, sum.refs
 	} else {
 		history, err = s.loadHistory(ctx, req.ConversationID, userMsg.Seq)
 	}
@@ -611,6 +650,8 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	}
 	lang = s.turnLanguage(req.Text, history)
 	s.loadTurnContext(ctx, conv, history, tc)
+	// ENG-2155: the transcript the turn is given is something its reply may repeat.
+	tc.givenRefs = unionRefs(tc.givenRefs, messageRefs(history))
 
 	turnCtx := ctx
 	turnCancel := context.CancelFunc(func() {})
@@ -625,7 +666,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		turnCtx, turnCancel = context.WithCancel(ctx)
 	}
 	defer turnCancel()
-	turn, untrack := s.trackActive(req.ConversationID, turnCancel)
+	turn, untrack := s.trackActive(req.ConversationID, userMsg.ID, tc.givenRefs, turnCancel)
 	defer untrack()
 	// The deadline counts only time not spent waiting on a person (SetPersonWaitProbe).
 	if pauseForPerson {
@@ -756,7 +797,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	if s.g.results != nil {
 		results = s.g.results(userMsg.ID)
 	}
-	reply = s.groundReply(turnCtx, ctx, conv, userMsg, history, h, reply, results, tc.shownIndex, lang)
+	reply = s.groundReply(turnCtx, ctx, conv, userMsg, history, h, reply, results, tc, lang)
 	if reply == "" {
 		return domain.Message{}, ErrEmptyReply
 	}
@@ -778,9 +819,10 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	// "working on it" after the reply has arrived.
 	s.emitProgress(ctx, req.ConversationID, domain.PhaseWriting, lang)
 
-	// ENG-2109: the reply records what the turn recalled and called, so forgetting any
-	// of those records later redacts it in the transcript.
-	msg, derr := s.emit(ctx, req.ConversationID, reply, s.turnSourceRefs(ctx, conv, userMsg.ID))
+	// ENG-2109/ENG-2155: the reply records what the turn recalled and called and what
+	// it was given, so forgetting any of those records later redacts it.
+	refs := s.replyRefs(ctx, conv.ID, userMsg.ID, tc.givenRefs)
+	msg, derr := s.emit(ctx, req.ConversationID, reply, refs)
 	if derr != nil {
 		slog.Warn("ADR-0090: turn reply stored but not delivered",
 			"conversation", req.ConversationID, "message", msg.ID, "err", derr)
@@ -789,7 +831,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		return domain.Message{}, derr
 	}
 	// ADR-0145 D2/D5a: the turn's index entry (and any ask-back it left open).
-	s.recordTurnIndex(context.WithoutCancel(ctx), conv, userMsg, results)
+	s.recordTurnIndex(context.WithoutCancel(ctx), conv, userMsg, results, refs)
 	return msg, nil
 }
 

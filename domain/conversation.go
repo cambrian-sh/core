@@ -196,6 +196,13 @@ type Message struct {
 // message stays in the transcript, in order, without the forgotten value.
 const RedactedReplyText = "[removed: forgotten source]"
 
+// LedgerToolConversationSummary is the tool name of the chat lane's rolling
+// conversation summary entries (ADR-0145 D2.3, computed ledger entries). An entry
+// records the source refs of every reply it condensed, so an ADR-0137 erase deletes
+// each summary that covered a forgotten value; the erasure store counts them apart
+// on the receipt (ENG-2155).
+const LedgerToolConversationSummary = "chat_conversation_summary"
+
 // Validate checks the invariants the store relies on. Seq is intentionally not validated:
 // it is assigned by the store.
 func (m Message) Validate() error {

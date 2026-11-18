@@ -70,6 +70,12 @@ type conversationSummary struct {
 	// ThroughSeq is the last message the summary covers.
 	ThroughSeq int64  `json:"through_seq"`
 	Text       string `json:"text"`
+	// refs are the memory records the summary may repeat: the source refs of every
+	// reply it condensed and of the summary it folded in (ENG-2155). Recorded as the
+	// entry's SourceRefs, not in its body, so an ADR-0137 erase of any of them deletes
+	// the summary in the erase transaction; the next turn then falls back to an older
+	// summary (or none) and folds the now-redacted transcript again.
+	refs []string
 }
 
 // latestSummary returns the conversation's newest summary, or the zero value.
@@ -82,6 +88,7 @@ func (s *TurnService) latestSummary(ctx context.Context, conv *domain.Conversati
 		}
 		var cs conversationSummary
 		if json.Unmarshal(e.Body, &cs) == nil {
+			cs.refs = unionRefs(e.SourceRefs)
 			return cs
 		}
 	}
@@ -101,8 +108,9 @@ func (s *TurnService) foldSummary(ctx context.Context, conv *domain.Conversation
 			"conversation", conv.ID, "messages", len(overflow), "err", err)
 		return prev
 	}
-	next := conversationSummary{ThroughSeq: overflow[len(overflow)-1].Seq, Text: text}
-	s.recordState(ctx, conv, turnID, toolSummary, next, nil)
+	next := conversationSummary{ThroughSeq: overflow[len(overflow)-1].Seq, Text: text,
+		refs: unionRefs(prev.refs, messageRefs(overflow))}
+	s.recordState(ctx, conv, turnID, toolSummary, next, nil, next.refs)
 	slog.Info("chat: rolling summary updated", "conversation", conv.ID, "through_seq", next.ThroughSeq,
 		"folded", len(overflow))
 	return next

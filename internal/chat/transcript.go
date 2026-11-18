@@ -50,15 +50,16 @@ func budgetWindow(msgs []domain.Message, budget int) (overflow, window []domain.
 // loadBudgetedHistory is loadHistory under the token budget: the messages after
 // the conversation's latest summary, cut to the budget, and the summary with any
 // overflow folded in. Without the ledger there is no summary to keep, so the
-// overflow is simply out of view (the wiring warns).
-func (s *TurnService) loadBudgetedHistory(ctx context.Context, conv *domain.Conversation, upToSeq int64, turnID string) ([]domain.Message, string, error) {
+// overflow is simply out of view (the wiring warns). The summary comes back whole:
+// its refs travel with the turn (ENG-2155).
+func (s *TurnService) loadBudgetedHistory(ctx context.Context, conv *domain.Conversation, upToSeq int64, turnID string) ([]domain.Message, conversationSummary, error) {
 	prev := conversationSummary{}
 	if s.ledgerOn() {
 		prev = s.latestSummary(ctx, conv)
 	}
 	msgs, err := s.store.ListMessages(ctx, conv.ID, prev.ThroughSeq, 0)
 	if err != nil {
-		return nil, "", err
+		return nil, conversationSummary{}, err
 	}
 	all := make([]domain.Message, 0, len(msgs))
 	for _, m := range msgs {
@@ -84,5 +85,5 @@ func (s *TurnService) loadBudgetedHistory(ctx context.Context, conv *domain.Conv
 			window = append(kept, window...)
 		}
 	}
-	return window, prev.Text, nil
+	return window, prev, nil
 }

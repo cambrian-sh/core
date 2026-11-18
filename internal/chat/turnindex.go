@@ -275,12 +275,15 @@ func renderTurnIndex(entries []TurnIndexEntry) string {
 
 // loadTurnIndex returns the conversation's index entries, oldest first, at most
 // n (the most recent).
-func (s *TurnService) loadTurnIndex(ctx context.Context, conv *domain.Conversation, n int) []TurnIndexEntry {
+// refs is the union of the loaded entries' source refs: what a turn shown them may
+// repeat (ENG-2155).
+func (s *TurnService) loadTurnIndex(ctx context.Context, conv *domain.Conversation, n int) (_ []TurnIndexEntry, refs []string) {
 	list := s.findState(ctx, conv, toolTurnIndex)
 	if len(list) > n {
 		list = list[len(list)-n:]
 	}
 	var out []TurnIndexEntry
+	var sets [][]string
 	for _, meta := range list {
 		e, err := s.readBody(ctx, conv.OwnerID, meta.ID)
 		if err != nil || e == nil {
@@ -291,8 +294,9 @@ func (s *TurnService) loadTurnIndex(ctx context.Context, conv *domain.Conversati
 			continue
 		}
 		out = append(out, te)
+		sets = append(sets, e.SourceRefs)
 	}
-	return out
+	return out, unionRefs(sets...)
 }
 
 // turnContext is what the phase-3 keys add to a turn before it is dispatched.
@@ -308,6 +312,12 @@ type turnContext struct {
 	// shownIndex is the rendered index the agent was shown (kernel records; the
 	// reply check accepts values restated from it).
 	shownIndex string
+	// givenRefs are the memory records behind everything the turn was GIVEN besides
+	// its own recalls: the transcript's replies, the rolling summary and the turn
+	// index entries it was shown (ENG-2155, owner's broad rule 2026-11-19). A reply
+	// may repeat any of it, so the reply — and anything the turn emits — records
+	// them, and forgetting one of those records redacts it too.
+	givenRefs []string
 }
 
 // loadTurnContext fills tc with the turn index and an open ask-back, per the
@@ -316,7 +326,7 @@ func (s *TurnService) loadTurnContext(ctx context.Context, conv *domain.Conversa
 	if !s.ledgerOn() || !(s.Grounding.TurnIndex || s.Grounding.AskBack) {
 		return
 	}
-	index := s.loadTurnIndex(ctx, conv, s.Grounding.indexTurns())
+	index, indexRefs := s.loadTurnIndex(ctx, conv, s.Grounding.indexTurns())
 	if s.Grounding.AskBack {
 		tc.pending, tc.pendingRef = pendingFor(index, history)
 		if tc.pending != nil {
@@ -326,6 +336,11 @@ func (s *TurnService) loadTurnContext(ctx context.Context, conv *domain.Conversa
 	if s.Grounding.TurnIndex {
 		tc.index = index
 		tc.shownIndex = renderTurnIndex(index)
+		tc.givenRefs = unionRefs(tc.givenRefs, indexRefs)
+	} else if tc.pending != nil {
+		// Only the open ask-back was shown, from the latest entry; its refs are in
+		// indexRefs with the rest. Broad on purpose: a superset never misses a value.
+		tc.givenRefs = unionRefs(tc.givenRefs, indexRefs)
 	}
 }
 
@@ -410,8 +425,11 @@ func renderPending(p *domain.InputRequired, request string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// recordTurnIndex writes the turn's index entry when it delegated anything.
-func (s *TurnService) recordTurnIndex(ctx context.Context, conv *domain.Conversation, userMsg domain.Message, results []domain.ExecuteResult) {
+// recordTurnIndex writes the turn's index entry when it delegated anything. refs are
+// the reply's sources: the entry restates the turn's runs (an action's detail even
+// when its step left no output for DerivedFrom to name), so an erase of any record
+// the turn rested on deletes it with the reply's redaction (ENG-2155).
+func (s *TurnService) recordTurnIndex(ctx context.Context, conv *domain.Conversation, userMsg domain.Message, results []domain.ExecuteResult, refs []string) {
 	if len(results) == 0 || !(s.Grounding.TurnIndex || s.Grounding.AskBack) {
 		return
 	}
@@ -419,5 +437,5 @@ func (s *TurnService) recordTurnIndex(ctx context.Context, conv *domain.Conversa
 	if !s.Grounding.AskBack {
 		e.Pending = nil
 	}
-	s.recordState(ctx, conv, userMsg.ID, toolTurnIndex, e, e.refs())
+	s.recordState(ctx, conv, userMsg.ID, toolTurnIndex, e, e.refs(), refs)
 }

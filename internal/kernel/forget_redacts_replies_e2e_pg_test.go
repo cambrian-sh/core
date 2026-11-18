@@ -33,8 +33,10 @@ import (
 //     agent-plane QueryMemory the chat worker calls on the turn's lease (which records
 //     the recall in the ledger with its source refs);
 //   - a contract note is ingested; a chat turn recalls it and answers quoting the
-//     agreement number — the reply records the document and chunk it rested on; a second
-//     turn answers from another document, a third recalls nothing;
+//     agreement number — the reply records the document and chunk it rested on; a turn
+//     in a second conversation answers from another document, one in a third recalls
+//     nothing (separate conversations: since ENG-2155 a reply also rests on the
+//     transcript it was given, TestPg_ForgetReachesEveryTranscriptCopyOfTheValue);
 //   - the operator forgets the note (compliance erase, MemoryStack.Eraser): the quoting
 //     reply now reads "[removed: forgotten source]" with its row, role, seq and time
 //     kept, every other message is untouched, and the receipt lists the message;
@@ -79,13 +81,15 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 	person := "eng2109-emp-" + stamp
 	agentID := "eng2109-chat-" + stamp
 	convID := "eng2109-conv-" + stamp
+	visitConv, helloConv := convID+"-b", convID+"-c"
+	convIDs := []string{convID, visitConv, helloConv}
 	noteDoc, otherDoc := "eng2109-note-"+stamp, "eng2109-other-"+stamp
 	secret := "HERON-b5r1-" + stamp
 	t.Cleanup(func() {
 		bg := context.Background()
-		_, _ = pool.Exec(bg, `DELETE FROM conversations WHERE id = $1`, convID)
+		_, _ = pool.Exec(bg, `DELETE FROM conversations WHERE id = ANY($1)`, convIDs)
 		_, _ = pool.Exec(bg, `DELETE FROM memory_erasures WHERE principal IN ($1, $2)`, "eng2109-op-"+stamp, agentID)
-		_, _ = pool.Exec(bg, `DELETE FROM ledger_entries WHERE conversation_id = $1`, convID)
+		_, _ = pool.Exec(bg, `DELETE FROM ledger_entries WHERE conversation_id = ANY($1)`, convIDs)
 		for _, d := range []string{noteDoc, otherDoc} {
 			_, _ = pool.Exec(bg, `DELETE FROM chunks WHERE document_id = $1`, d)
 			_, _ = pool.Exec(bg, `DELETE FROM documents WHERE id = $1`, d)
@@ -118,7 +122,7 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 		LLM:     config.LLMConfig{LLMGatewayMaxConcurrency: 4},
 	}, llm.NewSpendMeter(0, nil, nil))
 	ownerOf := func(_ context.Context, b domain.LeaseBinding) string {
-		if b.ConversationID == convID {
+		if strings.HasPrefix(b.ConversationID, convID) {
 			return person
 		}
 		return ""
@@ -175,27 +179,29 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 	turns.SetLeaseBinder(gw, agentID)
 	turns.SetLedger(led.Writer, led.Reader)
 
-	if err := convs.CreateConversation(ctx, domain.Conversation{ID: convID, OwnerID: person,
-		Status: domain.ConversationOpen, Profile: domain.ProfileEmployee}); err != nil {
-		t.Fatal(err)
+	for _, id := range convIDs {
+		if err := convs.CreateConversation(ctx, domain.Conversation{ID: id, OwnerID: person,
+			Status: domain.ConversationOpen, Profile: domain.ProfileEmployee}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	say := func(text string) domain.Message {
+	sayIn := func(conv, text string) domain.Message {
 		t.Helper()
-		m, err := turns.Turn(ctx, corechat.TurnRequest{ConversationID: convID, Text: text})
+		m, err := turns.Turn(ctx, corechat.TurnRequest{ConversationID: conv, Text: text})
 		if err != nil {
 			t.Fatalf("turn %q: %v", text, err)
 		}
 		return m
 	}
-	quoting := say("What is the agreement number with the supplier?")
+	quoting := sayIn(convID, "What is the agreement number with the supplier?")
 	if !strings.Contains(quoting.Content, secret) {
 		t.Fatalf("precondition: the reply quotes the note: %q", quoting.Content)
 	}
 	if !reflect.DeepEqual(quoting.SourceRefs, domain.SortedUniqueIDs([]string{noteChunk, noteDoc})) {
 		t.Fatalf("the reply's citation = %v, want the note and its chunk", quoting.SourceRefs)
 	}
-	visit := say("When is the supplier visit?")
-	hello := say("thanks, hi")
+	visit := sayIn(visitConv, "When is the supplier visit?")
+	hello := sayIn(helloConv, "thanks, hi")
 	if len(hello.SourceRefs) != 0 {
 		t.Fatalf("a reply that recalled nothing cites %v", hello.SourceRefs)
 	}
@@ -217,9 +223,16 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 
 	check := func(store *postgres.PgConversationStore, redacted ...string) {
 		t.Helper()
-		msgs, err := store.ListMessages(ctx, convID, 0, 0)
-		if err != nil || len(msgs) != 6 {
-			t.Fatalf("transcript = %d rows, %v; want all 6 kept", len(msgs), err)
+		var msgs []domain.Message
+		for _, id := range convIDs {
+			got, err := store.ListMessages(ctx, id, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			msgs = append(msgs, got...)
+		}
+		if len(msgs) != 6 {
+			t.Fatalf("transcripts = %d rows; want all 6 kept", len(msgs))
 		}
 		isRedacted := map[string]bool{}
 		for _, id := range redacted {
@@ -240,8 +253,8 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 		}
 	}
 	check(convs, quoting.ID)
-	if got, _ := convs.ListMessages(ctx, convID, 0, 0); got[3].ID != visit.ID || got[3].Content != visit.Content {
-		t.Fatalf("the reply from the other document must be untouched: %+v", got[3])
+	if got, _ := convs.ListMessages(ctx, visitConv, 0, 0); got[1].ID != visit.ID || got[1].Content != visit.Content {
+		t.Fatalf("the reply from the other document must be untouched: %+v", got[1])
 	}
 
 	// The chat agent forgets the document it wrote (forget_memory: preview, then token).

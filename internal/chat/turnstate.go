@@ -14,7 +14,7 @@ import (
 // found by a ledger query and never collides with a tool a worker called.
 const (
 	toolTurnIndex   = "chat_turn_index"
-	toolSummary     = "chat_conversation_summary"
+	toolSummary     = domain.LedgerToolConversationSummary
 	toolReplyCheck  = "chat_reply_check"
 	toolRequirement = "requirement_coverage"
 	// stateQueryLimit bounds one query for the chat lane's own entries of a
@@ -25,9 +25,11 @@ const (
 
 // recordState writes one chat-lane entry for the turn. derived names the ledger
 // entries its content was built from, so it is never easier to read than they are
-// (domain.LedgerEntryReadable). Best-effort: a failed write is logged and the turn
-// goes on.
-func (s *TurnService) recordState(ctx context.Context, conv *domain.Conversation, turnID, tool string, v any, derived []string) (string, bool) {
+// (domain.LedgerEntryReadable). refs are the memory records the content quotes
+// beyond what derived carries (the replies a summary condensed, the turn's whole
+// recall), so an ADR-0137 erase of any of them deletes the entry (ENG-2155).
+// Best-effort: a failed write is logged and the turn goes on.
+func (s *TurnService) recordState(ctx context.Context, conv *domain.Conversation, turnID, tool string, v any, derived, refs []string) (string, bool) {
 	if !s.ledgerOn() {
 		return "", false
 	}
@@ -44,6 +46,7 @@ func (s *TurnService) recordState(ctx context.Context, conv *domain.Conversation
 		ToolName:    tool,
 		Writer:      domain.SystemPrincipal,
 		DerivedFrom: derived,
+		SourceRefs:  refs,
 		ContentType: "application/json",
 		Body:        body,
 	})
@@ -112,23 +115,33 @@ func (s *TurnService) turnEntries(ctx context.Context, conv *domain.Conversation
 // Read under domain.ScopeMaintenance: the result is ids written onto the reply row,
 // never content shown to a principal, and an entry a tag fence hid here would be a
 // reference the erase could not follow. Scoped by conversation and turn.
-func (s *TurnService) turnSourceRefs(ctx context.Context, conv *domain.Conversation, turnID string) []string {
+func (s *TurnService) turnSourceRefs(ctx context.Context, conversationID, turnID string) []string {
 	if !s.ledgerOn() || turnID == "" {
 		return nil
 	}
 	list, err := s.g.ledgerR.Find(domain.WithScope(ctx, domain.ScopeMaintenance), domain.LedgerQuery{
-		ConversationID: conv.ID, TurnID: turnID, Limit: stateQueryLimit,
+		ConversationID: conversationID, TurnID: turnID, Limit: stateQueryLimit,
 	})
 	if err != nil {
 		// Not silent (AGENTS.md §3.2): a reply stored without its sources is one a
 		// later erase of them cannot redact.
 		slog.Warn("chat: the reply's sources could not be read; it is stored without them and a forget of them will not redact it",
-			"conversation", conv.ID, "turn", turnID, "err", err)
+			"conversation", conversationID, "turn", turnID, "err", err)
 		return nil
 	}
-	var refs []string
+	var sets [][]string
 	for _, e := range list {
-		for _, r := range e.SourceRefs {
+		sets = append(sets, e.SourceRefs)
+	}
+	return unionRefs(sets...)
+}
+
+// unionRefs is the sorted, de-duplicated union of ref sets without empty ids; nil
+// when there are none.
+func unionRefs(sets ...[]string) []string {
+	var refs []string
+	for _, set := range sets {
+		for _, r := range set {
 			if r != "" {
 				refs = append(refs, r)
 			}
@@ -138,4 +151,18 @@ func (s *TurnService) turnSourceRefs(ctx context.Context, conv *domain.Conversat
 		return nil
 	}
 	return domain.SortedUniqueIDs(refs)
+}
+
+// messageRefs is the union of the source refs of msgs that still hold their text:
+// what a turn, a summary or an emitted message given these messages may repeat
+// (ENG-2155). A redacted reply holds only domain.RedactedReplyText, so its refs no
+// longer travel: they would make every later reply rest on a record already gone.
+func messageRefs(msgs []domain.Message) []string {
+	var sets [][]string
+	for _, m := range msgs {
+		if m.RedactedAt == nil {
+			sets = append(sets, m.SourceRefs)
+		}
+	}
+	return unionRefs(sets...)
 }

@@ -96,15 +96,15 @@ func (s *TurnService) turnEvidence(ctx context.Context, conv *domain.Conversatio
 // groundReply runs the reply check (when on) and returns the reply the person
 // sees, with the evidence markers stripped.
 func (s *TurnService) groundReply(turnCtx, ctx context.Context, conv *domain.Conversation, userMsg domain.Message,
-	history []domain.Message, h *domain.Handoff, reply string, results []domain.ExecuteResult, shownIndex, lang string) string {
+	history []domain.Message, h *domain.Handoff, reply string, results []domain.ExecuteResult, tc *turnContext, lang string) string {
 	mode := s.Grounding.replyCheckMode()
 	if mode == ReplyCheckOff || !s.ledgerOn() {
 		return replycheck.StripMarkers(reply)
 	}
-	ev := s.turnEvidence(ctx, conv, userMsg, history, results, shownIndex)
+	ev := s.turnEvidence(ctx, conv, userMsg, history, results, tc.shownIndex)
 	opt := replycheck.Options{MinInteger: s.Grounding.minInteger(), Lang: lang}
 	rep := replycheck.Check(reply, ev, opt)
-	s.observeReplyCheck(ctx, conv, userMsg, mode, 1, len(results) > 0, rep)
+	s.observeReplyCheck(ctx, conv, userMsg, tc, mode, 1, len(results) > 0, rep)
 	if mode != ReplyCheckEnforce || rep.Violations() == 0 {
 		return replycheck.StripMarkers(reply)
 	}
@@ -113,7 +113,7 @@ func (s *TurnService) groundReply(turnCtx, ctx context.Context, conv *domain.Con
 	if revised, ok := s.reviseReply(turnCtx, conv, h, reply, rep, ev); ok {
 		s.g.retries.Add(1)
 		rep2 := replycheck.Check(revised, ev, opt)
-		s.observeReplyCheck(ctx, conv, userMsg, mode, 2, len(results) > 0, rep2)
+		s.observeReplyCheck(ctx, conv, userMsg, tc, mode, 2, len(results) > 0, rep2)
 		reply, rep = revised, rep2
 	}
 	out := replycheck.StripMarkers(reply)
@@ -263,7 +263,7 @@ const maxSourcesNamed = 2
 // observeReplyCheck logs, counts, records and traces one check. delegated says
 // whether the turn delegated anything: a reply with uncited values from a turn that
 // did not is the D3 measure (an organisation question answered without delegating).
-func (s *TurnService) observeReplyCheck(ctx context.Context, conv *domain.Conversation, userMsg domain.Message,
+func (s *TurnService) observeReplyCheck(ctx context.Context, conv *domain.Conversation, userMsg domain.Message, tc *turnContext,
 	mode string, attempt int, delegated bool, rep replycheck.Report) {
 	s.g.checkedTurns.Add(1)
 	s.g.violations.Add(int64(rep.Violations()))
@@ -282,7 +282,8 @@ func (s *TurnService) observeReplyCheck(ctx context.Context, conv *domain.Conver
 		Delegated bool              `json:"delegated"`
 		Report    replycheck.Report `json:"report"`
 	}{mode, attempt, delegated, rep}
-	s.recordState(ctx, conv, userMsg.ID, toolReplyCheck, record, nil)
+	// The report quotes the reply's values: it rests on what the reply does (ENG-2155).
+	s.recordState(ctx, conv, userMsg.ID, toolReplyCheck, record, nil, s.replyRefs(ctx, conv.ID, userMsg.ID, tc.givenRefs))
 	if s.g.tracer != nil {
 		raw, _ := json.Marshal(rep)
 		now := time.Now()
