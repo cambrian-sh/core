@@ -284,6 +284,10 @@ message ErasureReceipt {
   int32 targets = 10;
   int32 pending_steps = 11;
   bool replayed = 12;            // a retry of an executed request: nothing deleted now
+  // ADR-0137 D7 async steps (sorted) that ended without erasing because the records
+  // live in an external service with no delete path (e.g. premium langfuse_traces);
+  // what the erase left behind. Empty until such a step has run (contract 0108).
+  repeated string not_erasable_external = 13;
 }
 
 message PreviewForgetRequest {

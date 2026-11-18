@@ -4123,7 +4123,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// 0107 (2026-11-17, additive; ENG-1953): agent-plane
 		// PreviewForgetResponse.truncated — a query preview cut by
 		// execution.erasure.preview_max_candidates says so. Operator plane unchanged.
-		operatorSvc.SetHandshake(KernelVersion, "0107", operatorCaps)
+		// 0108 (2026-11-18, additive; ENG-2018): ErasureReceipt.not_erasable_external
+		// (agent plane) and ErasureReceiptOp.not_erasable_external (operator plane) —
+		// the ADR-0137 D7 async steps that could not erase from an external service.
+		operatorSvc.SetHandshake(KernelVersion, "0108", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -160,5 +161,18 @@ func TestForgetMemory_DisabledRoleGateAndNonOperator(t *testing.T) {
 	if _, err := s.ForgetMemory(operatorErasureCtx(RoleOperator, "operator"), &pb.ForgetMemoryOpRequest{
 		CommandId: "c3", Reason: "r", PreviewToken: "pv:forged"}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("unknown token: %v", err)
+	}
+}
+
+// ENG-2018 (contract 0108): the operator receipt names the ADR-0137 D7 async steps
+// that could not erase from an external service, as the Go receipt does.
+func TestReceiptToOp_CarriesNotErasableExternal(t *testing.T) {
+	got := receiptToOp(domain.ErasureReceipt{RequestID: "erase:x", Status: domain.ErasureStatusComplete,
+		NotErasableExternal: []string{"langfuse_traces"}}, time.Now())
+	if !slices.Equal(got.GetNotErasableExternal(), []string{"langfuse_traces"}) {
+		t.Fatalf("not_erasable_external = %v, want [langfuse_traces]", got.GetNotErasableExternal())
+	}
+	if empty := receiptToOp(domain.ErasureReceipt{RequestID: "erase:y"}, time.Now()); len(empty.GetNotErasableExternal()) != 0 {
+		t.Fatalf("a receipt with nothing left behind reports %v", empty.GetNotErasableExternal())
 	}
 }

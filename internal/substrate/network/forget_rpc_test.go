@@ -230,3 +230,16 @@ func TestForgetRPC_QueryPreviewTruncatedAndFloored(t *testing.T) {
 		}
 	}
 }
+
+// ENG-2018 (contract 0108): the agent-plane receipt names the ADR-0137 D7 async steps
+// that could not erase from an external service, as the Go receipt does.
+func TestReceiptToPB_CarriesNotErasableExternal(t *testing.T) {
+	got := receiptToPB(domain.ErasureReceipt{RequestID: "erase:x", Status: domain.ErasureStatusComplete,
+		NotErasableExternal: []string{"langfuse_traces"}})
+	if !slices.Equal(got.GetNotErasableExternal(), []string{"langfuse_traces"}) {
+		t.Fatalf("not_erasable_external = %v, want [langfuse_traces]", got.GetNotErasableExternal())
+	}
+	if empty := receiptToPB(domain.ErasureReceipt{RequestID: "erase:y"}); len(empty.GetNotErasableExternal()) != 0 {
+		t.Fatalf("a receipt with nothing left behind reports %v", empty.GetNotErasableExternal())
+	}
+}

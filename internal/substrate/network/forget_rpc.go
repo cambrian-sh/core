@@ -132,7 +132,7 @@ func receiptToPB(r domain.ErasureReceipt) *pb.ErasureReceipt {
 		RequestId: r.RequestID, Principal: r.Principal, PrincipalKind: string(r.PrincipalKind),
 		Reason: string(r.Reason), SelectorKinds: r.SelectorKinds, Status: r.Status,
 		Targets: int32(r.Targets), PendingSteps: int32(r.PendingSteps), Replayed: r.Replayed,
-		Counts: map[string]int32{},
+		Counts: map[string]int32{}, NotErasableExternal: r.NotErasableExternal,
 	}
 	if !r.ErasedAt.IsZero() {
 		out.ErasedAt = timestamppb.New(r.ErasedAt)

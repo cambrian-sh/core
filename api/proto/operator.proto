@@ -4670,6 +4670,10 @@ message ErasureReceiptOp {
   int32 pending_steps = 11;
   bool replayed = 12;
   bool overdue = 13; // pending_async past async_deadline (ADR-0137 D7)
+  // ADR-0137 D7 async steps (sorted) that ended without erasing because the records
+  // live in an external service with no delete path; what the erase left behind
+  // (contract 0108).
+  repeated string not_erasable_external = 14;
 }
 
 message PreviewForgetMemoryOpRequest {

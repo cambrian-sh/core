@@ -1145,8 +1145,12 @@ type ErasureReceipt struct {
 	Targets       int32                  `protobuf:"varint,10,opt,name=targets,proto3" json:"targets,omitempty"`
 	PendingSteps  int32                  `protobuf:"varint,11,opt,name=pending_steps,json=pendingSteps,proto3" json:"pending_steps,omitempty"`
 	Replayed      bool                   `protobuf:"varint,12,opt,name=replayed,proto3" json:"replayed,omitempty"` // a retry of an executed request: nothing deleted now
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// ADR-0137 D7 async steps (sorted) that ended without erasing because the records
+	// live in an external service with no delete path (e.g. premium langfuse_traces);
+	// what the erase left behind. Empty until such a step has run (contract 0108).
+	NotErasableExternal []string `protobuf:"bytes,13,rep,name=not_erasable_external,json=notErasableExternal,proto3" json:"not_erasable_external,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ErasureReceipt) Reset() {
@@ -1261,6 +1265,13 @@ func (x *ErasureReceipt) GetReplayed() bool {
 		return x.Replayed
 	}
 	return false
+}
+
+func (x *ErasureReceipt) GetNotErasableExternal() []string {
+	if x != nil {
+		return x.NotErasableExternal
+	}
+	return nil
 }
 
 type PreviewForgetRequest struct {
@@ -7869,7 +7880,7 @@ const file_cambrian_proto_rawDesc = "" +
 	"\x03via\x18\x03 \x01(\tR\x03via\x12\x1f\n" +
 	"\vdocument_id\x18\x04 \x01(\tR\n" +
 	"documentId\x12\x18\n" +
-	"\asnippet\x18\x05 \x01(\tR\asnippet\"\x9b\x04\n" +
+	"\asnippet\x18\x05 \x01(\tR\asnippet\"\xcf\x04\n" +
 	"\x0eErasureReceipt\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1c\n" +
@@ -7884,7 +7895,8 @@ const file_cambrian_proto_rawDesc = "" +
 	"\atargets\x18\n" +
 	" \x01(\x05R\atargets\x12#\n" +
 	"\rpending_steps\x18\v \x01(\x05R\fpendingSteps\x12\x1a\n" +
-	"\breplayed\x18\f \x01(\bR\breplayed\x1a9\n" +
+	"\breplayed\x18\f \x01(\bR\breplayed\x122\n" +
+	"\x15not_erasable_external\x18\r \x03(\tR\x13notErasableExternal\x1a9\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"c\n" +

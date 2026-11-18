@@ -8,11 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/metadata"
+
+	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/memory/erasureworker"
 	"github.com/cambrian-sh/core/internal/memory/forget"
 	"github.com/cambrian-sh/core/internal/storage"
+	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 // externalTracesStep stands in for a plugin tail step over an external service the
@@ -81,5 +86,25 @@ func TestPg_Forget_ExternalStepRecordedNotErasable(t *testing.T) {
 	list, err := g.eraser.ListReceipts(g.ctx, domain.ErasureReceiptFilter{Principal: stored.Principal})
 	if err != nil || len(list) == 0 || !reflect.DeepEqual(list[0].NotErasableExternal, []string{"langfuse_traces"}) {
 		t.Fatalf("ListReceipts: %v %+v", err, list)
+	}
+
+	// ENG-2018 (contract 0108): both gRPC planes carry what the erase left behind.
+	agentSrv := &subnetwork.Server{Forgetter: g.svc}
+	aliceRPC := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-agent-id", "eng1968-alice"))
+	mine, err := agentSrv.ListMyErasures(aliceRPC, &pb.ListMyErasuresRequest{})
+	if err != nil || len(mine.GetReceipts()) == 0 {
+		t.Fatalf("ListMyErasures = %+v, %v", mine, err)
+	}
+	if got := mine.GetReceipts()[0]; got.GetRequestId() != rec.RequestID ||
+		!reflect.DeepEqual(got.GetNotErasableExternal(), []string{"langfuse_traces"}) {
+		t.Fatalf("agent-plane receipt = %+v, want not_erasable_external [langfuse_traces]", got)
+	}
+	opSvc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
+	opSvc.SetForgetService(g.svc)
+	opCtx := domain.WithPrincipal(domain.WithPrincipalRoles(context.Background(), []string{"operator"}),
+		domain.PrincipalRef{Kind: domain.PrincipalUser, ID: "eng2018-ops"})
+	got, err := opSvc.GetErasure(opCtx, &pb.GetErasureOpRequest{RequestId: rec.RequestID})
+	if err != nil || !reflect.DeepEqual(got.GetReceipt().GetNotErasableExternal(), []string{"langfuse_traces"}) {
+		t.Fatalf("operator GetErasure = %+v, %v; want not_erasable_external [langfuse_traces]", got, err)
 	}
 }
