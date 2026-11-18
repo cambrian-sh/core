@@ -51,6 +51,41 @@ type LinkWriter interface {
 	// ListLinkCandidates is the review inbox: unretracted proposals, highest
 	// confidence first.
 	ListLinkCandidates(ctx context.Context, namespace string, limit int) ([]LinkRecord, error)
+
+	// ListLinkPairs is the review inbox grouped by claim (contract 0109): each
+	// pair once, with only the rows the operator plane may read.
+	ListLinkPairs(ctx context.Context, namespace string, limit int) ([]LinkPairRecord, error)
+
+	// ConfirmLinkPair confirms every open candidate row of the pair the operator
+	// plane may read — one confirmation per row, each as ConfirmLink — and
+	// returns the confirmations. A pair with no readable candidate is refused as
+	// an absent one (domain.ErrLinkRefused).
+	ConfirmLinkPair(ctx context.Context, pair LinkPairKey, actor string) ([]LinkRecord, error)
+
+	// RejectLinkPair retracts every open readable candidate row of the pair and
+	// records the rejection of the claim; returns how many rows it retracted.
+	RejectLinkPair(ctx context.Context, pair LinkPairKey, actor, reason string) (int, error)
+}
+
+// LinkPairKey names one claim as the operator plane speaks it.
+type LinkPairKey struct {
+	NamespaceID string
+	Family      string
+	FromRef     string
+	ToRef       string
+	Relation    string
+}
+
+// LinkPairRecord is one claim in the review inbox.
+type LinkPairRecord struct {
+	Key LinkPairKey
+	// Confidence is the best candidate's.
+	Confidence    float64
+	Candidates    []LinkRecord
+	Confirmations []LinkRecord
+	// AlreadyConfirmed: a readable confirmation holds the claim — "already
+	// confirmed via another source; extend the confirmation?".
+	AlreadyConfirmed bool
 }
 
 // LinkRecord is one assertion as the operator plane speaks it — the read shape
@@ -75,6 +110,9 @@ type LinkRecord struct {
 	ValidTo     time.Time
 	RetractedAt time.Time
 	SourceRef   string
+	// SupportingEvidenceIDs are the other evidence rows the assertion was derived
+	// from (ENG-2032).
+	SupportingEvidenceIDs []string
 }
 
 // SetLinkWriter wires the identity-plane review path. nil ⇒ Unimplemented.
@@ -103,14 +141,39 @@ func linkToOp(l LinkRecord) *pb.LinkOp {
 		FromRef: l.FromRef, ToRef: l.ToRef, Relation: l.Relation,
 		State: l.State, Mechanism: l.Mechanism, Producer: l.Producer,
 		Confidence: l.Confidence, EvidenceId: l.EvidenceID,
-		AssertedBy:        l.AssertedBy,
-		AssertedAtUnixMs:  linkOpTime(l.AssertedAt),
-		RecordedAtUnixMs:  linkOpTime(l.RecordedAt),
-		ValidFromUnixMs:   linkOpTime(l.ValidFrom),
-		ValidToUnixMs:     linkOpTime(l.ValidTo),
-		RetractedAtUnixMs: linkOpTime(l.RetractedAt),
-		SourceRef:         l.SourceRef,
+		AssertedBy:            l.AssertedBy,
+		AssertedAtUnixMs:      linkOpTime(l.AssertedAt),
+		RecordedAtUnixMs:      linkOpTime(l.RecordedAt),
+		ValidFromUnixMs:       linkOpTime(l.ValidFrom),
+		ValidToUnixMs:         linkOpTime(l.ValidTo),
+		RetractedAtUnixMs:     linkOpTime(l.RetractedAt),
+		SourceRef:             l.SourceRef,
+		SupportingEvidenceIds: l.SupportingEvidenceIDs,
 	}
+}
+
+func linksToOps(in []LinkRecord) []*pb.LinkOp {
+	out := make([]*pb.LinkOp, 0, len(in))
+	for _, l := range in {
+		out = append(out, linkToOp(l))
+	}
+	return out
+}
+
+// pairKeyFrom reads a request's pair, refusing one that names no claim.
+func pairKeyFrom(k *pb.LinkPairKeyOp) (LinkPairKey, error) {
+	key := LinkPairKey{
+		NamespaceID: k.GetNamespaceId(), Family: k.GetFamily(),
+		FromRef: k.GetFromRef(), ToRef: k.GetToRef(), Relation: k.GetRelation(),
+	}
+	if key.Family == "" || key.FromRef == "" || key.ToRef == "" || key.Relation == "" {
+		return LinkPairKey{}, status.Error(codes.InvalidArgument, "pair.family, pair.from_ref, pair.to_ref and pair.relation are required")
+	}
+	return key, nil
+}
+
+func pairTarget(k LinkPairKey) string {
+	return k.Family + ":" + k.FromRef + " " + k.Relation + " " + k.ToRef
 }
 
 // ConfirmLink promotes one candidate. Mutating: command_id + reason, audited,
@@ -212,4 +275,86 @@ func (s *Service) ListLinkCandidates(ctx context.Context, req *pb.ListLinkCandid
 		out.Candidates = append(out.Candidates, linkToOp(l))
 	}
 	return out, nil
+}
+
+// ListLinkPairs reads the review inbox grouped by claim (contract 0109). Read RPC.
+func (s *Service) ListLinkPairs(ctx context.Context, req *pb.ListLinkPairsOpRequest) (*pb.ListLinkPairsOpResponse, error) {
+	if s.linkWriter == nil {
+		return nil, status.Error(codes.Unimplemented, "this kernel has no identity plane to review")
+	}
+	pairs, err := s.linkWriter.ListLinkPairs(ctx, req.GetNamespaceId(), int(req.GetLimit()))
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.ListLinkPairsOpResponse{Pairs: make([]*pb.LinkPairOp, 0, len(pairs))}
+	for _, p := range pairs {
+		out.Pairs = append(out.Pairs, &pb.LinkPairOp{
+			Pair: &pb.LinkPairKeyOp{
+				NamespaceId: p.Key.NamespaceID, Family: p.Key.Family,
+				FromRef: p.Key.FromRef, ToRef: p.Key.ToRef, Relation: p.Key.Relation,
+			},
+			Confidence:       p.Confidence,
+			Candidates:       linksToOps(p.Candidates),
+			Confirmations:    linksToOps(p.Confirmations),
+			AlreadyConfirmed: p.AlreadyConfirmed,
+		})
+	}
+	return out, nil
+}
+
+// ConfirmLinkPair confirms every readable open candidate row of one claim.
+// Mutating: command_id + reason, audited, idempotent on command_id.
+func (s *Service) ConfirmLinkPair(ctx context.Context, req *pb.ConfirmLinkPairOpRequest) (*pb.ConfirmLinkPairOpResponse, error) {
+	if s.linkWriter == nil {
+		return nil, status.Error(codes.Unimplemented, "this kernel has no identity plane to review")
+	}
+	key, err := pairKeyFrom(req.GetPair())
+	if err != nil {
+		return nil, err
+	}
+	actor, _, _ := PrincipalFromContext(ctx)
+	var confirmed []LinkRecord
+	ack, err := s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
+		"confirm_link_pair", "link_pair", pairTarget(key),
+		"link pair "+pairTarget(key)+" confirmed",
+		func() error {
+			var applyErr error
+			confirmed, applyErr = s.linkWriter.ConfirmLinkPair(ctx, key, actor)
+			return applyErr
+		})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ConfirmLinkPairOpResponse{
+		CommandId: ack.GetCommandId(), Deduped: ack.GetDeduped(), Confirmations: linksToOps(confirmed),
+	}, nil
+}
+
+// RejectLinkPair rejects one claim. Mutating: command_id + reason, audited. The
+// reason is the only record of the judgement (the rows never gain a field), as
+// for RetractLink.
+func (s *Service) RejectLinkPair(ctx context.Context, req *pb.RejectLinkPairOpRequest) (*pb.RejectLinkPairOpResponse, error) {
+	if s.linkWriter == nil {
+		return nil, status.Error(codes.Unimplemented, "this kernel has no identity plane to review")
+	}
+	key, err := pairKeyFrom(req.GetPair())
+	if err != nil {
+		return nil, err
+	}
+	actor, _, _ := PrincipalFromContext(ctx)
+	var count int
+	ack, err := s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
+		"reject_link_pair", "link_pair", pairTarget(key),
+		"link pair "+pairTarget(key)+" rejected",
+		func() error {
+			var applyErr error
+			count, applyErr = s.linkWriter.RejectLinkPair(ctx, key, actor, req.GetReason())
+			return applyErr
+		})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.RejectLinkPairOpResponse{
+		CommandId: ack.GetCommandId(), Deduped: ack.GetDeduped(), Retracted: int32(count),
+	}, nil
 }

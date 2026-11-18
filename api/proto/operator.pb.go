@@ -19664,9 +19664,13 @@ type LinkOp struct {
 	// source_ref is the producing source's native reference, UNQUALIFIED — no
 	// "@r<rev>" suffix, so a mapping-revision bump re-derives the same link as a
 	// no-op instead of duplicating the graph.
-	SourceRef     string `protobuf:"bytes,18,opt,name=source_ref,json=sourceRef,proto3" json:"source_ref,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SourceRef string `protobuf:"bytes,18,opt,name=source_ref,json=sourceRef,proto3" json:"source_ref,omitempty"`
+	// supporting_evidence_ids are the OTHER evidence rows the assertion was derived
+	// from, besides evidence_id (contract 0109, ENG-2032). Erasing any of them
+	// removes the link (ADR-0137). Empty for a link derived from one row.
+	SupportingEvidenceIds []string `protobuf:"bytes,19,rep,name=supporting_evidence_ids,json=supportingEvidenceIds,proto3" json:"supporting_evidence_ids,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *LinkOp) Reset() {
@@ -19823,6 +19827,13 @@ func (x *LinkOp) GetSourceRef() string {
 		return x.SourceRef
 	}
 	return ""
+}
+
+func (x *LinkOp) GetSupportingEvidenceIds() []string {
+	if x != nil {
+		return x.SupportingEvidenceIds
+	}
+	return nil
 }
 
 type ConfirmLinkOpRequest struct {
@@ -20259,6 +20270,509 @@ func (x *ListLinkCandidatesOpResponse) GetCandidates() []*LinkOp {
 	return nil
 }
 
+// LinkPairKeyOp names one claim (contract 0109). Identity-family endpoints are
+// compared after the store's canonical ordering, so either order names the pair.
+type LinkPairKeyOp struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// namespace_id defaults to "default" when empty.
+	NamespaceId   string `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
+	Family        string `protobuf:"bytes,2,opt,name=family,proto3" json:"family,omitempty"`
+	FromRef       string `protobuf:"bytes,3,opt,name=from_ref,json=fromRef,proto3" json:"from_ref,omitempty"`
+	ToRef         string `protobuf:"bytes,4,opt,name=to_ref,json=toRef,proto3" json:"to_ref,omitempty"`
+	Relation      string `protobuf:"bytes,5,opt,name=relation,proto3" json:"relation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LinkPairKeyOp) Reset() {
+	*x = LinkPairKeyOp{}
+	mi := &file_operator_proto_msgTypes[251]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkPairKeyOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkPairKeyOp) ProtoMessage() {}
+
+func (x *LinkPairKeyOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[251]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkPairKeyOp.ProtoReflect.Descriptor instead.
+func (*LinkPairKeyOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{251}
+}
+
+func (x *LinkPairKeyOp) GetNamespaceId() string {
+	if x != nil {
+		return x.NamespaceId
+	}
+	return ""
+}
+
+func (x *LinkPairKeyOp) GetFamily() string {
+	if x != nil {
+		return x.Family
+	}
+	return ""
+}
+
+func (x *LinkPairKeyOp) GetFromRef() string {
+	if x != nil {
+		return x.FromRef
+	}
+	return ""
+}
+
+func (x *LinkPairKeyOp) GetToRef() string {
+	if x != nil {
+		return x.ToRef
+	}
+	return ""
+}
+
+func (x *LinkPairKeyOp) GetRelation() string {
+	if x != nil {
+		return x.Relation
+	}
+	return ""
+}
+
+// LinkPairOp is one claim in the review inbox.
+type LinkPairOp struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Pair  *LinkPairKeyOp         `protobuf:"bytes,1,opt,name=pair,proto3" json:"pair,omitempty"`
+	// confidence is the best open candidate's; the inbox is ordered by it.
+	Confidence float64 `protobuf:"fixed64,2,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	// candidates are the claim's open candidate rows the operator plane may read —
+	// one per producer lane and supporting source — in inbox order.
+	Candidates []*LinkOp `protobuf:"bytes,3,rep,name=candidates,proto3" json:"candidates,omitempty"`
+	// confirmations are the claim's live confirmed rows the operator plane may read.
+	Confirmations []*LinkOp `protobuf:"bytes,4,rep,name=confirmations,proto3" json:"confirmations,omitempty"`
+	// already_confirmed: a readable confirmation holds the claim and these
+	// candidates came from other sources — "already confirmed via another source;
+	// extend the confirmation?".
+	AlreadyConfirmed bool `protobuf:"varint,5,opt,name=already_confirmed,json=alreadyConfirmed,proto3" json:"already_confirmed,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *LinkPairOp) Reset() {
+	*x = LinkPairOp{}
+	mi := &file_operator_proto_msgTypes[252]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkPairOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkPairOp) ProtoMessage() {}
+
+func (x *LinkPairOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[252]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkPairOp.ProtoReflect.Descriptor instead.
+func (*LinkPairOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{252}
+}
+
+func (x *LinkPairOp) GetPair() *LinkPairKeyOp {
+	if x != nil {
+		return x.Pair
+	}
+	return nil
+}
+
+func (x *LinkPairOp) GetConfidence() float64 {
+	if x != nil {
+		return x.Confidence
+	}
+	return 0
+}
+
+func (x *LinkPairOp) GetCandidates() []*LinkOp {
+	if x != nil {
+		return x.Candidates
+	}
+	return nil
+}
+
+func (x *LinkPairOp) GetConfirmations() []*LinkOp {
+	if x != nil {
+		return x.Confirmations
+	}
+	return nil
+}
+
+func (x *LinkPairOp) GetAlreadyConfirmed() bool {
+	if x != nil {
+		return x.AlreadyConfirmed
+	}
+	return false
+}
+
+type ListLinkPairsOpRequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	NamespaceId string                 `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
+	// limit 0 = the store's default page (of pairs).
+	Limit         int32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLinkPairsOpRequest) Reset() {
+	*x = ListLinkPairsOpRequest{}
+	mi := &file_operator_proto_msgTypes[253]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLinkPairsOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLinkPairsOpRequest) ProtoMessage() {}
+
+func (x *ListLinkPairsOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[253]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLinkPairsOpRequest.ProtoReflect.Descriptor instead.
+func (*ListLinkPairsOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{253}
+}
+
+func (x *ListLinkPairsOpRequest) GetNamespaceId() string {
+	if x != nil {
+		return x.NamespaceId
+	}
+	return ""
+}
+
+func (x *ListLinkPairsOpRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListLinkPairsOpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pairs         []*LinkPairOp          `protobuf:"bytes,1,rep,name=pairs,proto3" json:"pairs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLinkPairsOpResponse) Reset() {
+	*x = ListLinkPairsOpResponse{}
+	mi := &file_operator_proto_msgTypes[254]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLinkPairsOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLinkPairsOpResponse) ProtoMessage() {}
+
+func (x *ListLinkPairsOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[254]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLinkPairsOpResponse.ProtoReflect.Descriptor instead.
+func (*ListLinkPairsOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{254}
+}
+
+func (x *ListLinkPairsOpResponse) GetPairs() []*LinkPairOp {
+	if x != nil {
+		return x.Pairs
+	}
+	return nil
+}
+
+type ConfirmLinkPairOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Pair          *LinkPairKeyOp         `protobuf:"bytes,3,opt,name=pair,proto3" json:"pair,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfirmLinkPairOpRequest) Reset() {
+	*x = ConfirmLinkPairOpRequest{}
+	mi := &file_operator_proto_msgTypes[255]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfirmLinkPairOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfirmLinkPairOpRequest) ProtoMessage() {}
+
+func (x *ConfirmLinkPairOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[255]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfirmLinkPairOpRequest.ProtoReflect.Descriptor instead.
+func (*ConfirmLinkPairOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{255}
+}
+
+func (x *ConfirmLinkPairOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *ConfirmLinkPairOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *ConfirmLinkPairOpRequest) GetPair() *LinkPairKeyOp {
+	if x != nil {
+		return x.Pair
+	}
+	return nil
+}
+
+type ConfirmLinkPairOpResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Deduped   bool                   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
+	// confirmations are the rows this act appended (or the standing ones it
+	// replayed), one per confirmed candidate. Empty on a deduplicated command.
+	Confirmations []*LinkOp `protobuf:"bytes,3,rep,name=confirmations,proto3" json:"confirmations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfirmLinkPairOpResponse) Reset() {
+	*x = ConfirmLinkPairOpResponse{}
+	mi := &file_operator_proto_msgTypes[256]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfirmLinkPairOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfirmLinkPairOpResponse) ProtoMessage() {}
+
+func (x *ConfirmLinkPairOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[256]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfirmLinkPairOpResponse.ProtoReflect.Descriptor instead.
+func (*ConfirmLinkPairOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{256}
+}
+
+func (x *ConfirmLinkPairOpResponse) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *ConfirmLinkPairOpResponse) GetDeduped() bool {
+	if x != nil {
+		return x.Deduped
+	}
+	return false
+}
+
+func (x *ConfirmLinkPairOpResponse) GetConfirmations() []*LinkOp {
+	if x != nil {
+		return x.Confirmations
+	}
+	return nil
+}
+
+type RejectLinkPairOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Pair          *LinkPairKeyOp         `protobuf:"bytes,3,opt,name=pair,proto3" json:"pair,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RejectLinkPairOpRequest) Reset() {
+	*x = RejectLinkPairOpRequest{}
+	mi := &file_operator_proto_msgTypes[257]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RejectLinkPairOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RejectLinkPairOpRequest) ProtoMessage() {}
+
+func (x *RejectLinkPairOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[257]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RejectLinkPairOpRequest.ProtoReflect.Descriptor instead.
+func (*RejectLinkPairOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{257}
+}
+
+func (x *RejectLinkPairOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *RejectLinkPairOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *RejectLinkPairOpRequest) GetPair() *LinkPairKeyOp {
+	if x != nil {
+		return x.Pair
+	}
+	return nil
+}
+
+type RejectLinkPairOpResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Deduped   bool                   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
+	// retracted is how many candidate rows the rejection stamped.
+	Retracted     int32 `protobuf:"varint,3,opt,name=retracted,proto3" json:"retracted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RejectLinkPairOpResponse) Reset() {
+	*x = RejectLinkPairOpResponse{}
+	mi := &file_operator_proto_msgTypes[258]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RejectLinkPairOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RejectLinkPairOpResponse) ProtoMessage() {}
+
+func (x *RejectLinkPairOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[258]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RejectLinkPairOpResponse.ProtoReflect.Descriptor instead.
+func (*RejectLinkPairOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{258}
+}
+
+func (x *RejectLinkPairOpResponse) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *RejectLinkPairOpResponse) GetDeduped() bool {
+	if x != nil {
+		return x.Deduped
+	}
+	return false
+}
+
+func (x *RejectLinkPairOpResponse) GetRetracted() int32 {
+	if x != nil {
+		return x.Retracted
+	}
+	return 0
+}
+
 type ListMemoryNotesOpRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// scope filters by "personal" | "org"; empty = both.
@@ -20273,7 +20787,7 @@ type ListMemoryNotesOpRequest struct {
 
 func (x *ListMemoryNotesOpRequest) Reset() {
 	*x = ListMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[251]
+	mi := &file_operator_proto_msgTypes[259]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20285,7 +20799,7 @@ func (x *ListMemoryNotesOpRequest) String() string {
 func (*ListMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *ListMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[251]
+	mi := &file_operator_proto_msgTypes[259]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20298,7 +20812,7 @@ func (x *ListMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*ListMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{251}
+	return file_operator_proto_rawDescGZIP(), []int{259}
 }
 
 func (x *ListMemoryNotesOpRequest) GetScope() string {
@@ -20350,7 +20864,7 @@ type MemoryNotesSummaryOp struct {
 
 func (x *MemoryNotesSummaryOp) Reset() {
 	*x = MemoryNotesSummaryOp{}
-	mi := &file_operator_proto_msgTypes[252]
+	mi := &file_operator_proto_msgTypes[260]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20362,7 +20876,7 @@ func (x *MemoryNotesSummaryOp) String() string {
 func (*MemoryNotesSummaryOp) ProtoMessage() {}
 
 func (x *MemoryNotesSummaryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[252]
+	mi := &file_operator_proto_msgTypes[260]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20375,7 +20889,7 @@ func (x *MemoryNotesSummaryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryNotesSummaryOp.ProtoReflect.Descriptor instead.
 func (*MemoryNotesSummaryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{252}
+	return file_operator_proto_rawDescGZIP(), []int{260}
 }
 
 func (x *MemoryNotesSummaryOp) GetScope() string {
@@ -20445,7 +20959,7 @@ type ListMemoryNotesOpResponse struct {
 
 func (x *ListMemoryNotesOpResponse) Reset() {
 	*x = ListMemoryNotesOpResponse{}
-	mi := &file_operator_proto_msgTypes[253]
+	mi := &file_operator_proto_msgTypes[261]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20457,7 +20971,7 @@ func (x *ListMemoryNotesOpResponse) String() string {
 func (*ListMemoryNotesOpResponse) ProtoMessage() {}
 
 func (x *ListMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[253]
+	mi := &file_operator_proto_msgTypes[261]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20470,7 +20984,7 @@ func (x *ListMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMemoryNotesOpResponse.ProtoReflect.Descriptor instead.
 func (*ListMemoryNotesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{253}
+	return file_operator_proto_rawDescGZIP(), []int{261}
 }
 
 func (x *ListMemoryNotesOpResponse) GetNotes() []*MemoryNotesSummaryOp {
@@ -20504,7 +21018,7 @@ type GetMemoryNotesOpRequest struct {
 
 func (x *GetMemoryNotesOpRequest) Reset() {
 	*x = GetMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[254]
+	mi := &file_operator_proto_msgTypes[262]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20516,7 +21030,7 @@ func (x *GetMemoryNotesOpRequest) String() string {
 func (*GetMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *GetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[254]
+	mi := &file_operator_proto_msgTypes[262]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20529,7 +21043,7 @@ func (x *GetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*GetMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{254}
+	return file_operator_proto_rawDescGZIP(), []int{262}
 }
 
 func (x *GetMemoryNotesOpRequest) GetScope() string {
@@ -20567,7 +21081,7 @@ type MemoryNotesOp struct {
 
 func (x *MemoryNotesOp) Reset() {
 	*x = MemoryNotesOp{}
-	mi := &file_operator_proto_msgTypes[255]
+	mi := &file_operator_proto_msgTypes[263]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20579,7 +21093,7 @@ func (x *MemoryNotesOp) String() string {
 func (*MemoryNotesOp) ProtoMessage() {}
 
 func (x *MemoryNotesOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[255]
+	mi := &file_operator_proto_msgTypes[263]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20592,7 +21106,7 @@ func (x *MemoryNotesOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryNotesOp.ProtoReflect.Descriptor instead.
 func (*MemoryNotesOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{255}
+	return file_operator_proto_rawDescGZIP(), []int{263}
 }
 
 func (x *MemoryNotesOp) GetScope() string {
@@ -20678,7 +21192,7 @@ type SetMemoryNotesOpRequest struct {
 
 func (x *SetMemoryNotesOpRequest) Reset() {
 	*x = SetMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[256]
+	mi := &file_operator_proto_msgTypes[264]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20690,7 +21204,7 @@ func (x *SetMemoryNotesOpRequest) String() string {
 func (*SetMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *SetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[256]
+	mi := &file_operator_proto_msgTypes[264]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20703,7 +21217,7 @@ func (x *SetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*SetMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{256}
+	return file_operator_proto_rawDescGZIP(), []int{264}
 }
 
 func (x *SetMemoryNotesOpRequest) GetCommandId() string {
@@ -20774,7 +21288,7 @@ type SetMemoryNotesOpResponse struct {
 
 func (x *SetMemoryNotesOpResponse) Reset() {
 	*x = SetMemoryNotesOpResponse{}
-	mi := &file_operator_proto_msgTypes[257]
+	mi := &file_operator_proto_msgTypes[265]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20786,7 +21300,7 @@ func (x *SetMemoryNotesOpResponse) String() string {
 func (*SetMemoryNotesOpResponse) ProtoMessage() {}
 
 func (x *SetMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[257]
+	mi := &file_operator_proto_msgTypes[265]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20799,7 +21313,7 @@ func (x *SetMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryNotesOpResponse.ProtoReflect.Descriptor instead.
 func (*SetMemoryNotesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{257}
+	return file_operator_proto_rawDescGZIP(), []int{265}
 }
 
 func (x *SetMemoryNotesOpResponse) GetCommandId() string {
@@ -20870,7 +21384,7 @@ type DeleteMemoryNotesOpRequest struct {
 
 func (x *DeleteMemoryNotesOpRequest) Reset() {
 	*x = DeleteMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[258]
+	mi := &file_operator_proto_msgTypes[266]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20882,7 +21396,7 @@ func (x *DeleteMemoryNotesOpRequest) String() string {
 func (*DeleteMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *DeleteMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[258]
+	mi := &file_operator_proto_msgTypes[266]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20895,7 +21409,7 @@ func (x *DeleteMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*DeleteMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{258}
+	return file_operator_proto_rawDescGZIP(), []int{266}
 }
 
 func (x *DeleteMemoryNotesOpRequest) GetCommandId() string {
@@ -20947,7 +21461,7 @@ type SetMemoryNotesBudgetOpRequest struct {
 
 func (x *SetMemoryNotesBudgetOpRequest) Reset() {
 	*x = SetMemoryNotesBudgetOpRequest{}
-	mi := &file_operator_proto_msgTypes[259]
+	mi := &file_operator_proto_msgTypes[267]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20959,7 +21473,7 @@ func (x *SetMemoryNotesBudgetOpRequest) String() string {
 func (*SetMemoryNotesBudgetOpRequest) ProtoMessage() {}
 
 func (x *SetMemoryNotesBudgetOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[259]
+	mi := &file_operator_proto_msgTypes[267]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20972,7 +21486,7 @@ func (x *SetMemoryNotesBudgetOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryNotesBudgetOpRequest.ProtoReflect.Descriptor instead.
 func (*SetMemoryNotesBudgetOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{259}
+	return file_operator_proto_rawDescGZIP(), []int{267}
 }
 
 func (x *SetMemoryNotesBudgetOpRequest) GetCommandId() string {
@@ -21031,7 +21545,7 @@ type ListSkillProposalsOpRequest struct {
 
 func (x *ListSkillProposalsOpRequest) Reset() {
 	*x = ListSkillProposalsOpRequest{}
-	mi := &file_operator_proto_msgTypes[260]
+	mi := &file_operator_proto_msgTypes[268]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21043,7 +21557,7 @@ func (x *ListSkillProposalsOpRequest) String() string {
 func (*ListSkillProposalsOpRequest) ProtoMessage() {}
 
 func (x *ListSkillProposalsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[260]
+	mi := &file_operator_proto_msgTypes[268]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21056,7 +21570,7 @@ func (x *ListSkillProposalsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillProposalsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSkillProposalsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{260}
+	return file_operator_proto_rawDescGZIP(), []int{268}
 }
 
 func (x *ListSkillProposalsOpRequest) GetState() string {
@@ -21123,7 +21637,7 @@ type SkillProposalOp struct {
 
 func (x *SkillProposalOp) Reset() {
 	*x = SkillProposalOp{}
-	mi := &file_operator_proto_msgTypes[261]
+	mi := &file_operator_proto_msgTypes[269]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21135,7 +21649,7 @@ func (x *SkillProposalOp) String() string {
 func (*SkillProposalOp) ProtoMessage() {}
 
 func (x *SkillProposalOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[261]
+	mi := &file_operator_proto_msgTypes[269]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21148,7 +21662,7 @@ func (x *SkillProposalOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillProposalOp.ProtoReflect.Descriptor instead.
 func (*SkillProposalOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{261}
+	return file_operator_proto_rawDescGZIP(), []int{269}
 }
 
 func (x *SkillProposalOp) GetId() string {
@@ -21281,7 +21795,7 @@ type ListSkillProposalsOpResponse struct {
 
 func (x *ListSkillProposalsOpResponse) Reset() {
 	*x = ListSkillProposalsOpResponse{}
-	mi := &file_operator_proto_msgTypes[262]
+	mi := &file_operator_proto_msgTypes[270]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21293,7 +21807,7 @@ func (x *ListSkillProposalsOpResponse) String() string {
 func (*ListSkillProposalsOpResponse) ProtoMessage() {}
 
 func (x *ListSkillProposalsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[262]
+	mi := &file_operator_proto_msgTypes[270]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21306,7 +21820,7 @@ func (x *ListSkillProposalsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillProposalsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSkillProposalsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{262}
+	return file_operator_proto_rawDescGZIP(), []int{270}
 }
 
 func (x *ListSkillProposalsOpResponse) GetProposals() []*SkillProposalOp {
@@ -21347,7 +21861,7 @@ type DecideSkillProposalOpRequest struct {
 
 func (x *DecideSkillProposalOpRequest) Reset() {
 	*x = DecideSkillProposalOpRequest{}
-	mi := &file_operator_proto_msgTypes[263]
+	mi := &file_operator_proto_msgTypes[271]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21359,7 +21873,7 @@ func (x *DecideSkillProposalOpRequest) String() string {
 func (*DecideSkillProposalOpRequest) ProtoMessage() {}
 
 func (x *DecideSkillProposalOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[263]
+	mi := &file_operator_proto_msgTypes[271]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21372,7 +21886,7 @@ func (x *DecideSkillProposalOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideSkillProposalOpRequest.ProtoReflect.Descriptor instead.
 func (*DecideSkillProposalOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{263}
+	return file_operator_proto_rawDescGZIP(), []int{271}
 }
 
 func (x *DecideSkillProposalOpRequest) GetCommandId() string {
@@ -21423,7 +21937,7 @@ type DecideSkillProposalOpResponse struct {
 
 func (x *DecideSkillProposalOpResponse) Reset() {
 	*x = DecideSkillProposalOpResponse{}
-	mi := &file_operator_proto_msgTypes[264]
+	mi := &file_operator_proto_msgTypes[272]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21435,7 +21949,7 @@ func (x *DecideSkillProposalOpResponse) String() string {
 func (*DecideSkillProposalOpResponse) ProtoMessage() {}
 
 func (x *DecideSkillProposalOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[264]
+	mi := &file_operator_proto_msgTypes[272]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21448,7 +21962,7 @@ func (x *DecideSkillProposalOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideSkillProposalOpResponse.ProtoReflect.Descriptor instead.
 func (*DecideSkillProposalOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{264}
+	return file_operator_proto_rawDescGZIP(), []int{272}
 }
 
 func (x *DecideSkillProposalOpResponse) GetCommandId() string {
@@ -21491,7 +22005,7 @@ type SetSkillLockOpRequest struct {
 
 func (x *SetSkillLockOpRequest) Reset() {
 	*x = SetSkillLockOpRequest{}
-	mi := &file_operator_proto_msgTypes[265]
+	mi := &file_operator_proto_msgTypes[273]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21503,7 +22017,7 @@ func (x *SetSkillLockOpRequest) String() string {
 func (*SetSkillLockOpRequest) ProtoMessage() {}
 
 func (x *SetSkillLockOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[265]
+	mi := &file_operator_proto_msgTypes[273]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21516,7 +22030,7 @@ func (x *SetSkillLockOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSkillLockOpRequest.ProtoReflect.Descriptor instead.
 func (*SetSkillLockOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{265}
+	return file_operator_proto_rawDescGZIP(), []int{273}
 }
 
 func (x *SetSkillLockOpRequest) GetCommandId() string {
@@ -21559,7 +22073,7 @@ type ListSkillLedgerOpRequest struct {
 
 func (x *ListSkillLedgerOpRequest) Reset() {
 	*x = ListSkillLedgerOpRequest{}
-	mi := &file_operator_proto_msgTypes[266]
+	mi := &file_operator_proto_msgTypes[274]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21571,7 +22085,7 @@ func (x *ListSkillLedgerOpRequest) String() string {
 func (*ListSkillLedgerOpRequest) ProtoMessage() {}
 
 func (x *ListSkillLedgerOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[266]
+	mi := &file_operator_proto_msgTypes[274]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21584,7 +22098,7 @@ func (x *ListSkillLedgerOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillLedgerOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSkillLedgerOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{266}
+	return file_operator_proto_rawDescGZIP(), []int{274}
 }
 
 func (x *ListSkillLedgerOpRequest) GetSkillName() string {
@@ -21638,7 +22152,7 @@ type SkillLedgerEntryOp struct {
 
 func (x *SkillLedgerEntryOp) Reset() {
 	*x = SkillLedgerEntryOp{}
-	mi := &file_operator_proto_msgTypes[267]
+	mi := &file_operator_proto_msgTypes[275]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21650,7 +22164,7 @@ func (x *SkillLedgerEntryOp) String() string {
 func (*SkillLedgerEntryOp) ProtoMessage() {}
 
 func (x *SkillLedgerEntryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[267]
+	mi := &file_operator_proto_msgTypes[275]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21663,7 +22177,7 @@ func (x *SkillLedgerEntryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillLedgerEntryOp.ProtoReflect.Descriptor instead.
 func (*SkillLedgerEntryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{267}
+	return file_operator_proto_rawDescGZIP(), []int{275}
 }
 
 func (x *SkillLedgerEntryOp) GetId() string {
@@ -21768,7 +22282,7 @@ type ListSkillLedgerOpResponse struct {
 
 func (x *ListSkillLedgerOpResponse) Reset() {
 	*x = ListSkillLedgerOpResponse{}
-	mi := &file_operator_proto_msgTypes[268]
+	mi := &file_operator_proto_msgTypes[276]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21780,7 +22294,7 @@ func (x *ListSkillLedgerOpResponse) String() string {
 func (*ListSkillLedgerOpResponse) ProtoMessage() {}
 
 func (x *ListSkillLedgerOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[268]
+	mi := &file_operator_proto_msgTypes[276]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21793,7 +22307,7 @@ func (x *ListSkillLedgerOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillLedgerOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSkillLedgerOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{268}
+	return file_operator_proto_rawDescGZIP(), []int{276}
 }
 
 func (x *ListSkillLedgerOpResponse) GetEntries() []*SkillLedgerEntryOp {
@@ -21832,7 +22346,7 @@ type RollbackSkillOpRequest struct {
 
 func (x *RollbackSkillOpRequest) Reset() {
 	*x = RollbackSkillOpRequest{}
-	mi := &file_operator_proto_msgTypes[269]
+	mi := &file_operator_proto_msgTypes[277]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21844,7 +22358,7 @@ func (x *RollbackSkillOpRequest) String() string {
 func (*RollbackSkillOpRequest) ProtoMessage() {}
 
 func (x *RollbackSkillOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[269]
+	mi := &file_operator_proto_msgTypes[277]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21857,7 +22371,7 @@ func (x *RollbackSkillOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackSkillOpRequest.ProtoReflect.Descriptor instead.
 func (*RollbackSkillOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{269}
+	return file_operator_proto_rawDescGZIP(), []int{277}
 }
 
 func (x *RollbackSkillOpRequest) GetCommandId() string {
@@ -21901,7 +22415,7 @@ type RollbackSkillOpResponse struct {
 
 func (x *RollbackSkillOpResponse) Reset() {
 	*x = RollbackSkillOpResponse{}
-	mi := &file_operator_proto_msgTypes[270]
+	mi := &file_operator_proto_msgTypes[278]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21913,7 +22427,7 @@ func (x *RollbackSkillOpResponse) String() string {
 func (*RollbackSkillOpResponse) ProtoMessage() {}
 
 func (x *RollbackSkillOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[270]
+	mi := &file_operator_proto_msgTypes[278]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21926,7 +22440,7 @@ func (x *RollbackSkillOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackSkillOpResponse.ProtoReflect.Descriptor instead.
 func (*RollbackSkillOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{270}
+	return file_operator_proto_rawDescGZIP(), []int{278}
 }
 
 func (x *RollbackSkillOpResponse) GetCommandId() string {
@@ -21973,7 +22487,7 @@ type ListSkillGrantsOpRequest struct {
 
 func (x *ListSkillGrantsOpRequest) Reset() {
 	*x = ListSkillGrantsOpRequest{}
-	mi := &file_operator_proto_msgTypes[271]
+	mi := &file_operator_proto_msgTypes[279]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21985,7 +22499,7 @@ func (x *ListSkillGrantsOpRequest) String() string {
 func (*ListSkillGrantsOpRequest) ProtoMessage() {}
 
 func (x *ListSkillGrantsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[271]
+	mi := &file_operator_proto_msgTypes[279]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21998,7 +22512,7 @@ func (x *ListSkillGrantsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillGrantsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSkillGrantsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{271}
+	return file_operator_proto_rawDescGZIP(), []int{279}
 }
 
 func (x *ListSkillGrantsOpRequest) GetAgentId() string {
@@ -22051,7 +22565,7 @@ type SkillGrantOp struct {
 
 func (x *SkillGrantOp) Reset() {
 	*x = SkillGrantOp{}
-	mi := &file_operator_proto_msgTypes[272]
+	mi := &file_operator_proto_msgTypes[280]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22063,7 +22577,7 @@ func (x *SkillGrantOp) String() string {
 func (*SkillGrantOp) ProtoMessage() {}
 
 func (x *SkillGrantOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[272]
+	mi := &file_operator_proto_msgTypes[280]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22076,7 +22590,7 @@ func (x *SkillGrantOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillGrantOp.ProtoReflect.Descriptor instead.
 func (*SkillGrantOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{272}
+	return file_operator_proto_rawDescGZIP(), []int{280}
 }
 
 func (x *SkillGrantOp) GetId() string {
@@ -22168,7 +22682,7 @@ type SkillAccessRequestOp struct {
 
 func (x *SkillAccessRequestOp) Reset() {
 	*x = SkillAccessRequestOp{}
-	mi := &file_operator_proto_msgTypes[273]
+	mi := &file_operator_proto_msgTypes[281]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22180,7 +22694,7 @@ func (x *SkillAccessRequestOp) String() string {
 func (*SkillAccessRequestOp) ProtoMessage() {}
 
 func (x *SkillAccessRequestOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[273]
+	mi := &file_operator_proto_msgTypes[281]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22193,7 +22707,7 @@ func (x *SkillAccessRequestOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillAccessRequestOp.ProtoReflect.Descriptor instead.
 func (*SkillAccessRequestOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{273}
+	return file_operator_proto_rawDescGZIP(), []int{281}
 }
 
 func (x *SkillAccessRequestOp) GetId() string {
@@ -22269,7 +22783,7 @@ type ListSkillGrantsOpResponse struct {
 
 func (x *ListSkillGrantsOpResponse) Reset() {
 	*x = ListSkillGrantsOpResponse{}
-	mi := &file_operator_proto_msgTypes[274]
+	mi := &file_operator_proto_msgTypes[282]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22281,7 +22795,7 @@ func (x *ListSkillGrantsOpResponse) String() string {
 func (*ListSkillGrantsOpResponse) ProtoMessage() {}
 
 func (x *ListSkillGrantsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[274]
+	mi := &file_operator_proto_msgTypes[282]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22294,7 +22808,7 @@ func (x *ListSkillGrantsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillGrantsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSkillGrantsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{274}
+	return file_operator_proto_rawDescGZIP(), []int{282}
 }
 
 func (x *ListSkillGrantsOpResponse) GetGrants() []*SkillGrantOp {
@@ -22324,7 +22838,7 @@ type GrantSkillOpRequest struct {
 
 func (x *GrantSkillOpRequest) Reset() {
 	*x = GrantSkillOpRequest{}
-	mi := &file_operator_proto_msgTypes[275]
+	mi := &file_operator_proto_msgTypes[283]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22336,7 +22850,7 @@ func (x *GrantSkillOpRequest) String() string {
 func (*GrantSkillOpRequest) ProtoMessage() {}
 
 func (x *GrantSkillOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[275]
+	mi := &file_operator_proto_msgTypes[283]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22349,7 +22863,7 @@ func (x *GrantSkillOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GrantSkillOpRequest.ProtoReflect.Descriptor instead.
 func (*GrantSkillOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{275}
+	return file_operator_proto_rawDescGZIP(), []int{283}
 }
 
 func (x *GrantSkillOpRequest) GetCommandId() string {
@@ -22392,7 +22906,7 @@ type RevokeSkillGrantOpRequest struct {
 
 func (x *RevokeSkillGrantOpRequest) Reset() {
 	*x = RevokeSkillGrantOpRequest{}
-	mi := &file_operator_proto_msgTypes[276]
+	mi := &file_operator_proto_msgTypes[284]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22404,7 +22918,7 @@ func (x *RevokeSkillGrantOpRequest) String() string {
 func (*RevokeSkillGrantOpRequest) ProtoMessage() {}
 
 func (x *RevokeSkillGrantOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[276]
+	mi := &file_operator_proto_msgTypes[284]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22417,7 +22931,7 @@ func (x *RevokeSkillGrantOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeSkillGrantOpRequest.ProtoReflect.Descriptor instead.
 func (*RevokeSkillGrantOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{276}
+	return file_operator_proto_rawDescGZIP(), []int{284}
 }
 
 func (x *RevokeSkillGrantOpRequest) GetCommandId() string {
@@ -22456,7 +22970,7 @@ type ListIntegrationCatalogOpRequest struct {
 
 func (x *ListIntegrationCatalogOpRequest) Reset() {
 	*x = ListIntegrationCatalogOpRequest{}
-	mi := &file_operator_proto_msgTypes[277]
+	mi := &file_operator_proto_msgTypes[285]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22468,7 +22982,7 @@ func (x *ListIntegrationCatalogOpRequest) String() string {
 func (*ListIntegrationCatalogOpRequest) ProtoMessage() {}
 
 func (x *ListIntegrationCatalogOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[277]
+	mi := &file_operator_proto_msgTypes[285]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22481,7 +22995,7 @@ func (x *ListIntegrationCatalogOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIntegrationCatalogOpRequest.ProtoReflect.Descriptor instead.
 func (*ListIntegrationCatalogOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{277}
+	return file_operator_proto_rawDescGZIP(), []int{285}
 }
 
 type ListIntegrationCatalogOpResponse struct {
@@ -22495,7 +23009,7 @@ type ListIntegrationCatalogOpResponse struct {
 
 func (x *ListIntegrationCatalogOpResponse) Reset() {
 	*x = ListIntegrationCatalogOpResponse{}
-	mi := &file_operator_proto_msgTypes[278]
+	mi := &file_operator_proto_msgTypes[286]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22507,7 +23021,7 @@ func (x *ListIntegrationCatalogOpResponse) String() string {
 func (*ListIntegrationCatalogOpResponse) ProtoMessage() {}
 
 func (x *ListIntegrationCatalogOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[278]
+	mi := &file_operator_proto_msgTypes[286]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22520,7 +23034,7 @@ func (x *ListIntegrationCatalogOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIntegrationCatalogOpResponse.ProtoReflect.Descriptor instead.
 func (*ListIntegrationCatalogOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{278}
+	return file_operator_proto_rawDescGZIP(), []int{286}
 }
 
 func (x *ListIntegrationCatalogOpResponse) GetEntries() []*IntegrationCatalogEntryOp {
@@ -22589,7 +23103,7 @@ type IntegrationCatalogEntryOp struct {
 
 func (x *IntegrationCatalogEntryOp) Reset() {
 	*x = IntegrationCatalogEntryOp{}
-	mi := &file_operator_proto_msgTypes[279]
+	mi := &file_operator_proto_msgTypes[287]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22601,7 +23115,7 @@ func (x *IntegrationCatalogEntryOp) String() string {
 func (*IntegrationCatalogEntryOp) ProtoMessage() {}
 
 func (x *IntegrationCatalogEntryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[279]
+	mi := &file_operator_proto_msgTypes[287]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22614,7 +23128,7 @@ func (x *IntegrationCatalogEntryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationCatalogEntryOp.ProtoReflect.Descriptor instead.
 func (*IntegrationCatalogEntryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{279}
+	return file_operator_proto_rawDescGZIP(), []int{287}
 }
 
 func (x *IntegrationCatalogEntryOp) GetId() string {
@@ -22832,7 +23346,7 @@ type IntegrationFieldOp struct {
 
 func (x *IntegrationFieldOp) Reset() {
 	*x = IntegrationFieldOp{}
-	mi := &file_operator_proto_msgTypes[280]
+	mi := &file_operator_proto_msgTypes[288]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22844,7 +23358,7 @@ func (x *IntegrationFieldOp) String() string {
 func (*IntegrationFieldOp) ProtoMessage() {}
 
 func (x *IntegrationFieldOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[280]
+	mi := &file_operator_proto_msgTypes[288]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22857,7 +23371,7 @@ func (x *IntegrationFieldOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationFieldOp.ProtoReflect.Descriptor instead.
 func (*IntegrationFieldOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{280}
+	return file_operator_proto_rawDescGZIP(), []int{288}
 }
 
 func (x *IntegrationFieldOp) GetName() string {
@@ -22927,7 +23441,7 @@ type IntegrationToolPolicyOp struct {
 
 func (x *IntegrationToolPolicyOp) Reset() {
 	*x = IntegrationToolPolicyOp{}
-	mi := &file_operator_proto_msgTypes[281]
+	mi := &file_operator_proto_msgTypes[289]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22939,7 +23453,7 @@ func (x *IntegrationToolPolicyOp) String() string {
 func (*IntegrationToolPolicyOp) ProtoMessage() {}
 
 func (x *IntegrationToolPolicyOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[281]
+	mi := &file_operator_proto_msgTypes[289]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22952,7 +23466,7 @@ func (x *IntegrationToolPolicyOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationToolPolicyOp.ProtoReflect.Descriptor instead.
 func (*IntegrationToolPolicyOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{281}
+	return file_operator_proto_rawDescGZIP(), []int{289}
 }
 
 func (x *IntegrationToolPolicyOp) GetName() string {
@@ -22984,7 +23498,7 @@ type ListIntegrationsOpRequest struct {
 
 func (x *ListIntegrationsOpRequest) Reset() {
 	*x = ListIntegrationsOpRequest{}
-	mi := &file_operator_proto_msgTypes[282]
+	mi := &file_operator_proto_msgTypes[290]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22996,7 +23510,7 @@ func (x *ListIntegrationsOpRequest) String() string {
 func (*ListIntegrationsOpRequest) ProtoMessage() {}
 
 func (x *ListIntegrationsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[282]
+	mi := &file_operator_proto_msgTypes[290]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23009,7 +23523,7 @@ func (x *ListIntegrationsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIntegrationsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListIntegrationsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{282}
+	return file_operator_proto_rawDescGZIP(), []int{290}
 }
 
 type ListIntegrationsOpResponse struct {
@@ -23024,7 +23538,7 @@ type ListIntegrationsOpResponse struct {
 
 func (x *ListIntegrationsOpResponse) Reset() {
 	*x = ListIntegrationsOpResponse{}
-	mi := &file_operator_proto_msgTypes[283]
+	mi := &file_operator_proto_msgTypes[291]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23036,7 +23550,7 @@ func (x *ListIntegrationsOpResponse) String() string {
 func (*ListIntegrationsOpResponse) ProtoMessage() {}
 
 func (x *ListIntegrationsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[283]
+	mi := &file_operator_proto_msgTypes[291]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23049,7 +23563,7 @@ func (x *ListIntegrationsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIntegrationsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListIntegrationsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{283}
+	return file_operator_proto_rawDescGZIP(), []int{291}
 }
 
 func (x *ListIntegrationsOpResponse) GetIntegrations() []*IntegrationOp {
@@ -23114,7 +23628,7 @@ type IntegrationOp struct {
 
 func (x *IntegrationOp) Reset() {
 	*x = IntegrationOp{}
-	mi := &file_operator_proto_msgTypes[284]
+	mi := &file_operator_proto_msgTypes[292]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23126,7 +23640,7 @@ func (x *IntegrationOp) String() string {
 func (*IntegrationOp) ProtoMessage() {}
 
 func (x *IntegrationOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[284]
+	mi := &file_operator_proto_msgTypes[292]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23139,7 +23653,7 @@ func (x *IntegrationOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationOp.ProtoReflect.Descriptor instead.
 func (*IntegrationOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{284}
+	return file_operator_proto_rawDescGZIP(), []int{292}
 }
 
 func (x *IntegrationOp) GetId() string {
@@ -23346,7 +23860,7 @@ type IntegrationContainmentOp struct {
 
 func (x *IntegrationContainmentOp) Reset() {
 	*x = IntegrationContainmentOp{}
-	mi := &file_operator_proto_msgTypes[285]
+	mi := &file_operator_proto_msgTypes[293]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23358,7 +23872,7 @@ func (x *IntegrationContainmentOp) String() string {
 func (*IntegrationContainmentOp) ProtoMessage() {}
 
 func (x *IntegrationContainmentOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[285]
+	mi := &file_operator_proto_msgTypes[293]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23371,7 +23885,7 @@ func (x *IntegrationContainmentOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationContainmentOp.ProtoReflect.Descriptor instead.
 func (*IntegrationContainmentOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{285}
+	return file_operator_proto_rawDescGZIP(), []int{293}
 }
 
 func (x *IntegrationContainmentOp) GetTier() string {
@@ -23462,7 +23976,7 @@ type IntegrationSecretStateOp struct {
 
 func (x *IntegrationSecretStateOp) Reset() {
 	*x = IntegrationSecretStateOp{}
-	mi := &file_operator_proto_msgTypes[286]
+	mi := &file_operator_proto_msgTypes[294]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23474,7 +23988,7 @@ func (x *IntegrationSecretStateOp) String() string {
 func (*IntegrationSecretStateOp) ProtoMessage() {}
 
 func (x *IntegrationSecretStateOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[286]
+	mi := &file_operator_proto_msgTypes[294]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23487,7 +24001,7 @@ func (x *IntegrationSecretStateOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationSecretStateOp.ProtoReflect.Descriptor instead.
 func (*IntegrationSecretStateOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{286}
+	return file_operator_proto_rawDescGZIP(), []int{294}
 }
 
 func (x *IntegrationSecretStateOp) GetName() string {
@@ -23558,7 +24072,7 @@ type IntegrationHealthOp struct {
 
 func (x *IntegrationHealthOp) Reset() {
 	*x = IntegrationHealthOp{}
-	mi := &file_operator_proto_msgTypes[287]
+	mi := &file_operator_proto_msgTypes[295]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23570,7 +24084,7 @@ func (x *IntegrationHealthOp) String() string {
 func (*IntegrationHealthOp) ProtoMessage() {}
 
 func (x *IntegrationHealthOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[287]
+	mi := &file_operator_proto_msgTypes[295]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23583,7 +24097,7 @@ func (x *IntegrationHealthOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationHealthOp.ProtoReflect.Descriptor instead.
 func (*IntegrationHealthOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{287}
+	return file_operator_proto_rawDescGZIP(), []int{295}
 }
 
 func (x *IntegrationHealthOp) GetServerId() string {
@@ -23658,7 +24172,7 @@ type IntegrationCustomSpecOp struct {
 
 func (x *IntegrationCustomSpecOp) Reset() {
 	*x = IntegrationCustomSpecOp{}
-	mi := &file_operator_proto_msgTypes[288]
+	mi := &file_operator_proto_msgTypes[296]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23670,7 +24184,7 @@ func (x *IntegrationCustomSpecOp) String() string {
 func (*IntegrationCustomSpecOp) ProtoMessage() {}
 
 func (x *IntegrationCustomSpecOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[288]
+	mi := &file_operator_proto_msgTypes[296]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23683,7 +24197,7 @@ func (x *IntegrationCustomSpecOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationCustomSpecOp.ProtoReflect.Descriptor instead.
 func (*IntegrationCustomSpecOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{288}
+	return file_operator_proto_rawDescGZIP(), []int{296}
 }
 
 func (x *IntegrationCustomSpecOp) GetName() string {
@@ -23799,7 +24313,7 @@ type InstallIntegrationOpRequest struct {
 
 func (x *InstallIntegrationOpRequest) Reset() {
 	*x = InstallIntegrationOpRequest{}
-	mi := &file_operator_proto_msgTypes[289]
+	mi := &file_operator_proto_msgTypes[297]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23811,7 +24325,7 @@ func (x *InstallIntegrationOpRequest) String() string {
 func (*InstallIntegrationOpRequest) ProtoMessage() {}
 
 func (x *InstallIntegrationOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[289]
+	mi := &file_operator_proto_msgTypes[297]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23824,7 +24338,7 @@ func (x *InstallIntegrationOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstallIntegrationOpRequest.ProtoReflect.Descriptor instead.
 func (*InstallIntegrationOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{289}
+	return file_operator_proto_rawDescGZIP(), []int{297}
 }
 
 func (x *InstallIntegrationOpRequest) GetCommandId() string {
@@ -23909,7 +24423,7 @@ type UpdateIntegrationOpRequest struct {
 
 func (x *UpdateIntegrationOpRequest) Reset() {
 	*x = UpdateIntegrationOpRequest{}
-	mi := &file_operator_proto_msgTypes[290]
+	mi := &file_operator_proto_msgTypes[298]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23921,7 +24435,7 @@ func (x *UpdateIntegrationOpRequest) String() string {
 func (*UpdateIntegrationOpRequest) ProtoMessage() {}
 
 func (x *UpdateIntegrationOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[290]
+	mi := &file_operator_proto_msgTypes[298]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23934,7 +24448,7 @@ func (x *UpdateIntegrationOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateIntegrationOpRequest.ProtoReflect.Descriptor instead.
 func (*UpdateIntegrationOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{290}
+	return file_operator_proto_rawDescGZIP(), []int{298}
 }
 
 func (x *UpdateIntegrationOpRequest) GetCommandId() string {
@@ -23999,7 +24513,7 @@ type SetIntegrationSecretOpRequest struct {
 
 func (x *SetIntegrationSecretOpRequest) Reset() {
 	*x = SetIntegrationSecretOpRequest{}
-	mi := &file_operator_proto_msgTypes[291]
+	mi := &file_operator_proto_msgTypes[299]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24011,7 +24525,7 @@ func (x *SetIntegrationSecretOpRequest) String() string {
 func (*SetIntegrationSecretOpRequest) ProtoMessage() {}
 
 func (x *SetIntegrationSecretOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[291]
+	mi := &file_operator_proto_msgTypes[299]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24024,7 +24538,7 @@ func (x *SetIntegrationSecretOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetIntegrationSecretOpRequest.ProtoReflect.Descriptor instead.
 func (*SetIntegrationSecretOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{291}
+	return file_operator_proto_rawDescGZIP(), []int{299}
 }
 
 func (x *SetIntegrationSecretOpRequest) GetCommandId() string {
@@ -24074,7 +24588,7 @@ type ClearIntegrationSecretOpRequest struct {
 
 func (x *ClearIntegrationSecretOpRequest) Reset() {
 	*x = ClearIntegrationSecretOpRequest{}
-	mi := &file_operator_proto_msgTypes[292]
+	mi := &file_operator_proto_msgTypes[300]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24086,7 +24600,7 @@ func (x *ClearIntegrationSecretOpRequest) String() string {
 func (*ClearIntegrationSecretOpRequest) ProtoMessage() {}
 
 func (x *ClearIntegrationSecretOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[292]
+	mi := &file_operator_proto_msgTypes[300]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24099,7 +24613,7 @@ func (x *ClearIntegrationSecretOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearIntegrationSecretOpRequest.ProtoReflect.Descriptor instead.
 func (*ClearIntegrationSecretOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{292}
+	return file_operator_proto_rawDescGZIP(), []int{300}
 }
 
 func (x *ClearIntegrationSecretOpRequest) GetCommandId() string {
@@ -24142,7 +24656,7 @@ type SetIntegrationEnabledOpRequest struct {
 
 func (x *SetIntegrationEnabledOpRequest) Reset() {
 	*x = SetIntegrationEnabledOpRequest{}
-	mi := &file_operator_proto_msgTypes[293]
+	mi := &file_operator_proto_msgTypes[301]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24154,7 +24668,7 @@ func (x *SetIntegrationEnabledOpRequest) String() string {
 func (*SetIntegrationEnabledOpRequest) ProtoMessage() {}
 
 func (x *SetIntegrationEnabledOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[293]
+	mi := &file_operator_proto_msgTypes[301]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24167,7 +24681,7 @@ func (x *SetIntegrationEnabledOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetIntegrationEnabledOpRequest.ProtoReflect.Descriptor instead.
 func (*SetIntegrationEnabledOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{293}
+	return file_operator_proto_rawDescGZIP(), []int{301}
 }
 
 func (x *SetIntegrationEnabledOpRequest) GetCommandId() string {
@@ -24211,7 +24725,7 @@ type RemoveIntegrationOpRequest struct {
 
 func (x *RemoveIntegrationOpRequest) Reset() {
 	*x = RemoveIntegrationOpRequest{}
-	mi := &file_operator_proto_msgTypes[294]
+	mi := &file_operator_proto_msgTypes[302]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24223,7 +24737,7 @@ func (x *RemoveIntegrationOpRequest) String() string {
 func (*RemoveIntegrationOpRequest) ProtoMessage() {}
 
 func (x *RemoveIntegrationOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[294]
+	mi := &file_operator_proto_msgTypes[302]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24236,7 +24750,7 @@ func (x *RemoveIntegrationOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveIntegrationOpRequest.ProtoReflect.Descriptor instead.
 func (*RemoveIntegrationOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{294}
+	return file_operator_proto_rawDescGZIP(), []int{302}
 }
 
 func (x *RemoveIntegrationOpRequest) GetCommandId() string {
@@ -24278,7 +24792,7 @@ type RevertIntegrationToFileOpRequest struct {
 
 func (x *RevertIntegrationToFileOpRequest) Reset() {
 	*x = RevertIntegrationToFileOpRequest{}
-	mi := &file_operator_proto_msgTypes[295]
+	mi := &file_operator_proto_msgTypes[303]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24290,7 +24804,7 @@ func (x *RevertIntegrationToFileOpRequest) String() string {
 func (*RevertIntegrationToFileOpRequest) ProtoMessage() {}
 
 func (x *RevertIntegrationToFileOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[295]
+	mi := &file_operator_proto_msgTypes[303]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24303,7 +24817,7 @@ func (x *RevertIntegrationToFileOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevertIntegrationToFileOpRequest.ProtoReflect.Descriptor instead.
 func (*RevertIntegrationToFileOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{295}
+	return file_operator_proto_rawDescGZIP(), []int{303}
 }
 
 func (x *RevertIntegrationToFileOpRequest) GetCommandId() string {
@@ -24340,7 +24854,7 @@ type SetIntegrationTrustTierOpRequest struct {
 
 func (x *SetIntegrationTrustTierOpRequest) Reset() {
 	*x = SetIntegrationTrustTierOpRequest{}
-	mi := &file_operator_proto_msgTypes[296]
+	mi := &file_operator_proto_msgTypes[304]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24352,7 +24866,7 @@ func (x *SetIntegrationTrustTierOpRequest) String() string {
 func (*SetIntegrationTrustTierOpRequest) ProtoMessage() {}
 
 func (x *SetIntegrationTrustTierOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[296]
+	mi := &file_operator_proto_msgTypes[304]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24365,7 +24879,7 @@ func (x *SetIntegrationTrustTierOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetIntegrationTrustTierOpRequest.ProtoReflect.Descriptor instead.
 func (*SetIntegrationTrustTierOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{296}
+	return file_operator_proto_rawDescGZIP(), []int{304}
 }
 
 func (x *SetIntegrationTrustTierOpRequest) GetCommandId() string {
@@ -24408,7 +24922,7 @@ type TestIntegrationOpRequest struct {
 
 func (x *TestIntegrationOpRequest) Reset() {
 	*x = TestIntegrationOpRequest{}
-	mi := &file_operator_proto_msgTypes[297]
+	mi := &file_operator_proto_msgTypes[305]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24420,7 +24934,7 @@ func (x *TestIntegrationOpRequest) String() string {
 func (*TestIntegrationOpRequest) ProtoMessage() {}
 
 func (x *TestIntegrationOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[297]
+	mi := &file_operator_proto_msgTypes[305]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24433,7 +24947,7 @@ func (x *TestIntegrationOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestIntegrationOpRequest.ProtoReflect.Descriptor instead.
 func (*TestIntegrationOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{297}
+	return file_operator_proto_rawDescGZIP(), []int{305}
 }
 
 func (x *TestIntegrationOpRequest) GetId() string {
@@ -24468,7 +24982,7 @@ type IntegrationMutationOpResponse struct {
 
 func (x *IntegrationMutationOpResponse) Reset() {
 	*x = IntegrationMutationOpResponse{}
-	mi := &file_operator_proto_msgTypes[298]
+	mi := &file_operator_proto_msgTypes[306]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24480,7 +24994,7 @@ func (x *IntegrationMutationOpResponse) String() string {
 func (*IntegrationMutationOpResponse) ProtoMessage() {}
 
 func (x *IntegrationMutationOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[298]
+	mi := &file_operator_proto_msgTypes[306]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24493,7 +25007,7 @@ func (x *IntegrationMutationOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationMutationOpResponse.ProtoReflect.Descriptor instead.
 func (*IntegrationMutationOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{298}
+	return file_operator_proto_rawDescGZIP(), []int{306}
 }
 
 func (x *IntegrationMutationOpResponse) GetCommandId() string {
@@ -24539,7 +25053,7 @@ type IntegrationToolOp struct {
 
 func (x *IntegrationToolOp) Reset() {
 	*x = IntegrationToolOp{}
-	mi := &file_operator_proto_msgTypes[299]
+	mi := &file_operator_proto_msgTypes[307]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24551,7 +25065,7 @@ func (x *IntegrationToolOp) String() string {
 func (*IntegrationToolOp) ProtoMessage() {}
 
 func (x *IntegrationToolOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[299]
+	mi := &file_operator_proto_msgTypes[307]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24564,7 +25078,7 @@ func (x *IntegrationToolOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationToolOp.ProtoReflect.Descriptor instead.
 func (*IntegrationToolOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{299}
+	return file_operator_proto_rawDescGZIP(), []int{307}
 }
 
 func (x *IntegrationToolOp) GetName() string {
@@ -24619,7 +25133,7 @@ type IntegrationTestResultOp struct {
 
 func (x *IntegrationTestResultOp) Reset() {
 	*x = IntegrationTestResultOp{}
-	mi := &file_operator_proto_msgTypes[300]
+	mi := &file_operator_proto_msgTypes[308]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24631,7 +25145,7 @@ func (x *IntegrationTestResultOp) String() string {
 func (*IntegrationTestResultOp) ProtoMessage() {}
 
 func (x *IntegrationTestResultOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[300]
+	mi := &file_operator_proto_msgTypes[308]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24644,7 +25158,7 @@ func (x *IntegrationTestResultOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IntegrationTestResultOp.ProtoReflect.Descriptor instead.
 func (*IntegrationTestResultOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{300}
+	return file_operator_proto_rawDescGZIP(), []int{308}
 }
 
 func (x *IntegrationTestResultOp) GetOk() bool {
@@ -24723,7 +25237,7 @@ type ErasureSelectorOp struct {
 
 func (x *ErasureSelectorOp) Reset() {
 	*x = ErasureSelectorOp{}
-	mi := &file_operator_proto_msgTypes[301]
+	mi := &file_operator_proto_msgTypes[309]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24735,7 +25249,7 @@ func (x *ErasureSelectorOp) String() string {
 func (*ErasureSelectorOp) ProtoMessage() {}
 
 func (x *ErasureSelectorOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[301]
+	mi := &file_operator_proto_msgTypes[309]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24748,7 +25262,7 @@ func (x *ErasureSelectorOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErasureSelectorOp.ProtoReflect.Descriptor instead.
 func (*ErasureSelectorOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{301}
+	return file_operator_proto_rawDescGZIP(), []int{309}
 }
 
 func (x *ErasureSelectorOp) GetDocumentIds() []string {
@@ -24799,7 +25313,7 @@ type ErasureCandidateOp struct {
 
 func (x *ErasureCandidateOp) Reset() {
 	*x = ErasureCandidateOp{}
-	mi := &file_operator_proto_msgTypes[302]
+	mi := &file_operator_proto_msgTypes[310]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24811,7 +25325,7 @@ func (x *ErasureCandidateOp) String() string {
 func (*ErasureCandidateOp) ProtoMessage() {}
 
 func (x *ErasureCandidateOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[302]
+	mi := &file_operator_proto_msgTypes[310]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24824,7 +25338,7 @@ func (x *ErasureCandidateOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErasureCandidateOp.ProtoReflect.Descriptor instead.
 func (*ErasureCandidateOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{302}
+	return file_operator_proto_rawDescGZIP(), []int{310}
 }
 
 func (x *ErasureCandidateOp) GetKind() string {
@@ -24880,7 +25394,7 @@ type ErasureReceiptOp struct {
 
 func (x *ErasureReceiptOp) Reset() {
 	*x = ErasureReceiptOp{}
-	mi := &file_operator_proto_msgTypes[303]
+	mi := &file_operator_proto_msgTypes[311]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24892,7 +25406,7 @@ func (x *ErasureReceiptOp) String() string {
 func (*ErasureReceiptOp) ProtoMessage() {}
 
 func (x *ErasureReceiptOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[303]
+	mi := &file_operator_proto_msgTypes[311]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24905,7 +25419,7 @@ func (x *ErasureReceiptOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErasureReceiptOp.ProtoReflect.Descriptor instead.
 func (*ErasureReceiptOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{303}
+	return file_operator_proto_rawDescGZIP(), []int{311}
 }
 
 func (x *ErasureReceiptOp) GetRequestId() string {
@@ -25015,7 +25529,7 @@ type PreviewForgetMemoryOpRequest struct {
 
 func (x *PreviewForgetMemoryOpRequest) Reset() {
 	*x = PreviewForgetMemoryOpRequest{}
-	mi := &file_operator_proto_msgTypes[304]
+	mi := &file_operator_proto_msgTypes[312]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25027,7 +25541,7 @@ func (x *PreviewForgetMemoryOpRequest) String() string {
 func (*PreviewForgetMemoryOpRequest) ProtoMessage() {}
 
 func (x *PreviewForgetMemoryOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[304]
+	mi := &file_operator_proto_msgTypes[312]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25040,7 +25554,7 @@ func (x *PreviewForgetMemoryOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewForgetMemoryOpRequest.ProtoReflect.Descriptor instead.
 func (*PreviewForgetMemoryOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{304}
+	return file_operator_proto_rawDescGZIP(), []int{312}
 }
 
 func (x *PreviewForgetMemoryOpRequest) GetSelector() *ErasureSelectorOp {
@@ -25062,7 +25576,7 @@ type PreviewForgetMemoryOpResponse struct {
 
 func (x *PreviewForgetMemoryOpResponse) Reset() {
 	*x = PreviewForgetMemoryOpResponse{}
-	mi := &file_operator_proto_msgTypes[305]
+	mi := &file_operator_proto_msgTypes[313]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25074,7 +25588,7 @@ func (x *PreviewForgetMemoryOpResponse) String() string {
 func (*PreviewForgetMemoryOpResponse) ProtoMessage() {}
 
 func (x *PreviewForgetMemoryOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[305]
+	mi := &file_operator_proto_msgTypes[313]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25087,7 +25601,7 @@ func (x *PreviewForgetMemoryOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewForgetMemoryOpResponse.ProtoReflect.Descriptor instead.
 func (*PreviewForgetMemoryOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{305}
+	return file_operator_proto_rawDescGZIP(), []int{313}
 }
 
 func (x *PreviewForgetMemoryOpResponse) GetPreviewToken() string {
@@ -25131,7 +25645,7 @@ type ForgetMemoryOpRequest struct {
 
 func (x *ForgetMemoryOpRequest) Reset() {
 	*x = ForgetMemoryOpRequest{}
-	mi := &file_operator_proto_msgTypes[306]
+	mi := &file_operator_proto_msgTypes[314]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25143,7 +25657,7 @@ func (x *ForgetMemoryOpRequest) String() string {
 func (*ForgetMemoryOpRequest) ProtoMessage() {}
 
 func (x *ForgetMemoryOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[306]
+	mi := &file_operator_proto_msgTypes[314]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25156,7 +25670,7 @@ func (x *ForgetMemoryOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgetMemoryOpRequest.ProtoReflect.Descriptor instead.
 func (*ForgetMemoryOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{306}
+	return file_operator_proto_rawDescGZIP(), []int{314}
 }
 
 func (x *ForgetMemoryOpRequest) GetCommandId() string {
@@ -25205,7 +25719,7 @@ type ForgetMemoryOpResponse struct {
 
 func (x *ForgetMemoryOpResponse) Reset() {
 	*x = ForgetMemoryOpResponse{}
-	mi := &file_operator_proto_msgTypes[307]
+	mi := &file_operator_proto_msgTypes[315]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25217,7 +25731,7 @@ func (x *ForgetMemoryOpResponse) String() string {
 func (*ForgetMemoryOpResponse) ProtoMessage() {}
 
 func (x *ForgetMemoryOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[307]
+	mi := &file_operator_proto_msgTypes[315]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25230,7 +25744,7 @@ func (x *ForgetMemoryOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgetMemoryOpResponse.ProtoReflect.Descriptor instead.
 func (*ForgetMemoryOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{307}
+	return file_operator_proto_rawDescGZIP(), []int{315}
 }
 
 func (x *ForgetMemoryOpResponse) GetCommandId() string {
@@ -25265,7 +25779,7 @@ type ListErasuresOpRequest struct {
 
 func (x *ListErasuresOpRequest) Reset() {
 	*x = ListErasuresOpRequest{}
-	mi := &file_operator_proto_msgTypes[308]
+	mi := &file_operator_proto_msgTypes[316]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25277,7 +25791,7 @@ func (x *ListErasuresOpRequest) String() string {
 func (*ListErasuresOpRequest) ProtoMessage() {}
 
 func (x *ListErasuresOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[308]
+	mi := &file_operator_proto_msgTypes[316]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25290,7 +25804,7 @@ func (x *ListErasuresOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListErasuresOpRequest.ProtoReflect.Descriptor instead.
 func (*ListErasuresOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{308}
+	return file_operator_proto_rawDescGZIP(), []int{316}
 }
 
 func (x *ListErasuresOpRequest) GetPrincipal() string {
@@ -25323,7 +25837,7 @@ type ListErasuresOpResponse struct {
 
 func (x *ListErasuresOpResponse) Reset() {
 	*x = ListErasuresOpResponse{}
-	mi := &file_operator_proto_msgTypes[309]
+	mi := &file_operator_proto_msgTypes[317]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25335,7 +25849,7 @@ func (x *ListErasuresOpResponse) String() string {
 func (*ListErasuresOpResponse) ProtoMessage() {}
 
 func (x *ListErasuresOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[309]
+	mi := &file_operator_proto_msgTypes[317]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25348,7 +25862,7 @@ func (x *ListErasuresOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListErasuresOpResponse.ProtoReflect.Descriptor instead.
 func (*ListErasuresOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{309}
+	return file_operator_proto_rawDescGZIP(), []int{317}
 }
 
 func (x *ListErasuresOpResponse) GetReceipts() []*ErasureReceiptOp {
@@ -25367,7 +25881,7 @@ type GetErasureOpRequest struct {
 
 func (x *GetErasureOpRequest) Reset() {
 	*x = GetErasureOpRequest{}
-	mi := &file_operator_proto_msgTypes[310]
+	mi := &file_operator_proto_msgTypes[318]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25379,7 +25893,7 @@ func (x *GetErasureOpRequest) String() string {
 func (*GetErasureOpRequest) ProtoMessage() {}
 
 func (x *GetErasureOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[310]
+	mi := &file_operator_proto_msgTypes[318]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25392,7 +25906,7 @@ func (x *GetErasureOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetErasureOpRequest.ProtoReflect.Descriptor instead.
 func (*GetErasureOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{310}
+	return file_operator_proto_rawDescGZIP(), []int{318}
 }
 
 func (x *GetErasureOpRequest) GetRequestId() string {
@@ -25411,7 +25925,7 @@ type GetErasureOpResponse struct {
 
 func (x *GetErasureOpResponse) Reset() {
 	*x = GetErasureOpResponse{}
-	mi := &file_operator_proto_msgTypes[311]
+	mi := &file_operator_proto_msgTypes[319]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25423,7 +25937,7 @@ func (x *GetErasureOpResponse) String() string {
 func (*GetErasureOpResponse) ProtoMessage() {}
 
 func (x *GetErasureOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[311]
+	mi := &file_operator_proto_msgTypes[319]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25436,7 +25950,7 @@ func (x *GetErasureOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetErasureOpResponse.ProtoReflect.Descriptor instead.
 func (*GetErasureOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{311}
+	return file_operator_proto_rawDescGZIP(), []int{319}
 }
 
 func (x *GetErasureOpResponse) GetReceipt() *ErasureReceiptOp {
@@ -27194,7 +27708,7 @@ const file_operator_proto_rawDesc = "" +
 	"\bapproved\x18\x0f \x01(\bR\bapproved\x12\"\n" +
 	"\n" +
 	"entry_live\x18\x10 \x01(\bH\x00R\tentryLive\x88\x01\x01B\r\n" +
-	"\v_entry_live\"\xd7\x04\n" +
+	"\v_entry_live\"\x8f\x05\n" +
 	"\x06LinkOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fnamespace_id\x18\x02 \x01(\tR\vnamespaceId\x12\x16\n" +
@@ -27219,7 +27733,8 @@ const file_operator_proto_rawDesc = "" +
 	"\x10valid_to_unix_ms\x18\x10 \x01(\x03R\rvalidToUnixMs\x12/\n" +
 	"\x14retracted_at_unix_ms\x18\x11 \x01(\x03R\x11retractedAtUnixMs\x12\x1d\n" +
 	"\n" +
-	"source_ref\x18\x12 \x01(\tR\tsourceRef\"\x89\x01\n" +
+	"source_ref\x18\x12 \x01(\tR\tsourceRef\x126\n" +
+	"\x17supporting_evidence_ids\x18\x13 \x03(\tR\x15supportingEvidenceIds\"\x89\x01\n" +
 	"\x14ConfirmLinkOpRequest\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
@@ -27254,7 +27769,49 @@ const file_operator_proto_rawDesc = "" +
 	"\x1cListLinkCandidatesOpResponse\x120\n" +
 	"\n" +
 	"candidates\x18\x01 \x03(\v2\x10.cambrian.LinkOpR\n" +
-	"candidates\"|\n" +
+	"candidates\"\x98\x01\n" +
+	"\rLinkPairKeyOp\x12!\n" +
+	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12\x16\n" +
+	"\x06family\x18\x02 \x01(\tR\x06family\x12\x19\n" +
+	"\bfrom_ref\x18\x03 \x01(\tR\afromRef\x12\x15\n" +
+	"\x06to_ref\x18\x04 \x01(\tR\x05toRef\x12\x1a\n" +
+	"\brelation\x18\x05 \x01(\tR\brelation\"\xf0\x01\n" +
+	"\n" +
+	"LinkPairOp\x12+\n" +
+	"\x04pair\x18\x01 \x01(\v2\x17.cambrian.LinkPairKeyOpR\x04pair\x12\x1e\n" +
+	"\n" +
+	"confidence\x18\x02 \x01(\x01R\n" +
+	"confidence\x120\n" +
+	"\n" +
+	"candidates\x18\x03 \x03(\v2\x10.cambrian.LinkOpR\n" +
+	"candidates\x126\n" +
+	"\rconfirmations\x18\x04 \x03(\v2\x10.cambrian.LinkOpR\rconfirmations\x12+\n" +
+	"\x11already_confirmed\x18\x05 \x01(\bR\x10alreadyConfirmed\"Q\n" +
+	"\x16ListLinkPairsOpRequest\x12!\n" +
+	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"E\n" +
+	"\x17ListLinkPairsOpResponse\x12*\n" +
+	"\x05pairs\x18\x01 \x03(\v2\x14.cambrian.LinkPairOpR\x05pairs\"~\n" +
+	"\x18ConfirmLinkPairOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12+\n" +
+	"\x04pair\x18\x03 \x01(\v2\x17.cambrian.LinkPairKeyOpR\x04pair\"\x8c\x01\n" +
+	"\x19ConfirmLinkPairOpResponse\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
+	"\adeduped\x18\x02 \x01(\bR\adeduped\x126\n" +
+	"\rconfirmations\x18\x03 \x03(\v2\x10.cambrian.LinkOpR\rconfirmations\"}\n" +
+	"\x17RejectLinkPairOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12+\n" +
+	"\x04pair\x18\x03 \x01(\v2\x17.cambrian.LinkPairKeyOpR\x04pair\"q\n" +
+	"\x18RejectLinkPairOpResponse\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
+	"\adeduped\x18\x02 \x01(\bR\adeduped\x12\x1c\n" +
+	"\tretracted\x18\x03 \x01(\x05R\tretracted\"|\n" +
 	"\x18ListMemoryNotesOpRequest\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\x12\x19\n" +
 	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12\x12\n" +
@@ -27781,7 +28338,7 @@ const file_operator_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\"L\n" +
 	"\x14GetErasureOpResponse\x124\n" +
-	"\areceipt\x18\x01 \x01(\v2\x1a.cambrian.ErasureReceiptOpR\areceipt2\xefS\n" +
+	"\areceipt\x18\x01 \x01(\v2\x1a.cambrian.ErasureReceiptOpR\areceipt2\xfaU\n" +
 	"\x0fOperatorConsole\x128\n" +
 	"\x05Login\x12\x16.cambrian.LoginRequest\x1a\x17.cambrian.LoginResponse\x12M\n" +
 	"\fDescribeAuth\x12\x1d.cambrian.DescribeAuthRequest\x1a\x1e.cambrian.DescribeAuthResponse\x12;\n" +
@@ -27879,7 +28436,10 @@ const file_operator_proto_rawDesc = "" +
 	"\vConfirmLink\x12\x1e.cambrian.ConfirmLinkOpRequest\x1a\x1f.cambrian.ConfirmLinkOpResponse\x12C\n" +
 	"\vRetractLink\x12\x1e.cambrian.RetractLinkOpRequest\x1a\x14.cambrian.CommandAck\x12o\n" +
 	"\x16RetractLinksByProducer\x12).cambrian.RetractLinksByProducerOpRequest\x1a*.cambrian.RetractLinksByProducerOpResponse\x12c\n" +
-	"\x12ListLinkCandidates\x12%.cambrian.ListLinkCandidatesOpRequest\x1a&.cambrian.ListLinkCandidatesOpResponse\x12K\n" +
+	"\x12ListLinkCandidates\x12%.cambrian.ListLinkCandidatesOpRequest\x1a&.cambrian.ListLinkCandidatesOpResponse\x12T\n" +
+	"\rListLinkPairs\x12 .cambrian.ListLinkPairsOpRequest\x1a!.cambrian.ListLinkPairsOpResponse\x12Z\n" +
+	"\x0fConfirmLinkPair\x12\".cambrian.ConfirmLinkPairOpRequest\x1a#.cambrian.ConfirmLinkPairOpResponse\x12W\n" +
+	"\x0eRejectLinkPair\x12!.cambrian.RejectLinkPairOpRequest\x1a\".cambrian.RejectLinkPairOpResponse\x12K\n" +
 	"\n" +
 	"SubmitPlan\x12\x1d.cambrian.SubmitPlanOpRequest\x1a\x1e.cambrian.SubmitPlanOpResponse\x12`\n" +
 	"\x11GetReactiveBudget\x12$.cambrian.GetReactiveBudgetOpRequest\x1a%.cambrian.GetReactiveBudgetOpResponse\x12W\n" +
@@ -27927,7 +28487,7 @@ func file_operator_proto_rawDescGZIP() []byte {
 	return file_operator_proto_rawDescData
 }
 
-var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 328)
+var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 336)
 var file_operator_proto_goTypes = []any{
 	(*CreateSessionRequest)(nil),               // 0: cambrian.CreateSessionRequest
 	(*CreateSessionResponse)(nil),              // 1: cambrian.CreateSessionResponse
@@ -28180,84 +28740,92 @@ var file_operator_proto_goTypes = []any{
 	(*RetractLinksByProducerOpResponse)(nil),   // 248: cambrian.RetractLinksByProducerOpResponse
 	(*ListLinkCandidatesOpRequest)(nil),        // 249: cambrian.ListLinkCandidatesOpRequest
 	(*ListLinkCandidatesOpResponse)(nil),       // 250: cambrian.ListLinkCandidatesOpResponse
-	(*ListMemoryNotesOpRequest)(nil),           // 251: cambrian.ListMemoryNotesOpRequest
-	(*MemoryNotesSummaryOp)(nil),               // 252: cambrian.MemoryNotesSummaryOp
-	(*ListMemoryNotesOpResponse)(nil),          // 253: cambrian.ListMemoryNotesOpResponse
-	(*GetMemoryNotesOpRequest)(nil),            // 254: cambrian.GetMemoryNotesOpRequest
-	(*MemoryNotesOp)(nil),                      // 255: cambrian.MemoryNotesOp
-	(*SetMemoryNotesOpRequest)(nil),            // 256: cambrian.SetMemoryNotesOpRequest
-	(*SetMemoryNotesOpResponse)(nil),           // 257: cambrian.SetMemoryNotesOpResponse
-	(*DeleteMemoryNotesOpRequest)(nil),         // 258: cambrian.DeleteMemoryNotesOpRequest
-	(*SetMemoryNotesBudgetOpRequest)(nil),      // 259: cambrian.SetMemoryNotesBudgetOpRequest
-	(*ListSkillProposalsOpRequest)(nil),        // 260: cambrian.ListSkillProposalsOpRequest
-	(*SkillProposalOp)(nil),                    // 261: cambrian.SkillProposalOp
-	(*ListSkillProposalsOpResponse)(nil),       // 262: cambrian.ListSkillProposalsOpResponse
-	(*DecideSkillProposalOpRequest)(nil),       // 263: cambrian.DecideSkillProposalOpRequest
-	(*DecideSkillProposalOpResponse)(nil),      // 264: cambrian.DecideSkillProposalOpResponse
-	(*SetSkillLockOpRequest)(nil),              // 265: cambrian.SetSkillLockOpRequest
-	(*ListSkillLedgerOpRequest)(nil),           // 266: cambrian.ListSkillLedgerOpRequest
-	(*SkillLedgerEntryOp)(nil),                 // 267: cambrian.SkillLedgerEntryOp
-	(*ListSkillLedgerOpResponse)(nil),          // 268: cambrian.ListSkillLedgerOpResponse
-	(*RollbackSkillOpRequest)(nil),             // 269: cambrian.RollbackSkillOpRequest
-	(*RollbackSkillOpResponse)(nil),            // 270: cambrian.RollbackSkillOpResponse
-	(*ListSkillGrantsOpRequest)(nil),           // 271: cambrian.ListSkillGrantsOpRequest
-	(*SkillGrantOp)(nil),                       // 272: cambrian.SkillGrantOp
-	(*SkillAccessRequestOp)(nil),               // 273: cambrian.SkillAccessRequestOp
-	(*ListSkillGrantsOpResponse)(nil),          // 274: cambrian.ListSkillGrantsOpResponse
-	(*GrantSkillOpRequest)(nil),                // 275: cambrian.GrantSkillOpRequest
-	(*RevokeSkillGrantOpRequest)(nil),          // 276: cambrian.RevokeSkillGrantOpRequest
-	(*ListIntegrationCatalogOpRequest)(nil),    // 277: cambrian.ListIntegrationCatalogOpRequest
-	(*ListIntegrationCatalogOpResponse)(nil),   // 278: cambrian.ListIntegrationCatalogOpResponse
-	(*IntegrationCatalogEntryOp)(nil),          // 279: cambrian.IntegrationCatalogEntryOp
-	(*IntegrationFieldOp)(nil),                 // 280: cambrian.IntegrationFieldOp
-	(*IntegrationToolPolicyOp)(nil),            // 281: cambrian.IntegrationToolPolicyOp
-	(*ListIntegrationsOpRequest)(nil),          // 282: cambrian.ListIntegrationsOpRequest
-	(*ListIntegrationsOpResponse)(nil),         // 283: cambrian.ListIntegrationsOpResponse
-	(*IntegrationOp)(nil),                      // 284: cambrian.IntegrationOp
-	(*IntegrationContainmentOp)(nil),           // 285: cambrian.IntegrationContainmentOp
-	(*IntegrationSecretStateOp)(nil),           // 286: cambrian.IntegrationSecretStateOp
-	(*IntegrationHealthOp)(nil),                // 287: cambrian.IntegrationHealthOp
-	(*IntegrationCustomSpecOp)(nil),            // 288: cambrian.IntegrationCustomSpecOp
-	(*InstallIntegrationOpRequest)(nil),        // 289: cambrian.InstallIntegrationOpRequest
-	(*UpdateIntegrationOpRequest)(nil),         // 290: cambrian.UpdateIntegrationOpRequest
-	(*SetIntegrationSecretOpRequest)(nil),      // 291: cambrian.SetIntegrationSecretOpRequest
-	(*ClearIntegrationSecretOpRequest)(nil),    // 292: cambrian.ClearIntegrationSecretOpRequest
-	(*SetIntegrationEnabledOpRequest)(nil),     // 293: cambrian.SetIntegrationEnabledOpRequest
-	(*RemoveIntegrationOpRequest)(nil),         // 294: cambrian.RemoveIntegrationOpRequest
-	(*RevertIntegrationToFileOpRequest)(nil),   // 295: cambrian.RevertIntegrationToFileOpRequest
-	(*SetIntegrationTrustTierOpRequest)(nil),   // 296: cambrian.SetIntegrationTrustTierOpRequest
-	(*TestIntegrationOpRequest)(nil),           // 297: cambrian.TestIntegrationOpRequest
-	(*IntegrationMutationOpResponse)(nil),      // 298: cambrian.IntegrationMutationOpResponse
-	(*IntegrationToolOp)(nil),                  // 299: cambrian.IntegrationToolOp
-	(*IntegrationTestResultOp)(nil),            // 300: cambrian.IntegrationTestResultOp
-	(*ErasureSelectorOp)(nil),                  // 301: cambrian.ErasureSelectorOp
-	(*ErasureCandidateOp)(nil),                 // 302: cambrian.ErasureCandidateOp
-	(*ErasureReceiptOp)(nil),                   // 303: cambrian.ErasureReceiptOp
-	(*PreviewForgetMemoryOpRequest)(nil),       // 304: cambrian.PreviewForgetMemoryOpRequest
-	(*PreviewForgetMemoryOpResponse)(nil),      // 305: cambrian.PreviewForgetMemoryOpResponse
-	(*ForgetMemoryOpRequest)(nil),              // 306: cambrian.ForgetMemoryOpRequest
-	(*ForgetMemoryOpResponse)(nil),             // 307: cambrian.ForgetMemoryOpResponse
-	(*ListErasuresOpRequest)(nil),              // 308: cambrian.ListErasuresOpRequest
-	(*ListErasuresOpResponse)(nil),             // 309: cambrian.ListErasuresOpResponse
-	(*GetErasureOpRequest)(nil),                // 310: cambrian.GetErasureOpRequest
-	(*GetErasureOpResponse)(nil),               // 311: cambrian.GetErasureOpResponse
-	nil,                                        // 312: cambrian.SetRuntimeConfigRequest.ParamsEntry
-	nil,                                        // 313: cambrian.PipelineNodeMeterOp.PortsEntry
-	nil,                                        // 314: cambrian.WatchConfigOp.DaemonParamsEntry
-	nil,                                        // 315: cambrian.PreviewCandidateOp.CapabilityStatsEntry
-	nil,                                        // 316: cambrian.ConfigSchemaOp.CurrentValuesEntry
-	nil,                                        // 317: cambrian.ConfigSchemaOp.ValueSourceEntry
-	nil,                                        // 318: cambrian.ConfigSchemaOp.OverridesFileEntry
-	nil,                                        // 319: cambrian.ConfigSchemaOp.OverridesFileValueEntry
-	nil,                                        // 320: cambrian.SetConfigOpRequest.ValuesEntry
-	nil,                                        // 321: cambrian.LogFilterOp.AttrEqualsEntry
-	nil,                                        // 322: cambrian.IntegrationOp.SettingsEntry
-	nil,                                        // 323: cambrian.InstallIntegrationOpRequest.SettingsEntry
-	nil,                                        // 324: cambrian.InstallIntegrationOpRequest.SecretsEntry
-	nil,                                        // 325: cambrian.UpdateIntegrationOpRequest.SettingsEntry
-	nil,                                        // 326: cambrian.ErasureReceiptOp.CountsEntry
-	nil,                                        // 327: cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
-	(*timestamppb.Timestamp)(nil),              // 328: google.protobuf.Timestamp
+	(*LinkPairKeyOp)(nil),                      // 251: cambrian.LinkPairKeyOp
+	(*LinkPairOp)(nil),                         // 252: cambrian.LinkPairOp
+	(*ListLinkPairsOpRequest)(nil),             // 253: cambrian.ListLinkPairsOpRequest
+	(*ListLinkPairsOpResponse)(nil),            // 254: cambrian.ListLinkPairsOpResponse
+	(*ConfirmLinkPairOpRequest)(nil),           // 255: cambrian.ConfirmLinkPairOpRequest
+	(*ConfirmLinkPairOpResponse)(nil),          // 256: cambrian.ConfirmLinkPairOpResponse
+	(*RejectLinkPairOpRequest)(nil),            // 257: cambrian.RejectLinkPairOpRequest
+	(*RejectLinkPairOpResponse)(nil),           // 258: cambrian.RejectLinkPairOpResponse
+	(*ListMemoryNotesOpRequest)(nil),           // 259: cambrian.ListMemoryNotesOpRequest
+	(*MemoryNotesSummaryOp)(nil),               // 260: cambrian.MemoryNotesSummaryOp
+	(*ListMemoryNotesOpResponse)(nil),          // 261: cambrian.ListMemoryNotesOpResponse
+	(*GetMemoryNotesOpRequest)(nil),            // 262: cambrian.GetMemoryNotesOpRequest
+	(*MemoryNotesOp)(nil),                      // 263: cambrian.MemoryNotesOp
+	(*SetMemoryNotesOpRequest)(nil),            // 264: cambrian.SetMemoryNotesOpRequest
+	(*SetMemoryNotesOpResponse)(nil),           // 265: cambrian.SetMemoryNotesOpResponse
+	(*DeleteMemoryNotesOpRequest)(nil),         // 266: cambrian.DeleteMemoryNotesOpRequest
+	(*SetMemoryNotesBudgetOpRequest)(nil),      // 267: cambrian.SetMemoryNotesBudgetOpRequest
+	(*ListSkillProposalsOpRequest)(nil),        // 268: cambrian.ListSkillProposalsOpRequest
+	(*SkillProposalOp)(nil),                    // 269: cambrian.SkillProposalOp
+	(*ListSkillProposalsOpResponse)(nil),       // 270: cambrian.ListSkillProposalsOpResponse
+	(*DecideSkillProposalOpRequest)(nil),       // 271: cambrian.DecideSkillProposalOpRequest
+	(*DecideSkillProposalOpResponse)(nil),      // 272: cambrian.DecideSkillProposalOpResponse
+	(*SetSkillLockOpRequest)(nil),              // 273: cambrian.SetSkillLockOpRequest
+	(*ListSkillLedgerOpRequest)(nil),           // 274: cambrian.ListSkillLedgerOpRequest
+	(*SkillLedgerEntryOp)(nil),                 // 275: cambrian.SkillLedgerEntryOp
+	(*ListSkillLedgerOpResponse)(nil),          // 276: cambrian.ListSkillLedgerOpResponse
+	(*RollbackSkillOpRequest)(nil),             // 277: cambrian.RollbackSkillOpRequest
+	(*RollbackSkillOpResponse)(nil),            // 278: cambrian.RollbackSkillOpResponse
+	(*ListSkillGrantsOpRequest)(nil),           // 279: cambrian.ListSkillGrantsOpRequest
+	(*SkillGrantOp)(nil),                       // 280: cambrian.SkillGrantOp
+	(*SkillAccessRequestOp)(nil),               // 281: cambrian.SkillAccessRequestOp
+	(*ListSkillGrantsOpResponse)(nil),          // 282: cambrian.ListSkillGrantsOpResponse
+	(*GrantSkillOpRequest)(nil),                // 283: cambrian.GrantSkillOpRequest
+	(*RevokeSkillGrantOpRequest)(nil),          // 284: cambrian.RevokeSkillGrantOpRequest
+	(*ListIntegrationCatalogOpRequest)(nil),    // 285: cambrian.ListIntegrationCatalogOpRequest
+	(*ListIntegrationCatalogOpResponse)(nil),   // 286: cambrian.ListIntegrationCatalogOpResponse
+	(*IntegrationCatalogEntryOp)(nil),          // 287: cambrian.IntegrationCatalogEntryOp
+	(*IntegrationFieldOp)(nil),                 // 288: cambrian.IntegrationFieldOp
+	(*IntegrationToolPolicyOp)(nil),            // 289: cambrian.IntegrationToolPolicyOp
+	(*ListIntegrationsOpRequest)(nil),          // 290: cambrian.ListIntegrationsOpRequest
+	(*ListIntegrationsOpResponse)(nil),         // 291: cambrian.ListIntegrationsOpResponse
+	(*IntegrationOp)(nil),                      // 292: cambrian.IntegrationOp
+	(*IntegrationContainmentOp)(nil),           // 293: cambrian.IntegrationContainmentOp
+	(*IntegrationSecretStateOp)(nil),           // 294: cambrian.IntegrationSecretStateOp
+	(*IntegrationHealthOp)(nil),                // 295: cambrian.IntegrationHealthOp
+	(*IntegrationCustomSpecOp)(nil),            // 296: cambrian.IntegrationCustomSpecOp
+	(*InstallIntegrationOpRequest)(nil),        // 297: cambrian.InstallIntegrationOpRequest
+	(*UpdateIntegrationOpRequest)(nil),         // 298: cambrian.UpdateIntegrationOpRequest
+	(*SetIntegrationSecretOpRequest)(nil),      // 299: cambrian.SetIntegrationSecretOpRequest
+	(*ClearIntegrationSecretOpRequest)(nil),    // 300: cambrian.ClearIntegrationSecretOpRequest
+	(*SetIntegrationEnabledOpRequest)(nil),     // 301: cambrian.SetIntegrationEnabledOpRequest
+	(*RemoveIntegrationOpRequest)(nil),         // 302: cambrian.RemoveIntegrationOpRequest
+	(*RevertIntegrationToFileOpRequest)(nil),   // 303: cambrian.RevertIntegrationToFileOpRequest
+	(*SetIntegrationTrustTierOpRequest)(nil),   // 304: cambrian.SetIntegrationTrustTierOpRequest
+	(*TestIntegrationOpRequest)(nil),           // 305: cambrian.TestIntegrationOpRequest
+	(*IntegrationMutationOpResponse)(nil),      // 306: cambrian.IntegrationMutationOpResponse
+	(*IntegrationToolOp)(nil),                  // 307: cambrian.IntegrationToolOp
+	(*IntegrationTestResultOp)(nil),            // 308: cambrian.IntegrationTestResultOp
+	(*ErasureSelectorOp)(nil),                  // 309: cambrian.ErasureSelectorOp
+	(*ErasureCandidateOp)(nil),                 // 310: cambrian.ErasureCandidateOp
+	(*ErasureReceiptOp)(nil),                   // 311: cambrian.ErasureReceiptOp
+	(*PreviewForgetMemoryOpRequest)(nil),       // 312: cambrian.PreviewForgetMemoryOpRequest
+	(*PreviewForgetMemoryOpResponse)(nil),      // 313: cambrian.PreviewForgetMemoryOpResponse
+	(*ForgetMemoryOpRequest)(nil),              // 314: cambrian.ForgetMemoryOpRequest
+	(*ForgetMemoryOpResponse)(nil),             // 315: cambrian.ForgetMemoryOpResponse
+	(*ListErasuresOpRequest)(nil),              // 316: cambrian.ListErasuresOpRequest
+	(*ListErasuresOpResponse)(nil),             // 317: cambrian.ListErasuresOpResponse
+	(*GetErasureOpRequest)(nil),                // 318: cambrian.GetErasureOpRequest
+	(*GetErasureOpResponse)(nil),               // 319: cambrian.GetErasureOpResponse
+	nil,                                        // 320: cambrian.SetRuntimeConfigRequest.ParamsEntry
+	nil,                                        // 321: cambrian.PipelineNodeMeterOp.PortsEntry
+	nil,                                        // 322: cambrian.WatchConfigOp.DaemonParamsEntry
+	nil,                                        // 323: cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	nil,                                        // 324: cambrian.ConfigSchemaOp.CurrentValuesEntry
+	nil,                                        // 325: cambrian.ConfigSchemaOp.ValueSourceEntry
+	nil,                                        // 326: cambrian.ConfigSchemaOp.OverridesFileEntry
+	nil,                                        // 327: cambrian.ConfigSchemaOp.OverridesFileValueEntry
+	nil,                                        // 328: cambrian.SetConfigOpRequest.ValuesEntry
+	nil,                                        // 329: cambrian.LogFilterOp.AttrEqualsEntry
+	nil,                                        // 330: cambrian.IntegrationOp.SettingsEntry
+	nil,                                        // 331: cambrian.InstallIntegrationOpRequest.SettingsEntry
+	nil,                                        // 332: cambrian.InstallIntegrationOpRequest.SecretsEntry
+	nil,                                        // 333: cambrian.UpdateIntegrationOpRequest.SettingsEntry
+	nil,                                        // 334: cambrian.ErasureReceiptOp.CountsEntry
+	nil,                                        // 335: cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
+	(*timestamppb.Timestamp)(nil),              // 336: google.protobuf.Timestamp
 }
 var file_operator_proto_depIdxs = []int32{
 	25,  // 0: cambrian.SendTurnOpResponse.reply:type_name -> cambrian.MessageOp
@@ -28267,14 +28835,14 @@ var file_operator_proto_depIdxs = []int32{
 	16,  // 4: cambrian.GetFactChainOpResponse.chain:type_name -> cambrian.FactOp
 	22,  // 5: cambrian.GetFactCoverageOpResponse.versions:type_name -> cambrian.FactVersionCoverageOp
 	25,  // 6: cambrian.ListConversationMessagesOpResponse.messages:type_name -> cambrian.MessageOp
-	312, // 7: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
+	320, // 7: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
 	85,  // 8: cambrian.QueryAuditResponse.entries:type_name -> cambrian.AuditOp
 	52,  // 9: cambrian.SnapshotResponse.plans:type_name -> cambrian.PlanInFlightOp
 	53,  // 10: cambrian.SnapshotResponse.sessions:type_name -> cambrian.SessionSummaryOp
 	50,  // 11: cambrian.SnapshotResponse.plugins:type_name -> cambrian.PluginInfoOp
 	49,  // 12: cambrian.SnapshotResponse.fact_extractor:type_name -> cambrian.FactExtractorStatsOp
 	51,  // 13: cambrian.PluginInfoOp.panels:type_name -> cambrian.PluginPanelOp
-	328, // 14: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
+	336, // 14: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
 	64,  // 15: cambrian.OperatorEvent.resync:type_name -> cambrian.ResyncRequired
 	71,  // 16: cambrian.OperatorEvent.agent_ready:type_name -> cambrian.AgentReadyOp
 	73,  // 17: cambrian.OperatorEvent.session_dormant:type_name -> cambrian.SessionDormantOp
@@ -28298,50 +28866,50 @@ var file_operator_proto_depIdxs = []int32{
 	59,  // 35: cambrian.OperatorEvent.retention_run:type_name -> cambrian.RetentionRunOp
 	57,  // 36: cambrian.OperatorEvent.pipeline_meters:type_name -> cambrian.PipelineMetersOp
 	56,  // 37: cambrian.OperatorEvent.pipeline_step:type_name -> cambrian.PipelineStepOp
-	287, // 38: cambrian.OperatorEvent.integration_health:type_name -> cambrian.IntegrationHealthOp
+	295, // 38: cambrian.OperatorEvent.integration_health:type_name -> cambrian.IntegrationHealthOp
 	107, // 39: cambrian.OperatorEvent.hitl_resolved:type_name -> cambrian.HITLResolvedOp
 	65,  // 40: cambrian.OperatorEvent.selection:type_name -> cambrian.SelectionEventOp
 	58,  // 41: cambrian.PipelineMetersOp.nodes:type_name -> cambrian.PipelineNodeMeterOp
-	313, // 42: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
-	328, // 43: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
-	328, // 44: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
+	321, // 42: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
+	336, // 43: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
+	336, // 44: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
 	60,  // 45: cambrian.RetentionRunOp.deleted:type_name -> cambrian.RetentionDeletionOp
 	66,  // 46: cambrian.SelectionEventOp.candidates:type_name -> cambrian.SelectionCandidateOp
 	67,  // 47: cambrian.SelectionEventOp.funnel:type_name -> cambrian.GatekeeperFunnelOp
 	68,  // 48: cambrian.GatekeeperFunnelOp.l1:type_name -> cambrian.DeclarationResultOp
 	69,  // 49: cambrian.GatekeeperFunnelOp.l2:type_name -> cambrian.SemanticGateOp
 	70,  // 50: cambrian.GatekeeperFunnelOp.l3:type_name -> cambrian.MeritResultOp
-	328, // 51: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
-	328, // 52: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
+	336, // 51: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
+	336, // 52: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
 	83,  // 53: cambrian.PlanStateOp.steps:type_name -> cambrian.PlanStepOp
 	86,  // 54: cambrian.ToolGrantOp.policy:type_name -> cambrian.ToolPolicyOp
 	87,  // 55: cambrian.ToolOp.grants:type_name -> cambrian.ToolGrantOp
 	88,  // 56: cambrian.ListToolsOpResponse.tools:type_name -> cambrian.ToolOp
-	328, // 57: cambrian.SkillOp.state_changed_at:type_name -> google.protobuf.Timestamp
-	328, // 58: cambrian.SkillOp.last_used_at:type_name -> google.protobuf.Timestamp
+	336, // 57: cambrian.SkillOp.state_changed_at:type_name -> google.protobuf.Timestamp
+	336, // 58: cambrian.SkillOp.last_used_at:type_name -> google.protobuf.Timestamp
 	92,  // 59: cambrian.ListSkillsOpResponse.skills:type_name -> cambrian.SkillOp
-	328, // 60: cambrian.QueryMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
-	328, // 61: cambrian.QueryMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
-	328, // 62: cambrian.QueryMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
-	328, // 63: cambrian.MemoryOp.event_time:type_name -> google.protobuf.Timestamp
-	328, // 64: cambrian.MemoryOp.event_time_end:type_name -> google.protobuf.Timestamp
+	336, // 60: cambrian.QueryMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
+	336, // 61: cambrian.QueryMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
+	336, // 62: cambrian.QueryMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
+	336, // 63: cambrian.MemoryOp.event_time:type_name -> google.protobuf.Timestamp
+	336, // 64: cambrian.MemoryOp.event_time_end:type_name -> google.protobuf.Timestamp
 	95,  // 65: cambrian.QueryMemoryResponse.results:type_name -> cambrian.MemoryOp
 	143, // 66: cambrian.QueryMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
-	328, // 67: cambrian.AnswerMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
-	328, // 68: cambrian.AnswerMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
-	328, // 69: cambrian.AnswerMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
-	328, // 70: cambrian.MemoryCitation.event_time:type_name -> google.protobuf.Timestamp
-	328, // 71: cambrian.MemoryCitation.event_time_end:type_name -> google.protobuf.Timestamp
+	336, // 67: cambrian.AnswerMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
+	336, // 68: cambrian.AnswerMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
+	336, // 69: cambrian.AnswerMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
+	336, // 70: cambrian.MemoryCitation.event_time:type_name -> google.protobuf.Timestamp
+	336, // 71: cambrian.MemoryCitation.event_time_end:type_name -> google.protobuf.Timestamp
 	98,  // 72: cambrian.AnswerMemoryResponse.citations:type_name -> cambrian.MemoryCitation
 	143, // 73: cambrian.AnswerMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
 	86,  // 74: cambrian.SetToolPolicyRequest.policy:type_name -> cambrian.ToolPolicyOp
-	328, // 75: cambrian.IngestMemoryOpRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	336, // 75: cambrian.IngestMemoryOpRequest.occurred_at:type_name -> google.protobuf.Timestamp
 	104, // 76: cambrian.IngestMemoryOpRequest.parts:type_name -> cambrian.MemoryPartOp
-	328, // 77: cambrian.MemoryPartOp.occurred_at:type_name -> google.protobuf.Timestamp
+	336, // 77: cambrian.MemoryPartOp.occurred_at:type_name -> google.protobuf.Timestamp
 	106, // 78: cambrian.ListApprovalsOpResponse.approvals:type_name -> cambrian.ApprovalOp
 	113, // 79: cambrian.ListStandingApprovalsOpResponse.standing:type_name -> cambrian.StandingApprovalOp
 	119, // 80: cambrian.WatchConfigOp.action:type_name -> cambrian.WatchActionOp
-	314, // 81: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
+	322, // 81: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
 	121, // 82: cambrian.WatchConfigOp.last_fires:type_name -> cambrian.WatchFireOp
 	119, // 83: cambrian.WatchConfigOp.actions:type_name -> cambrian.WatchActionOp
 	120, // 84: cambrian.ListWatchesOpResponse.configs:type_name -> cambrian.WatchConfigOp
@@ -28351,24 +28919,24 @@ var file_operator_proto_depIdxs = []int32{
 	120, // 88: cambrian.BacktestWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
 	135, // 89: cambrian.BacktestWatchOpResponse.verdicts:type_name -> cambrian.WatchBacktestVerdictOp
 	137, // 90: cambrian.PreviewRouteOpRequest.candidates:type_name -> cambrian.PreviewCandidateOp
-	315, // 91: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	323, // 91: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
 	70,  // 92: cambrian.PreviewRouteOpResponse.ranked:type_name -> cambrian.MeritResultOp
 	142, // 93: cambrian.AccessDecisionOp.decided_by:type_name -> cambrian.PolicyContributionOp
 	143, // 94: cambrian.ExplainAccessOpResponse.decision:type_name -> cambrian.AccessDecisionOp
 	148, // 95: cambrian.ListDocumentsOpResponse.documents:type_name -> cambrian.DocumentSummaryOp
 	151, // 96: cambrian.ListSessionCheckpointsOpResponse.checkpoints:type_name -> cambrian.SessionCheckpointOp
-	285, // 97: cambrian.MCPServerOp.containment:type_name -> cambrian.IntegrationContainmentOp
+	293, // 97: cambrian.MCPServerOp.containment:type_name -> cambrian.IntegrationContainmentOp
 	154, // 98: cambrian.ListMCPServersOpResponse.servers:type_name -> cambrian.MCPServerOp
 	161, // 99: cambrian.ListGeneratorsOpResponse.generators:type_name -> cambrian.GeneratorOp
 	164, // 100: cambrian.ListRoleAssignmentsOpResponse.assignments:type_name -> cambrian.RoleAssignmentOp
 	168, // 101: cambrian.SaveGeneratorOpRequest.generator:type_name -> cambrian.GeneratorSpecOp
 	172, // 102: cambrian.SaveMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
 	172, // 103: cambrian.TestMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
-	316, // 104: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
-	317, // 105: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
-	318, // 106: cambrian.ConfigSchemaOp.overrides_file:type_name -> cambrian.ConfigSchemaOp.OverridesFileEntry
-	319, // 107: cambrian.ConfigSchemaOp.overrides_file_value:type_name -> cambrian.ConfigSchemaOp.OverridesFileValueEntry
-	320, // 108: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
+	324, // 104: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
+	325, // 105: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
+	326, // 106: cambrian.ConfigSchemaOp.overrides_file:type_name -> cambrian.ConfigSchemaOp.OverridesFileEntry
+	327, // 107: cambrian.ConfigSchemaOp.overrides_file_value:type_name -> cambrian.ConfigSchemaOp.OverridesFileValueEntry
+	328, // 108: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
 	187, // 109: cambrian.SetConfigOpResponse.outcomes:type_name -> cambrian.ConfigWriteOutcomeOp
 	189, // 110: cambrian.SubmitPlanOpRequest.steps:type_name -> cambrian.AuthoredStepOp
 	191, // 111: cambrian.SubmitPlanOpResponse.issues:type_name -> cambrian.PlanValidationIssueOp
@@ -28383,7 +28951,7 @@ var file_operator_proto_depIdxs = []int32{
 	207, // 120: cambrian.BlastRadiusPreviewOp.affected_agents:type_name -> cambrian.AgentImpactOp
 	208, // 121: cambrian.BlastRadiusPreviewOp.affected_plans:type_name -> cambrian.PlanImpactOp
 	211, // 122: cambrian.LogRecordOp.attrs:type_name -> cambrian.LogAttrOp
-	321, // 123: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
+	329, // 123: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
 	213, // 124: cambrian.QueryLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
 	212, // 125: cambrian.QueryLogsOpResponse.records:type_name -> cambrian.LogRecordOp
 	214, // 126: cambrian.QueryLogsOpResponse.window:type_name -> cambrian.LogWindowOp
@@ -28402,310 +28970,323 @@ var file_operator_proto_depIdxs = []int32{
 	238, // 139: cambrian.SavePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
 	243, // 140: cambrian.ConfirmLinkOpResponse.link:type_name -> cambrian.LinkOp
 	243, // 141: cambrian.ListLinkCandidatesOpResponse.candidates:type_name -> cambrian.LinkOp
-	328, // 142: cambrian.MemoryNotesSummaryOp.updated_at:type_name -> google.protobuf.Timestamp
-	252, // 143: cambrian.ListMemoryNotesOpResponse.notes:type_name -> cambrian.MemoryNotesSummaryOp
-	328, // 144: cambrian.MemoryNotesOp.updated_at:type_name -> google.protobuf.Timestamp
-	328, // 145: cambrian.SkillProposalOp.created_at:type_name -> google.protobuf.Timestamp
-	328, // 146: cambrian.SkillProposalOp.decided_at:type_name -> google.protobuf.Timestamp
-	261, // 147: cambrian.ListSkillProposalsOpResponse.proposals:type_name -> cambrian.SkillProposalOp
-	328, // 148: cambrian.SkillLedgerEntryOp.at:type_name -> google.protobuf.Timestamp
-	267, // 149: cambrian.ListSkillLedgerOpResponse.entries:type_name -> cambrian.SkillLedgerEntryOp
-	328, // 150: cambrian.SkillGrantOp.granted_at:type_name -> google.protobuf.Timestamp
-	328, // 151: cambrian.SkillGrantOp.revoked_at:type_name -> google.protobuf.Timestamp
-	328, // 152: cambrian.SkillAccessRequestOp.requested_at:type_name -> google.protobuf.Timestamp
-	328, // 153: cambrian.SkillAccessRequestOp.decided_at:type_name -> google.protobuf.Timestamp
-	272, // 154: cambrian.ListSkillGrantsOpResponse.grants:type_name -> cambrian.SkillGrantOp
-	273, // 155: cambrian.ListSkillGrantsOpResponse.requests:type_name -> cambrian.SkillAccessRequestOp
-	279, // 156: cambrian.ListIntegrationCatalogOpResponse.entries:type_name -> cambrian.IntegrationCatalogEntryOp
-	280, // 157: cambrian.IntegrationCatalogEntryOp.fields:type_name -> cambrian.IntegrationFieldOp
-	281, // 158: cambrian.IntegrationCatalogEntryOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
-	281, // 159: cambrian.IntegrationCatalogEntryOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
-	284, // 160: cambrian.ListIntegrationsOpResponse.integrations:type_name -> cambrian.IntegrationOp
-	322, // 161: cambrian.IntegrationOp.settings:type_name -> cambrian.IntegrationOp.SettingsEntry
-	286, // 162: cambrian.IntegrationOp.secrets:type_name -> cambrian.IntegrationSecretStateOp
-	287, // 163: cambrian.IntegrationOp.health:type_name -> cambrian.IntegrationHealthOp
-	281, // 164: cambrian.IntegrationOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
-	281, // 165: cambrian.IntegrationOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
-	285, // 166: cambrian.IntegrationOp.containment:type_name -> cambrian.IntegrationContainmentOp
-	281, // 167: cambrian.IntegrationCustomSpecOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
-	281, // 168: cambrian.IntegrationCustomSpecOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
-	323, // 169: cambrian.InstallIntegrationOpRequest.settings:type_name -> cambrian.InstallIntegrationOpRequest.SettingsEntry
-	324, // 170: cambrian.InstallIntegrationOpRequest.secrets:type_name -> cambrian.InstallIntegrationOpRequest.SecretsEntry
-	288, // 171: cambrian.InstallIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
-	325, // 172: cambrian.UpdateIntegrationOpRequest.settings:type_name -> cambrian.UpdateIntegrationOpRequest.SettingsEntry
-	288, // 173: cambrian.UpdateIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
-	187, // 174: cambrian.IntegrationMutationOpResponse.outcome:type_name -> cambrian.ConfigWriteOutcomeOp
-	284, // 175: cambrian.IntegrationMutationOpResponse.integration:type_name -> cambrian.IntegrationOp
-	299, // 176: cambrian.IntegrationTestResultOp.tools:type_name -> cambrian.IntegrationToolOp
-	328, // 177: cambrian.ErasureReceiptOp.erased_at:type_name -> google.protobuf.Timestamp
-	328, // 178: cambrian.ErasureReceiptOp.async_deadline:type_name -> google.protobuf.Timestamp
-	326, // 179: cambrian.ErasureReceiptOp.counts:type_name -> cambrian.ErasureReceiptOp.CountsEntry
-	301, // 180: cambrian.PreviewForgetMemoryOpRequest.selector:type_name -> cambrian.ErasureSelectorOp
-	302, // 181: cambrian.PreviewForgetMemoryOpResponse.candidates:type_name -> cambrian.ErasureCandidateOp
-	328, // 182: cambrian.PreviewForgetMemoryOpResponse.expires_at:type_name -> google.protobuf.Timestamp
-	327, // 183: cambrian.PreviewForgetMemoryOpResponse.counts_by_kind:type_name -> cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
-	301, // 184: cambrian.ForgetMemoryOpRequest.selector:type_name -> cambrian.ErasureSelectorOp
-	303, // 185: cambrian.ForgetMemoryOpResponse.receipt:type_name -> cambrian.ErasureReceiptOp
-	303, // 186: cambrian.ListErasuresOpResponse.receipts:type_name -> cambrian.ErasureReceiptOp
-	303, // 187: cambrian.GetErasureOpResponse.receipt:type_name -> cambrian.ErasureReceiptOp
-	138, // 188: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
-	39,  // 189: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
-	41,  // 190: cambrian.OperatorConsole.DescribeAuth:input_type -> cambrian.DescribeAuthRequest
-	45,  // 191: cambrian.OperatorConsole.Logout:input_type -> cambrian.LogoutRequest
-	43,  // 192: cambrian.OperatorConsole.WhoAmI:input_type -> cambrian.WhoAmIRequest
-	54,  // 193: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
-	47,  // 194: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
-	38,  // 195: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
-	35,  // 196: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
-	32,  // 197: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
-	33,  // 198: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
-	33,  // 199: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
-	33,  // 200: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
-	34,  // 201: cambrian.OperatorConsole.CancelRun:input_type -> cambrian.CancelRunRequest
-	26,  // 202: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
-	27,  // 203: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
-	28,  // 204: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
-	29,  // 205: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
-	30,  // 206: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
-	31,  // 207: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
-	0,   // 208: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
-	2,   // 209: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
-	3,   // 210: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
-	4,   // 211: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
-	6,   // 212: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
-	8,   // 213: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
-	9,   // 214: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
-	12,  // 215: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
-	13,  // 216: cambrian.OperatorConsole.ListScheduledTasks:input_type -> cambrian.ListScheduledTasksOpRequest
-	17,  // 217: cambrian.OperatorConsole.ListFacts:input_type -> cambrian.ListFactsOpRequest
-	19,  // 218: cambrian.OperatorConsole.GetFactChain:input_type -> cambrian.GetFactChainOpRequest
-	21,  // 219: cambrian.OperatorConsole.GetFactCoverage:input_type -> cambrian.GetFactCoverageOpRequest
-	304, // 220: cambrian.OperatorConsole.PreviewForgetMemory:input_type -> cambrian.PreviewForgetMemoryOpRequest
-	306, // 221: cambrian.OperatorConsole.ForgetMemory:input_type -> cambrian.ForgetMemoryOpRequest
-	308, // 222: cambrian.OperatorConsole.ListErasures:input_type -> cambrian.ListErasuresOpRequest
-	310, // 223: cambrian.OperatorConsole.GetErasure:input_type -> cambrian.GetErasureOpRequest
-	89,  // 224: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
-	91,  // 225: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
-	94,  // 226: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
-	147, // 227: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
-	218, // 228: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
-	97,  // 229: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
-	100, // 230: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
-	101, // 231: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
-	103, // 232: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
-	54,  // 233: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
-	108, // 234: cambrian.OperatorConsole.WatchMyApprovals:input_type -> cambrian.WatchMyApprovalsOpRequest
-	109, // 235: cambrian.OperatorConsole.ListApprovals:input_type -> cambrian.ListApprovalsOpRequest
-	111, // 236: cambrian.OperatorConsole.AnswerApproval:input_type -> cambrian.AnswerApprovalOpRequest
-	114, // 237: cambrian.OperatorConsole.ListStandingApprovals:input_type -> cambrian.ListStandingApprovalsOpRequest
-	116, // 238: cambrian.OperatorConsole.RevokeStandingApproval:input_type -> cambrian.RevokeStandingApprovalOpRequest
-	117, // 239: cambrian.OperatorConsole.ShareToTeam:input_type -> cambrian.ShareToTeamOpRequest
-	122, // 240: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
-	124, // 241: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
-	125, // 242: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
-	126, // 243: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
-	127, // 244: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
-	223, // 245: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
-	225, // 246: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
-	229, // 247: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
-	220, // 248: cambrian.OperatorConsole.ListNodeItems:input_type -> cambrian.ListNodeItemsOpRequest
-	232, // 249: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
-	234, // 250: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
-	236, // 251: cambrian.OperatorConsole.TransitionPipeline:input_type -> cambrian.TransitionPipelineOpRequest
-	215, // 252: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
-	217, // 253: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
-	130, // 254: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
-	133, // 255: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
-	136, // 256: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
-	141, // 257: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
-	145, // 258: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
-	150, // 259: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
-	153, // 260: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
-	156, // 261: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
-	158, // 262: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
-	160, // 263: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
-	163, // 264: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
-	166, // 265: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
-	181, // 266: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
-	183, // 267: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
-	184, // 268: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
-	185, // 269: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
-	186, // 270: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
-	169, // 271: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
-	170, // 272: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
-	171, // 273: cambrian.OperatorConsole.SetRoleAssignment:input_type -> cambrian.SetRoleAssignmentOpRequest
-	173, // 274: cambrian.OperatorConsole.SaveMCPServer:input_type -> cambrian.SaveMCPServerOpRequest
-	174, // 275: cambrian.OperatorConsole.RemoveMCPServer:input_type -> cambrian.RemoveMCPServerOpRequest
-	175, // 276: cambrian.OperatorConsole.SetMCPServerToken:input_type -> cambrian.SetMCPServerTokenOpRequest
-	176, // 277: cambrian.OperatorConsole.ClearMCPServerToken:input_type -> cambrian.ClearMCPServerTokenOpRequest
-	177, // 278: cambrian.OperatorConsole.TestMCPServer:input_type -> cambrian.TestMCPServerOpRequest
-	244, // 279: cambrian.OperatorConsole.ConfirmLink:input_type -> cambrian.ConfirmLinkOpRequest
-	246, // 280: cambrian.OperatorConsole.RetractLink:input_type -> cambrian.RetractLinkOpRequest
-	247, // 281: cambrian.OperatorConsole.RetractLinksByProducer:input_type -> cambrian.RetractLinksByProducerOpRequest
-	249, // 282: cambrian.OperatorConsole.ListLinkCandidates:input_type -> cambrian.ListLinkCandidatesOpRequest
-	190, // 283: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
-	194, // 284: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
-	196, // 285: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
-	199, // 286: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
-	204, // 287: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
-	206, // 288: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
-	179, // 289: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
-	180, // 290: cambrian.OperatorConsole.DeleteWatchDeadLetter:input_type -> cambrian.DeleteWatchDeadLetterOpRequest
-	251, // 291: cambrian.OperatorConsole.ListMemoryNotes:input_type -> cambrian.ListMemoryNotesOpRequest
-	254, // 292: cambrian.OperatorConsole.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesOpRequest
-	256, // 293: cambrian.OperatorConsole.SetMemoryNotes:input_type -> cambrian.SetMemoryNotesOpRequest
-	258, // 294: cambrian.OperatorConsole.DeleteMemoryNotes:input_type -> cambrian.DeleteMemoryNotesOpRequest
-	259, // 295: cambrian.OperatorConsole.SetMemoryNotesBudget:input_type -> cambrian.SetMemoryNotesBudgetOpRequest
-	260, // 296: cambrian.OperatorConsole.ListSkillProposals:input_type -> cambrian.ListSkillProposalsOpRequest
-	263, // 297: cambrian.OperatorConsole.DecideSkillProposal:input_type -> cambrian.DecideSkillProposalOpRequest
-	265, // 298: cambrian.OperatorConsole.SetSkillLock:input_type -> cambrian.SetSkillLockOpRequest
-	266, // 299: cambrian.OperatorConsole.ListSkillLedger:input_type -> cambrian.ListSkillLedgerOpRequest
-	269, // 300: cambrian.OperatorConsole.RollbackSkill:input_type -> cambrian.RollbackSkillOpRequest
-	271, // 301: cambrian.OperatorConsole.ListSkillGrants:input_type -> cambrian.ListSkillGrantsOpRequest
-	275, // 302: cambrian.OperatorConsole.GrantSkill:input_type -> cambrian.GrantSkillOpRequest
-	276, // 303: cambrian.OperatorConsole.RevokeSkillGrant:input_type -> cambrian.RevokeSkillGrantOpRequest
-	277, // 304: cambrian.OperatorConsole.ListIntegrationCatalog:input_type -> cambrian.ListIntegrationCatalogOpRequest
-	282, // 305: cambrian.OperatorConsole.ListIntegrations:input_type -> cambrian.ListIntegrationsOpRequest
-	289, // 306: cambrian.OperatorConsole.InstallIntegration:input_type -> cambrian.InstallIntegrationOpRequest
-	290, // 307: cambrian.OperatorConsole.UpdateIntegration:input_type -> cambrian.UpdateIntegrationOpRequest
-	291, // 308: cambrian.OperatorConsole.SetIntegrationSecret:input_type -> cambrian.SetIntegrationSecretOpRequest
-	292, // 309: cambrian.OperatorConsole.ClearIntegrationSecret:input_type -> cambrian.ClearIntegrationSecretOpRequest
-	293, // 310: cambrian.OperatorConsole.SetIntegrationEnabled:input_type -> cambrian.SetIntegrationEnabledOpRequest
-	297, // 311: cambrian.OperatorConsole.TestIntegration:input_type -> cambrian.TestIntegrationOpRequest
-	294, // 312: cambrian.OperatorConsole.RemoveIntegration:input_type -> cambrian.RemoveIntegrationOpRequest
-	295, // 313: cambrian.OperatorConsole.RevertIntegrationToFile:input_type -> cambrian.RevertIntegrationToFileOpRequest
-	296, // 314: cambrian.OperatorConsole.SetIntegrationTrustTier:input_type -> cambrian.SetIntegrationTrustTierOpRequest
-	40,  // 315: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
-	42,  // 316: cambrian.OperatorConsole.DescribeAuth:output_type -> cambrian.DescribeAuthResponse
-	46,  // 317: cambrian.OperatorConsole.Logout:output_type -> cambrian.LogoutResponse
-	44,  // 318: cambrian.OperatorConsole.WhoAmI:output_type -> cambrian.WhoAmIResponse
-	55,  // 319: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
-	48,  // 320: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
-	37,  // 321: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
-	36,  // 322: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
-	37,  // 323: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
-	37,  // 324: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
-	37,  // 325: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
-	37,  // 326: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
-	37,  // 327: cambrian.OperatorConsole.CancelRun:output_type -> cambrian.CommandAck
-	37,  // 328: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
-	37,  // 329: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
-	37,  // 330: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
-	37,  // 331: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
-	37,  // 332: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
-	37,  // 333: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
-	1,   // 334: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
-	37,  // 335: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
-	37,  // 336: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
-	5,   // 337: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
-	7,   // 338: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
-	37,  // 339: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
-	10,  // 340: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
-	24,  // 341: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
-	14,  // 342: cambrian.OperatorConsole.ListScheduledTasks:output_type -> cambrian.ListScheduledTasksOpResponse
-	18,  // 343: cambrian.OperatorConsole.ListFacts:output_type -> cambrian.ListFactsOpResponse
-	20,  // 344: cambrian.OperatorConsole.GetFactChain:output_type -> cambrian.GetFactChainOpResponse
-	23,  // 345: cambrian.OperatorConsole.GetFactCoverage:output_type -> cambrian.GetFactCoverageOpResponse
-	305, // 346: cambrian.OperatorConsole.PreviewForgetMemory:output_type -> cambrian.PreviewForgetMemoryOpResponse
-	307, // 347: cambrian.OperatorConsole.ForgetMemory:output_type -> cambrian.ForgetMemoryOpResponse
-	309, // 348: cambrian.OperatorConsole.ListErasures:output_type -> cambrian.ListErasuresOpResponse
-	311, // 349: cambrian.OperatorConsole.GetErasure:output_type -> cambrian.GetErasureOpResponse
-	90,  // 350: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
-	93,  // 351: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
-	96,  // 352: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
-	149, // 353: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
-	219, // 354: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
-	99,  // 355: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
-	37,  // 356: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
-	102, // 357: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
-	105, // 358: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
-	106, // 359: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
-	106, // 360: cambrian.OperatorConsole.WatchMyApprovals:output_type -> cambrian.ApprovalOp
-	110, // 361: cambrian.OperatorConsole.ListApprovals:output_type -> cambrian.ListApprovalsOpResponse
-	112, // 362: cambrian.OperatorConsole.AnswerApproval:output_type -> cambrian.AnswerApprovalOpResponse
-	115, // 363: cambrian.OperatorConsole.ListStandingApprovals:output_type -> cambrian.ListStandingApprovalsOpResponse
-	37,  // 364: cambrian.OperatorConsole.RevokeStandingApproval:output_type -> cambrian.CommandAck
-	118, // 365: cambrian.OperatorConsole.ShareToTeam:output_type -> cambrian.ShareToTeamOpResponse
-	123, // 366: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
-	37,  // 367: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
-	37,  // 368: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
-	37,  // 369: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
-	128, // 370: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
-	224, // 371: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
-	226, // 372: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
-	230, // 373: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
-	222, // 374: cambrian.OperatorConsole.ListNodeItems:output_type -> cambrian.ListNodeItemsOpResponse
-	233, // 375: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
-	235, // 376: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
-	237, // 377: cambrian.OperatorConsole.TransitionPipeline:output_type -> cambrian.TransitionPipelineOpResponse
-	216, // 378: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
-	212, // 379: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
-	131, // 380: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
-	134, // 381: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
-	139, // 382: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
-	144, // 383: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
-	146, // 384: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
-	152, // 385: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
-	155, // 386: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
-	157, // 387: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
-	159, // 388: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
-	162, // 389: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
-	165, // 390: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
-	167, // 391: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
-	182, // 392: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
-	188, // 393: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
-	188, // 394: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
-	188, // 395: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
-	37,  // 396: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
-	188, // 397: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
-	188, // 398: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
-	188, // 399: cambrian.OperatorConsole.SetRoleAssignment:output_type -> cambrian.SetConfigOpResponse
-	188, // 400: cambrian.OperatorConsole.SaveMCPServer:output_type -> cambrian.SetConfigOpResponse
-	188, // 401: cambrian.OperatorConsole.RemoveMCPServer:output_type -> cambrian.SetConfigOpResponse
-	188, // 402: cambrian.OperatorConsole.SetMCPServerToken:output_type -> cambrian.SetConfigOpResponse
-	37,  // 403: cambrian.OperatorConsole.ClearMCPServerToken:output_type -> cambrian.CommandAck
-	178, // 404: cambrian.OperatorConsole.TestMCPServer:output_type -> cambrian.MCPServerTestResultOp
-	245, // 405: cambrian.OperatorConsole.ConfirmLink:output_type -> cambrian.ConfirmLinkOpResponse
-	37,  // 406: cambrian.OperatorConsole.RetractLink:output_type -> cambrian.CommandAck
-	248, // 407: cambrian.OperatorConsole.RetractLinksByProducer:output_type -> cambrian.RetractLinksByProducerOpResponse
-	250, // 408: cambrian.OperatorConsole.ListLinkCandidates:output_type -> cambrian.ListLinkCandidatesOpResponse
-	192, // 409: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
-	195, // 410: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
-	198, // 411: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
-	203, // 412: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
-	205, // 413: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
-	209, // 414: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
-	37,  // 415: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
-	37,  // 416: cambrian.OperatorConsole.DeleteWatchDeadLetter:output_type -> cambrian.CommandAck
-	253, // 417: cambrian.OperatorConsole.ListMemoryNotes:output_type -> cambrian.ListMemoryNotesOpResponse
-	255, // 418: cambrian.OperatorConsole.GetMemoryNotes:output_type -> cambrian.MemoryNotesOp
-	257, // 419: cambrian.OperatorConsole.SetMemoryNotes:output_type -> cambrian.SetMemoryNotesOpResponse
-	37,  // 420: cambrian.OperatorConsole.DeleteMemoryNotes:output_type -> cambrian.CommandAck
-	37,  // 421: cambrian.OperatorConsole.SetMemoryNotesBudget:output_type -> cambrian.CommandAck
-	262, // 422: cambrian.OperatorConsole.ListSkillProposals:output_type -> cambrian.ListSkillProposalsOpResponse
-	264, // 423: cambrian.OperatorConsole.DecideSkillProposal:output_type -> cambrian.DecideSkillProposalOpResponse
-	37,  // 424: cambrian.OperatorConsole.SetSkillLock:output_type -> cambrian.CommandAck
-	268, // 425: cambrian.OperatorConsole.ListSkillLedger:output_type -> cambrian.ListSkillLedgerOpResponse
-	270, // 426: cambrian.OperatorConsole.RollbackSkill:output_type -> cambrian.RollbackSkillOpResponse
-	274, // 427: cambrian.OperatorConsole.ListSkillGrants:output_type -> cambrian.ListSkillGrantsOpResponse
-	37,  // 428: cambrian.OperatorConsole.GrantSkill:output_type -> cambrian.CommandAck
-	37,  // 429: cambrian.OperatorConsole.RevokeSkillGrant:output_type -> cambrian.CommandAck
-	278, // 430: cambrian.OperatorConsole.ListIntegrationCatalog:output_type -> cambrian.ListIntegrationCatalogOpResponse
-	283, // 431: cambrian.OperatorConsole.ListIntegrations:output_type -> cambrian.ListIntegrationsOpResponse
-	298, // 432: cambrian.OperatorConsole.InstallIntegration:output_type -> cambrian.IntegrationMutationOpResponse
-	298, // 433: cambrian.OperatorConsole.UpdateIntegration:output_type -> cambrian.IntegrationMutationOpResponse
-	298, // 434: cambrian.OperatorConsole.SetIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
-	298, // 435: cambrian.OperatorConsole.ClearIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
-	298, // 436: cambrian.OperatorConsole.SetIntegrationEnabled:output_type -> cambrian.IntegrationMutationOpResponse
-	300, // 437: cambrian.OperatorConsole.TestIntegration:output_type -> cambrian.IntegrationTestResultOp
-	298, // 438: cambrian.OperatorConsole.RemoveIntegration:output_type -> cambrian.IntegrationMutationOpResponse
-	298, // 439: cambrian.OperatorConsole.RevertIntegrationToFile:output_type -> cambrian.IntegrationMutationOpResponse
-	298, // 440: cambrian.OperatorConsole.SetIntegrationTrustTier:output_type -> cambrian.IntegrationMutationOpResponse
-	315, // [315:441] is the sub-list for method output_type
-	189, // [189:315] is the sub-list for method input_type
-	189, // [189:189] is the sub-list for extension type_name
-	189, // [189:189] is the sub-list for extension extendee
-	0,   // [0:189] is the sub-list for field type_name
+	251, // 142: cambrian.LinkPairOp.pair:type_name -> cambrian.LinkPairKeyOp
+	243, // 143: cambrian.LinkPairOp.candidates:type_name -> cambrian.LinkOp
+	243, // 144: cambrian.LinkPairOp.confirmations:type_name -> cambrian.LinkOp
+	252, // 145: cambrian.ListLinkPairsOpResponse.pairs:type_name -> cambrian.LinkPairOp
+	251, // 146: cambrian.ConfirmLinkPairOpRequest.pair:type_name -> cambrian.LinkPairKeyOp
+	243, // 147: cambrian.ConfirmLinkPairOpResponse.confirmations:type_name -> cambrian.LinkOp
+	251, // 148: cambrian.RejectLinkPairOpRequest.pair:type_name -> cambrian.LinkPairKeyOp
+	336, // 149: cambrian.MemoryNotesSummaryOp.updated_at:type_name -> google.protobuf.Timestamp
+	260, // 150: cambrian.ListMemoryNotesOpResponse.notes:type_name -> cambrian.MemoryNotesSummaryOp
+	336, // 151: cambrian.MemoryNotesOp.updated_at:type_name -> google.protobuf.Timestamp
+	336, // 152: cambrian.SkillProposalOp.created_at:type_name -> google.protobuf.Timestamp
+	336, // 153: cambrian.SkillProposalOp.decided_at:type_name -> google.protobuf.Timestamp
+	269, // 154: cambrian.ListSkillProposalsOpResponse.proposals:type_name -> cambrian.SkillProposalOp
+	336, // 155: cambrian.SkillLedgerEntryOp.at:type_name -> google.protobuf.Timestamp
+	275, // 156: cambrian.ListSkillLedgerOpResponse.entries:type_name -> cambrian.SkillLedgerEntryOp
+	336, // 157: cambrian.SkillGrantOp.granted_at:type_name -> google.protobuf.Timestamp
+	336, // 158: cambrian.SkillGrantOp.revoked_at:type_name -> google.protobuf.Timestamp
+	336, // 159: cambrian.SkillAccessRequestOp.requested_at:type_name -> google.protobuf.Timestamp
+	336, // 160: cambrian.SkillAccessRequestOp.decided_at:type_name -> google.protobuf.Timestamp
+	280, // 161: cambrian.ListSkillGrantsOpResponse.grants:type_name -> cambrian.SkillGrantOp
+	281, // 162: cambrian.ListSkillGrantsOpResponse.requests:type_name -> cambrian.SkillAccessRequestOp
+	287, // 163: cambrian.ListIntegrationCatalogOpResponse.entries:type_name -> cambrian.IntegrationCatalogEntryOp
+	288, // 164: cambrian.IntegrationCatalogEntryOp.fields:type_name -> cambrian.IntegrationFieldOp
+	289, // 165: cambrian.IntegrationCatalogEntryOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
+	289, // 166: cambrian.IntegrationCatalogEntryOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
+	292, // 167: cambrian.ListIntegrationsOpResponse.integrations:type_name -> cambrian.IntegrationOp
+	330, // 168: cambrian.IntegrationOp.settings:type_name -> cambrian.IntegrationOp.SettingsEntry
+	294, // 169: cambrian.IntegrationOp.secrets:type_name -> cambrian.IntegrationSecretStateOp
+	295, // 170: cambrian.IntegrationOp.health:type_name -> cambrian.IntegrationHealthOp
+	289, // 171: cambrian.IntegrationOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
+	289, // 172: cambrian.IntegrationOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
+	293, // 173: cambrian.IntegrationOp.containment:type_name -> cambrian.IntegrationContainmentOp
+	289, // 174: cambrian.IntegrationCustomSpecOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
+	289, // 175: cambrian.IntegrationCustomSpecOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
+	331, // 176: cambrian.InstallIntegrationOpRequest.settings:type_name -> cambrian.InstallIntegrationOpRequest.SettingsEntry
+	332, // 177: cambrian.InstallIntegrationOpRequest.secrets:type_name -> cambrian.InstallIntegrationOpRequest.SecretsEntry
+	296, // 178: cambrian.InstallIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
+	333, // 179: cambrian.UpdateIntegrationOpRequest.settings:type_name -> cambrian.UpdateIntegrationOpRequest.SettingsEntry
+	296, // 180: cambrian.UpdateIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
+	187, // 181: cambrian.IntegrationMutationOpResponse.outcome:type_name -> cambrian.ConfigWriteOutcomeOp
+	292, // 182: cambrian.IntegrationMutationOpResponse.integration:type_name -> cambrian.IntegrationOp
+	307, // 183: cambrian.IntegrationTestResultOp.tools:type_name -> cambrian.IntegrationToolOp
+	336, // 184: cambrian.ErasureReceiptOp.erased_at:type_name -> google.protobuf.Timestamp
+	336, // 185: cambrian.ErasureReceiptOp.async_deadline:type_name -> google.protobuf.Timestamp
+	334, // 186: cambrian.ErasureReceiptOp.counts:type_name -> cambrian.ErasureReceiptOp.CountsEntry
+	309, // 187: cambrian.PreviewForgetMemoryOpRequest.selector:type_name -> cambrian.ErasureSelectorOp
+	310, // 188: cambrian.PreviewForgetMemoryOpResponse.candidates:type_name -> cambrian.ErasureCandidateOp
+	336, // 189: cambrian.PreviewForgetMemoryOpResponse.expires_at:type_name -> google.protobuf.Timestamp
+	335, // 190: cambrian.PreviewForgetMemoryOpResponse.counts_by_kind:type_name -> cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
+	309, // 191: cambrian.ForgetMemoryOpRequest.selector:type_name -> cambrian.ErasureSelectorOp
+	311, // 192: cambrian.ForgetMemoryOpResponse.receipt:type_name -> cambrian.ErasureReceiptOp
+	311, // 193: cambrian.ListErasuresOpResponse.receipts:type_name -> cambrian.ErasureReceiptOp
+	311, // 194: cambrian.GetErasureOpResponse.receipt:type_name -> cambrian.ErasureReceiptOp
+	138, // 195: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
+	39,  // 196: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
+	41,  // 197: cambrian.OperatorConsole.DescribeAuth:input_type -> cambrian.DescribeAuthRequest
+	45,  // 198: cambrian.OperatorConsole.Logout:input_type -> cambrian.LogoutRequest
+	43,  // 199: cambrian.OperatorConsole.WhoAmI:input_type -> cambrian.WhoAmIRequest
+	54,  // 200: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
+	47,  // 201: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
+	38,  // 202: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
+	35,  // 203: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
+	32,  // 204: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
+	33,  // 205: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
+	33,  // 206: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
+	33,  // 207: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
+	34,  // 208: cambrian.OperatorConsole.CancelRun:input_type -> cambrian.CancelRunRequest
+	26,  // 209: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
+	27,  // 210: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
+	28,  // 211: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
+	29,  // 212: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
+	30,  // 213: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
+	31,  // 214: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
+	0,   // 215: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
+	2,   // 216: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
+	3,   // 217: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
+	4,   // 218: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
+	6,   // 219: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
+	8,   // 220: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
+	9,   // 221: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
+	12,  // 222: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
+	13,  // 223: cambrian.OperatorConsole.ListScheduledTasks:input_type -> cambrian.ListScheduledTasksOpRequest
+	17,  // 224: cambrian.OperatorConsole.ListFacts:input_type -> cambrian.ListFactsOpRequest
+	19,  // 225: cambrian.OperatorConsole.GetFactChain:input_type -> cambrian.GetFactChainOpRequest
+	21,  // 226: cambrian.OperatorConsole.GetFactCoverage:input_type -> cambrian.GetFactCoverageOpRequest
+	312, // 227: cambrian.OperatorConsole.PreviewForgetMemory:input_type -> cambrian.PreviewForgetMemoryOpRequest
+	314, // 228: cambrian.OperatorConsole.ForgetMemory:input_type -> cambrian.ForgetMemoryOpRequest
+	316, // 229: cambrian.OperatorConsole.ListErasures:input_type -> cambrian.ListErasuresOpRequest
+	318, // 230: cambrian.OperatorConsole.GetErasure:input_type -> cambrian.GetErasureOpRequest
+	89,  // 231: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
+	91,  // 232: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
+	94,  // 233: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
+	147, // 234: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
+	218, // 235: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
+	97,  // 236: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
+	100, // 237: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
+	101, // 238: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
+	103, // 239: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
+	54,  // 240: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
+	108, // 241: cambrian.OperatorConsole.WatchMyApprovals:input_type -> cambrian.WatchMyApprovalsOpRequest
+	109, // 242: cambrian.OperatorConsole.ListApprovals:input_type -> cambrian.ListApprovalsOpRequest
+	111, // 243: cambrian.OperatorConsole.AnswerApproval:input_type -> cambrian.AnswerApprovalOpRequest
+	114, // 244: cambrian.OperatorConsole.ListStandingApprovals:input_type -> cambrian.ListStandingApprovalsOpRequest
+	116, // 245: cambrian.OperatorConsole.RevokeStandingApproval:input_type -> cambrian.RevokeStandingApprovalOpRequest
+	117, // 246: cambrian.OperatorConsole.ShareToTeam:input_type -> cambrian.ShareToTeamOpRequest
+	122, // 247: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
+	124, // 248: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
+	125, // 249: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
+	126, // 250: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
+	127, // 251: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
+	223, // 252: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
+	225, // 253: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
+	229, // 254: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
+	220, // 255: cambrian.OperatorConsole.ListNodeItems:input_type -> cambrian.ListNodeItemsOpRequest
+	232, // 256: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
+	234, // 257: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
+	236, // 258: cambrian.OperatorConsole.TransitionPipeline:input_type -> cambrian.TransitionPipelineOpRequest
+	215, // 259: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
+	217, // 260: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
+	130, // 261: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
+	133, // 262: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
+	136, // 263: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
+	141, // 264: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
+	145, // 265: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
+	150, // 266: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
+	153, // 267: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
+	156, // 268: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
+	158, // 269: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
+	160, // 270: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
+	163, // 271: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
+	166, // 272: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
+	181, // 273: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
+	183, // 274: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
+	184, // 275: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
+	185, // 276: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
+	186, // 277: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
+	169, // 278: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
+	170, // 279: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
+	171, // 280: cambrian.OperatorConsole.SetRoleAssignment:input_type -> cambrian.SetRoleAssignmentOpRequest
+	173, // 281: cambrian.OperatorConsole.SaveMCPServer:input_type -> cambrian.SaveMCPServerOpRequest
+	174, // 282: cambrian.OperatorConsole.RemoveMCPServer:input_type -> cambrian.RemoveMCPServerOpRequest
+	175, // 283: cambrian.OperatorConsole.SetMCPServerToken:input_type -> cambrian.SetMCPServerTokenOpRequest
+	176, // 284: cambrian.OperatorConsole.ClearMCPServerToken:input_type -> cambrian.ClearMCPServerTokenOpRequest
+	177, // 285: cambrian.OperatorConsole.TestMCPServer:input_type -> cambrian.TestMCPServerOpRequest
+	244, // 286: cambrian.OperatorConsole.ConfirmLink:input_type -> cambrian.ConfirmLinkOpRequest
+	246, // 287: cambrian.OperatorConsole.RetractLink:input_type -> cambrian.RetractLinkOpRequest
+	247, // 288: cambrian.OperatorConsole.RetractLinksByProducer:input_type -> cambrian.RetractLinksByProducerOpRequest
+	249, // 289: cambrian.OperatorConsole.ListLinkCandidates:input_type -> cambrian.ListLinkCandidatesOpRequest
+	253, // 290: cambrian.OperatorConsole.ListLinkPairs:input_type -> cambrian.ListLinkPairsOpRequest
+	255, // 291: cambrian.OperatorConsole.ConfirmLinkPair:input_type -> cambrian.ConfirmLinkPairOpRequest
+	257, // 292: cambrian.OperatorConsole.RejectLinkPair:input_type -> cambrian.RejectLinkPairOpRequest
+	190, // 293: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
+	194, // 294: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
+	196, // 295: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
+	199, // 296: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
+	204, // 297: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
+	206, // 298: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
+	179, // 299: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
+	180, // 300: cambrian.OperatorConsole.DeleteWatchDeadLetter:input_type -> cambrian.DeleteWatchDeadLetterOpRequest
+	259, // 301: cambrian.OperatorConsole.ListMemoryNotes:input_type -> cambrian.ListMemoryNotesOpRequest
+	262, // 302: cambrian.OperatorConsole.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesOpRequest
+	264, // 303: cambrian.OperatorConsole.SetMemoryNotes:input_type -> cambrian.SetMemoryNotesOpRequest
+	266, // 304: cambrian.OperatorConsole.DeleteMemoryNotes:input_type -> cambrian.DeleteMemoryNotesOpRequest
+	267, // 305: cambrian.OperatorConsole.SetMemoryNotesBudget:input_type -> cambrian.SetMemoryNotesBudgetOpRequest
+	268, // 306: cambrian.OperatorConsole.ListSkillProposals:input_type -> cambrian.ListSkillProposalsOpRequest
+	271, // 307: cambrian.OperatorConsole.DecideSkillProposal:input_type -> cambrian.DecideSkillProposalOpRequest
+	273, // 308: cambrian.OperatorConsole.SetSkillLock:input_type -> cambrian.SetSkillLockOpRequest
+	274, // 309: cambrian.OperatorConsole.ListSkillLedger:input_type -> cambrian.ListSkillLedgerOpRequest
+	277, // 310: cambrian.OperatorConsole.RollbackSkill:input_type -> cambrian.RollbackSkillOpRequest
+	279, // 311: cambrian.OperatorConsole.ListSkillGrants:input_type -> cambrian.ListSkillGrantsOpRequest
+	283, // 312: cambrian.OperatorConsole.GrantSkill:input_type -> cambrian.GrantSkillOpRequest
+	284, // 313: cambrian.OperatorConsole.RevokeSkillGrant:input_type -> cambrian.RevokeSkillGrantOpRequest
+	285, // 314: cambrian.OperatorConsole.ListIntegrationCatalog:input_type -> cambrian.ListIntegrationCatalogOpRequest
+	290, // 315: cambrian.OperatorConsole.ListIntegrations:input_type -> cambrian.ListIntegrationsOpRequest
+	297, // 316: cambrian.OperatorConsole.InstallIntegration:input_type -> cambrian.InstallIntegrationOpRequest
+	298, // 317: cambrian.OperatorConsole.UpdateIntegration:input_type -> cambrian.UpdateIntegrationOpRequest
+	299, // 318: cambrian.OperatorConsole.SetIntegrationSecret:input_type -> cambrian.SetIntegrationSecretOpRequest
+	300, // 319: cambrian.OperatorConsole.ClearIntegrationSecret:input_type -> cambrian.ClearIntegrationSecretOpRequest
+	301, // 320: cambrian.OperatorConsole.SetIntegrationEnabled:input_type -> cambrian.SetIntegrationEnabledOpRequest
+	305, // 321: cambrian.OperatorConsole.TestIntegration:input_type -> cambrian.TestIntegrationOpRequest
+	302, // 322: cambrian.OperatorConsole.RemoveIntegration:input_type -> cambrian.RemoveIntegrationOpRequest
+	303, // 323: cambrian.OperatorConsole.RevertIntegrationToFile:input_type -> cambrian.RevertIntegrationToFileOpRequest
+	304, // 324: cambrian.OperatorConsole.SetIntegrationTrustTier:input_type -> cambrian.SetIntegrationTrustTierOpRequest
+	40,  // 325: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
+	42,  // 326: cambrian.OperatorConsole.DescribeAuth:output_type -> cambrian.DescribeAuthResponse
+	46,  // 327: cambrian.OperatorConsole.Logout:output_type -> cambrian.LogoutResponse
+	44,  // 328: cambrian.OperatorConsole.WhoAmI:output_type -> cambrian.WhoAmIResponse
+	55,  // 329: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
+	48,  // 330: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
+	37,  // 331: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
+	36,  // 332: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
+	37,  // 333: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
+	37,  // 334: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
+	37,  // 335: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
+	37,  // 336: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
+	37,  // 337: cambrian.OperatorConsole.CancelRun:output_type -> cambrian.CommandAck
+	37,  // 338: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
+	37,  // 339: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
+	37,  // 340: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
+	37,  // 341: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
+	37,  // 342: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
+	37,  // 343: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
+	1,   // 344: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
+	37,  // 345: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
+	37,  // 346: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
+	5,   // 347: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
+	7,   // 348: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
+	37,  // 349: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
+	10,  // 350: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
+	24,  // 351: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
+	14,  // 352: cambrian.OperatorConsole.ListScheduledTasks:output_type -> cambrian.ListScheduledTasksOpResponse
+	18,  // 353: cambrian.OperatorConsole.ListFacts:output_type -> cambrian.ListFactsOpResponse
+	20,  // 354: cambrian.OperatorConsole.GetFactChain:output_type -> cambrian.GetFactChainOpResponse
+	23,  // 355: cambrian.OperatorConsole.GetFactCoverage:output_type -> cambrian.GetFactCoverageOpResponse
+	313, // 356: cambrian.OperatorConsole.PreviewForgetMemory:output_type -> cambrian.PreviewForgetMemoryOpResponse
+	315, // 357: cambrian.OperatorConsole.ForgetMemory:output_type -> cambrian.ForgetMemoryOpResponse
+	317, // 358: cambrian.OperatorConsole.ListErasures:output_type -> cambrian.ListErasuresOpResponse
+	319, // 359: cambrian.OperatorConsole.GetErasure:output_type -> cambrian.GetErasureOpResponse
+	90,  // 360: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
+	93,  // 361: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
+	96,  // 362: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
+	149, // 363: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
+	219, // 364: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
+	99,  // 365: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
+	37,  // 366: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
+	102, // 367: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
+	105, // 368: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
+	106, // 369: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
+	106, // 370: cambrian.OperatorConsole.WatchMyApprovals:output_type -> cambrian.ApprovalOp
+	110, // 371: cambrian.OperatorConsole.ListApprovals:output_type -> cambrian.ListApprovalsOpResponse
+	112, // 372: cambrian.OperatorConsole.AnswerApproval:output_type -> cambrian.AnswerApprovalOpResponse
+	115, // 373: cambrian.OperatorConsole.ListStandingApprovals:output_type -> cambrian.ListStandingApprovalsOpResponse
+	37,  // 374: cambrian.OperatorConsole.RevokeStandingApproval:output_type -> cambrian.CommandAck
+	118, // 375: cambrian.OperatorConsole.ShareToTeam:output_type -> cambrian.ShareToTeamOpResponse
+	123, // 376: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
+	37,  // 377: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
+	37,  // 378: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
+	37,  // 379: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
+	128, // 380: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
+	224, // 381: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
+	226, // 382: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
+	230, // 383: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
+	222, // 384: cambrian.OperatorConsole.ListNodeItems:output_type -> cambrian.ListNodeItemsOpResponse
+	233, // 385: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
+	235, // 386: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
+	237, // 387: cambrian.OperatorConsole.TransitionPipeline:output_type -> cambrian.TransitionPipelineOpResponse
+	216, // 388: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
+	212, // 389: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
+	131, // 390: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
+	134, // 391: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
+	139, // 392: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
+	144, // 393: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
+	146, // 394: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
+	152, // 395: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
+	155, // 396: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
+	157, // 397: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
+	159, // 398: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
+	162, // 399: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
+	165, // 400: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
+	167, // 401: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
+	182, // 402: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
+	188, // 403: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
+	188, // 404: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
+	188, // 405: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
+	37,  // 406: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
+	188, // 407: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
+	188, // 408: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
+	188, // 409: cambrian.OperatorConsole.SetRoleAssignment:output_type -> cambrian.SetConfigOpResponse
+	188, // 410: cambrian.OperatorConsole.SaveMCPServer:output_type -> cambrian.SetConfigOpResponse
+	188, // 411: cambrian.OperatorConsole.RemoveMCPServer:output_type -> cambrian.SetConfigOpResponse
+	188, // 412: cambrian.OperatorConsole.SetMCPServerToken:output_type -> cambrian.SetConfigOpResponse
+	37,  // 413: cambrian.OperatorConsole.ClearMCPServerToken:output_type -> cambrian.CommandAck
+	178, // 414: cambrian.OperatorConsole.TestMCPServer:output_type -> cambrian.MCPServerTestResultOp
+	245, // 415: cambrian.OperatorConsole.ConfirmLink:output_type -> cambrian.ConfirmLinkOpResponse
+	37,  // 416: cambrian.OperatorConsole.RetractLink:output_type -> cambrian.CommandAck
+	248, // 417: cambrian.OperatorConsole.RetractLinksByProducer:output_type -> cambrian.RetractLinksByProducerOpResponse
+	250, // 418: cambrian.OperatorConsole.ListLinkCandidates:output_type -> cambrian.ListLinkCandidatesOpResponse
+	254, // 419: cambrian.OperatorConsole.ListLinkPairs:output_type -> cambrian.ListLinkPairsOpResponse
+	256, // 420: cambrian.OperatorConsole.ConfirmLinkPair:output_type -> cambrian.ConfirmLinkPairOpResponse
+	258, // 421: cambrian.OperatorConsole.RejectLinkPair:output_type -> cambrian.RejectLinkPairOpResponse
+	192, // 422: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
+	195, // 423: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
+	198, // 424: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
+	203, // 425: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
+	205, // 426: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
+	209, // 427: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
+	37,  // 428: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
+	37,  // 429: cambrian.OperatorConsole.DeleteWatchDeadLetter:output_type -> cambrian.CommandAck
+	261, // 430: cambrian.OperatorConsole.ListMemoryNotes:output_type -> cambrian.ListMemoryNotesOpResponse
+	263, // 431: cambrian.OperatorConsole.GetMemoryNotes:output_type -> cambrian.MemoryNotesOp
+	265, // 432: cambrian.OperatorConsole.SetMemoryNotes:output_type -> cambrian.SetMemoryNotesOpResponse
+	37,  // 433: cambrian.OperatorConsole.DeleteMemoryNotes:output_type -> cambrian.CommandAck
+	37,  // 434: cambrian.OperatorConsole.SetMemoryNotesBudget:output_type -> cambrian.CommandAck
+	270, // 435: cambrian.OperatorConsole.ListSkillProposals:output_type -> cambrian.ListSkillProposalsOpResponse
+	272, // 436: cambrian.OperatorConsole.DecideSkillProposal:output_type -> cambrian.DecideSkillProposalOpResponse
+	37,  // 437: cambrian.OperatorConsole.SetSkillLock:output_type -> cambrian.CommandAck
+	276, // 438: cambrian.OperatorConsole.ListSkillLedger:output_type -> cambrian.ListSkillLedgerOpResponse
+	278, // 439: cambrian.OperatorConsole.RollbackSkill:output_type -> cambrian.RollbackSkillOpResponse
+	282, // 440: cambrian.OperatorConsole.ListSkillGrants:output_type -> cambrian.ListSkillGrantsOpResponse
+	37,  // 441: cambrian.OperatorConsole.GrantSkill:output_type -> cambrian.CommandAck
+	37,  // 442: cambrian.OperatorConsole.RevokeSkillGrant:output_type -> cambrian.CommandAck
+	286, // 443: cambrian.OperatorConsole.ListIntegrationCatalog:output_type -> cambrian.ListIntegrationCatalogOpResponse
+	291, // 444: cambrian.OperatorConsole.ListIntegrations:output_type -> cambrian.ListIntegrationsOpResponse
+	306, // 445: cambrian.OperatorConsole.InstallIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	306, // 446: cambrian.OperatorConsole.UpdateIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	306, // 447: cambrian.OperatorConsole.SetIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
+	306, // 448: cambrian.OperatorConsole.ClearIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
+	306, // 449: cambrian.OperatorConsole.SetIntegrationEnabled:output_type -> cambrian.IntegrationMutationOpResponse
+	308, // 450: cambrian.OperatorConsole.TestIntegration:output_type -> cambrian.IntegrationTestResultOp
+	306, // 451: cambrian.OperatorConsole.RemoveIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	306, // 452: cambrian.OperatorConsole.RevertIntegrationToFile:output_type -> cambrian.IntegrationMutationOpResponse
+	306, // 453: cambrian.OperatorConsole.SetIntegrationTrustTier:output_type -> cambrian.IntegrationMutationOpResponse
+	325, // [325:454] is the sub-list for method output_type
+	196, // [196:325] is the sub-list for method input_type
+	196, // [196:196] is the sub-list for extension type_name
+	196, // [196:196] is the sub-list for extension extendee
+	0,   // [0:196] is the sub-list for field type_name
 }
 
 func init() { file_operator_proto_init() }
@@ -28754,7 +29335,7 @@ func file_operator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_operator_proto_rawDesc), len(file_operator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   328,
+			NumMessages:   336,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

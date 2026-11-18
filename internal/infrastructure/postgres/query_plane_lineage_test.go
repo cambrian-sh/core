@@ -328,3 +328,11 @@ func TestPg_WhyFromEntityRef_HopsRespectBothEndsScope(t *testing.T) {
 		t.Fatal("the operator saw no hop either, so the stranger's empty answer proved nothing")
 	}
 }
+
+func (f *inboxLinkStore) CandidatePairs(context.Context, string, int) ([]domain.LinkPair, error) {
+	panic("not used by this test")
+}
+
+func (f *inboxLinkStore) PairLinks(context.Context, domain.LinkPairKey) (domain.LinkPair, error) {
+	panic("not used by this test")
+}

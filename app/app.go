@@ -111,20 +111,22 @@ type Kernel struct {
 	// otherwise local to the build, and a queue of candidates nobody can confirm
 	// is the state contract 0098 exists to end. nil without a database.
 	Links domain.LinkStore
-	// linkReview reads the review inbox through the query plane, so every
-	// candidate passes the plane's per-link evidence filter (owner fence
-	// included) before the operator sees it
-	// (T-20261107-link-review-inbox-and-entity-op-candidates-skip).
-	linkReview  *postgres.PgQueryPlane
-	Registry    domain.AgentRegistry // domain-facing interface layer
-	Store       io.Closer            // opaque storage handle — only Close() is exposed
-	Memory      *kernel.MemoryStack
-	Awareness   *kernel.AwarenessStack
-	Metabolism  *kernel.MetabolismStack
-	Supervision *kernel.SupervisionStack
-	Server      *subnetwork.Server
-	Listener    net.Listener
-	GRPC        *grpc.Server
+	// linkReviewLane is the operator plane's review lane (contracts 0098/0109),
+	// composed by Substrate.LinkReview: the inbox reads go through the query
+	// plane, so every candidate passes the plane's per-link evidence filter
+	// (owner fence included) before the operator sees it
+	// (T-20261107-link-review-inbox-and-entity-op-candidates-skip). nil without
+	// a database.
+	linkReviewLane operator.LinkWriter
+	Registry       domain.AgentRegistry // domain-facing interface layer
+	Store          io.Closer            // opaque storage handle — only Close() is exposed
+	Memory         *kernel.MemoryStack
+	Awareness      *kernel.AwarenessStack
+	Metabolism     *kernel.MetabolismStack
+	Supervision    *kernel.SupervisionStack
+	Server         *subnetwork.Server
+	Listener       net.Listener
+	GRPC           *grpc.Server
 	// agentSockets serves the gRPC plane on the kernel-only agents' unix
 	// sockets (ADR-0157 S2); started with GRPC, stopped after it.
 	agentSockets *agentSocketServer
@@ -2818,7 +2820,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	return &Kernel{
 		agentSockets:    agentSockets,
 		Links:           linkStore,
-		linkReview:      queryPlane,
+		linkReviewLane:  substrate.LinkReview(),
 		OperatorEffects: operatorEffects,
 		MemorySharer:    sharer,
 		OperatorAudit:   operatorAudit,
@@ -3566,8 +3568,8 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// Producers below the trust ceiling (derived, scored, correlation) can
 		// only ever write `candidate`. Without this binding those proposals were
 		// write-only: the queue filled and nothing in the product could empty it.
-		if k.Links != nil {
-			operatorSvc.SetLinkWriter(linkWriteSource{links: k.Links, review: k.linkReview})
+		if k.linkReviewLane != nil {
+			operatorSvc.SetLinkWriter(k.linkReviewLane)
 		}
 
 		// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
@@ -3987,7 +3989,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// 0108 (2026-11-18, additive; ENG-2018): ErasureReceipt.not_erasable_external
 		// (agent plane) and ErasureReceiptOp.not_erasable_external (operator plane) —
 		// the ADR-0137 D7 async steps that could not erase from an external service.
-		operatorSvc.SetHandshake(KernelVersion, "0108", operatorCaps)
+		// 0109 (2026-11-18, additive; ENG-2030/ENG-2032): the review lane over CLAIMS -
+		// ListLinkPairs (the inbox with each pair once, already_confirmed = "extend
+		// the confirmation?"), ConfirmLinkPair (one confirmation per readable open
+		// candidate row), RejectLinkPair (retract them + record the claim's
+		// rejection) - and LinkOp.supporting_evidence_ids. Row-level RPCs unchanged.
+		operatorSvc.SetHandshake(KernelVersion, "0109", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

@@ -104,6 +104,10 @@ type IdentityEntityRow struct {
 	// handle on the party's evidence — the least restricted such route, so the
 	// tags are those of one real supporting row.
 	Classification []string
+	// RouteEvidence is, for EntitiesWithParty only, the evidence row of that same
+	// route row (the party-carrying evidence the handle appears on), so a link
+	// derived from it can record it as a supporting row (ENG-2032). "" elsewhere.
+	RouteEvidence string
 }
 
 // IdentityPartyRow pairs a party identity with an evidence row carrying it.

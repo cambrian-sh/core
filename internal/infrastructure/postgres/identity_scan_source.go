@@ -183,34 +183,48 @@ func (s *PgIdentityScanSource) EntitiesWithParty(ctx context.Context, scope *dom
 			ORDER BY e.ingested_at DESC
 			LIMIT ` + a.add(identityPartyEvidenceScanLimit) + `::int
 		), ent AS (
-			SELECT en.id AS entity_id, en.first_seen_classification AS cls FROM entities en
+			SELECT en.id AS entity_id, en.first_seen_classification AS cls, ev.id AS evid FROM entities en
 			  JOIN ev ON ev.id = en.first_seen_evidence
 			  WHERE en.namespace_id=` + ns + `::text` +
 		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 			UNION
-			SELECT o.entity_id, o.classification FROM observations o
+			SELECT o.entity_id, o.classification, ev.id FROM observations o
 			  JOIN ev ON ev.id = o.evidence_id
 			  WHERE o.namespace_id=` + ns + `::text` + notRetired("o") +
 		a.viaTypedRow(scope, "o.evidence_id", "o.classification") + `
 			UNION
-			SELECT r.entity_id, x.classification FROM event_roles r
+			SELECT r.entity_id, x.classification, ev.id FROM event_roles r
 			  JOIN events x ON x.id = r.event_id
 			  JOIN ev ON ev.id = x.evidence_id
 			  WHERE x.namespace_id=` + ns + `::text` + notRetired("x") +
 		a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
 		), route AS (
-			SELECT DISTINCT ON (entity_id) entity_id, COALESCE(cls, '{}') AS cls FROM ent
-			ORDER BY entity_id, ` + leastRestrictedOrder("cls") + `
+			SELECT DISTINCT ON (entity_id) entity_id, COALESCE(cls, '{}') AS cls, evid FROM ent
+			ORDER BY entity_id, ` + leastRestrictedOrder("cls") + `, evid
 		)
 		SELECT en.id, en.kind, en.created_at, COALESCE(en.first_seen_evidence, ''),
-		       ARRAY(SELECT DISTINCT u.t FROM unnest(COALESCE(en.first_seen_classification, '{}') || route.cls) AS u(t) ORDER BY u.t)
+		       ARRAY(SELECT DISTINCT u.t FROM unnest(COALESCE(en.first_seen_classification, '{}') || route.cls) AS u(t) ORDER BY u.t),
+		       route.evid
 		FROM entities en
 		JOIN route ON route.entity_id = en.id
 		WHERE en.namespace_id=` + ns + `::text AND en.kind=` + a.add(kind) + `::text` +
 		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 		ORDER BY en.created_at, en.id
 		LIMIT ` + a.add(limit) + `::int`
-	return s.entities(ctx, "entities by party", q, a.args)
+	rows, err := s.pool.Query(ctx, q, a.args...)
+	if err != nil {
+		return nil, identityScanErr("entities by party", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.IdentityEntityRow, error) {
+		var e domain.IdentityEntityRow
+		err := r.Scan(&e.ID, &e.Kind, &e.CreatedAt, &e.FirstSeenEvidence, &e.Classification, &e.RouteEvidence)
+		e.Classification = rowClassificationRead(e.Classification)
+		return e, err
+	})
+	if err != nil {
+		return nil, identityScanErr("entities by party", err)
+	}
+	return out, nil
 }
 
 func (s *PgIdentityScanSource) entities(ctx context.Context, what, q string, args []any) ([]domain.IdentityEntityRow, error) {

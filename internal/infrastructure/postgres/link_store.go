@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -57,7 +58,7 @@ func confirmationSourceRef(linkID string) string { return "confirm:" + linkID }
 
 const linkColumns = `id, namespace_id, family, from_ref, to_ref, relation, state, mechanism,
 	producer, confidence, evidence_id, asserted_by, asserted_at, recorded_at,
-	valid_from, valid_to, retracted_at, source_ref, classification`
+	valid_from, valid_to, retracted_at, source_ref, classification, supporting_evidence`
 
 // PutLink appends one assertion, idempotent on links_dedup.
 //
@@ -122,13 +123,14 @@ func insertLink(ctx context.Context, tx pgx.Tx, l domain.Link, declVersion int64
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO links (id, namespace_id, family, from_ref, to_ref, relation, state,
 			mechanism, producer, confidence, evidence_id, asserted_by, asserted_at,
-			valid_from, valid_to, source_ref, decl_version, classification)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			valid_from, valid_to, source_ref, decl_version, classification, supporting_evidence)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT ON CONSTRAINT links_dedup DO NOTHING`,
 		l.ID, l.NamespaceID, l.Family, l.FromRef, l.ToRef, l.Relation, l.State,
 		l.Mechanism, l.Producer, l.Confidence, nullableEvidence(l.EvidenceID), l.AssertedBy,
 		l.AssertedAt.UTC(), utcOrNil(l.ValidFrom), utcOrNil(l.ValidTo), l.SourceRef,
-		declVersionOrNil(declVersion), rowClassificationArg(rowTags))
+		declVersionOrNil(declVersion), rowClassificationArg(rowTags),
+		supportingEvidenceArg(l.EvidenceID, l.SupportingEvidence))
 	if err != nil {
 		return false, err
 	}
@@ -204,7 +206,20 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 		return domain.Link{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	confirmed, err := s.confirmTx(ctx, tx, namespace, linkID, actor)
+	if err != nil {
+		return domain.Link{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Link{}, err
+	}
+	return confirmed, nil
+}
 
+// confirmTx is ConfirmLink's body inside a caller's transaction, so the pair-level
+// confirm (ConfirmLinks) writes every row's confirmation atomically through the one
+// rendering of "confirm this row".
+func (s *PgLinkStore) confirmTx(ctx context.Context, tx pgx.Tx, namespace, linkID, actor string) (domain.Link, error) {
 	src, err := scanLink(tx.QueryRow(ctx,
 		`SELECT `+linkColumns+` FROM links WHERE namespace_id=$1 AND id=$2`,
 		namespace, linkID))
@@ -244,6 +259,10 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 		// inherits its evidence (ADR-0158 D1): endorsing a restricted assertion
 		// must not publish it wider than the assertion itself.
 		Classification: src.Classification,
+		// And its supporting evidence (ENG-2032): erasing any row the candidate
+		// was derived from removes the confirmation with it, so a confirmation
+		// made through one source goes when that source is forgotten.
+		SupportingEvidence: src.SupportingEvidence,
 	}
 	reg := s.relations.RelationsFor(namespace)
 	if err := reg.ValidateLink(confirmed); err != nil {
@@ -277,9 +296,6 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 			return domain.Link{}, fmt.Errorf("link confirm: the confirmation of link %q in namespace %q was retracted and is not reinstated: %w",
 				linkID, namespace, domain.ErrLinkRefused)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return domain.Link{}, err
 	}
 	return confirmed, nil
 }
@@ -434,10 +450,20 @@ func (s *PgLinkStore) LinksForRefs(ctx context.Context, namespace string, refs [
 // re-confirming would only replay the standing row). Literal 'candidate' and
 // 'human' (not bound parameters) so the planner can match the partial indexes
 // idx_links_review / idx_links_candidate_* / idx_links_confirmations (0038).
+//
+// A candidate whose PAIR was rejected (a pair-level reject appended a
+// domain.IsPairRejection row for the same namespace, family, from, to and
+// relation; ADR-0128 D4, owner decision 2026-11-18 Q3) is not open either,
+// whichever lane or source wrote it: "never ask me this again" holds for the
+// claim, not for one row. links_dedup's leading columns serve that probe.
 const openCandidate = `l.state = 'candidate' AND l.retracted_at IS NULL
 	AND NOT EXISTS (SELECT 1 FROM links c
 		WHERE c.namespace_id = l.namespace_id AND c.mechanism = 'human'
-		  AND c.source_ref = 'confirm:' || l.id)`
+		  AND c.source_ref = 'confirm:' || l.id)
+	AND NOT EXISTS (SELECT 1 FROM links rj
+		WHERE rj.namespace_id = l.namespace_id AND rj.family = l.family
+		  AND rj.from_ref = l.from_ref AND rj.to_ref = l.to_ref AND rj.relation = l.relation
+		  AND rj.mechanism = 'human' AND rj.source_ref LIKE 'reject:%')`
 
 // candidateOrder is the review inbox's order (owner decision 2026-11-12, ADR-0128
 // §3): most likely first, and among equals the one that has waited longest
@@ -519,18 +545,44 @@ func collectLinks(rows pgx.Rows) ([]domain.Link, error) {
 func scanLink(row pgx.Row, leading ...any) (domain.Link, error) {
 	var l domain.Link
 	var evidenceID *string
+	var supporting []string
 	dest := append(leading, &l.ID, &l.NamespaceID, &l.Family, &l.FromRef, &l.ToRef, &l.Relation,
 		&l.State, &l.Mechanism, &l.Producer, &l.Confidence, &evidenceID, &l.AssertedBy,
 		&l.AssertedAt, &l.RecordedAt, &l.ValidFrom, &l.ValidTo, &l.RetractedAt,
-		&l.SourceRef, &l.Classification)
+		&l.SourceRef, &l.Classification, &supporting)
 	if err := row.Scan(dest...); err != nil {
 		return domain.Link{}, err
 	}
 	l.Classification = rowClassificationRead(l.Classification)
+	for _, e := range supporting {
+		l.SupportingEvidence = append(l.SupportingEvidence, domain.EvidenceID(e))
+	}
 	if evidenceID != nil {
 		l.EvidenceID = domain.EvidenceID(*evidenceID)
 	}
 	return l, nil
+}
+
+// supportingEvidenceArg renders a link's supporting evidence for the column:
+// sorted, de-duplicated, without empties and without the cited evidence itself
+// (the cascade already deletes by evidence_id), never NULL. Sorted so a replay
+// writes byte-identical rows.
+func supportingEvidenceArg(cited domain.EvidenceID, in []domain.EvidenceID) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, e := range in {
+		v := string(e)
+		if v == "" || e == cited {
+			continue
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // nullableEvidence keeps an absent basis as SQL NULL rather than "", so the FK to

@@ -113,6 +113,9 @@ const (
 	OperatorConsole_RetractLink_FullMethodName              = "/cambrian.OperatorConsole/RetractLink"
 	OperatorConsole_RetractLinksByProducer_FullMethodName   = "/cambrian.OperatorConsole/RetractLinksByProducer"
 	OperatorConsole_ListLinkCandidates_FullMethodName       = "/cambrian.OperatorConsole/ListLinkCandidates"
+	OperatorConsole_ListLinkPairs_FullMethodName            = "/cambrian.OperatorConsole/ListLinkPairs"
+	OperatorConsole_ConfirmLinkPair_FullMethodName          = "/cambrian.OperatorConsole/ConfirmLinkPair"
+	OperatorConsole_RejectLinkPair_FullMethodName           = "/cambrian.OperatorConsole/RejectLinkPair"
 	OperatorConsole_SubmitPlan_FullMethodName               = "/cambrian.OperatorConsole/SubmitPlan"
 	OperatorConsole_GetReactiveBudget_FullMethodName        = "/cambrian.OperatorConsole/GetReactiveBudget"
 	OperatorConsole_GetTokenSeries_FullMethodName           = "/cambrian.OperatorConsole/GetTokenSeries"
@@ -711,6 +714,31 @@ type OperatorConsoleClient interface {
 	RetractLink(ctx context.Context, in *RetractLinkOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	RetractLinksByProducer(ctx context.Context, in *RetractLinksByProducerOpRequest, opts ...grpc.CallOption) (*RetractLinksByProducerOpResponse, error)
 	ListLinkCandidates(ctx context.Context, in *ListLinkCandidatesOpRequest, opts ...grpc.CallOption) (*ListLinkCandidatesOpResponse, error)
+	// ListLinkPairs / ConfirmLinkPair / RejectLinkPair are the review lane over
+	// CLAIMS (contract 0109; ENG-2030, owner decisions 2026-11-18). One claim — the
+	// same (namespace, family, from_ref, to_ref, relation) — is several rows: one
+	// per producer lane and per supporting source, plus a mapping's deferred
+	// crosswalk, each with its own evidence and classification, so a reader allowed
+	// to read ANY of them reaches the claim. The kernel groups them (one definition
+	// for the console, agents and tools); the row-level RPCs above are unchanged.
+	//
+	//   - ListLinkPairs is the inbox with each claim ONCE, listing only the rows the
+	//     operator plane may read. already_confirmed flags a claim a readable
+	//     confirmation already holds while a newer source's candidate waits: "already
+	//     confirmed via another source; extend the confirmation?" — never confirmed
+	//     automatically, never suppressed.
+	//   - ConfirmLinkPair writes ONE confirmation per open readable candidate row of
+	//     the claim, each exactly as ConfirmLink would (that row's evidence and
+	//     classification), atomically. A confirmation through a restricted row stays
+	//     restricted; erasing a source removes its confirmation.
+	//   - RejectLinkPair retracts every open readable candidate row of the claim and
+	//     records the rejection of the CLAIM: its later candidates leave the inbox and
+	//     no producer lane proposes it again (ADR-0128 D4 "never ask me this again").
+	//
+	// Mutating: command_id + reason, audited, Operator-only. ListLinkPairs is a read.
+	ListLinkPairs(ctx context.Context, in *ListLinkPairsOpRequest, opts ...grpc.CallOption) (*ListLinkPairsOpResponse, error)
+	ConfirmLinkPair(ctx context.Context, in *ConfirmLinkPairOpRequest, opts ...grpc.CallOption) (*ConfirmLinkPairOpResponse, error)
+	RejectLinkPair(ctx context.Context, in *RejectLinkPairOpRequest, opts ...grpc.CallOption) (*RejectLinkPairOpResponse, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -1900,6 +1928,36 @@ func (c *operatorConsoleClient) ListLinkCandidates(ctx context.Context, in *List
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListLinkPairs(ctx context.Context, in *ListLinkPairsOpRequest, opts ...grpc.CallOption) (*ListLinkPairsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListLinkPairsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListLinkPairs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ConfirmLinkPair(ctx context.Context, in *ConfirmLinkPairOpRequest, opts ...grpc.CallOption) (*ConfirmLinkPairOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfirmLinkPairOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ConfirmLinkPair_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RejectLinkPair(ctx context.Context, in *RejectLinkPairOpRequest, opts ...grpc.CallOption) (*RejectLinkPairOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RejectLinkPairOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_RejectLinkPair_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) SubmitPlan(ctx context.Context, in *SubmitPlanOpRequest, opts ...grpc.CallOption) (*SubmitPlanOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubmitPlanOpResponse)
@@ -2784,6 +2842,31 @@ type OperatorConsoleServer interface {
 	RetractLink(context.Context, *RetractLinkOpRequest) (*CommandAck, error)
 	RetractLinksByProducer(context.Context, *RetractLinksByProducerOpRequest) (*RetractLinksByProducerOpResponse, error)
 	ListLinkCandidates(context.Context, *ListLinkCandidatesOpRequest) (*ListLinkCandidatesOpResponse, error)
+	// ListLinkPairs / ConfirmLinkPair / RejectLinkPair are the review lane over
+	// CLAIMS (contract 0109; ENG-2030, owner decisions 2026-11-18). One claim — the
+	// same (namespace, family, from_ref, to_ref, relation) — is several rows: one
+	// per producer lane and per supporting source, plus a mapping's deferred
+	// crosswalk, each with its own evidence and classification, so a reader allowed
+	// to read ANY of them reaches the claim. The kernel groups them (one definition
+	// for the console, agents and tools); the row-level RPCs above are unchanged.
+	//
+	//   - ListLinkPairs is the inbox with each claim ONCE, listing only the rows the
+	//     operator plane may read. already_confirmed flags a claim a readable
+	//     confirmation already holds while a newer source's candidate waits: "already
+	//     confirmed via another source; extend the confirmation?" — never confirmed
+	//     automatically, never suppressed.
+	//   - ConfirmLinkPair writes ONE confirmation per open readable candidate row of
+	//     the claim, each exactly as ConfirmLink would (that row's evidence and
+	//     classification), atomically. A confirmation through a restricted row stays
+	//     restricted; erasing a source removes its confirmation.
+	//   - RejectLinkPair retracts every open readable candidate row of the claim and
+	//     records the rejection of the CLAIM: its later candidates leave the inbox and
+	//     no producer lane proposes it again (ADR-0128 D4 "never ask me this again").
+	//
+	// Mutating: command_id + reason, audited, Operator-only. ListLinkPairs is a read.
+	ListLinkPairs(context.Context, *ListLinkPairsOpRequest) (*ListLinkPairsOpResponse, error)
+	ConfirmLinkPair(context.Context, *ConfirmLinkPairOpRequest) (*ConfirmLinkPairOpResponse, error)
+	RejectLinkPair(context.Context, *RejectLinkPairOpRequest) (*RejectLinkPairOpResponse, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -3278,6 +3361,15 @@ func (UnimplementedOperatorConsoleServer) RetractLinksByProducer(context.Context
 }
 func (UnimplementedOperatorConsoleServer) ListLinkCandidates(context.Context, *ListLinkCandidatesOpRequest) (*ListLinkCandidatesOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListLinkCandidates not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListLinkPairs(context.Context, *ListLinkPairsOpRequest) (*ListLinkPairsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListLinkPairs not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ConfirmLinkPair(context.Context, *ConfirmLinkPairOpRequest) (*ConfirmLinkPairOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfirmLinkPair not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RejectLinkPair(context.Context, *RejectLinkPairOpRequest) (*RejectLinkPairOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RejectLinkPair not implemented")
 }
 func (UnimplementedOperatorConsoleServer) SubmitPlan(context.Context, *SubmitPlanOpRequest) (*SubmitPlanOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitPlan not implemented")
@@ -5060,6 +5152,60 @@ func _OperatorConsole_ListLinkCandidates_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListLinkPairs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLinkPairsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListLinkPairs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListLinkPairs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListLinkPairs(ctx, req.(*ListLinkPairsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ConfirmLinkPair_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfirmLinkPairOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ConfirmLinkPair(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ConfirmLinkPair_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ConfirmLinkPair(ctx, req.(*ConfirmLinkPairOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RejectLinkPair_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RejectLinkPairOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RejectLinkPair(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RejectLinkPair_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RejectLinkPair(ctx, req.(*RejectLinkPairOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_SubmitPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubmitPlanOpRequest)
 	if err := dec(in); err != nil {
@@ -6002,6 +6148,18 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListLinkCandidates",
 			Handler:    _OperatorConsole_ListLinkCandidates_Handler,
+		},
+		{
+			MethodName: "ListLinkPairs",
+			Handler:    _OperatorConsole_ListLinkPairs_Handler,
+		},
+		{
+			MethodName: "ConfirmLinkPair",
+			Handler:    _OperatorConsole_ConfirmLinkPair_Handler,
+		},
+		{
+			MethodName: "RejectLinkPair",
+			Handler:    _OperatorConsole_RejectLinkPair_Handler,
 		},
 		{
 			MethodName: "SubmitPlan",

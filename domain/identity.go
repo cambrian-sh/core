@@ -185,6 +185,62 @@ type Link struct {
 	// nil ≡ empty. Write-once with the row; a confirmation inherits the
 	// candidate's, as it inherits its evidence.
 	Classification []string
+	// SupportingEvidence is every OTHER evidence row the assertion was derived
+	// from, besides EvidenceID (ENG-2032): an identity producer reads several
+	// rows to propose one link (the matched alias's observation, both handles'
+	// mints and routes, the earlier event). The ADR-0137 erasure cascade removes
+	// the link when ANY of them, or EvidenceID, is erased, so a link derived
+	// from forgotten content does not outlive it. Write-once with the row; a
+	// confirmation inherits it with the evidence. nil ≡ none.
+	SupportingEvidence []EvidenceID
+}
+
+// LinkPairKey names one CLAIM independent of who made it: the same assertion
+// (namespace, family, from, to, relation) written by different producer lanes,
+// supporting sources or a mapping's deferred crosswalk is several rows (ADR-0128
+// D5) and one pair. The review inbox shows a pair once and the pair-level
+// confirm/reject act on its rows (owner decision 2026-11-18, ENG-2030).
+// Identity-family endpoints are compared after canonical ordering.
+type LinkPairKey struct {
+	NamespaceID string
+	Family      string
+	FromRef     string
+	ToRef       string
+	Relation    string
+}
+
+// PairKeyOf is the pair a link belongs to.
+func PairKeyOf(l Link) LinkPairKey {
+	l = CanonicalizeLink(l)
+	return LinkPairKey{NamespaceID: l.NamespaceID, Family: l.Family, FromRef: l.FromRef, ToRef: l.ToRef, Relation: l.Relation}
+}
+
+// Canonical orders an identity pair's endpoints the way the store does.
+func (k LinkPairKey) Canonical() LinkPairKey {
+	l := CanonicalizeLink(Link{Family: k.Family, FromRef: k.FromRef, ToRef: k.ToRef})
+	k.FromRef, k.ToRef = l.FromRef, l.ToRef
+	return k
+}
+
+// LinkPair is one pair as the review lane sees it: its open candidates (one per
+// producer lane and supporting source) and its live confirmed rows.
+type LinkPair struct {
+	Key        LinkPairKey
+	Candidates []Link
+	Confirmed  []Link
+}
+
+// LinkRejectionSourceRefPrefix marks the row a pair-level REJECT appends: a
+// human-mechanism row, born retracted, citing no evidence, whose source_ref is
+// this prefix plus a digest of the pair. It is the stored "never ask me this
+// again" fact for the whole pair (ADR-0128 D4, owner decision 2026-11-18 Q3):
+// the review inbox hides the pair's candidates and every producer lane stops
+// proposing the pair. A row-level RetractLink never writes it.
+const LinkRejectionSourceRefPrefix = "reject:"
+
+// IsPairRejection reports whether l is a pair-level rejection row.
+func IsPairRejection(l Link) bool {
+	return l.Mechanism == LinkMechanismHuman && strings.HasPrefix(l.SourceRef, LinkRejectionSourceRefPrefix)
 }
 
 // LinkQuery filters a LinksFor read. Every field's zero value means "no filter", so the

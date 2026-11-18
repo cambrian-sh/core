@@ -551,3 +551,11 @@ func TestPg_EntityOp_AReachableRowStillDisclosesTheHandle(t *testing.T) {
 		t.Fatalf("the subject row should lead the answer: %v", res.Rows)
 	}
 }
+
+func (f *fakeLinkStore) CandidatePairs(context.Context, string, int) ([]domain.LinkPair, error) {
+	panic("not used by this test")
+}
+
+func (f *fakeLinkStore) PairLinks(context.Context, domain.LinkPairKey) (domain.LinkPair, error) {
+	panic("not used by this test")
+}

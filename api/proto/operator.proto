@@ -629,6 +629,32 @@ service OperatorConsole {
   rpc RetractLinksByProducer(RetractLinksByProducerOpRequest) returns (RetractLinksByProducerOpResponse);
   rpc ListLinkCandidates(ListLinkCandidatesOpRequest) returns (ListLinkCandidatesOpResponse);
 
+  // ListLinkPairs / ConfirmLinkPair / RejectLinkPair are the review lane over
+  // CLAIMS (contract 0109; ENG-2030, owner decisions 2026-11-18). One claim — the
+  // same (namespace, family, from_ref, to_ref, relation) — is several rows: one
+  // per producer lane and per supporting source, plus a mapping's deferred
+  // crosswalk, each with its own evidence and classification, so a reader allowed
+  // to read ANY of them reaches the claim. The kernel groups them (one definition
+  // for the console, agents and tools); the row-level RPCs above are unchanged.
+  //
+  //   * ListLinkPairs is the inbox with each claim ONCE, listing only the rows the
+  //     operator plane may read. already_confirmed flags a claim a readable
+  //     confirmation already holds while a newer source's candidate waits: "already
+  //     confirmed via another source; extend the confirmation?" — never confirmed
+  //     automatically, never suppressed.
+  //   * ConfirmLinkPair writes ONE confirmation per open readable candidate row of
+  //     the claim, each exactly as ConfirmLink would (that row's evidence and
+  //     classification), atomically. A confirmation through a restricted row stays
+  //     restricted; erasing a source removes its confirmation.
+  //   * RejectLinkPair retracts every open readable candidate row of the claim and
+  //     records the rejection of the CLAIM: its later candidates leave the inbox and
+  //     no producer lane proposes it again (ADR-0128 D4 "never ask me this again").
+  //
+  // Mutating: command_id + reason, audited, Operator-only. ListLinkPairs is a read.
+  rpc ListLinkPairs(ListLinkPairsOpRequest) returns (ListLinkPairsOpResponse);
+  rpc ConfirmLinkPair(ConfirmLinkPairOpRequest) returns (ConfirmLinkPairOpResponse);
+  rpc RejectLinkPair(RejectLinkPairOpRequest) returns (RejectLinkPairOpResponse);
+
   // SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
   //
   // Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -3968,6 +3994,10 @@ message LinkOp {
   // "@r<rev>" suffix, so a mapping-revision bump re-derives the same link as a
   // no-op instead of duplicating the graph.
   string source_ref = 18;
+  // supporting_evidence_ids are the OTHER evidence rows the assertion was derived
+  // from, besides evidence_id (contract 0109, ENG-2032). Erasing any of them
+  // removes the link (ADR-0137). Empty for a link derived from one row.
+  repeated string supporting_evidence_ids = 19;
 }
 
 message ConfirmLinkOpRequest {
@@ -4024,6 +4054,70 @@ message ListLinkCandidatesOpResponse {
   // candidates are unretracted proposals, highest confidence first — the review
   // inbox, in the order a reviewer would work it.
   repeated LinkOp candidates = 1;
+}
+
+// LinkPairKeyOp names one claim (contract 0109). Identity-family endpoints are
+// compared after the store's canonical ordering, so either order names the pair.
+message LinkPairKeyOp {
+  // namespace_id defaults to "default" when empty.
+  string namespace_id = 1;
+  string family = 2;
+  string from_ref = 3;
+  string to_ref = 4;
+  string relation = 5;
+}
+
+// LinkPairOp is one claim in the review inbox.
+message LinkPairOp {
+  LinkPairKeyOp pair = 1;
+  // confidence is the best open candidate's; the inbox is ordered by it.
+  double confidence = 2;
+  // candidates are the claim's open candidate rows the operator plane may read —
+  // one per producer lane and supporting source — in inbox order.
+  repeated LinkOp candidates = 3;
+  // confirmations are the claim's live confirmed rows the operator plane may read.
+  repeated LinkOp confirmations = 4;
+  // already_confirmed: a readable confirmation holds the claim and these
+  // candidates came from other sources — "already confirmed via another source;
+  // extend the confirmation?".
+  bool already_confirmed = 5;
+}
+
+message ListLinkPairsOpRequest {
+  string namespace_id = 1;
+  // limit 0 = the store's default page (of pairs).
+  int32 limit = 2;
+}
+
+message ListLinkPairsOpResponse {
+  repeated LinkPairOp pairs = 1;
+}
+
+message ConfirmLinkPairOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  LinkPairKeyOp pair = 3;
+}
+
+message ConfirmLinkPairOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // confirmations are the rows this act appended (or the standing ones it
+  // replayed), one per confirmed candidate. Empty on a deduplicated command.
+  repeated LinkOp confirmations = 3;
+}
+
+message RejectLinkPairOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  LinkPairKeyOp pair = 3;
+}
+
+message RejectLinkPairOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // retracted is how many candidate rows the rejection stamped.
+  int32 retracted = 3;
 }
 
 // ── ADR-0139 D14: principal memory notes (capability "memory-notes") ─────────

@@ -60,6 +60,10 @@ type walkLinkStore interface {
 	// restricted to the candidates touching each ref, Offset/Limit per ref — how
 	// the entity card reads one subject's candidates without reading the inbox.
 	CandidatesForRefs(ctx context.Context, namespace string, refs []string, offset, limit int) (map[string][]domain.Link, error)
+	// CandidatePairs / PairLinks are the review inbox grouped by claim (ENG-2030):
+	// the pair-level inbox and the rows a pair-level confirm or reject acts on.
+	CandidatePairs(ctx context.Context, namespace string, limit int) ([]domain.LinkPair, error)
+	PairLinks(ctx context.Context, key domain.LinkPairKey) (domain.LinkPair, error)
 }
 
 var _ walkLinkStore = (*PgLinkStore)(nil)

@@ -12,6 +12,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/objects"
 	"github.com/cambrian-sh/core/internal/ontology"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 // Substrate is the knowledge substrate's store set over one Postgres pool:
@@ -68,6 +69,16 @@ func NewSubstrate(pool *pgxpool.Pool, kinds domain.KindSource, relations domain.
 	s.Query = postgres.NewPgQueryPlane(pool, s.Events, s.Knowledge, s.Evidence, s.Links, s.Entities, relations)
 	s.Objects = objects.NewReader(pool, kinds, relations)
 	return s
+}
+
+// LinkReview is the operator plane's review lane over this substrate (contract
+// 0098 row-level, 0109 pair-level; ENG-2030): the review inbox and the pair
+// inbox read through the query plane at the operator plane's scope, and the
+// confirm/reject writes guarded by the same per-row judgement. The single
+// construction of the lane — the kernel binds it to the operator console, and
+// premium's end-to-end tests drive the same adapter (the NewSubstrate rule).
+func (s *Substrate) LinkReview() operator.LinkWriter {
+	return linkWriteSource{links: s.Links, review: s.Query, pairs: s.Links}
 }
 
 // Ontology is the live ontology declarations as the kernel composes them

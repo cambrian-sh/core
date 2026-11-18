@@ -529,7 +529,8 @@ func (s *PgErasureStore) eraseDocuments(ctx context.Context, run *erasureRun, do
 
 // eraseEvidence deletes evidence rows and their dependents in FK order (D4.8): every
 // knowledge item derived from them (any kind, through EraseItemsTx), events (event_roles
-// cascade), observations and links by evidence_id, the outbox rows, then the evidence.
+// cascade), observations by evidence_id, links by evidence_id or supporting evidence,
+// the outbox rows, then the evidence.
 // entities.first_seen_evidence and evidence.revises_id become NULL by FK action (0051).
 func (s *PgErasureStore) eraseEvidence(ctx context.Context, run *erasureRun, evidenceIDs []string) error {
 	// ENG-1858: the entities the erased observations describe, read before they go, so
@@ -591,7 +592,12 @@ func (s *PgErasureStore) eraseEvidenceRows(ctx context.Context, run *erasureRun,
 	for _, st := range []struct{ store, sql string }{
 		{eraseEvents, `DELETE FROM events WHERE evidence_id = ANY($1)`},
 		{eraseObservations, `DELETE FROM observations WHERE evidence_id = ANY($1)`},
-		{eraseLinks, `DELETE FROM links WHERE evidence_id = ANY($1)`},
+		// A link goes when its cited evidence OR any evidence it was derived from
+		// is erased (ENG-2032): an identity producer's proposal, and the
+		// confirmation inheriting it, record their supporting rows, so "E-17 same_as
+		// P" does not outlive a forgotten row it was built from. Served by
+		// idx_links_supporting_evidence (0056).
+		{eraseLinks, `DELETE FROM links WHERE evidence_id = ANY($1) OR supporting_evidence && $1::text[]`},
 		{eraseEvidenceOutbox, `DELETE FROM evidence_outbox WHERE evidence_id = ANY($1)`},
 		{eraseEvidence, `DELETE FROM evidence WHERE id = ANY($1)`},
 	} {
