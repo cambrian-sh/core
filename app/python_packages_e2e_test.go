@@ -22,6 +22,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/pypackages"
 	"github.com/cambrian-sh/core/internal/sandbox"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // packageProbePy is a probe agent: it serves its --socket, imports --module
@@ -120,6 +121,7 @@ func TestE2E_PythonPackageLayerThroughOperatorApproval(t *testing.T) {
 	if kernelDir == "" || dsn == "" {
 		t.Skip("set PYPKG_E2E_KERNEL and PG_TEST_DSN to run the package layer e2e")
 	}
+	pgscratch.Migrated(t) // migrates PG_TEST_DSN to HEAD itself (ENG-2100)
 	pkgName, pkgVersion, module, otherVersion := "python-dateutil", "2.9.0.post0", "dateutil", "2.8.2"
 	if v := os.Getenv("PYPKG_E2E_PACKAGE"); v != "" {
 		pkgName, pkgVersion, _ = strings.Cut(v, "==")

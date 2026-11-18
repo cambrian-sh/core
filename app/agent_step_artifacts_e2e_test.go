@@ -24,6 +24,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/storage"
 	"github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // T-20261118-agent-artifacts-from-planner-lane-steps-carry end to end: the
@@ -49,6 +50,7 @@ func TestE2E_DispatchedStepArtifactsCarryTheStepsProvenance(t *testing.T) {
 	if py == "" || dsn == "" {
 		t.Skip("set STEP_ARTIFACTS_E2E_PY and PG_TEST_DSN to run the step-artifacts e2e")
 	}
+	pgscratch.Migrated(t) // migrates PG_TEST_DSN to HEAD itself (ENG-2100)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dsn)

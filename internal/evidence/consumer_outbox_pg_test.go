@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/evidence"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // The outbox failure semantics against the REAL Postgres store and migration
@@ -64,10 +64,9 @@ func (r *pgRouter) Transform(_ context.Context, ev domain.Evidence, _ []byte) (b
 
 func newPgOutbox(t *testing.T) *pgOutbox {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
+	// The test migrates its database itself (ENG-2100): it used to FAIL with "relation
+	// evidence does not exist" on a database nobody had run `migrate up` on.
+	dsn, _ := pgscratch.Migrated(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {

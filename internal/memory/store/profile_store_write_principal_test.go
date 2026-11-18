@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +13,7 @@ import (
 	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // failClosedAuthorizer reproduces the WRITE semantics of the premium authorizer
@@ -139,24 +138,13 @@ func isKernelStamped(tags []string) bool {
 //
 // Requires PG_TEST_DSN (handoff §0 recipe: port 5433). Skipped otherwise.
 func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping Postgres profile-write test")
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("PG_TEST_DSN: %v", err)
-	}
+	// The database is migrated to HEAD first and the embedder follows the dimension it
+	// carries (pgscratch.Migrated, ENG-2100): a different one sends NewPgVectorAdapter
+	// down its dimension change path, which recreated the corpus tables and left
+	// cambrian_test unmigratable (ENG-1832), or refuses to boot.
+	dsn, dim := pgscratch.Migrated(t)
 	cfg := config.DefaultConfig()
-	cfg.Database.Host = u.Hostname()
-	cfg.Database.Port = u.Port()
-	cfg.Database.User = u.User.Username()
-	cfg.Database.Password, _ = u.User.Password()
-	cfg.Database.DBName = u.Path[1:]
-	// The default embedder dimension, like every other test on the shared
-	// database: a different one sends NewPgVectorAdapter down its dimension
-	// change path, which recreated the corpus tables and left cambrian_test
-	// unmigratable (ENG-1832).
+	pgscratch.ApplyToConfig(t, cfg, dsn, dim)
 
 	vec, err := postgres.NewPgVectorAdapter(context.Background(), cfg)
 	if err != nil {

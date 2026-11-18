@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,6 +11,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 func TestBuildToolGrants_NoPoolIsInMemory(t *testing.T) {
@@ -89,14 +89,11 @@ func (k *grantsKernel) setGrant(t *testing.T, cmd, agent, tool string, granted b
 // is enforced by the executor; a revoke survives too; profile allowlist grants
 // are re-derived, never persisted; a store error denies the call.
 func TestPg_ToolGrants_OperatorGrantSurvivesRestart(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
+	dsn, _ := pgscratch.Migrated(t) // migrates the database itself (ENG-2100)
 	ctx := context.Background()
 	k1 := bootGrantsKernel(t, dsn)
 	if !postgres.NewPgToolGrantStore(k1.pool).Ready(ctx) {
-		t.Skip("tool_grants missing (run `orchestrator migrate up` first)")
+		t.Fatal("tool_grants not ready on the migrated test database")
 	}
 	clean := func() {
 		_, _ = k1.pool.Exec(context.Background(), `DELETE FROM tool_grants WHERE agent_id LIKE 'eng1116-%'`)

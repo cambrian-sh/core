@@ -3,7 +3,7 @@
 # All targets assume `go`, `benchstat`, `pytest`, and `docker` are in PATH.
 
 .PHONY: help \
-        test integration chaos chaos-real chaos-real-up \
+        test test-pg integration chaos chaos-real chaos-real-up \
         leak leak-integration \
         bench-micro bench-macro bench-compare \
         fuzz fuzz-release \
@@ -31,6 +31,7 @@ help:
 	@echo "    make bench-micro       Micro benchmarks vs git baseline           ~10s"
 	@echo ""
 	@echo "  SLOW (dedicated runner or Docker required)"
+	@echo "    make test-pg           Every Pg package vs PG_TEST_DSN (*_test DB); a Pg skip fails  ~5m"
 	@echo "    make bench-macro       Macro benchmarks (nightly runner)          ~6m"
 	@echo "    make bench-compare     Micro benchmarks + benchstat diff          ~15s"
 	@echo "    make chaos-real-up     Start chaos infra (postgres + toxiproxy)   ~30s"
@@ -67,6 +68,25 @@ test:
 # `make integration` stays as the verbose, targeted run of the same suite.
 test-race:
 	go test -race -tags integration ./app/... ./domain/... ./internal/...
+
+# The Postgres gate (T-20261118-internal-evidence-pg-outbox-tests-fail-on-an): every
+# package with Pg tests, serialised (-p 1: they share the PG_TEST_DSN database), under
+# the race detector, through pgtestgate, which FAILS on any Postgres skip and on a
+# package whose canary test did not pass. Each package migrates PG_TEST_DSN to HEAD
+# itself (pgscratch.EnsureMigrated), so the database only has to exist and carry
+# "test" in its name. CI's Postgres step runs exactly this target. A new package with
+# Pg tests goes here AND into pgtestgate.Canaries (its unit test checks both).
+PG_PACKAGES := ./app/ ./app/migratetest/ ./internal/backup/ ./internal/evidence/ \
+	./internal/identity/ ./internal/infrastructure/postgres/ ./internal/kernel/ \
+	./internal/knowledgecommit/ ./internal/memory/ ./internal/memory/store/ \
+	./internal/memorynotes/ ./internal/migrate/ ./internal/objects/ ./internal/ontology/ \
+	./internal/substrate/network/ ./internal/testing/pgscratch/
+
+# No pipefail needed: a failing or unbuildable package reaches the gate as a fail /
+# build-fail event, and a go test that ran nothing leaves every canary unpassed.
+test-pg:
+	@test -n "$$PG_TEST_DSN" || { echo "test-pg: set PG_TEST_DSN to a disposable *_test database"; exit 1; }
+	go test -race -p 1 -count=1 -json $(PG_PACKAGES) | go run ./internal/testing/pgtestgate
 
 # ─── Lint & Dead Code ────────────────────────────────────────────────────────
 

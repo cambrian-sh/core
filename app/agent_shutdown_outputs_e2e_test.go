@@ -25,6 +25,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/storage"
 	"github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // ENG-2095 end to end: two REAL Python SDK agents run under the sandbox; the
@@ -50,6 +51,7 @@ func TestE2E_GracefulShutdownCollectsLiveAgentsOutputs(t *testing.T) {
 	if py == "" || dsn == "" {
 		t.Skip("set STEP_ARTIFACTS_E2E_PY and PG_TEST_DSN to run the graceful-shutdown e2e")
 	}
+	pgscratch.Migrated(t) // migrates PG_TEST_DSN to HEAD itself (ENG-2100)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	// checkPool reads the ledger after the kernel's pool is closed.

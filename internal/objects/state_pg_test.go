@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -29,21 +27,10 @@ import (
 // the REAL live ontology (ontology.Load / Apply), so each test exercises the
 // production path from a history write to the object row.
 
-var disposableDB = regexp.MustCompile(`(?i)test`)
-
 func pgPool(t *testing.T) (*pgxpool.Pool, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !disposableDB.MatchString(cfg.ConnConfig.Database) {
-		t.Skipf("refusing to touch %q: its name does not say test", cfg.ConnConfig.Database)
-	}
+	// pgscratch.Pool skips without PG_TEST_DSN, FAILS on a database whose name does not
+	// say test (a skip there hid these tests, ENG-2100) and migrates the database to HEAD.
 	// The declarations table is global and append-only; each test starts from its own
 	// seed in a shadowing scratch schema (0040 + 0041 there, everything else the
 	// migrated public tables) instead of TRUNCATE-ing the migrated table

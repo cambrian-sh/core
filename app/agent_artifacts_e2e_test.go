@@ -27,6 +27,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/storage"
 	"github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // ADR-0157 S4 end to end — artifacts leave an agent only through the kernel —
@@ -68,6 +69,7 @@ func TestE2E_ArtifactsLeaveOnlyThroughTheKernel(t *testing.T) {
 	if py == "" || dsn == "" {
 		t.Skip("set ARTIFACT_E2E_PY and PG_TEST_DSN to run the artifact e2e")
 	}
+	pgscratch.Migrated(t) // migrates PG_TEST_DSN to HEAD itself (ENG-2100)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dsn)

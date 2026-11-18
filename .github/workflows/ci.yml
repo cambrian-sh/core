@@ -126,20 +126,25 @@ jobs:
       # serialised step below (internal/migrate now runs in its own scratch
       # database, but the adapter tests still DROP/CREATE chunks and
       # conversations in the shared one);
-      # here they skip exactly as they did before, and the next step is what
+      # here they skip exactly as they did before, and the Postgres step below is what
       # turns that skip into a failure.
       - name: Gate — unit tests under the race detector
         run: make test-race
 
-      # Core's schema is a precondition for the link, event and query-plane
-      # tests (they INSERT into evidence/entities/links and create nothing).
-      # Apply it with core's own runner — the same `orchestrator migrate up` an
-      # operator runs — rather than a copied DDL that could drift. No
-      # configs/config.json exists in a fresh checkout; the CAMBRIAN_* env layer
-      # supplies the connection. 1536 dimensions, not premium's 1024: the
-      # adapter tests build a PgVectorAdapter{dim: 1536}, and a mismatch makes
-      # ensureSchema drop and recreate `documents` (CASCADE takes `chunks` with
-      # it), which fails every adapter test that follows.
+      # The test schema, applied with core's own runner — the same
+      # `orchestrator migrate up` an operator runs — rather than a copied DDL.
+      # No configs/config.json exists in a fresh checkout; the CAMBRIAN_* env
+      # layer supplies the connection. Every Pg test package also migrates
+      # PG_TEST_DSN to HEAD itself (pgscratch.EnsureMigrated, ENG-2100), so this
+      # step is the operator path, not a precondition the tests silently need.
+      #
+      # 1024 dimensions — the default config's embedder.dimensions, premium's CI
+      # value and what pgscratch migrates an empty test database at. It used to
+      # be 1536, while the kernel and memory/store Pg tests booted at the default
+      # 1024 and refused that store ("REFUSING to boot: the store's embedding
+      # dimension is 1536"); CI never ran them, so nothing noticed. The adapter
+      # tests follow whatever dimension the database carries (testdim_test.go),
+      # and the kernel/app boot tests now take theirs from the database too.
       - name: Apply migrations to the test database
         env:
           CAMBRIAN_DATABASE__HOST: localhost
@@ -147,39 +152,33 @@ jobs:
           CAMBRIAN_DATABASE__USER: cambrian
           CAMBRIAN_DATABASE__PASSWORD: cambrian
           CAMBRIAN_DATABASE__DBNAME: cambrian_test
-          CAMBRIAN_EMBEDDER__DIMENSIONS: "1536"
+          CAMBRIAN_EMBEDDER__DIMENSIONS: "1024"
         run: go run ./cmd/orchestrator migrate up
 
-      # -p 1 is kept for the adapter packages' sake; internal/migrate's tests run
-      # in their own scratch database and are safe in parallel
-      # (T-20261118-internal-migrate-pg-tests-cannot-run-in).
+      # EVERY package with Postgres tests (`make test-pg`: evidence, kernel
+      # incl. TestPg_Forget_EndToEndThroughBothPlanes, memory/store, objects,
+      # ontology, identity, app, backup, the adapter, migrate, …), serialised
+      # (-p 1, one shared database) under the race detector
+      # (T-20261118-internal-evidence-pg-outbox-tests-fail-on-an). Before, only
+      # the adapter and migrate ran here; the rest skipped in `make test-race`
+      # for the life of the workflow.
       #
-      # A Postgres test that SKIPS in CI is a failure, not a pass: every helper
-      # skips on a missing/unreachable/non-disposable DSN, and that skip is
-      # exactly how these tests stayed silent for the life of the workflow. The
-      # scan fails the job if the log carries any of the helpers' skip messages
-      # (`go test -v` prints the message BEFORE the `--- SKIP` line, so this
-      # matches the messages, not the marker), and asserts one canary from the
-      # adapter package actually passed. A new Pg helper must keep "PG_TEST_DSN"
-      # in its skip message to stay covered.
-      - name: Gate — Postgres adapter and migrations under the race detector
+      # A Postgres test that SKIPS in CI is a failure, not a pass. The target
+      # pipes `go test -json` through internal/testing/pgtestgate, which fails
+      # the step on any failed test, any test skipped for a Postgres reason (no
+      # DSN, an unmigrated or non-*test* database, no pg_dump), and any package
+      # whose canary Pg test did not PASS. Skips for other reasons (the Python
+      # agent e2es, run in sandbox-e2e) stay skips. The database name must
+      # contain "test" (cambrian_test does): a non-disposable name now FAILS the
+      # tests instead of skipping them. pg_dump comes from the runner image's
+      # PostgreSQL client (the backup e2es need it; their skip would fail here).
+      - name: Gate — every Postgres test package under the race detector
         shell: bash
         env:
           PG_TEST_DSN: postgres://cambrian:cambrian@localhost:5432/cambrian_test?sslmode=disable
         run: |
-          go test -race -p 1 -v ./internal/infrastructure/postgres/... ./internal/migrate/... 2>&1 \
-            | tee "$RUNNER_TEMP/go-test-pg.log"
-          test "${PIPESTATUS[0]}" -eq 0
-          if grep -E 'PG_TEST_DSN (not set|has no database name)|refusing to run the document-split migration' \
-               "$RUNNER_TEMP/go-test-pg.log"; then
-            echo "FAIL: Postgres tests skipped in CI (see the lines above); PG_TEST_DSN must reach the service database"
-            exit 1
-          fi
-          if ! grep -qE '^\s*--- PASS: TestBindDelivery_RoundTrips ' "$RUNNER_TEMP/go-test-pg.log"; then
-            echo "FAIL: canary TestBindDelivery_RoundTrips did not pass — the Postgres tests are not running"
-            exit 1
-          fi
-          echo "PASS: no Postgres test skipped; canary TestBindDelivery_RoundTrips ran"
+          pg_dump --version
+          make test-pg
 
       - name: Gate — SystemHarness integration
         run: make integration
@@ -285,7 +284,7 @@ jobs:
           CAMBRIAN_DATABASE__USER: cambrian
           CAMBRIAN_DATABASE__PASSWORD: cambrian
           CAMBRIAN_DATABASE__DBNAME: cambrian_test
-          CAMBRIAN_EMBEDDER__DIMENSIONS: "1536"
+          CAMBRIAN_EMBEDDER__DIMENSIONS: "1024" # one test dimension in every job (ENG-2100)
         run: go run ./cmd/orchestrator migrate up
 
       # AGENTMGR_E2E_KERNEL is this checkout: it holds agents/, prompts/,

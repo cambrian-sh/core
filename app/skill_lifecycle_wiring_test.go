@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // No pool ⇒ no lifecycle (and so no "skills-lifecycle" capability).
@@ -33,10 +33,7 @@ func TestLifecycleConfig_MapsDays(t *testing.T) {
 // Against a migrated Postgres (PG_TEST_DSN): the shipped skills get builtin
 // records and stay served; the curator is built only when enabled.
 func TestPg_WireSkillLifecycle_RecordsShippedSkills(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
+	dsn, _ := pgscratch.Migrated(t) // migrates the database itself (ENG-2100)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -52,7 +49,7 @@ func TestPg_WireSkillLifecycle_RecordsShippedSkills(t *testing.T) {
 	cfg.Curator.Enabled = true
 	svc, cur := wireSkillLifecycle(ctx, cfg, pool, reg, nil, shipped, nil)
 	if svc == nil {
-		t.Skip("lifecycle tables missing (run `orchestrator migrate up` first)")
+		t.Fatal("skill lifecycle not wired on the migrated test database")
 	}
 	if cur == nil {
 		t.Fatal("curator enabled but not built")

@@ -50,7 +50,8 @@ type Options struct {
 var validSchema = regexp.MustCompile(`^[a-z][a-z0-9_]{0,40}$`)
 
 // Pool returns a pool on PG_TEST_DSN whose every connection resolves unqualified names in
-// the scratch schema first. It skips the test when PG_TEST_DSN is unset (the message keeps
+// the scratch schema first, after migrating the database to HEAD (EnsureMigrated). It
+// skips the test when PG_TEST_DSN is unset (the message keeps
 // "PG_TEST_DSN not set": CI's Postgres gate fails the job on it). The pool is closed and
 // the schema dropped on cleanup.
 func Pool(t testing.TB, schema string, opt Options) (*pgxpool.Pool, context.Context) {
@@ -66,6 +67,12 @@ func Pool(t testing.TB, schema string, opt Options) (*pgxpool.Pool, context.Cont
 	// statement cannot outlive it. Cleanup work below runs after that cancellation and
 	// therefore uses context.WithoutCancel(ctx).
 	ctx := t.Context()
+	// A shadowing schema resolves every table it does not create to the migrated public
+	// one, so the database is brought to HEAD first (and refused unless disposable) —
+	// the test never depends on an earlier `migrate up` (ENG-2100).
+	if _, err := EnsureMigrated(ctx, dsn); err != nil {
+		t.Fatalf("pgscratch: %v", err)
+	}
 	ident := pgx.Identifier{schema}.Sanitize()
 
 	// Reset with a plain connection first: the pool's AfterConnect sets a search_path

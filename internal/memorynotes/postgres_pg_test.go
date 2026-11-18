@@ -3,13 +3,13 @@ package memorynotes
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // Integration tests against a real, migrated Postgres (PG_TEST_DSN; migration 0030).
@@ -17,10 +17,7 @@ import (
 
 func newPgTestStore(t *testing.T) (*PgStore, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
+	dsn, _ := pgscratch.Migrated(t) // migrates the database itself (ENG-2100)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -29,7 +26,7 @@ func newPgTestStore(t *testing.T) (*PgStore, context.Context) {
 	t.Cleanup(pool.Close)
 	st, err := NewPgStore(ctx, pool)
 	if err != nil {
-		t.Skipf("memory_notes schema missing (run `orchestrator migrate up` first): %v", err)
+		t.Fatalf("memory_notes on the migrated test database: %v", err)
 	}
 	clean := func() {
 		for _, q := range []string{

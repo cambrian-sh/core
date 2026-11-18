@@ -2,12 +2,8 @@ package knowledgecommit
 
 import (
 	"context"
-	"os"
-	"regexp"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
@@ -22,17 +18,8 @@ import (
 // ontology — and the case's object row shows the COMMITTED value, never the
 // agent's candidate.
 func TestPg_E2E_KnowledgeCommitReachesTheObjectRow(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !regexp.MustCompile(`(?i)test`).MatchString(cfg.ConnConfig.Database) {
-		t.Skipf("refusing to touch %q: its name does not say test", cfg.ConnConfig.Database)
-	}
+	// pgscratch.Pool skips without PG_TEST_DSN, FAILS on a database whose name does not
+	// say test (a skip there hid this test, ENG-2100) and migrates the database to HEAD.
 	// Shadowing scratch schema: the global, append-only declarations table starts empty
 	// there instead of the test TRUNCATE-ing the migrated one
 	// (T-20261114-postgres-adapter-tests-drop-migrated-tables).

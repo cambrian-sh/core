@@ -3,8 +3,6 @@ package kernel
 import (
 	"context"
 	"errors"
-	"net/url"
-	"os"
 	"testing"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/testing/fakemodels"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // usageModel answers with fixed provider usage on a trailing chunk.
@@ -29,24 +28,15 @@ func (u usageModel) GenerateStream(context.Context, string) (<-chan domain.Strea
 	return ch, nil
 }
 
-// pgTestConfig points a default config at PG_TEST_DSN (skips without it). Use a
-// scratch database of your own: the adapter auto-migrates it.
+// pgTestConfig points a default config at PG_TEST_DSN (skips without it), after
+// migrating that database to HEAD, and at the embedding dimension the database carries
+// (pgscratch.Migrated, ENG-2100): a store at another dimension than embedder.dimensions
+// makes the adapter refuse to boot, so the test follows the database.
 func pgTestConfig(t *testing.T) *config.Config {
 	t.Helper()
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping the Postgres-backed composition test")
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("PG_TEST_DSN: %v", err)
-	}
+	dsn, dim := pgscratch.Migrated(t)
 	cfg := config.DefaultConfig()
-	cfg.Database.Host = u.Hostname()
-	cfg.Database.Port = u.Port()
-	cfg.Database.User = u.User.Username()
-	cfg.Database.Password, _ = u.User.Password()
-	cfg.Database.DBName = u.Path[1:]
+	pgscratch.ApplyToConfig(t, cfg, dsn, dim)
 	return cfg
 }
 

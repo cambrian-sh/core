@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
 // One contract, two implementations (ADR-0142 D3): every case runs against the
@@ -24,10 +25,12 @@ type regUnderTest interface {
 func registries(t *testing.T) map[string]regUnderTest {
 	t.Helper()
 	out := map[string]regUnderTest{"mem": NewMemRegistry()}
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
+	if os.Getenv("PG_TEST_DSN") == "" {
 		return out
 	}
+	// The test migrates its database itself (ENG-2100) instead of skipping on a
+	// database nobody had run `migrate up` on.
+	dsn, _ := pgscratch.Migrated(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -36,7 +39,7 @@ func registries(t *testing.T) map[string]regUnderTest {
 	t.Cleanup(pool.Close)
 	pg, err := NewPgRegistry(ctx, pool)
 	if err != nil {
-		t.Skipf("principal registry schema missing (run `orchestrator migrate up`): %v", err)
+		t.Fatalf("principal registry on the migrated test database: %v", err)
 	}
 	clean := func() {
 		// Cascades to identities, aliases and credentials. Test rows only.
