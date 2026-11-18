@@ -110,6 +110,10 @@ type ChunkTripletsBatcher struct {
 	// source was erased meanwhile (domain.ErrSourceErased, ADR-0137 D5): dropped,
 	// never requeued.
 	sourceErased uint64
+	// staleVersion counts chunks whose triplet save was refused because their document
+	// was revised after the chunk was queued (domain.ErrSourceVersionRetired, ENG-501):
+	// dropped, never requeued — the new version's own items carry its triplets.
+	staleVersion uint64
 }
 
 // ChunkTripletsBatcherConfig is the constructor input. All fields required.
@@ -176,14 +180,16 @@ func (b *ChunkTripletsBatcher) UseExtractor(e domain.TripletExtractor) {
 // full (backpressure), the chunk's triplet extraction is dropped (the doc
 // itself is already saved upstream) and a counter ticks up.
 //
-// ctx supplies the ingest origin (domain.IngestOriginFrom) the triplet save is fenced
-// with (ADR-0137 D5); the item does not keep ctx itself.
+// ctx supplies the ingest origin (domain.IngestOriginFrom) and the document version
+// (domain.SourceVersionFrom) the triplet save is fenced with (ADR-0137 D5, ENG-501);
+// the item does not keep ctx itself.
 func (b *ChunkTripletsBatcher) Enqueue(ctx context.Context, doc *domain.Document) {
 	if b == nil || doc == nil {
 		return
 	}
 	origin, _ := domain.IngestOriginFrom(ctx)
-	b.enqueue(tripletItem{doc: doc, origin: origin})
+	version, _ := domain.SourceVersionFrom(ctx)
+	b.enqueue(tripletItem{doc: doc, origin: origin, version: version})
 }
 
 // EnqueueTracked enqueues one document's chunks and returns a TripletsWait that
@@ -212,9 +218,10 @@ func (b *ChunkTripletsBatcher) EnqueueTracked(ctx context.Context, docs []*domai
 		return w
 	}
 	origin, _ := domain.IngestOriginFrom(ctx)
+	version, _ := domain.SourceVersionFrom(ctx)
 	for _, d := range docs {
 		if d != nil {
-			b.enqueue(tripletItem{doc: d, wait: w, origin: origin})
+			b.enqueue(tripletItem{doc: d, wait: w, origin: origin, version: version})
 		}
 	}
 	return w
@@ -308,6 +315,12 @@ func (b *ChunkTripletsBatcher) FailureStats() (extractFailed, requeued uint64) {
 // source was erased while extraction was in flight (ADR-0137 D5).
 func (b *ChunkTripletsBatcher) SourceErasedDrops() uint64 {
 	return atomic.LoadUint64(&b.sourceErased)
+}
+
+// StaleVersionDrops returns how many chunks' triplets were dropped because their
+// document was revised while extraction was in flight (ENG-501).
+func (b *ChunkTripletsBatcher) StaleVersionDrops() uint64 {
+	return atomic.LoadUint64(&b.staleVersion)
 }
 
 // probeReady runs once, at the top of the drain goroutine, when the extractor
@@ -555,8 +568,9 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 		}
 		saveCtx := parentCtx
 		if !it.origin.IsZero() {
-			saveCtx = domain.WithIngestOrigin(parentCtx, it.origin)
+			saveCtx = domain.WithIngestOrigin(saveCtx, it.origin)
 		}
+		saveCtx = domain.WithSourceVersion(saveCtx, it.version)
 		if err := b.store.SaveChunkTriplets(saveCtx, it.doc.ID, triplets); err != nil {
 			if errors.Is(err, domain.ErrSourceErased) {
 				// ADR-0137 D5: the chunk (or its document) was erased while this batch was
@@ -564,6 +578,17 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 				// enrich, so the chunk settles complete (no KG failure to report).
 				atomic.AddUint64(&b.sourceErased, 1)
 				slog.Info("ChunkTripletsBatcher: source erased; triplets dropped", "doc_id", it.doc.ID)
+				it.wait.settle(1, true)
+				continue
+			}
+			if errors.Is(err, domain.ErrSourceVersionRetired) {
+				// ENG-501: the document was revised after this chunk was queued and the new
+				// version reuses its chunk id. Final, like an erasure: drop and count, never
+				// requeue; the retired version has nothing left to enrich, so it settles
+				// complete.
+				atomic.AddUint64(&b.staleVersion, 1)
+				slog.Info("ChunkTripletsBatcher: document revised; triplets of the retired version dropped",
+					"doc_id", it.doc.ID, "stale_version_drops", atomic.LoadUint64(&b.staleVersion))
 				it.wait.settle(1, true)
 				continue
 			}

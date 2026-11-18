@@ -1807,7 +1807,9 @@ func (p *PgVectorAdapter) SaveChunkTriplets(ctx context.Context, chunkID string,
 	// ADR-0137 D5: a triplet batch is in flight for seconds while its chunk may be
 	// erased. A chunk that is gone refuses the write (the 0051 FK would too); a chunk
 	// of a document erased after the batch's ingest origin refuses it under the
-	// document fence — the same chunk id may already belong to a newer ingest.
+	// document fence — the same chunk id may already belong to a newer ingest. The same
+	// fence refuses a batch extracted from a retired version of the document
+	// (domain.ErrSourceVersionRetired, ENG-501): the new version reuses the chunk ids.
 	var parent *string
 	if err := tx.QueryRow(ctx, `SELECT document_id FROM `+TableChunks+` WHERE id = $1`, chunkID).Scan(&parent); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

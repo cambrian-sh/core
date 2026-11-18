@@ -84,6 +84,9 @@ type FactExtractor struct {
 	refusedShape   atomic.Uint64
 	refusedDup     atomic.Uint64
 	refusedOverCap atomic.Uint64
+	// staleVersion counts documents whose run stopped because the document was revised
+	// after the job was queued (domain.ErrSourceVersionRetired, ENG-501).
+	staleVersion atomic.Uint64
 }
 
 // FactExtractorConfig is execution.facts, mapped by kernel.factExtractorConfigFrom.
@@ -149,6 +152,10 @@ type FactExtractorStats struct {
 	// SourceFiltered counts ingests execution.memory.fact_extraction_sources kept out
 	// of extraction (ENG-494).
 	SourceFiltered uint64
+	// StaleVersion counts documents whose extraction stopped because the document was
+	// revised after the job was queued: its writes were refused by the version fence
+	// (domain.ErrSourceVersionRetired, ENG-501).
+	StaleVersion uint64
 }
 
 type factJob struct {
@@ -393,7 +400,7 @@ func (e *FactExtractor) Stats() FactExtractorStats {
 		ParseRepaired: e.parseRepaired.Load(), Timeouts: e.timeouts.Load(),
 		PartialDocs: e.partialDocs.Load(), RefusedQuoteNotFound: e.refusedQuote.Load(),
 		RefusedBadShape: e.refusedShape.Load(), RefusedDuplicate: e.refusedDup.Load(), RefusedOverCap: e.refusedOverCap.Load(),
-		SourceFiltered: e.sourceFiltered.Load(),
+		SourceFiltered: e.sourceFiltered.Load(), StaleVersion: e.staleVersion.Load(),
 	}
 }
 
@@ -456,6 +463,10 @@ type FactSaveStats struct {
 	// the ingest that queued this job (domain.ErrSourceErased, ADR-0137 D5). Final:
 	// the window's remaining items are not attempted.
 	SourceErased int
+	// StaleVersion counts items refused because the document was revised after the job
+	// was queued (domain.ErrSourceVersionRetired, ENG-501). Final: the run stops, writes
+	// no marker and makes no further call — the new version's own job extracts it.
+	StaleVersion int
 }
 
 // FactDocumentResult is what one document's extraction did (ExtractDocument).
@@ -620,18 +631,36 @@ func (e *FactExtractor) process(j factJob) (FactDocumentResult, error) {
 		first++
 	}
 	covered := min(start, len(passages))
-	mark := func() {
-		if err := e.sink.MarkExtracted(ctx, domain.ExtractionMarker{
+	// stale ends the run of a document revised after this job was queued (ENG-501): the
+	// version fence refused a write, so nothing more of the retired version is written
+	// or extracted, and no marker is left for the new version's job to misread.
+	stale := func() (FactDocumentResult, error) {
+		e.staleVersion.Add(1)
+		slog.InfoContext(ctx, "FactExtractor: document revised after this job was queued; extraction of the retired version stopped",
+			"document_id", j.documentID, "windows", res.Windows, "dropped", res.Stats.StaleVersion,
+			"stale_version_docs", e.staleVersion.Load())
+		return res, nil
+	}
+	// mark records the coverage; false when the version fence refused it.
+	mark := func() bool {
+		err := e.sink.MarkExtracted(ctx, domain.ExtractionMarker{
 			NamespaceID: e.cfg.Namespace, Extractor: domain.KindMemoryFact, DocumentID: j.documentID,
 			ContentHash: hash, Items: items, ExtractorVersion: version,
 			PassagesCovered: covered, PassagesTotal: len(passages),
-		}); err != nil {
+		})
+		if errors.Is(err, domain.ErrSourceVersionRetired) {
+			return false
+		}
+		if err != nil {
 			slog.WarnContext(ctx, "FactExtractor: extraction marker not written; a re-run will extract these passages again",
 				"document_id", j.documentID, "err", err)
 		}
+		return true
 	}
 	if len(passages) == 0 {
-		mark()
+		if !mark() {
+			return stale()
+		}
 		e.extracted.Add(1)
 		return res, nil
 	}
@@ -661,8 +690,14 @@ func (e *FactExtractor) process(j factJob) (FactDocumentResult, error) {
 		res.Stats.Inserted += st.Inserted
 		res.Stats.Existing += st.Existing
 		res.Stats.Failed += st.Failed
+		if st.StaleVersion > 0 {
+			res.Stats.StaleVersion += st.StaleVersion
+			return stale()
+		}
 		covered = windows[w].End
-		mark()
+		if !mark() {
+			return stale()
+		}
 	}
 	res.Facts = facts
 	e.extracted.Add(1)
@@ -686,7 +721,7 @@ func (e *FactExtractor) processWindow(j factJob, win []factPassage, w, of, maxFa
 	if err != nil {
 		return st, n, err
 	}
-	if e.assessing() && len(storedFacts) > 0 {
+	if e.assessing() && len(storedFacts) > 0 && st.StaleVersion == 0 {
 		called, replayed := e.assess(j.ctx, storedFacts)
 		if called {
 			res.LLMCalls++
@@ -752,6 +787,12 @@ func (e *FactExtractor) writeItems(ctx context.Context, facts []domain.Fact) ([]
 	var embs []domain.ItemEmbedding
 	for _, f := range facts {
 		it, inserted, err := e.sink.PutClassifiedItem(ctx, f.ToItem(e.cfg.Namespace))
+		if errors.Is(err, domain.ErrSourceVersionRetired) {
+			st.StaleVersion += len(facts) - len(stored) - st.Failed
+			slog.InfoContext(ctx, "FactExtractor: document revised while extracting; facts of the retired version dropped",
+				"source_chunk", f.SourceChunkID, "dropped", st.StaleVersion)
+			break
+		}
 		if errors.Is(err, domain.ErrSourceErased) {
 			st.SourceErased += len(facts) - len(stored) - st.Failed
 			slog.InfoContext(ctx, "FactExtractor: source erased while extracting; remaining facts dropped",

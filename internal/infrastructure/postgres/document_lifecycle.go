@@ -138,6 +138,14 @@ func (l *PgDocumentLifecycle) RecordAssociation(ctx context.Context, a domain.Do
 // Retirement runs BEFORE the caller saves the new chunks, because the KG triplet batcher
 // and the fact extractor are asynchronous and keyed by chunk id — deleting after the
 // save would race them and delete the new version's derivatives.
+//
+// Before the row lock it takes the per-document advisory key of the ADR-0137 D5 write
+// fence EXCLUSIVELY (the erase transaction takes the same key; fenced writers take it
+// shared, erasureFenceTx). A fenced async write of the previous version — a KG triplet
+// or fact job that carries the version it was extracted from (domain.WithSourceVersion)
+// — therefore either commits before the revise, and is retired by the cascade below, or
+// runs after it and is refused because content_digest moved (ENG-501). Lock order is
+// advisory key, then row, as in every fenced writer, so the two cannot deadlock.
 func (l *PgDocumentLifecycle) ReviseDocument(ctx context.Context, rev domain.DocumentRevision) (domain.DocumentRevisionOutcome, error) {
 	out := domain.DocumentRevisionOutcome{Previous: domain.DocumentRecord{ID: rev.ID}, Version: 1}
 	if rev.ID == "" {
@@ -148,6 +156,10 @@ func (l *PgDocumentLifecycle) ReviseDocument(ctx context.Context, rev domain.Doc
 		return out, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, rev.ID); err != nil {
+		return out, fmt.Errorf("revise document %q: lock: %w", rev.ID, err)
+	}
 
 	var (
 		digest  *string

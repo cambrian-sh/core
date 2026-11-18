@@ -25,6 +25,10 @@ type tripletItem struct {
 	// origin is the ingest origin of the write that queued the chunk (ADR-0137 D5):
 	// its triplet save is refused when the chunk's document was erased after it.
 	origin time.Time
+	// version is the document version the chunk was written as (ENG-501): its triplet
+	// save is refused when the document was revised after it. Zero when the enqueue
+	// carried none.
+	version domain.SourceVersion
 }
 
 // TripletsWait is the completion signal for one document's chunks in the

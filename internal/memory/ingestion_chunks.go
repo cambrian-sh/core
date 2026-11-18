@@ -326,6 +326,11 @@ func (im *IngestionManager) persistChunksTracked(
 		return outcome, fmt.Errorf("ingestion manager: save chunk batch: %w", err)
 	}
 	clock.Since(StageChunkSave, tSave)
+	// ENG-501 (ADR-0137 D5 / ADR-0138 D3): the async jobs below are keyed by chunk id,
+	// which a later revision of this document reuses. They carry the version they were
+	// extracted from on ctx, and the store refuses their writes once the document's
+	// content digest has moved on (domain.ErrSourceVersionRetired).
+	jobCtx := domain.WithSourceVersion(ctx, domain.SourceVersion{DocumentID: documentID, ContentDigest: ident.ContentDigest})
 	// ADR-0053: enqueue each saved chunk for per-chunk (h, r, t) + anchor
 	// extraction. Non-blocking + nil-safe; the chunk doc is already persisted, so
 	// a dropped enqueue only loses KG enrichment, never the chunk itself.
@@ -335,10 +340,10 @@ func (im *IngestionManager) persistChunksTracked(
 	if im.tripletsBatcher != nil {
 		t := time.Now()
 		if trackKG {
-			outcome.KGWait = im.tripletsBatcher.EnqueueTracked(ctx, docs)
+			outcome.KGWait = im.tripletsBatcher.EnqueueTracked(jobCtx, docs)
 		} else {
 			for _, d := range docs {
-				im.tripletsBatcher.Enqueue(ctx, d)
+				im.tripletsBatcher.Enqueue(jobCtx, d)
 			}
 		}
 		clock.Since(StageTripletsEnqueue, t)
@@ -351,7 +356,7 @@ func (im *IngestionManager) persistChunksTracked(
 	if im.factExtractor != nil {
 		t := time.Now()
 		src := domain.SourceMetaOf(doc, ingestedAt, domain.PrincipalFromContext(ctx).ID)
-		outcome.FactsWait = im.factExtractor.Enqueue(ctx, documentID, src, docs, trackFacts)
+		outcome.FactsWait = im.factExtractor.Enqueue(jobCtx, documentID, src, docs, trackFacts)
 		clock.Since(StageFactsEnqueue, t)
 	}
 	// ADR-0060: build the document-structure graph and stamp each chunk with its

@@ -335,11 +335,22 @@ func (s *PgErasureStore) PruneTombstones(ctx context.Context, cutoff time.Time) 
 //     takes the same key exclusively (PgErasureStore.eraseTx), so a write and an erase
 //     of one document serialise: a write that started first commits before the erase
 //     deletes it; a write that waits sees the committed tombstone;
+//
 //  2. when ctx carries an ingest origin (domain.IngestOriginFrom), it refuses with
 //     domain.ErrSourceErased if a tombstone of the document (or of digest, a document's
 //     content digest) was written after that origin — a replay, retry or queued job that
 //     predates the erase. A genuinely new ingest (origin after the erase) passes: a
 //     re-ingest is a new act (ADR-0137 Q4).
+//
+//  3. when ctx carries a source version of THIS document (domain.WithSourceVersion —
+//     the async triplet and fact jobs of an ingest, ENG-501), it refuses with
+//     domain.ErrSourceVersionRetired if documents.content_digest is no longer that
+//     version's digest: the document was revised after the job was queued, and the new
+//     version reuses the chunk ids. ReviseDocument takes the same advisory key
+//     exclusively, so the digest read here cannot change before this transaction
+//     commits; a write that committed first is retired by the revise's cascade. A
+//     missing documents row or a NULL digest (a legacy row) cannot be compared and
+//     passes — the tombstone check above covers an erased document.
 //
 // Kernel-authored writes carry no origin and only take the lock. An empty documentID is
 // a no-op.
@@ -356,6 +367,26 @@ func erasureFenceTx(ctx context.Context, q fenceQuerier, documentID, digest stri
 	}
 	if erased {
 		return fmt.Errorf("document %s: %w", documentID, domain.ErrSourceErased)
+	}
+	return sourceVersionFence(ctx, q, documentID)
+}
+
+// sourceVersionFence is step 3 of erasureFenceTx; it takes no lock of its own.
+func sourceVersionFence(ctx context.Context, q rowQuerier, documentID string) error {
+	v, ok := domain.SourceVersionFrom(ctx)
+	if !ok || v.DocumentID != documentID {
+		return nil
+	}
+	var current *string
+	err := q.QueryRow(ctx, `SELECT content_digest FROM `+TableDocuments+` WHERE id = $1`, documentID).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && current == nil) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("version fence: digest: %w", err)
+	}
+	if *current != v.ContentDigest {
+		return fmt.Errorf("document %s: %w", documentID, domain.ErrSourceVersionRetired)
 	}
 	return nil
 }

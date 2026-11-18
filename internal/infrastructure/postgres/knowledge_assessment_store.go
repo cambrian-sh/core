@@ -607,7 +607,20 @@ func (s *PgKnowledgeStore) ExtractionMarker(ctx context.Context, namespace, extr
 func (s *PgKnowledgeStore) MarkExtracted(ctx context.Context, m domain.ExtractionMarker) error {
 	ns := m.NamespaceID
 	ns = orDefaultNamespace(ns)
-	_, err := s.pool.Exec(ctx, `INSERT INTO knowledge_extractions
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	// ADR-0137 D5 / ENG-501: the marker is keyed by a hash of the document's chunk IDS,
+	// which a revised version reuses. A fact job of a retired version that marked after
+	// the revise would make the new version's job skip (or resume past) windows it never
+	// extracted, so the marker is written under the document's write fence like the
+	// items themselves.
+	if err := erasureFenceTx(ctx, tx, m.DocumentID, ""); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO knowledge_extractions
 			(namespace_id, extractor, document_id, content_hash, items, extractor_version, passages_covered, passages_total)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (namespace_id, extractor, document_id, content_hash) DO UPDATE SET
@@ -615,7 +628,10 @@ func (s *PgKnowledgeStore) MarkExtracted(ctx context.Context, m domain.Extractio
 			passages_covered = EXCLUDED.passages_covered, passages_total = EXCLUDED.passages_total,
 			extracted_at = now()`,
 		ns, m.Extractor, m.DocumentID, m.ContentHash, m.Items, m.ExtractorVersion, m.PassagesCovered, m.PassagesTotal)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 var _ domain.ExtractionWindowJournal = (*PgKnowledgeStore)(nil)
