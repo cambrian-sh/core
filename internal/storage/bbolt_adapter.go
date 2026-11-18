@@ -72,10 +72,13 @@ var watchConfigBucket = []byte("watch_configs")
 var pipelineBucket = []byte("pipelines")
 var planEventBucket = []byte("plan_events")
 
-// The ADR-0021 retrieval_sessions bucket is no longer created (ENG-2019): its
-// writer, the WorkspaceStage retrieval-session log, was never wired and is deleted
-// (ADR-0021 deprecated, owner 2026-10-31). A store created earlier keeps the
-// bucket, empty and unread; nothing else reads or writes that name.
+// retiredRetrievalSessionsBucket is the ADR-0021 retrieval-session log's bucket. It
+// is no longer created (ENG-2019): its writer, the WorkspaceStage retrieval-session
+// log, was never wired and is deleted (ADR-0021 deprecated, owner 2026-10-31). A
+// store created earlier has it dropped at open, whatever it holds — at most query
+// text from a pre-git build, which no ADR-0137 erasure reaches (owner decision
+// 2026-11-18, ENG-2052; dropRetiredRetrievalSessions).
+var retiredRetrievalSessionsBucket = []byte("retrieval_sessions")
 var traversalLogBucket = []byte("traversal_log")
 var contradictionResolutionBucket = []byte("contradiction_resolutions")
 var descRegex = regexp.MustCompile(`AGENT_DESCRIPTION\s*=\s*(?:"|')([^"']+)(?:"|')`)
@@ -119,6 +122,10 @@ func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id stri
 		db.Close()
 		return nil, err
 	}
+	if err := dropRetiredRetrievalSessions(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return adapter, nil
 }
@@ -143,6 +150,10 @@ func NewBBoltAdapterNoScan(dbPath string) (*BBoltAdapter, error) {
 		return nil, err
 	}
 	if err := migrateRetiredToolTrait(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := dropRetiredRetrievalSessions(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -1569,6 +1580,25 @@ func titleSeparator(r rune) bool {
 		return false
 	}
 	return unicode.IsSpace(r)
+}
+
+// dropRetiredRetrievalSessions deletes the retired retrieval_sessions bucket if a
+// store an earlier build created still has it (ENG-2052). Idempotent: a store
+// without it — every fresh one, and an old one after its first open — is left
+// untouched and logs nothing. Whatever the bucket holds goes with it.
+func dropRetiredRetrievalSessions(db *bbolt.DB) error {
+	return db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(retiredRetrievalSessionsBucket)
+		if b == nil {
+			return nil
+		}
+		records := b.Stats().KeyN
+		if err := tx.DeleteBucket(retiredRetrievalSessionsBucket); err != nil {
+			return fmt.Errorf("drop the retired retrieval_sessions bucket: %w", err)
+		}
+		slog.Info("DB (BBOLT): dropped the retired ADR-0021 retrieval_sessions bucket (ENG-2052)", "records", records)
+		return nil
+	})
 }
 
 // migrateRetiredToolTrait rewrites registry records stored with the deleted
