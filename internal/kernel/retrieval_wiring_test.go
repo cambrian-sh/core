@@ -145,7 +145,7 @@ func legacyWiredQueryService(backend MemoryBackend, execCfg config.ExecutionConf
 		qs.EnableReranker(rr, cfg.Execution.Retrieval.RerankerTopK, cfg.Execution.Retrieval.RerankerWeight)
 	}
 	if cfg.Execution.Retrieval.StructureGraphEnabled {
-		qs.EnableSectionScopedRetrieval(backend.Vector.(memory.SectionScopedStore))
+		qs.EnableSectionScopedRetrieval(backend.Vector.(memory.SectionScopedStore), cfg.Execution.Retrieval.SectionScopeCues)
 	}
 	if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
 		qs.EnableAgenticRetrieval(pl, cfg.Execution.Retrieval.AgenticMaxHops)

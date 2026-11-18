@@ -183,7 +183,8 @@ func composeRetrieval(qs *memory.QueryService, execCfg config.ExecutionConfig, b
 	// (the docling parse that fills the sections) needs the agent transport and stays
 	// in app.go under the same flag, which also logs the feature's boot line.
 	if rc.StructureGraphEnabled && backend.Sections != nil {
-		qs.EnableSectionScopedRetrieval(backend.Sections)
+		qs.EnableSectionScopedRetrieval(backend.Sections, rc.SectionScopeCues)
+		slog.Info("ADR-0060: section-scoped retrieval ENABLED", "title_cues", rc.SectionScopeCues)
 	}
 }
 

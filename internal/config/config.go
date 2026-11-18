@@ -899,6 +899,19 @@ type RetrievalConfig struct {
 	// chunk stamped with its inherited section path. Opt-in (default false).
 	StructureGraphEnabled bool `json:"structure_graph_enabled,omitempty"`
 
+	// SectionScopeCues are the words that mark a query as naming a document
+	// location by its heading ("the photosynthesis section", "in the genetics
+	// chapter"). ADR-0060 section scoping lifts the chunks under a matched heading
+	// above every other result, so it may only fire when the query actually names
+	// a place in a document: a hierarchical number ("3.2") always counts; matching
+	// headings by the query's content words happens only when one of these cue
+	// words is in the query. Without the gate any question sharing one word with
+	// any heading (a memo asking about "readiness" vs an SOP heading "Recall
+	// Readiness") had its direct answer pushed out of the top-k (ENG-2108).
+	// Matched as whole lowercase words; add the words of the deployment's own
+	// languages here. Empty ⇒ only hierarchical numbers scope by section.
+	SectionScopeCues []string `json:"section_scope_cues,omitempty"`
+
 	// AgenticRetrievalEnabled turns on the agentic retrieval loop
 	// (AGENTIC_RETRIEVAL_SPEC): an LLM query-planner rewrites the query before
 	// the single pass (Phase 2a, hops=1), growing into the full plan/iterate/
@@ -3416,6 +3429,10 @@ func DefaultConfig() *Config {
 				KG2RAGEnabled:            true, // ADR-0053 D3: KG²RAG expansion; opt-out via config.json
 				AnchorConstraintEnabled:  true, // ADR-0053: document-local anchor promotion; opt-out via config.json
 				StructureGraphEnabled:    true, // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
+				// ENG-2108: the words that let a query scope by heading title (see the field).
+				// The unambiguous structural nouns only — "part", "unit" and "book" are
+				// everyday words in operations questions ("which part", "unit price").
+				SectionScopeCues: []string{"chapter", "section", "subsection", "appendix", "article", "lecture", "module"},
 
 				// ── The tuned retrieval stack, promoted to shipped defaults ──
 				// Owner decision 2026-08-11: the operating config's measured-best

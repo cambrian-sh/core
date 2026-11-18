@@ -24,10 +24,20 @@ type SectionScopedStore interface {
 	ChunksInMatchingSections(ctx context.Context, terms []string, limit int) ([]string, error)
 }
 
-// EnableSectionScopedRetrieval wires the structure-graph section boost.
-func (q *QueryService) EnableSectionScopedRetrieval(store SectionScopedStore) {
-	if q != nil && store != nil {
-		q.sectionStore = store
+// EnableSectionScopedRetrieval wires the structure-graph section boost. cues are
+// the words that mark a query as naming a heading by its title
+// (execution.retrieval.section_scope_cues); see extractSectionTerms for why the
+// title match needs one. Empty cues ⇒ only hierarchical section numbers scope.
+func (q *QueryService) EnableSectionScopedRetrieval(store SectionScopedStore, cues []string) {
+	if q == nil || store == nil {
+		return
+	}
+	q.sectionStore = store
+	q.sectionCues = make(map[string]bool, len(cues))
+	for _, c := range cues {
+		if c = strings.ToLower(strings.TrimSpace(c)); c != "" {
+			q.sectionCues[c] = true
+		}
 	}
 }
 
@@ -47,9 +57,17 @@ var sectionNumRE = regexp.MustCompile(`\b\d+(?:\.\d+)+\b`)
 // extractSectionTerms pulls the DISTINCTIVE tokens that can localize a query to a
 // section: hierarchical section numbers (3.2) and content words (len >= 5, not a
 // structural keyword). Generic/short words are dropped so a title match is
-// selective. A non-matching term simply returns no chunks downstream, so extra
-// candidates are harmless.
-func extractSectionTerms(query string) []string {
+// selective.
+//
+// Content words are used only when the query carries a cue word (cues; "section",
+// "chapter", … from execution.retrieval.section_scope_cues). The promotion this
+// feeds puts every matched chunk above every other result, so a term that matches
+// is never harmless: without the gate an ordinary question ("What is the readiness
+// codeword for project Larkspur?") shared one word with an SOP heading ("Recall
+// Readiness") and that heading's chunks displaced the memo that answered it
+// verbatim (ENG-2108). A question that names no place in a document is answered by
+// relevance, not by structure.
+func extractSectionTerms(query string, cues map[string]bool) []string {
 	low := strings.ToLower(query)
 	seen := make(map[string]bool)
 	out := make([]string, 0, 8)
@@ -69,10 +87,21 @@ func extractSectionTerms(query string) []string {
 	if len(out) > 0 {
 		return out
 	}
-	for _, w := range strings.FieldsFunc(low, func(r rune) bool {
+	words := strings.FieldsFunc(low, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	}) {
-		if len(w) >= 5 && !sectionKeywordStop[w] {
+	})
+	cued := false
+	for _, w := range words {
+		if cues[w] {
+			cued = true
+			break
+		}
+	}
+	if !cued {
+		return nil
+	}
+	for _, w := range words {
+		if len(w) >= 5 && !sectionKeywordStop[w] && !cues[w] {
 			add(w)
 		}
 	}
@@ -87,7 +116,7 @@ func (q *QueryService) applySectionConstraint(ctx context.Context, results []dom
 	if q.sectionStore == nil {
 		return results
 	}
-	terms := extractSectionTerms(query)
+	terms := extractSectionTerms(query, q.sectionCues)
 	if len(terms) == 0 {
 		return results
 	}

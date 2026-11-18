@@ -114,15 +114,23 @@ func (p *PgVectorAdapter) ChunksInMatchingSections(ctx context.Context, terms []
 	// between two tables that mean different things — sections and chunks. The shape of
 	// the answer is unchanged; the query just stopped pretending they were the same kind
 	// of row. `title` replaces `text` because that is what a section row now calls it.
+	//
+	// ENG-2108: the subtree join is scoped to the matched section's OWN document.
+	// section_ltree is a per-document ordinal path ("n0.n2.n1", BuildStructureGraph),
+	// so `<@` alone also took the chunks at the same position in every other
+	// document: a match on one SOP's "Recall Readiness" heading promoted another
+	// SOP's "Related SOPs" list. A section whose document row was missing at
+	// ingest (document_id NULL) matches nothing rather than everything.
 	rows, err := p.pool.Query(ctx, `
 		WITH matched AS (
-			SELECT section_ltree FROM `+TableSections+`
+			SELECT document_id, section_ltree FROM `+TableSections+`
 			WHERE section_ltree IS NOT NULL
+			  AND document_id IS NOT NULL
 			  AND (lower(title) ILIKE ANY($1) OR lower(section_path) ILIKE ANY($1))
 		)
 		SELECT DISTINCT c.id
 		FROM `+TableChunks+` c
-		JOIN matched m ON c.section_ltree <@ m.section_ltree
+		JOIN matched m ON c.document_id = m.document_id AND c.section_ltree <@ m.section_ltree
 		WHERE c.document_type = $2
 		LIMIT $3`,
 		patterns, domain.DocTypeMnemonicFact, limit)

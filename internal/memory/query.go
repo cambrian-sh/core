@@ -53,6 +53,7 @@ type QueryService struct {
 	queryEntitySeed  bool                      // recall: seed kgExpand from entities extracted from the QUERY text (LLM-free)
 	anchorConstraint bool                      // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
 	sectionStore     SectionScopedStore        // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
+	sectionCues      map[string]bool           // ENG-2108: words that let a query scope by heading title (execution.retrieval.section_scope_cues)
 	neighborWindow   bool                      // ADR-0060: expand each returned chunk with its document neighbors
 	docCompletion    docCompletion             // ENG-430: return the rest of the top documents (document_completion.go); zero = off
 	chronoContext    bool                      // ADR-0134 D5a: order + date the final synthesis context by event time (chronological_context.go)
