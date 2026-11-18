@@ -533,20 +533,18 @@ func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bo
 	var manifest ManifestRecord
 	sidecarUsed := false
 	sibling := filepath.Join(filepath.Dir(fullPath), id+".manifest.json")
-	if mb, e := os.ReadFile(sibling); e == nil {
-		var sm ManifestRecord
-		if json.Unmarshal(mb, &sm) == nil && sm.Trait != "tool" {
-			manifest = sm
-			sidecarUsed = true
-		} else {
-			slog.Warn("DB (BBOLT): sibling manifest ignored (parse error or trait=tool)", "id", id, "file", sibling)
-		}
+	if sm, present, err := siblingManifest(sibling); err != nil {
+		return DiscoveredAgent{}, refuseUnparsableManifest(id, sibling, err, refused)
+	} else if present && sm.Trait != "tool" {
+		manifest = sm
+		sidecarUsed = true
+	} else if present {
+		slog.Warn("DB (BBOLT): sibling manifest ignored (trait=tool)", "id", id, "file", sibling)
 	}
 	if !sidecarUsed && readErr == nil {
 		if m := manifestRegexJS.FindSubmatch(content); len(m) > 1 {
 			if jsonErr := json.Unmarshal(m[1], &manifest); jsonErr != nil {
-				slog.Warn("DB (BBOLT): agent manifest JSON parse error", "id", id, "err", jsonErr)
-				manifest = ManifestRecord{}
+				return DiscoveredAgent{}, refuseUnparsableManifest(id, fullPath, jsonErr, refused)
 			}
 		}
 	}
@@ -639,9 +637,10 @@ func (b *BBoltAdapter) checkSystemAgentLayout(agentsDir string) error {
 // pythonAgentRecord builds the DiscoveredAgent for a `*_agent.py` entry (no DB access).
 // Manifest resolution prefers a sibling `<id>.manifest.json` (a non-"tool" ManifestRecord)
 // over the embedded `AGENT_MANIFEST=”'…”'` regex (ADR-0075 sidecar-preference) — the
-// declared JSON is less brittle than parsing a manifest out of source text. ok is always
-// true (an unreadable entry still registers with defaults, preserving pre-inversion
-// behavior; availability health-gating is applied by the app-layer source, not here).
+// declared JSON is less brittle than parsing a manifest out of source text. An unreadable
+// entry still registers with defaults (availability health-gating is applied by the
+// app-layer source, not here); a manifest that is present but unparsable — sibling or
+// embedded — refuses the agent (ok=false, reported through refused, ENG-2094).
 func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bool, refused func(string)) (DiscoveredAgent, bool) {
 	content, readErr := os.ReadFile(fullPath)
 
@@ -656,20 +655,18 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 	sidecarUsed := false
 	// Prefer a sibling declared manifest (non-tool) over the source regex.
 	sibling := filepath.Join(filepath.Dir(fullPath), id+".manifest.json")
-	if mb, e := os.ReadFile(sibling); e == nil {
-		var sm ManifestRecord
-		if json.Unmarshal(mb, &sm) == nil && sm.Trait != "tool" {
-			manifest = sm
-			sidecarUsed = true
-		} else {
-			slog.Warn("DB (BBOLT): sibling manifest ignored (parse error or trait=tool)", "id", id, "file", sibling)
-		}
+	if sm, present, err := siblingManifest(sibling); err != nil {
+		return DiscoveredAgent{}, refuseUnparsableManifest(id, sibling, err, refused)
+	} else if present && sm.Trait != "tool" {
+		manifest = sm
+		sidecarUsed = true
+	} else if present {
+		slog.Warn("DB (BBOLT): sibling manifest ignored (trait=tool)", "id", id, "file", sibling)
 	}
 	if !sidecarUsed && readErr == nil {
 		if m := manifestRegex.FindSubmatch(content); len(m) > 1 {
 			if jsonErr := json.Unmarshal(m[1], &manifest); jsonErr != nil {
-				slog.Warn("DB (BBOLT): agent manifest JSON parse error", "id", id, "err", jsonErr)
-				manifest = ManifestRecord{}
+				return DiscoveredAgent{}, refuseUnparsableManifest(id, fullPath, jsonErr, refused)
 			}
 		}
 	}
@@ -719,19 +716,18 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 
 // sidecarAgentRecord builds the DiscoveredAgent for a standalone `*.manifest.json`
 // sidecar (no DB access). Returns ok=false (skips) when the manifest is unreadable/
-// unparseable, its trait is missing or unknown (ADR-0125: tool/cognitive/model/daemon
+// unparseable (also reported through refused so an earlier registration is dropped,
+// ENG-2094), its trait is missing or unknown (ADR-0125: tool/cognitive/model/daemon
 // are accepted; cognitive normalizes to ""), or its exec target does not exist — a
 // health gate at discovery time.
 func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(string) bool, refused func(string)) (DiscoveredAgent, bool) {
 	manifestBytes, readErr := os.ReadFile(manifestPath)
 	if readErr != nil {
-		slog.Warn("DB (BBOLT): sidecar manifest unreadable, skipping", "file", manifestPath, "err", readErr)
-		return DiscoveredAgent{}, false
+		return DiscoveredAgent{}, refuseUnparsableManifest(id, manifestPath, readErr, refused)
 	}
 	var sm sidecarManifest
 	if jsonErr := json.Unmarshal(manifestBytes, &sm); jsonErr != nil {
-		slog.Warn("DB (BBOLT): sidecar manifest JSON parse error, skipping", "file", manifestPath, "err", jsonErr)
-		return DiscoveredAgent{}, false
+		return DiscoveredAgent{}, refuseUnparsableManifest(id, manifestPath, jsonErr, refused)
 	}
 	trait, known := sidecarTraits[sm.Trait]
 	if !known {

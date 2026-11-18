@@ -1,6 +1,12 @@
 package storage
 
-import "log/slog"
+import (
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"log/slog"
+	"os"
+)
 
 // ADR-0139 D8 tiers a local agent's manifest (AGENT_MANIFEST or a
 // *.manifest.json) may name in its trust_tier field.
@@ -50,4 +56,40 @@ func manifestTrustTier(id, file, declared string, system bool) (string, bool) {
 		return refuse("a manifest cannot grant system status; only the composition root can")
 	}
 	return refuse("unknown tier (want \"first-party\" or \"third-party\")")
+}
+
+// refuseUnparsableManifest logs the ERROR for an agent whose manifest is present
+// but cannot be parsed and reports the refusal (owner decision 2026-11-18,
+// ENG-2094). It returns false so a record builder can `return
+// DiscoveredAgent{}, refuseUnparsableManifest(...)`.
+//
+// Refusal over the old empty-manifest-plus-WARN: an empty manifest drops every
+// declaration in it, trust_tier included, so a "third-party" agent whose JSON
+// had one typo ran first-party — the fail-open ENG-2085 closed for well-formed
+// manifests (AGENTS.md §3.2: access decisions fail closed). An agent with NO
+// manifest is unaffected. No shipped agent's manifest fails to parse (checked
+// 2026-11-18: core, premium, plugins, SDK examples, benchmark fixtures).
+func refuseUnparsableManifest(id, file string, err error, refused func(string)) bool {
+	slog.Error("agent manifest is present but unparsable: agent NOT registered and any earlier registration dropped (ENG-2094)",
+		"id", id, "file", file, "err", err)
+	refused(id)
+	return false
+}
+
+// siblingManifest reads <dir>/<id>.manifest.json, the canonical manifest of a
+// source-file agent (ADR-0075 sidecar preference). present=false means there is
+// no such file; err is set when the file is present but unreadable or not valid
+// JSON (the caller refuses the agent, ENG-2094).
+func siblingManifest(path string) (m ManifestRecord, present bool, err error) {
+	b, readErr := os.ReadFile(path)
+	if errors.Is(readErr, fs.ErrNotExist) {
+		return ManifestRecord{}, false, nil
+	}
+	if readErr != nil {
+		return ManifestRecord{}, true, readErr
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return ManifestRecord{}, true, err
+	}
+	return m, true, nil
 }
