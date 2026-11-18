@@ -24,68 +24,64 @@ type chatPoolRunner interface {
 	Started() bool
 }
 
-// pythonReadiness is the slice of the managed Python env the chat lane's start
-// needs: the explicit readiness signal and the gate's current refusal (its
-// reason names the build step or the fix).
+// pythonReadiness is the slice of the managed Python env the chat lane's
+// readiness reason needs: the gate's current refusal (its reason names the
+// build step or the fix).
 type pythonReadiness interface {
 	Interpreter() (pyenv.Interpreter, error)
-	ReadyC() <-chan struct{}
 }
 
-// chatPoolStarter starts the chat pool at boot and, when the start is refused
-// because the sandbox Python env is still building, starts it once the env
-// signals ready — no restart, no sleep loop (ENG-2105).
+// chatPoolStarter starts the chat pool once a worker spawned now would be
+// served on its first dial and could launch: after the kernel serves gRPC
+// (ENG-2148) and the sandbox Python env is ready, or settled without becoming
+// ready (ENG-2105, ENG-2137). It waits on the same gate the plugins' boot-time
+// spawns wait on (spawnGate, KernelServices.AwaitSpawnReady), not a second one.
 //
-// Before, the chat-pool lifecycle called pool.Start once and only logged the
-// error: on a fresh install the env build takes ~2 min, the pool started 6 s
-// into it, and every turn answered "agent pool not started" until a restart.
-// Rejected: retrying Start with a backoff — it polls a state the env already
-// announces, and keeps spawning (and failing) Python processes while it waits.
+// Before ENG-2148 the chat-pool lifecycle called pool.Start straight away, and
+// lifecycles start before serveGRPC reaches Serve: the workers dialled the
+// early-bound listener and sat unserved in the OS backlog until Serve — the
+// redial / CLOSE_WAIT window ENG-2135 closed for plugin daemons. Before
+// ENG-2105 a start refused because the env was still building was only
+// logged, and every turn answered "agent pool not started" until a restart.
+// Rejected: moving the pool start after serveMarked in serveGRPC — the chat
+// lane is a lifecycle like any other, and the gate already composes every
+// precondition; retrying Start with a backoff — it polls states the kernel and
+// the env already announce, and spawns (and fails) Python processes meanwhile.
 //
 // It owns at most one goroutine (Start/Stop, AGENTS.md §3.3): the wait for the
-// env, which Stop cancels and joins before stopping the pool.
+// gate and the start behind it, which Stop cancels and joins before stopping
+// the pool.
 type chatPoolStarter struct {
 	pool chatPoolRunner
-	env  pythonReadiness // nil: no managed env to wait for
+	gate spawnGate
+	env  pythonReadiness // nil: no managed env to name in the readiness reason
 	// layout is the boot layout problem the chat agent will hit (a missing
 	// prompt library), or nil; a failed start's reason carries it.
 	layout error
 
 	mu      sync.Mutex
 	err     error // the last start failure; nil when started or not tried yet
-	waiting bool  // a start was refused with ErrBuilding and waits for the env
-	stop    chan struct{}
+	waiting bool  // Start ran and the pool start waits on the gate
+	cancel  context.CancelFunc
 	done    chan struct{}
 }
 
-func newChatPoolStarter(pool chatPoolRunner, env pythonReadiness, layout error) *chatPoolStarter {
-	return &chatPoolStarter{pool: pool, env: env, layout: layout}
+func newChatPoolStarter(pool chatPoolRunner, gate spawnGate, env pythonReadiness, layout error) *chatPoolStarter {
+	return &chatPoolStarter{pool: pool, gate: gate, env: env, layout: layout}
 }
 
-// Start is the chat-pool Lifecycle.Start.
+// Start is the chat-pool Lifecycle.Start. It never blocks: the pool starts
+// from the starter's goroutine once the gate opens.
 func (s *chatPoolStarter) Start(ctx context.Context) {
-	err := s.pool.Start(ctx)
-	if err == nil {
-		return
-	}
-	if s.env == nil || !errors.Is(err, pyenv.ErrBuilding) {
-		s.fail(err)
-		return
-	}
-	slog.Warn("ADR-0084: chat pool waits for the sandbox Python env; the chat lane starts when the env is ready", "reason", err)
-	stop, done := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	s.mu.Lock()
-	s.err, s.waiting, s.stop, s.done = err, true, stop, done
+	s.waiting, s.cancel, s.done = true, cancel, done
 	s.mu.Unlock()
-	ready := s.env.ReadyC()
 	go func() {
 		defer close(done)
-		select {
-		case <-stop:
-			return
-		case <-ctx.Done():
-			return
-		case <-ready:
+		if err := s.gate.await(ctx); err != nil {
+			return // shutdown before the gate opened: nothing was spawned
 		}
 		err := s.pool.Start(ctx)
 		s.mu.Lock()
@@ -95,10 +91,7 @@ func (s *chatPoolStarter) Start(ctx context.Context) {
 			s.fail(err)
 			return
 		}
-		s.mu.Lock()
-		s.err = nil
-		s.mu.Unlock()
-		slog.Info("ADR-0084: chat pool started once the sandbox Python env was ready; chat lane available")
+		slog.Info("ADR-0084: chat pool started once the kernel served and the sandbox Python env was ready; chat lane available")
 	}()
 }
 
@@ -112,23 +105,24 @@ func (s *chatPoolStarter) fail(err error) {
 	slog.Error("ADR-0084: chat pool failed to start; chat lane unavailable", "err", err)
 }
 
-// Stop is the chat-pool Lifecycle.Stop: it ends a pending wait for the env
+// Stop is the chat-pool Lifecycle.Stop: it ends a pending wait on the gate
 // (joining a start already under way), then stops the pool.
 func (s *chatPoolStarter) Stop() {
 	s.mu.Lock()
-	stop, done := s.stop, s.done
-	s.stop = nil
+	cancel, done := s.cancel, s.done
+	s.cancel = nil
 	s.mu.Unlock()
-	if stop != nil {
-		close(stop)
+	if cancel != nil {
+		cancel()
 		<-done
 	}
 	s.pool.Stop()
 }
 
 // Ready is the chat lane's health component: nil once the pool is up, else
-// why not — the env's build step while it waits, the build failure, or the
-// start error. It never blocks (Pool.Started does not wait on a Start).
+// why not — the kernel not serving yet, the env's build step while it waits,
+// the build failure, or the start error. It never blocks (Pool.Started does
+// not wait on a Start).
 func (s *chatPoolStarter) Ready() error {
 	if s.pool.Started() {
 		return nil
@@ -137,10 +131,15 @@ func (s *chatPoolStarter) Ready() error {
 	waiting, err := s.waiting, s.err
 	s.mu.Unlock()
 	if waiting {
-		if _, envErr := s.env.Interpreter(); envErr != nil {
-			return fmt.Errorf("chat pool waiting for the sandbox Python env: %w", envErr)
+		if !s.gate.serving() {
+			return errors.New("chat pool waiting for the kernel to serve gRPC")
 		}
-		return errors.New("chat pool starting (the sandbox Python env is ready)")
+		if s.env != nil {
+			if _, envErr := s.env.Interpreter(); envErr != nil {
+				return fmt.Errorf("chat pool waiting for the sandbox Python env: %w", envErr)
+			}
+		}
+		return errors.New("chat pool starting (the kernel serves and the sandbox Python env is ready)")
 	}
 	if err != nil {
 		return fmt.Errorf("chat pool failed to start: %w", err)
@@ -187,8 +186,8 @@ func checkAgentLayout(agentsDir string) error {
 		filepath.ToSlash(promptLibraryMarker), abs, filepath.Join(filepath.Dir(abs), "prompts"))
 }
 
-// pythonReadinessOf narrows the kernel's env gate; nil when there is none, so
-// the starter does not wait on an env that was never installed.
+// pythonReadinessOf narrows the kernel's env gate for the chat lane's readiness
+// reason; nil when there is none, so the reason names no env never installed.
 func pythonReadinessOf(env pythonEnvGate) pythonReadiness {
 	if env == nil {
 		return nil

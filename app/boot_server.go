@@ -130,11 +130,14 @@ func (b *kernelBuild) buildChatLane() {
 		chatTurns.SetDeliverer(deliverySvc)
 		// ADR-0098 D2: the same resolved, re-authorised envelope carries progress.
 		progressOut.set(deliverySvc.DeliverProgress)
-		// ENG-2105: the pool starts when the sandbox Python env is ready — at
-		// boot when it already is, else on the env's readiness signal (a fresh
-		// install builds it for ~2 min) — and the health checker reports the
-		// chat lane not ready, with the reason, until the pool is up.
-		chatStart := newChatPoolStarter(pool, pythonReadinessOf(b.pyEnv), b.agentLayout)
+		// ENG-2148, ENG-2105: the pool starts behind the same spawn gate as the
+		// plugins' boot-time daemons — once the kernel serves gRPC (lifecycles
+		// start before Serve, so workers spawned at once dialled an unserved
+		// backlog) and the sandbox Python env is ready (a fresh install builds
+		// it for ~2 min) — and the health checker reports the chat lane not
+		// ready, with the reason, until the pool is up.
+		chatGate := spawnGate{Serving: b.serving.C(), PythonEnv: pythonSpawnReadinessOf(b.pyEnv)}
+		chatStart := newChatPoolStarter(pool, chatGate, pythonReadinessOf(b.pyEnv), b.agentLayout)
 		if b.healthChecker != nil {
 			b.healthChecker.AddComponent(chatLaneComponent, chatStart.Ready)
 		}

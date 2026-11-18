@@ -21,12 +21,16 @@ type fakeChatPool struct {
 	starts   int
 	started  bool
 	stops    int
+	onStart  func() // called at each Start, before the result
 }
 
 func (p *fakeChatPool) Start(context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.starts++
+	if p.onStart != nil {
+		p.onStart()
+	}
 	if p.startErr != nil {
 		return p.startErr
 	}
@@ -124,36 +128,82 @@ func waitChatUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-func buildingErr() error {
-	return fmt.Errorf("agentpool: spawn worker 1/2 for \"chat_agent\": SpawnDaemon: boot failed for \"chat_agent\": agent \"chat_agent\" not started: %w (step: verifying installer archive)", pyenv.ErrBuilding)
+// openSignal is a serving signal already closed: the kernel serves.
+func openSignal() *servingSignal {
+	sig := newServingSignal()
+	sig.markServing()
+	return sig
 }
 
-// ENG-2105: a start refused because the env is building waits for the env's
-// readiness signal and starts the pool once — without a restart — and the lane's
-// readiness names the env's step until then.
-func TestChatPoolStarter_StartsWhenEnvBecomesReady(t *testing.T) {
-	pool := &fakeChatPool{startErr: buildingErr()}
+// gateOf is the chat pool's gate as buildChatLane wires it.
+func gateOf(sig *servingSignal, env pythonEnvGate) spawnGate {
+	return spawnGate{Serving: sig.C(), PythonEnv: pythonSpawnReadinessOf(env)}
+}
+
+// ENG-2148 + ENG-2105: the pool starts behind the spawn gate — not while the
+// kernel does not serve yet, not while the env builds — exactly once, with no
+// refused attempt, and the lane's readiness names what it waits for.
+func TestChatPoolStarter_WaitsForServingThenTheEnv(t *testing.T) {
+	sig := newServingSignal()
 	env := newDelayedPythonEnv(pyenv.Interpreter{Path: "python"})
-	s := newChatPoolStarter(pool, env, nil)
+	pool := &fakeChatPool{}
+	var servedAtStart, readyAtStart bool
+	pool.onStart = func() {
+		servedAtStart = isClosed(sig.C(), false)
+		readyAtStart = isClosed(env.ReadyC(), false)
+	}
+	s := newChatPoolStarter(pool, gateOf(sig, env), env, nil)
 	s.Start(context.Background())
 	t.Cleanup(s.Stop)
 
-	err := s.Ready()
-	if err == nil || !strings.Contains(err.Error(), "waiting for the sandbox Python env") || !strings.Contains(err.Error(), "step: installing base packages") {
-		t.Fatalf("readiness while the env builds: %v", err)
+	if err := s.Ready(); err == nil || !strings.Contains(err.Error(), "waiting for the kernel to serve") {
+		t.Fatalf("readiness before the kernel serves: %v", err)
 	}
-	if n := pool.startCount(); n != 1 {
-		t.Fatalf("starts before the env is ready: %d, want 1 (no polling)", n)
+	sig.markServing()
+	waitChatUntil(t, "the readiness to name the env build", func() bool {
+		err := s.Ready()
+		return err != nil && strings.Contains(err.Error(), "waiting for the sandbox Python env") &&
+			strings.Contains(err.Error(), "step: installing base packages")
+	})
+	time.Sleep(50 * time.Millisecond)
+	if n := pool.startCount(); n != 0 {
+		t.Fatalf("starts while the env builds: %d, want 0 (no refused attempt)", n)
 	}
 
-	pool.set(nil)
 	env.finish()
-	waitChatUntil(t, "the pool to start after the env became ready", pool.Started)
+	waitChatUntil(t, "the pool to start once the gate opened", pool.Started)
 	if err := s.Ready(); err != nil {
 		t.Fatalf("readiness once the pool is up: %v", err)
 	}
-	if n := pool.startCount(); n != 2 {
-		t.Fatalf("starts: %d, want exactly 2 (the refused one and the one on ready)", n)
+	if n := pool.startCount(); n != 1 {
+		t.Fatalf("starts: %d, want exactly 1", n)
+	}
+	if !servedAtStart || !readyAtStart {
+		t.Fatalf("pool started with serving=%v env ready=%v; want both", servedAtStart, readyAtStart)
+	}
+}
+
+// The env is ready at boot but the kernel does not serve yet: nothing spawns
+// until it does (ENG-2148: the workers' first dial must be served).
+func TestChatPoolStarter_ReadyEnvWaitsForServing(t *testing.T) {
+	sig := newServingSignal()
+	env := newDelayedPythonEnv(pyenv.Interpreter{})
+	env.finish()
+	pool := &fakeChatPool{}
+	s := newChatPoolStarter(pool, gateOf(sig, env), env, nil)
+	if err := s.Ready(); err == nil || !strings.Contains(err.Error(), "not started yet") {
+		t.Fatalf("before Start: %v", err)
+	}
+	s.Start(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if n := pool.startCount(); n != 0 {
+		t.Fatalf("starts before the kernel serves: %d", n)
+	}
+	sig.markServing()
+	waitChatUntil(t, "the pool to start once the kernel serves", pool.Started)
+	s.Stop()
+	if pool.Started() {
+		t.Fatal("Stop left the pool started")
 	}
 }
 
@@ -162,32 +212,42 @@ func TestChatPoolStarter_StartsWhenEnvBecomesReady(t *testing.T) {
 func TestChatPoolStarter_OtherFailureIsReportedNotRetried(t *testing.T) {
 	pool := &fakeChatPool{startErr: errors.New("boot failed: ModuleNotFoundError")}
 	env := newDelayedPythonEnv(pyenv.Interpreter{Path: "python"})
-	s := newChatPoolStarter(pool, env, errors.New("prompt library not found"))
+	env.finish()
+	s := newChatPoolStarter(pool, gateOf(openSignal(), env), env, errors.New("prompt library not found"))
 	s.Start(context.Background())
 	t.Cleanup(s.Stop)
-	env.finish()
+	waitChatUntil(t, "the start to fail", func() bool {
+		err := s.Ready()
+		return err != nil && strings.Contains(err.Error(), "failed to start")
+	})
 	time.Sleep(50 * time.Millisecond)
 	if n := pool.startCount(); n != 1 {
-		t.Fatalf("a non-env failure was retried: %d starts", n)
+		t.Fatalf("a failure was retried: %d starts", n)
 	}
 	err := s.Ready()
-	if err == nil || !strings.Contains(err.Error(), "failed to start") || !strings.Contains(err.Error(), "ModuleNotFoundError") ||
-		!strings.Contains(err.Error(), "prompt library not found") {
+	if !strings.Contains(err.Error(), "ModuleNotFoundError") || !strings.Contains(err.Error(), "prompt library not found") {
 		t.Fatalf("readiness after a failed start: %v", err)
 	}
 }
 
-// The env's build fails while the lane waits: the lane stays down, its reason
-// becomes the build failure, and Stop ends the wait without a start.
+// The env's build fails while the lane waits: the gate opens (the env settled;
+// waiting longer cannot help), the one start is refused with the build failure,
+// and the lane reports it rather than waiting silently until shutdown.
 func TestChatPoolStarter_BuildFailureWhileWaiting(t *testing.T) {
-	pool := &fakeChatPool{startErr: buildingErr()}
 	env := newDelayedPythonEnv(pyenv.Interpreter{Path: "python"})
-	s := newChatPoolStarter(pool, env, nil)
+	// What the launch gate answers a spawn once the build failed.
+	pool := &fakeChatPool{startErr: errors.New("agentpool: spawn worker 1/2: sandbox Python env build failed: hash mismatch; fix: rebuild")}
+	s := newChatPoolStarter(pool, gateOf(openSignal(), env), env, nil)
 	s.Start(context.Background())
-	env.fail(errors.New("hash mismatch"))
-	if err := s.Ready(); err == nil || !strings.Contains(err.Error(), "build failed: hash mismatch") {
-		t.Fatalf("readiness after the build failed: %v", err)
+	time.Sleep(50 * time.Millisecond)
+	if n := pool.startCount(); n != 0 {
+		t.Fatalf("starts while the env builds: %d", n)
 	}
+	env.fail(errors.New("hash mismatch"))
+	waitChatUntil(t, "the start to be refused with the build failure", func() bool {
+		err := s.Ready()
+		return err != nil && strings.Contains(err.Error(), "build failed: hash mismatch")
+	})
 	s.Stop()
 	if n := pool.startCount(); n != 1 {
 		t.Fatalf("starts: %d, want 1", n)
@@ -200,32 +260,31 @@ func TestChatPoolStarter_BuildFailureWhileWaiting(t *testing.T) {
 	}
 }
 
-// A healthy env at boot: the pool starts at once and nothing waits.
-func TestChatPoolStarter_ReadyEnvStartsAtOnce(t *testing.T) {
+// Stop before the gate opens ends the wait: nothing is spawned, the goroutine
+// is joined.
+func TestChatPoolStarter_StopBeforeTheGateOpens(t *testing.T) {
+	sig := newServingSignal()
 	pool := &fakeChatPool{}
-	s := newChatPoolStarter(pool, newDelayedPythonEnv(pyenv.Interpreter{}), nil)
-	if err := s.Ready(); err == nil || !strings.Contains(err.Error(), "not started yet") {
-		t.Fatalf("before Start: %v", err)
-	}
+	s := newChatPoolStarter(pool, gateOf(sig, nil), nil, nil)
 	s.Start(context.Background())
-	if !pool.Started() || s.Ready() != nil {
-		t.Fatalf("started=%v ready=%v", pool.Started(), s.Ready())
-	}
 	s.Stop()
-	if pool.Started() {
-		t.Fatal("Stop left the pool started")
+	sig.markServing()
+	time.Sleep(50 * time.Millisecond)
+	if n := pool.startCount(); n != 0 {
+		t.Fatalf("starts after Stop: %d", n)
 	}
 }
 
-// With no managed env (nil gate) an ErrBuilding refusal cannot be waited on and
-// is reported as a failure, never hangs.
-func TestChatPoolStarter_NoEnvDoesNotWait(t *testing.T) {
-	pool := &fakeChatPool{startErr: buildingErr()}
-	s := newChatPoolStarter(pool, pythonReadinessOf(nil), nil)
+// With no managed env and no serving signal (a zero gate) the pool starts at
+// once and a refusal is reported as a failure, never hangs.
+func TestChatPoolStarter_NoGateDoesNotWait(t *testing.T) {
+	pool := &fakeChatPool{startErr: errors.New("sandbox Python env unavailable: unpinned platform")}
+	s := newChatPoolStarter(pool, spawnGate{}, pythonReadinessOf(nil), nil)
 	s.Start(context.Background())
-	if err := s.Ready(); err == nil || !strings.Contains(err.Error(), "failed to start") {
-		t.Fatalf("readiness: %v", err)
-	}
+	waitChatUntil(t, "the start to fail", func() bool {
+		err := s.Ready()
+		return err != nil && strings.Contains(err.Error(), "failed to start")
+	})
 	s.Stop()
 }
 

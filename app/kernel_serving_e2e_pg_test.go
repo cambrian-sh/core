@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,10 @@ import (
 // serving signal at Build; it stays shut through the rest of the boot and the
 // lifecycle start; startKernelServices opens it as it serves; and a daemon
 // released by AwaitSpawnReady at that moment connects to the real kernel server
-// on its first dial. Postgres via PG_TEST_DSN (a scratch database, dropped).
+// on its first dial. ENG-2148: the core chat pool (on by default) is behind the
+// same gate — its lifecycle starts with the others, before Serve, and spawns
+// nothing until the kernel serves; /healthz?component=chat says so meanwhile.
+// Postgres via PG_TEST_DSN (a scratch database, dropped).
 func TestPg_BootSpawnGateOpensWhenTheKernelServes(t *testing.T) {
 	cfg := retrievalScratchConfig(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,8 +56,33 @@ func TestPg_BootSpawnGateOpensWhenTheKernelServes(t *testing.T) {
 		got <- result{d, err}
 	}()
 
+	chatReason := func() string {
+		t.Helper()
+		st, ok := k.Health.Component(chatLaneComponent)
+		if !ok {
+			t.Fatal("the default boot registered no chat lane health component")
+		}
+		return st.Reason
+	}
+
+	// startKernelServices in two halves, so the window between the lifecycles
+	// starting and Serve is held open and observable.
 	g, gCtx := errgroup.WithContext(ctx)
-	startKernelServices(g, gCtx, k)
+	startBackgroundWorkers(g, gCtx, k)
+	time.Sleep(500 * time.Millisecond) // a spawn behind no gate would have gone by now
+	if r := chatReason(); !strings.Contains(r, "waiting for the kernel to serve") {
+		t.Fatalf("chat lane before the kernel serves: %q; want it waiting for the kernel to serve", r)
+	}
+	select {
+	case r := <-got:
+		t.Fatalf("the plugin spawn went before the kernel serves: %+v", r)
+	default:
+	}
+	operatorIDP, agentAuth, planeLimiter, ok := buildPlaneAuth(g, gCtx, k)
+	if !ok {
+		t.Fatalf("buildPlaneAuth failed: %v", g.Wait())
+	}
+	serveGRPC(g, gCtx, k, operatorIDP, agentAuth, planeLimiter)
 	select {
 	case r := <-got:
 		if r.err != nil {
@@ -64,6 +93,16 @@ func TestPg_BootSpawnGateOpensWhenTheKernelServes(t *testing.T) {
 		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("the serving signal never opened")
+	}
+	// The kernel serves: the chat pool went on to its start. A test boot has no
+	// chat agent to spawn (no agents directory), so the start is refused and
+	// the lane reports that refusal — no longer waiting on the kernel.
+	deadline := time.Now().Add(30 * time.Second)
+	for r := chatReason(); strings.Contains(r, "waiting for the kernel to serve") || r == ""; r = chatReason() {
+		if time.Now().After(deadline) {
+			t.Fatalf("chat lane still %q after the kernel served", r)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	cancel()
 	_ = lis.Close()

@@ -82,13 +82,45 @@ type PythonSpawnReadiness struct {
 // ENG-2135. This orders startup; it is not an access control, so absent means
 // "do not wait".
 func (s KernelServices) AwaitSpawnReady(ctx context.Context) error {
-	if err := awaitEither(ctx, s.Serving, nil); err != nil {
+	return spawnGate{Serving: s.Serving, PythonEnv: s.PythonEnv}.await(ctx)
+}
+
+// spawnGate is the one implementation of the boot-time spawn gate: the plugins
+// reach it through KernelServices.AwaitSpawnReady, the core chat pool through
+// chatPoolStarter (ENG-2148), so a new spawn precondition is added here once
+// and every boot-time spawner waits on it (AGENTS.md §4.3).
+type spawnGate struct {
+	Serving   <-chan struct{}
+	PythonEnv PythonSpawnReadiness
+}
+
+// await blocks until a daemon spawned now would be served on its first dial
+// and could launch, or ctx ends; see KernelServices.AwaitSpawnReady.
+func (g spawnGate) await(ctx context.Context) error {
+	if err := awaitEither(ctx, g.Serving, nil); err != nil {
 		return err
 	}
-	if s.PythonEnv.Ready == nil {
+	if g.PythonEnv.Ready == nil {
 		return nil
 	}
-	return awaitEither(ctx, s.PythonEnv.Ready, s.PythonEnv.Settled)
+	return awaitEither(ctx, g.PythonEnv.Ready, g.PythonEnv.Settled)
+}
+
+// serving reports, without blocking, whether the kernel-serving half of the
+// gate is open (a nil Serving is no gate, so open) — for a readiness reason.
+func (g spawnGate) serving() bool { return isClosed(g.Serving, true) }
+
+// isClosed reports whether ch is closed, without blocking; ifNil for a nil ch.
+func isClosed(ch <-chan struct{}, ifNil bool) bool {
+	if ch == nil {
+		return ifNil
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // awaitEither returns nil once a or b is closed — at once when one already is,
