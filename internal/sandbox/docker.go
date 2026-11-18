@@ -210,6 +210,9 @@ type containerHandle struct {
 	cmd       *exec.Cmd
 	once      sync.Once
 	err       error
+	// reclaim is set for an agent container: its scratch is handed back to
+	// the kernel after the exit (reclaimScratch, ENG-2031). nil for MCP.
+	reclaim *dockerReclaim
 }
 
 func (h *containerHandle) kill() error {

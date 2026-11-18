@@ -517,6 +517,13 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	agentID, instanceID := def.ID, inst.ID
 	cleanup := func() {
 		_ = l.Kill() // normally already exited; the collection must see no writer
+		// The docker runner's agent uid is not the kernel's (ENG-2031): its
+		// files come back to the kernel before out/ is read. A failure keeps
+		// the scratch on disk and says so; out/ is collected as far as it can.
+		if err := l.Reclaim(collectCtx); err != nil {
+			slog.ErrorContext(collectCtx, "ADR-0157: agent scratch not handed back to the kernel; out/ collection may be incomplete and the scratch is kept",
+				"agent", agentID, "instance", instanceID, "dir", l.Workdir(), "err", err)
+		}
 		im.collectOutputs(collectCtx, agentID, instanceID, l.Workdir())
 		l.Release()
 		closeKernelSock()

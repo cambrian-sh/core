@@ -29,10 +29,11 @@ import (
 //	                           e.g. debian:trixie-slim for a golang:1.25 build)
 //
 // is set; ENG-2017 ran it in a privileged golang:1.25 container with its own
-// dockerd (docker-in-docker). As root it passes. As a non-root kernel it fails
-// on "scratch survived the exit": the agent (uid 65534) leaves 0700 dirs the
-// kernel's uid cannot remove or collect from
-// (T-20261118-docker-runner-non-root-kernel-files-the-agent).
+// dockerd (docker-in-docker). It must pass as root AND as a non-root kernel:
+// the agent (uid 65534) leaves a 0700 out/sub with a 0600 result in it, which
+// a non-root kernel can collect and remove only after the runner's reclaim
+// container hands the scratch back (ENG-2031). The out/ collection and the
+// scratch removal are asserted on both.
 func TestE2E_DockerRunnerAgentBootsConfined(t *testing.T) {
 	image := os.Getenv("AGENTMGR_E2E_DOCKER_IMAGE")
 	if image == "" || runtime.GOOS != "linux" {
@@ -104,6 +105,8 @@ func dockerRunnerProbe(t *testing.T, image, tier string) {
 	im.SetManifestResolver(func(context.Context, string) *domain.AgentManifest {
 		return &domain.AgentManifest{SandboxPaths: []domain.SandboxPath{{Path: cache, Write: true}, {Path: weights}}}
 	})
+	col := &recordingCollector{files: map[string]string{}}
+	im.SetOutputCollector(col)
 	var reads []string
 	for _, f := range files {
 		reads = append(reads, f)
@@ -183,8 +186,17 @@ func dockerRunnerProbe(t *testing.T, image, tier string) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("the evicted agent did not exit")
 	}
+	col.mu.Lock()
+	got := col.files["sub/result.txt"]
+	col.mu.Unlock()
+	if got != "probe result" {
+		t.Errorf("out/sub/result.txt (0600 in a 0700 dir of uid 65534) was not collected: %q (files %v)", got, col.files)
+	}
 	if m, _ := filepath.Glob(scratchGlob); len(m) != 0 {
-		t.Errorf("scratch survived the exit: %v (non-root kernel: T-20261118-docker-runner-non-root-kernel-files-the-agent)", m)
+		t.Errorf("scratch survived the exit: %v", m)
+	}
+	if n := reclaimContainers(t); n != 0 {
+		t.Errorf("%d reclaim container(s) left behind", n)
 	}
 	if _, err := os.Stat(filepath.Dir(inst.SocketPath)); !os.IsNotExist(err) {
 		t.Errorf("socket directory survived the exit: %v", err)
@@ -196,6 +208,16 @@ func dockerRunnerProbe(t *testing.T, image, tier string) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// reclaimContainers counts the reclaim containers (running or not) left.
+func reclaimContainers(t *testing.T) int {
+	t.Helper()
+	out, err := exec.Command("docker", "ps", "-aq", "--filter", "label=cambrian.sandbox=agent-reclaim").Output()
+	if err != nil {
+		t.Fatalf("docker ps: %v", err)
+	}
+	return len(strings.Fields(string(out)))
 }
 
 // agentContainers counts the containers (running or not) whose cambrian.agent

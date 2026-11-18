@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cambrian-sh/core/internal/procenv"
 )
@@ -86,8 +87,81 @@ func startDockerAgent(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, 
 	cmd := exec.Command(bin, args...) //nolint:gosec // configured docker CLI and kernel-built agent command
 	cmd.Env = cliEnv
 	name := args[indexOf(args, "--name")+1]
-	post := func() (osHandle, error) { return &containerHandle{bin: bin, name: name, cmd: cmd}, nil }
+	user := spec.Agent.DockerUser
+	if user == "" {
+		user = agentDefaultDockerUser
+	}
+	post := func() (osHandle, error) {
+		return &containerHandle{bin: bin, name: name, cmd: cmd,
+			reclaim: &dockerReclaim{image: spec.Server.Image, user: user}}, nil
+	}
 	return start(cmd, post)
+}
+
+// reclaimTimeout bounds the one-shot container that hands an exited agent's
+// scratch back to the kernel (ENG-2031).
+const reclaimTimeout = 2 * time.Minute
+
+// dockerReclaim is what the reclaim container needs: the agent's image and
+// docker user (the owner of every file the agent created).
+type dockerReclaim struct{ image, user string }
+
+// reclaimScratch hands an exited agent container's scratch back to the
+// kernel's uid (ADR-0157 D2.2 keeps the agent on a uid that is not the
+// kernel's; owner decision on ENG-2031, option 1). A directory or file the
+// agent made with an explicit mode (0700, 0600: caches, tempfile, pip) is
+// closed to a non-root kernel, which then could neither collect out/ (D5.1)
+// nor remove the scratch. One `docker run --rm` of the same image, as the
+// agent's own user (it owns those files, so no capability is needed), with no
+// network, a read-only root and only the scratch mounted, opens the tree; the
+// kernel then checks it can walk every entry. A root kernel is not bound by
+// file modes and skips it.
+func (h *containerHandle) reclaimScratch(ctx context.Context, workdir string) error {
+	if h.reclaim == nil || workdir == "" || os.Geteuid() == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, reclaimTimeout)
+	defer cancel()
+	args := reclaimArgs(h.name, h.reclaim.image, h.reclaim.user, workdir)
+	cmd := exec.CommandContext(ctx, h.bin, args...) //nolint:gosec // configured docker CLI, kernel-built argv
+	cmd.Env = procenv.Allowlisted([]string{"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"})
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("reclaim container (%s): %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	if p, err := unreachableIn(workdir); err != nil {
+		return fmt.Errorf("after the reclaim container the kernel still cannot reach %s: %w", p, err)
+	}
+	return nil
+}
+
+// reclaimArgs is the reclaim container's `docker run` argv. chmod -R goes on
+// past entries it may not change (the kernel's own directories, already open)
+// and the kernel's walk afterwards is the check, so its status is not.
+func reclaimArgs(agentName, image, user, workdir string) []string {
+	return []string{"run", "--rm", "--name", agentName + "-reclaim",
+		"--network", "none", "--read-only",
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--pids-limit", "32", "--memory", "128m", "--memory-swap", "128m",
+		"--user", user,
+		"-v", workdir + ":" + containerWork,
+		"--label", "cambrian.sandbox=agent-reclaim",
+		"--entrypoint", "/bin/sh", image,
+		"-c", "chmod -R a+rwX " + containerWork + " 2>/dev/null; exit 0"}
+}
+
+// unreachableIn walks dir as the kernel and returns the first entry it cannot
+// read (a directory it cannot list), with the error; "" and nil when every
+// entry is reachable.
+func unreachableIn(dir string) (string, error) {
+	var bad string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			bad = path
+			return err
+		}
+		return nil
+	})
+	return bad, err
 }
 
 // dockerAgentArgs builds the `docker run` argv and the docker CLI's own

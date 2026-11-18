@@ -93,6 +93,31 @@ func (l *Launched) Kill() error { return l.h.kill() }
 // KillReason is why OS-level containment killed the tree ("" if it did not).
 func (l *Launched) KillReason() string { return l.h.limitReason() }
 
+// scratchReclaimer is a handle whose runner leaves the instance's scratch
+// with files the kernel's uid may not read or remove (the docker runner as a
+// non-root kernel, ENG-2031) and can hand it back.
+type scratchReclaimer interface {
+	reclaimScratch(ctx context.Context, workdir string) error
+}
+
+// Reclaim hands the exited instance's scratch back to the kernel: call it
+// after the process has exited and before reading out/ (ADR-0157 D5.1) and
+// Release. A no-op for runners whose files the kernel can always read. On
+// failure the scratch is KEPT — Release will not remove it — so nothing the
+// agent left is dropped unseen, and the error names where it is.
+func (l *Launched) Reclaim(ctx context.Context) error {
+	r, ok := l.h.(scratchReclaimer)
+	if !ok || l.workdir == "" {
+		return nil
+	}
+	if err := r.reclaimScratch(ctx, l.workdir); err != nil {
+		l.remove = false
+		return fmt.Errorf("sandbox: the scratch of %s was not handed back to the kernel and is kept at %s: %w",
+			l.report.ServerID, l.workdir, err)
+	}
+	return nil
+}
+
 // Release kills what is left of the tree, frees OS resources (job object,
 // cgroup, container) and removes an ephemeral scratch directory. Call it after
 // the process has exited (or to end it). Idempotent.
