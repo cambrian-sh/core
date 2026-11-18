@@ -41,6 +41,10 @@ const (
 	setupRerankModel   = "BAAI/bge-reranker-base"
 )
 
+// setupDBContainer is the bundled Postgres container's name (container_name in
+// setupComposeYML).
+const setupDBContainer = "cambrian-db"
+
 // setupComposeYML is the local-Postgres compose file setup generates. It is a
 // reduced copy of db/docker-compose.yml: the pagerank-recompute worker is not
 // included because its image builds from the source tree, which an installed
@@ -654,6 +658,20 @@ func (s *setupState) writeConfigBundle() error {
 			"timeout_ms":   10000,
 			"query_prefix": "Represent this sentence for searching relevant passages: ",
 		}
+	}
+
+	// The bundled Postgres: pg_dump / pg_restore run inside its container
+	// (backup.pg_container), so the pre-migration snapshot and backups need no
+	// PostgreSQL client on the host (ENG-1833). An operator's own value wins.
+	if s.pgContainer != "" {
+		bk, _ := cfg["backup"].(map[string]any)
+		if bk == nil {
+			bk = map[string]any{}
+		}
+		if v, _ := bk["pg_container"].(string); strings.TrimSpace(v) == "" {
+			bk["pg_container"] = s.pgContainer
+		}
+		cfg["backup"] = bk
 	}
 
 	b, err := json.MarshalIndent(cfg, "", "  ")

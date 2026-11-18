@@ -159,6 +159,15 @@ func (s *setupState) stepDatabase(ctx context.Context) {
 			s.warnf("Postgres has no pgvector extension", "install pgvector (or use the pgvector/pgvector:pg16 image) — migrations need it")
 		}
 	}
+	// The bundled Postgres runs in a container that carries a matching pg_dump;
+	// the host often has none, or an older major that cannot dump pg16. Record
+	// it so the config bundle routes the pre-migration snapshot (ENG-681) and
+	// backups through it (backup.pg_container, ENG-1833).
+	if where == "1" && s.dbUp && s.dockerOK {
+		if out, ok := s.exec(ctx, 10*time.Second, "docker", "inspect", "-f", "{{.State.Running}}", setupDBContainer); ok && out == "true" {
+			s.pgContainer = setupDBContainer
+		}
+	}
 }
 
 // stepPython provisions the agent runtime: agents ship inside the binary and
@@ -396,7 +405,10 @@ func (s *setupState) stepConfig() {
 }
 
 // stepMigrate applies DB migrations in-process via the ADR-0064 runner. The
-// CWD is the prefix (stepInstall), so RunMigrate resolves this bundle.
+// CWD is the prefix (stepInstall), so RunMigrate resolves this bundle —
+// including backup.pg_container for the bundled Postgres (stepConfig), so a
+// destructive migration on an upgrade is snapshotted with the container's
+// pg_dump instead of refused on a host without one (ENG-1833).
 func (s *setupState) stepMigrate(ctx context.Context) {
 	if !s.dbUp {
 		s.warnf("migrations skipped", "database not reachable")

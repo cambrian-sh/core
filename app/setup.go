@@ -50,17 +50,20 @@ type setupState struct {
 
 	degraded bool
 
-	db         setupDB
-	dbUp       bool
-	vectorOK   bool
-	dockerOK   bool
-	ollamaOK   bool
-	uvBin      string
-	venvPy     string
-	bunBin     string
-	nodeBin    string
-	agentsDir  string
-	serverPort string
+	db       setupDB
+	dbUp     bool
+	vectorOK bool
+	dockerOK bool
+	// pgContainer is the running bundled Postgres container (setupDBContainer)
+	// when setup manages the database; "" for an existing / remote Postgres.
+	pgContainer string
+	ollamaOK    bool
+	uvBin       string
+	venvPy      string
+	bunBin      string
+	nodeBin     string
+	agentsDir   string
+	serverPort  string
 }
 
 // warnf reports a warning that leaves the install degraded (exit 2, kernel not

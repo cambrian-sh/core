@@ -42,7 +42,9 @@ an incomplete run that `verify` refuses.
 - `pg_container` — run `pg_dump`/`pg_restore` inside this Docker container (e.g.
   `cambrian-db`); empty means the PostgreSQL client tools from `PATH`, which must be the
   server's major version or newer. The password is passed in `PGPASSWORD`, never on a
-  command line.
+  command line. `orchestrator setup` sets it to `cambrian-db` when it manages the bundled
+  Postgres (an existing value is kept); the kernel images carry the PostgreSQL 16 client
+  tools, so a containerised kernel needs no `pg_container`.
 - `drill_dbname` — the drill's scratch database; empty means `<dbname>_restore_drill`. It
   can never be the live database or a protected one.
 - `retention` — keep the newest run of each of the last 7 days, 4 ISO weeks and 3 months

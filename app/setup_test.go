@@ -318,3 +318,63 @@ func TestVenvPythonPath(t *testing.T) {
 		t.Errorf("venvPython = %s", p)
 	}
 }
+
+// ENG-1833: with the bundled Postgres, the config bundle routes pg_dump /
+// pg_restore through its container (backup.pg_container), so the
+// pre-migration snapshot works on a host with no PostgreSQL client; an
+// operator's own value is kept, and an existing / remote Postgres gets none.
+func TestWriteConfigBundlePGContainer(t *testing.T) {
+	if !strings.Contains(setupComposeYML, "container_name: "+setupDBContainer+"\n") {
+		t.Fatalf("setupComposeYML does not name its container %q", setupDBContainer)
+	}
+	read := func(t *testing.T, prefix string) map[string]any {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(prefix, "configs", "config.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	newState := func(prefix, container string) *setupState {
+		return &setupState{ui: newSetupUI(true), prefix: prefix, serverPort: "50051", pgContainer: container,
+			db: setupDB{host: "localhost", port: "5432", user: "u", password: "p", dbname: "d"}}
+	}
+
+	prefix := t.TempDir()
+	if err := newState(prefix, setupDBContainer).writeConfigBundle(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := read(t, prefix)
+	bk, _ := cfg["backup"].(map[string]any)
+	if bk["pg_container"] != setupDBContainer {
+		t.Fatalf("backup.pg_container = %v, want %q", bk["pg_container"], setupDBContainer)
+	}
+
+	// An operator's own value survives a re-run.
+	bk["pg_container"] = "my-pg"
+	bk["dir"] = "/srv/backups"
+	edited, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(prefix, "configs", "config.json"), edited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newState(prefix, setupDBContainer).writeConfigBundle(); err != nil {
+		t.Fatal(err)
+	}
+	bk, _ = read(t, prefix)["backup"].(map[string]any)
+	if bk["pg_container"] != "my-pg" || bk["dir"] != "/srv/backups" {
+		t.Fatalf("re-run changed the operator's backup block: %v", bk)
+	}
+
+	// An existing / remote Postgres: no container is assumed.
+	remote := t.TempDir()
+	if err := newState(remote, "").writeConfigBundle(); err != nil {
+		t.Fatal(err)
+	}
+	if bk, ok := read(t, remote)["backup"].(map[string]any); ok && bk["pg_container"] != nil {
+		t.Fatalf("remote Postgres got backup.pg_container %v", bk["pg_container"])
+	}
+}
