@@ -30,6 +30,13 @@ The SDK resolves from PyPI (``cambrian-agent-sdk``, published — PLAT-06). Per-
 ``requirements.lock`` exact-pins it (``==<installed version>``) like every other dep for a
 reproducible install, falling back to the range only when the SDK isn't installed.
 
+Both --base-lock and --check verify that the SDK wheel base.lock pins ships
+``cambrian_agent_sdk/channel.py`` (``SDK_REQUIRED_MODULES``): sandboxed agents reach
+the kernel only through it (ADR-0157 S2/S5), and the published 0.1.5 lacked it
+(T-20261118-release-base-lock-pins-the-published-agent-sdk). The check downloads
+that pinned wheel from the index (network), verifies a locked hash, and reads its
+file list; --base-lock refuses to write a lock that fails it.
+
 Usage:
   python scripts/gen_agent_requirements.py [--check]   # --check = fail on drift
   python scripts/gen_agent_requirements.py --base-lock # regenerate agents/base.lock
@@ -38,12 +45,17 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
+import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
+import zipfile
 from importlib import metadata as md
 from pathlib import Path
 
@@ -274,6 +286,64 @@ def check_base_lock(lock_text: str, base_text: str) -> list[str]:
     return bad
 
 
+SDK_DIST = "cambrian-agent-sdk"
+# Modules the locked SDK wheel must ship: the kernel-socket channel every
+# sandboxed agent dials (ADR-0157 S2/S5).
+SDK_REQUIRED_MODULES = ("cambrian_agent_sdk/channel.py",)
+PYPI_JSON = os.environ.get("CAMBRIAN_PYPI_JSON", "https://pypi.org/pypi")
+
+
+def _locked_entry(base_text: str, dist: str) -> tuple[str, list[str]] | None:
+    """(version, [sha256...]) of dist's pin in a hashed lock, or None."""
+    want = re.sub(r"[-_.]+", "-", dist.lower())
+    text = base_text.replace("\r\n", "\n").replace("\\\n", " ")
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        spec = line.split(" --", 1)[0].split(";", 1)[0].strip()
+        if "==" not in spec:
+            continue
+        name, ver = spec.split("==", 1)
+        if re.sub(r"[-_.]+", "-", name.strip().lower()) == want:
+            return ver.strip(), re.findall(r"--hash=sha256:([0-9a-f]{64})", line)
+    return None
+
+
+def _fetch(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "cambrian-gen-agent-requirements"})
+    with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 - fixed https index URL
+        return r.read()
+
+
+def check_sdk_modules(base_text: str, fetch=_fetch) -> list[str]:
+    """Problems with the SDK wheel base.lock pins: no pin, no hashed wheel on the
+    index, a hash mismatch, or a required module the wheel does not ship."""
+    entry = _locked_entry(base_text, SDK_DIST)
+    if entry is None:
+        return [f"base.lock pins no {SDK_DIST}"]
+    ver, hashes = entry
+    try:
+        meta = json.loads(fetch(f"{PYPI_JSON}/{SDK_DIST}/{ver}/json"))
+    except Exception as e:  # noqa: BLE001 - any fetch failure fails the check, with the reason
+        return [f"cannot read {SDK_DIST}=={ver} from the index to verify its modules: {e}"]
+    wheels = [u for u in meta.get("urls", [])
+              if u.get("packagetype") == "bdist_wheel" and u.get("digests", {}).get("sha256") in hashes]
+    if not wheels:
+        return [f"{SDK_DIST}=={ver}: no wheel on the index matches a base.lock hash"]
+    w = wheels[0]
+    try:
+        blob = fetch(w["url"])
+    except Exception as e:  # noqa: BLE001
+        return [f"cannot download {w.get('filename')} to verify its modules: {e}"]
+    if hashlib.sha256(blob).hexdigest() != w["digests"]["sha256"]:
+        return [f"{w.get('filename')}: downloaded bytes do not match the locked sha256"]
+    names = set(zipfile.ZipFile(io.BytesIO(blob)).namelist())
+    return [f"{SDK_DIST}=={ver} ({w.get('filename')}) does not ship {m}: sandboxed agents "
+            f"cannot reach the kernel; publish an SDK that does and regenerate base.lock"
+            for m in SDK_REQUIRED_MODULES if m not in names]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="fail if committed files are stale")
@@ -283,7 +353,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.base_lock:
         lock_text = (AGENTS / "requirements.lock").read_text(encoding="utf-8")
-        BASE_LOCK.write_text(compile_base_lock(lock_text), encoding="utf-8", newline="\n")
+        base_text = compile_base_lock(lock_text)
+        bad_sdk = check_sdk_modules(base_text)
+        if bad_sdk:
+            print("REFUSING to write agents/base.lock:", file=sys.stderr)
+            for b in bad_sdk:
+                print("  " + b, file=sys.stderr)
+            return 1
+        BASE_LOCK.write_text(base_text, encoding="utf-8", newline="\n")
         print("wrote " + BASE_LOCK.relative_to(CORE).as_posix())
         return 0
 
@@ -301,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         base_text = BASE_LOCK.read_text(encoding="utf-8") if BASE_LOCK.exists() else ""
         stale_base = check_base_lock((AGENTS / "requirements.lock").read_text(encoding="utf-8"), base_text)
+        stale_base += check_sdk_modules(base_text)
         if stale_base:
             print("STALE agents/base.lock (run scripts/gen_agent_requirements.py --base-lock):", file=sys.stderr)
             for b in stale_base:
