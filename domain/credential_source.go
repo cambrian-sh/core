@@ -154,7 +154,7 @@ type OrgCredentialWriter interface {
 	ClearOrgCredential(ctx context.Context, req CredentialRequest, actor string) (existed bool, err error)
 	// OrgCredentialStatus reports whether a usable org credential is bound,
 	// with its last four characters and last write time. Never the value.
-	OrgCredentialStatus(req CredentialRequest) (configured bool, lastFour string, updatedAt time.Time)
+	OrgCredentialStatus(ctx context.Context, req CredentialRequest) (configured bool, lastFour string, updatedAt time.Time)
 }
 
 // PrincipalIdentities answers "which external identities does this principal
@@ -183,7 +183,7 @@ type CredentialSource interface {
 	// ConnectedPrincipals lists principals holding a usable credential for the
 	// server — used only to bring a per-user server up far enough to discover
 	// its tool list, never to serve a call.
-	ConnectedPrincipals(serverID string) []string
+	ConnectedPrincipals(ctx context.Context, serverID string) []string
 }
 
 // Credential scopes of a consumer (ADR-0140 D1).

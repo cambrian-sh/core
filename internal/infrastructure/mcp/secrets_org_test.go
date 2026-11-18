@@ -21,7 +21,7 @@ func (o orgOnly) Credential(_ context.Context, r domain.CredentialRequest) (doma
 	}
 	return domain.Credential{}, domain.ErrCredentialNotConnected
 }
-func (orgOnly) ConnectedPrincipals(string) []string { return nil }
+func (orgOnly) ConnectedPrincipals(context.Context, string) []string { return nil }
 
 // ADR-0141 phase 5: once an org-account provider owns shared credentials,
 // the consumer-named store entries are NOT read (one answer, not two); the
@@ -63,7 +63,7 @@ func (p ctxProbe) Credential(ctx context.Context, _ domain.CredentialRequest) (d
 	}
 	return domain.Credential{Token: "account-tok"}, nil
 }
-func (ctxProbe) ConnectedPrincipals(string) []string { return nil }
+func (ctxProbe) ConnectedPrincipals(context.Context, string) []string { return nil }
 
 // T-20261113-mcp-credential-source-and-secret-resolver-are: the provider is asked
 // under the connect's own context (its values and cancellation), always with a

@@ -37,7 +37,7 @@ func (f *fakeOrgAccounts) Credential(_ context.Context, r domain.CredentialReque
 	}
 	return domain.Credential{Token: v}, nil
 }
-func (f *fakeOrgAccounts) ConnectedPrincipals(string) []string { return nil }
+func (f *fakeOrgAccounts) ConnectedPrincipals(context.Context, string) []string { return nil }
 func (f *fakeOrgAccounts) SetOrgCredential(_ context.Context, r domain.CredentialRequest, v, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -51,7 +51,7 @@ func (f *fakeOrgAccounts) ClearOrgCredential(_ context.Context, r domain.Credent
 	delete(f.slots, f.key(r))
 	return ok, nil
 }
-func (f *fakeOrgAccounts) OrgCredentialStatus(r domain.CredentialRequest) (bool, string, time.Time) {
+func (f *fakeOrgAccounts) OrgCredentialStatus(_ context.Context, r domain.CredentialRequest) (bool, string, time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.slots[f.key(r)]
@@ -74,7 +74,7 @@ func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 	if err := writeSharedMCPCredential(context.Background(), nil, store, "gh", mcp.TokenSecretName("gh"), "store-token"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := sharedMCPCredentialStatus(nil, store, "gh", mcp.TokenSecretName("gh")); !ok {
+	if ok, _ := sharedMCPCredentialStatus(context.Background(), nil, store, "gh", mcp.TokenSecretName("gh")); !ok {
 		t.Fatal("OSS: the store holds it")
 	}
 
@@ -177,5 +177,54 @@ func TestSharedCredentials_WritesCarryTheCallerContext(t *testing.T) {
 	}
 	if len(fake.seen) != 2 || fake.seen[0] != "rpc" || fake.seen[1] != "rpc" {
 		t.Fatalf("provider saw ctx values %v, want the RPC's on both writes", fake.seen)
+	}
+}
+
+// ctxProbeOrg is an org-credential writer that records whether
+// OrgCredentialStatus received the caller's ctx (ENG-2044: the port is
+// ctx-first, and the operator reads thread the RPC ctx down to it).
+type ctxProbeOrg struct {
+	mu      sync.Mutex
+	calls   int
+	dropped int
+}
+
+type orgProbeKey struct{}
+
+func (p *ctxProbeOrg) SetOrgCredential(context.Context, domain.CredentialRequest, string, string) error {
+	return nil
+}
+func (p *ctxProbeOrg) ClearOrgCredential(context.Context, domain.CredentialRequest, string) (bool, error) {
+	return false, nil
+}
+func (p *ctxProbeOrg) OrgCredentialStatus(ctx context.Context, _ domain.CredentialRequest) (bool, string, time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	if ctx.Value(orgProbeKey{}) != "rpc" {
+		p.dropped++
+	}
+	return true, "0001", time.Unix(1700000000, 0)
+}
+
+// The operator plane's MCP-server read (ListMCPServers → mcpLister.MCPServers)
+// reports a server's token through the org account provider with the request's
+// ctx, not a fresh one.
+func TestMCPServerRead_PassesTheRequestContextToTheOrgCredentialStatus(t *testing.T) {
+	rt := &mcpRuntime{}
+	rt.upsertConfig(config.MCPServerConfig{ID: "gh", Transport: "http", Endpoint: "http://127.0.0.1:1"}, mcpSourceStore)
+	org := &ctxProbeOrg{}
+	ctx := context.WithValue(context.Background(), orgProbeKey{}, "rpc")
+	servers := mcpLister{runtime: rt, org: org}.MCPServers(ctx)
+	if len(servers) != 1 || !servers[0].TokenConfigured || servers[0].TokenSource != "account" {
+		t.Fatalf("servers = %+v, want gh with its token from the org account", servers)
+	}
+	if ok, _ := sharedMCPCredentialStatus(ctx, org, nil, "gh", mcp.TokenSecretName("gh")); !ok {
+		t.Fatal("sharedMCPCredentialStatus: the bound account was not reported")
+	}
+	org.mu.Lock()
+	defer org.mu.Unlock()
+	if org.calls < 2 || org.dropped != 0 {
+		t.Fatalf("OrgCredentialStatus calls = %d, %d without the request ctx", org.calls, org.dropped)
 	}
 }

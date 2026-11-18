@@ -57,7 +57,7 @@ func (f *fakeUserCreds) Credential(_ context.Context, req domain.CredentialReque
 	return domain.Credential{Token: tok, Expiry: time.Now().Add(time.Hour)}, nil
 }
 
-func (f *fakeUserCreds) ConnectedPrincipals(server string) []string {
+func (f *fakeUserCreds) ConnectedPrincipals(_ context.Context, server string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string

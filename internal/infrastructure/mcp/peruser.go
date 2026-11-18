@@ -547,7 +547,7 @@ func (c *Connector) watchUserServer(ctx context.Context, s ServerConfig, sink To
 				h.LastError = "per-user accounts are not available on this kernel (they are provided by the premium accounts plugin, ADR-0141)"
 			})
 		default:
-			principals := src.ConnectedPrincipals(s.ID)
+			principals := src.ConnectedPrincipals(ctx, s.ID)
 			if len(principals) == 0 {
 				c.setHealth(s.ID, gen, func(h *ServerHealth) {
 					h.State, h.ToolCount, h.LastError = HealthAwaitingUser, known, ""

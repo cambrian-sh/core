@@ -71,9 +71,9 @@ func clearSharedMCPCredential(ctx context.Context, org domain.OrgCredentialWrite
 
 // sharedMCPCredentialStatus reports whether a shared credential is stored, and
 // when it was last written. Never the value.
-func sharedMCPCredentialStatus(org domain.OrgCredentialWriter, store *storage.BoltConfigStore, serverID, secretName string) (bool, time.Time) {
+func sharedMCPCredentialStatus(ctx context.Context, org domain.OrgCredentialWriter, store *storage.BoltConfigStore, serverID, secretName string) (bool, time.Time) {
 	if w := org; w != nil {
-		ok, _, at := w.OrgCredentialStatus(mcpOrgRequest(serverID, secretName))
+		ok, _, at := w.OrgCredentialStatus(ctx, mcpOrgRequest(serverID, secretName))
 		return ok, at
 	}
 	if store == nil || !store.Configured(secretName) {

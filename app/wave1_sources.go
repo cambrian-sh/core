@@ -113,7 +113,7 @@ func (m mcpLister) MCPServers(ctx context.Context) []operator.MCPServerInfo {
 			AuthHeader:         s.AuthHeader,
 			ClassificationTags: s.DefaultClassificationTags,
 		}
-		info.TokenConfigured, info.TokenSource = m.tokenFacts(s)
+		info.TokenConfigured, info.TokenSource = m.tokenFacts(ctx, s)
 		// Endpoint carries a URL for http/sse and a command for stdio. Split them
 		// so the console never renders a shell command as a link.
 		if strings.EqualFold(s.Transport, "http") || strings.EqualFold(s.Transport, "sse") {
@@ -150,11 +150,11 @@ func (m mcpLister) MCPServers(ctx context.Context) []operator.MCPServerInfo {
 // tokenFacts mirrors generatorRegistry.keyFacts: it reports the source the
 // connector will actually use (env first, then the org account or the store —
 // the mcp.tokenFor precedence), never the credential.
-func (m mcpLister) tokenFacts(s mcp.ServerConfig) (configured bool, source string) {
+func (m mcpLister) tokenFacts(ctx context.Context, s mcp.ServerConfig) (configured bool, source string) {
 	if s.AuthTokenEnv != "" && os.Getenv(s.AuthTokenEnv) != "" {
 		return true, "env:" + s.AuthTokenEnv
 	}
-	if ok, _ := sharedMCPCredentialStatus(m.org, m.secrets, s.ID, mcp.TokenSecretName(s.ID)); ok {
+	if ok, _ := sharedMCPCredentialStatus(ctx, m.org, m.secrets, s.ID, mcp.TokenSecretName(s.ID)); ok {
 		if m.org != nil {
 			return true, "account" // ADR-0141: the org account bound to the server
 		}

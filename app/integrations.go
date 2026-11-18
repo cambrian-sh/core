@@ -145,7 +145,7 @@ func (m *integrationManager) integrationOp(ctx context.Context, id string, store
 
 	// Secrets and missing required fields.
 	for _, f := range m.secretFields(cfg, entry, fromCatalog) {
-		st := m.secretState(id, cfg, f)
+		st := m.secretState(ctx, id, cfg, f)
 		op.Secrets = append(op.Secrets, st)
 		if f.Required && !st.GetSet() {
 			op.MissingRequired = append(op.MissingRequired, f.Name)
@@ -199,14 +199,14 @@ func (m *integrationManager) secretFields(cfg config.MCPServerConfig, entry inte
 const customTokenField = "token"
 
 // secretState reports set / source / updated-at for one secret — never a value.
-func (m *integrationManager) secretState(id string, cfg config.MCPServerConfig, f integrations.Field) *pb.IntegrationSecretStateOp {
+func (m *integrationManager) secretState(ctx context.Context, id string, cfg config.MCPServerConfig, f integrations.Field) *pb.IntegrationSecretStateOp {
 	st := &pb.IntegrationSecretStateOp{Name: f.Name, Label: f.Label, Required: f.Required, Kind: f.Kind}
 	storeName, envVar := m.secretLocation(id, cfg, f)
 	if envVar != "" && os.Getenv(envVar) != "" {
 		st.Set, st.Source = true, "env:"+envVar
 		return st
 	}
-	if ok, at := sharedMCPCredentialStatus(m.writer.org, m.writer.store, id, storeName); ok {
+	if ok, at := sharedMCPCredentialStatus(ctx, m.writer.org, m.writer.store, id, storeName); ok {
 		st.Set, st.Source = true, "store"
 		if m.writer.org != nil {
 			st.Source = "account" // ADR-0141: an org account bound to this slot

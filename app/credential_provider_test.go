@@ -40,7 +40,7 @@ func (f *fakeAccounts) Credential(_ context.Context, req domain.CredentialReques
 	return domain.Credential{Token: tok, Expiry: time.Now().Add(time.Hour)}, nil
 }
 
-func (f *fakeAccounts) ConnectedPrincipals(server string) []string {
+func (f *fakeAccounts) ConnectedPrincipals(_ context.Context, server string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
