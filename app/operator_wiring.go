@@ -94,19 +94,7 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// ADR-0136 A3.5 (contract 0104): the same descriptive-field caps the agent plane reads.
 	mc := k.Config.Execution.Ingestion.SourceMetaCaps()
 	o.SourceMetaCaps = operator.SourceMetaCaps{Kind: mc.Kind, Title: mc.Title, Author: mc.Author, Speaker: mc.Speaker}
-	d.Ingestor = operator.MemoryIngestorFunc(func(ctx context.Context, req operator.IngestRequest) (string, error) {
-		if k.Server.IngestionProcessor != nil {
-			doc := operatorIngestDoc(req)
-			return k.Server.IngestionProcessor.ProcessSync(ctx, doc)
-		}
-		// No raw-store-write fallback, matching the agent plane. A direct
-		// MemoryWriter.Remember here produced a structurally different row —
-		// un-chunked, no source-document entity, invisible to ListDocuments — so
-		// the SAME operator action wrote two different shapes of memory depending
-		// on a queue-size setting. Failing is the honest outcome.
-		return "", fmt.Errorf("ingestion pipeline not configured: every memory ingest " +
-			"must go through the chunker, and there is no raw-store-write path")
-	})
+	d.Ingestor = operatorMemoryIngestor(k.Server.IngestionProcessor)
 	// ADR-0138 Amendment B1.3 (contract 0100): the console's "Replace <name>?" lookup,
 	// answered by the ingestion manager's own identity resolution over the same
 	// operatorIngestDoc the ingest builds, so the prompt and the write cannot
@@ -1101,4 +1089,22 @@ func pluginHandshake(statuses []PluginStatus) []operator.PluginInfo {
 		out = append(out, info)
 	}
 	return out
+}
+
+// operatorMemoryIngestor binds the operator plane's IngestMemory to the kernel ingest
+// pipeline (ADR-0047 A2.4): the upload becomes an ExternalDocument (operatorIngestDoc)
+// and goes through ProcessSync — the same path the agent plane uses.
+func operatorMemoryIngestor(proc subnetwork.IngestionProcessor) operator.MemoryIngestor {
+	return operator.MemoryIngestorFunc(func(ctx context.Context, req operator.IngestRequest) (string, error) {
+		if proc != nil {
+			return proc.ProcessSync(ctx, operatorIngestDoc(req))
+		}
+		// No raw-store-write fallback, matching the agent plane. A direct
+		// MemoryWriter.Remember here produced a structurally different row —
+		// un-chunked, no source-document entity, invisible to ListDocuments — so
+		// the SAME operator action wrote two different shapes of memory depending
+		// on a queue-size setting. Failing is the honest outcome.
+		return "", fmt.Errorf("ingestion pipeline not configured: every memory ingest " +
+			"must go through the chunker, and there is no raw-store-write path")
+	})
 }

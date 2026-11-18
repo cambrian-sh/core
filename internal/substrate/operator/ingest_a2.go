@@ -280,6 +280,11 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 		// ENG-2115: a classification the operator asked for that cannot be carried in
 		// full (a tag outside their write ceiling, an unknown tag) refuses the upload;
 		// the message names the tags. It is the caller's to fix, not an Internal.
+		// ENG-2110: content that yields no usable text (an unparseable file, an image
+		// with no recognised text, whitespace) is refused with nothing stored.
+		if errors.Is(err, domain.ErrNoUsableText) {
+			return nil, status.Errorf(codes.InvalidArgument, "ingest memory: %v", err)
+		}
 		if errors.Is(err, authz.ErrWriteDenied) {
 			return nil, status.Errorf(codes.InvalidArgument, "ingest memory: %v", err)
 		}

@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -184,4 +185,16 @@ func TestIngestMemory_NoChunkingPipelineFailsRatherThanWritingDirectly(t *testin
 // AuthorizeErase completes domain.Authorizer (ADR-0137 D3); this fake is not about erasure.
 func (denyUnknownAuthz) AuthorizeErase(ctx context.Context, p domain.PrincipalRef, s domain.SurfaceRef, t domain.Taggable) domain.AccessDecision {
 	return domain.AllowAllAuthorizer{}.AuthorizeErase(ctx, p, s, t)
+}
+
+// ENG-2110: an ingest refused for having no usable text is the caller's
+// InvalidArgument with the reason, never Internal.
+func TestIngestMemory_NoUsableTextIsInvalidArgument(t *testing.T) {
+	t.Parallel()
+	p := &fakeIngestionProcessor{err: fmt.Errorf("%w from notes: the text is whitespace only", domain.ErrNoUsableText)}
+	s := &Server{IngestionProcessor: p}
+	_, err := s.IngestMemory(agentCtx("analyst"), &pb.IngestMemoryRequest{Text: "  \n\t"})
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(status.Convert(err).Message(), "no usable text could be extracted from notes") {
+		t.Fatalf("want InvalidArgument with the reason, got %v", err)
+	}
 }

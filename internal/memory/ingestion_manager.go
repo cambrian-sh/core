@@ -110,7 +110,8 @@ type IngestionManager struct {
 	// publisher wired to a dead path and a consumer receiving nothing.
 	bus domain.EventBus
 	// evidenceCapture preserves the delivery as immutable evidence (ADR-0105)
-	// before ANY semantic processing touches it.
+	// before any write derived from it. Extraction, which writes nothing, runs first
+	// so a refused ingest leaves no evidence behind (ENG-2110; see ProcessSync).
 	// nil = the substrate's evidence foundation is disabled (the default).
 	evidenceCapture EvidenceCapture
 	// structureLeavesDropped counts structure leaves dropped as junk since start
@@ -362,6 +363,11 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	ctx, clock := ingestClock(ctx)
 	stored := 0
 	defer func() { logIngestTiming(ctx, clock, time.Since(started), doc.SourceURI, stored, err) }()
+	// ENG-2110: bytes Postgres text refuses (NUL, invalid UTF-8) are normalised at
+	// the pipeline head, before the identity digest, so the evidence, the document
+	// row and the chunks hold the same bytes and none of them fails on a raw
+	// driver error half-way through.
+	doc.NormalizeForStorage()
 	// ADR-0138 D1.4: the document's identity, resolved ONCE for every step below.
 	ident := im.resolveDocumentID(ctx, doc)
 	report := domain.IngestOutcomeFrom(ctx)
@@ -379,10 +385,24 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 			"upload", doc.UploadName, "duplicate_of", dup.ID, "resolved", ident.ID)
 		return dup.ID, nil
 	}
+	// ENG-2110 (owner decision 2026-11-18): unusable content is not a success.
+	// Extraction — chunking and the ADR-0060 structure parse — writes nothing, so it
+	// runs BEFORE evidence capture: a document whose content yields no usable text
+	// (an unparseable file, an image with no recognised text, a whitespace body) is
+	// refused here with nothing behind it — no evidence, document, chunk or
+	// derivation-journal row. Evidence-then-delete was rejected: the evidence insert
+	// also writes an outbox row a consumer may already be reading. ADR-0105 D2 still
+	// holds for every ingest the kernel ACCEPTS: its bytes are durable as evidence
+	// before anything derived from them is written.
+	entityID = sourceDocEntityID(doc)
+	ex := im.extract(ctx, doc, ident.ID)
+	if err := ex.usable(doc); err != nil {
+		slog.WarnContext(ctx, "IngestionManager: ingest refused; nothing written", "source_uri", doc.SourceURI, "err", err)
+		return "", err
+	}
 	// Evidence first (ADR-0105 D2): the original bytes must be durable and
-	// published as evidence before chunking or any other
-	// semantic step — so a failure anywhere downstream still leaves source
-	// material that can be reprocessed.
+	// published as evidence before any write derived from them — so a failure
+	// anywhere downstream still leaves source material that can be reprocessed.
 	if im.evidenceCapture != nil {
 		t := time.Now()
 		evID, err := im.captureEvidence(ctx, doc, ident.ID)
@@ -405,16 +425,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	// involved is deterministic and a retry overwrites both. Rolling the entity
 	// back after a failed chunk write was the rejected alternative: it is one more
 	// store call against a store that just failed.
-	entityID = sourceDocEntityID(doc)
-	t := time.Now()
-	chunker := im.chunkerFor(doc)
-	chunks, err := chunker.Chunk(ctx, &doc)
-	if err != nil {
-		slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", err)
-		chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
-	}
-	clock.Since(StageChunk, t)
-	outcome, err := im.persistChunksTracked(ctx, doc, ident, chunks, entityID, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
+	outcome, err := im.persistChunksTracked(ctx, doc, ident, ex, entityID, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
 	chunkCount := outcome.Stored
 	stored = chunkCount
 	if err != nil {
@@ -423,7 +434,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		// (T-20261031-processsync-reports-success-when-every-chunk).
 		return "", err
 	}
-	t = time.Now()
+	t := time.Now()
 	_, _, err = im.mintSourceDoc(ctx, doc, ident.ID)
 	clock.Since(StageEntity, t)
 	if err != nil {
@@ -569,6 +580,7 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 		err     error
 	)
 	defer func() { logIngestTiming(dctx, clock, time.Since(started), doc.SourceURI, outcome.Stored, err) }()
+	doc.NormalizeForStorage() // ENG-2110, as in ProcessSync
 	entityID := sourceDocEntityID(doc)
 	ident := im.resolveDocumentID(dctx, doc) // ADR-0138 D1.4: once per document
 	// ADR-0138 B1.1, the same rule as ProcessSync (only operator uploads carry an
@@ -579,20 +591,20 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 		slog.Info("IngestionManager: duplicate upload; nothing written", "upload", doc.UploadName, "duplicate_of", dup.ID)
 		return
 	}
-	t := time.Now()
-	chunker := im.chunkerFor(doc)
-	chunks, cerr := chunker.Chunk(dctx, &doc)
-	if cerr != nil {
-		slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", cerr)
-		chunks, _ = OptionCChunker{}.Chunk(dctx, &doc)
+	// ENG-2110: the same refusal as ProcessSync. The pusher already had its 202
+	// ("queued", not "stored"); the document is dropped with nothing written and the
+	// reason logged. /v1/ingest refuses a push with no usable body synchronously.
+	ex := im.extract(dctx, doc, ident.ID)
+	if err = ex.usable(doc); err != nil {
+		slog.Warn("IngestionManager: queued document refused; nothing written", "source_uri", doc.SourceURI, "err", err)
+		return
 	}
-	clock.Since(StageChunk, t)
-	outcome, err = im.persistChunksTracked(dctx, doc, ident, chunks, entityID, false, false) // async path: never waits for the KG or fact lane
+	outcome, err = im.persistChunksTracked(dctx, doc, ident, ex, entityID, false, false) // async path: never waits for the KG or fact lane
 	if err != nil {
 		slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
 		return
 	}
-	t = time.Now()
+	t := time.Now()
 	_, _, err = im.mintSourceDoc(dctx, doc, ident.ID)
 	clock.Since(StageEntity, t)
 	if err != nil {

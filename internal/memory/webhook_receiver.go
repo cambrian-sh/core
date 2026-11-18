@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -53,9 +55,35 @@ func (wr *WebhookReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ENG-2110: the body is decoded STRICTLY. A field domain.ExternalDocument does not
+	// have is the pusher's error (a typo'd "body" used to decode to an empty document,
+	// answer 202 and store an empty row), refused with the field named — the same
+	// rule as the kernel's other caller-facing JSON (hooks, specs, subtasks). The body
+	// size is capped by the listener's limitBody (http.MaxBytesReader); hitting it is
+	// 413, not a generic 400.
 	var doc domain.ExternalDocument
-	if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, fmt.Sprintf("request body too large: the limit is %d bytes", tooLarge.Limit),
+				http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// ENG-2110: a push with no usable text and no file bytes is refused now, while
+	// the pusher is still listening — queued, it could only be dropped later. (Bytes
+	// are checked after the parser reads them, on the queue; see processBatchDoc.)
+	if len(doc.Data) == 0 && !domain.HasUsableText(domain.StorableText(doc.Body)) {
+		why := "the body is empty"
+		if doc.Body != "" {
+			why = "the body is whitespace only"
+		}
+		http.Error(w, fmt.Sprintf("bad request: %v from %s: %s", domain.ErrNoUsableText, doc.IngestDisplayName(), why),
+			http.StatusBadRequest)
 		return
 	}
 

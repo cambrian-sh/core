@@ -105,7 +105,7 @@ func TestWebhookReceiver_EmptyTokenFailsClosed(t *testing.T) {
 	called := false
 	h := NewWebhookReceiver("", func(context.Context, domain.ExternalDocument) bool { called = true; return true })
 	for _, hdr := range []string{"", "anything"} {
-		req := httptest.NewRequest(http.MethodPost, "/v1/ingest", strings.NewReader(`{"content":"x"}`))
+		req := httptest.NewRequest(http.MethodPost, "/v1/ingest", strings.NewReader(`{"body":"x"}`))
 		if hdr != "" {
 			req.Header.Set("X-Ingest-Token", hdr)
 		}
@@ -118,7 +118,7 @@ func TestWebhookReceiver_EmptyTokenFailsClosed(t *testing.T) {
 	// Behind an authenticating wrapper the preauthenticated receiver enqueues.
 	pre := NewPreauthenticatedWebhookReceiver(func(context.Context, domain.ExternalDocument) bool { called = true; return true })
 	rec := httptest.NewRecorder()
-	pre.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/ingest", strings.NewReader(`{"content":"x"}`)))
+	pre.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/ingest", strings.NewReader(`{"body":"x"}`)))
 	if rec.Code != http.StatusAccepted || !called {
 		t.Fatalf("preauthenticated: %d", rec.Code)
 	}

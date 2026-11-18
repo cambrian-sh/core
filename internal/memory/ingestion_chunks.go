@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -63,7 +62,7 @@ func (im *IngestionManager) persistChunksTracked(
 	ctx context.Context,
 	doc domain.ExternalDocument,
 	ident docIdentity,
-	chunks []domain.Chunk,
+	ex extraction,
 	entityID string,
 	trackKG bool,
 	trackFacts bool,
@@ -159,58 +158,12 @@ func (im *IngestionManager) persistChunksTracked(
 		}
 	}
 
-	// ADR-0060 leaves-as-chunks: when structure parsing is on, the parser's leaves
-	// ARE the chunk set, so chunk boundaries match the hierarchy exactly and every
-	// chunk's section stamp is correct by construction. Falls back to the flat
-	// chunker's chunks when parsing is off, fails, or yields no leaf content.
-	var structuredDoc *StructuredDocument
-	var structuredReps []StructNode
-	if im.structureParser != nil && im.structureStore != nil {
-		// A binary document (doc.Data non-empty) travels to the sidecar as base64 so
-		// the docling_agent runs its Docling backend on the ORIGINAL bytes. Text
-		// documents keep the Text path (no sidecar decode, no backend). The agent
-		// gates on this: want_docling = bool(data_b64) and (...), so leaving DataB64
-		// unset makes the Docling backend unreachable regardless of source type.
-		dataB64 := ""
-		if len(doc.Data) > 0 {
-			dataB64 = base64.StdEncoding.EncodeToString(doc.Data)
-		}
-		t := time.Now()
-		parsed, perr := im.structureParser.Parse(ctx, StructureParseRequest{
-			DocID: documentID, Title: doc.Title, SourceType: doc.SourceType,
-			Text: doc.Body, DataB64: dataB64,
-			// The sidecar classifies junk; the kernel decides (applyStructureJunkFilter).
-			JunkMode: structureJunkModeMark,
-		})
-		clock.Since(StageStructureParse, t)
-		t = time.Now()
-		if perr != nil {
-			slog.WarnContext(ctx, "IngestionManager: structure parse failed; flat chunking", "doc", documentID, "err", perr)
-		} else if parsed != nil {
-			// The sidecar reports degraded parses (ok=false) and classifies junk
-			// leaves. Both used to be consumed silently — a chronic sidecar failure
-			// disabled the entire default ingest strategy with no line of evidence,
-			// and junk drops were unrecoverable content loss nobody could audit.
-			if !parsed.OK {
-				slog.WarnContext(ctx, "IngestionManager: structure sidecar reported a degraded parse; using its partial output",
-					"doc", documentID, "backend", parsed.Backend)
-			}
-			// Drops only for backends in structure_junk_filter_backends (default:
-			// docling); logs each drop with hash + sample and counts it.
-			outcome.DroppedLeaves = im.applyStructureJunkFilter(ctx, documentID, parsed)
-			if lc, reps := ChunksFromLeaves(parsed); len(lc) > 0 {
-				chunks = lc
-				structuredDoc = parsed
-				structuredReps = reps
-			} else {
-				slog.WarnContext(ctx, "IngestionManager: structure parse yielded no leaves; flat chunking",
-					"doc", documentID, "backend", parsed.Backend, "dropped_leaves", parsed.DroppedLeaves)
-			}
-		} else {
-			slog.WarnContext(ctx, "IngestionManager: structure parser returned no document; flat chunking", "doc", documentID)
-		}
-		clock.Since(StageStructureLeaves, t)
-	}
+	// ADR-0060 leaves-as-chunks: the extraction (extract / extractStructure) already
+	// chose the chunk set — the parser's leaves when it found leaf content, else the
+	// flat chunks — before anything was written (ENG-2110).
+	chunks := ex.chunks
+	structuredDoc, structuredReps := ex.structured, ex.reps
+	outcome.DroppedLeaves = ex.droppedLeaves
 	tPrep := time.Now()
 
 	// ADR-0134 Q5: every chunk's own event time — the earliest timed part it covers

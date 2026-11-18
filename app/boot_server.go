@@ -404,7 +404,9 @@ func (b *kernelBuild) buildServer() error {
 		}
 		// ADR-0105: the knowledge substrate's evidence foundation. Opt-in. Every
 		// ingested document's original bytes become durable, content-addressed
-		// evidence (+ outbox work item) BEFORE chunking or any other semantic step.
+		// evidence (+ outbox work item) BEFORE any write derived from them. Extraction
+		// (chunking, structure parse) runs first and writes nothing, so a document
+		// refused for having no usable text leaves no evidence row (ENG-2110).
 		if evIngestor != nil {
 			mem.IngestionManager.SetEvidenceCapture(evIngestor)
 			slog.Info("ADR-0105: evidence capture ENABLED (content-first evidence + outbox on every ingest)")

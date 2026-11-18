@@ -156,6 +156,10 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 			switch {
 			case errors.Is(err, authz.ErrWriteDenied):
 				return nil, status.Error(codes.InvalidArgument, err.Error())
+			case errors.Is(err, domain.ErrNoUsableText):
+				// ENG-2110: content that yields no usable text is refused, nothing
+				// stored; the message names the document and why.
+				return nil, status.Error(codes.InvalidArgument, err.Error())
 			case errors.Is(err, domain.ErrDocumentOwnedByAnotherWriter):
 				// ADR-0138 Q1: another writer holds this caller-named document id. Refused,
 				// never taken over — the earlier writer keeps read access to its content.
