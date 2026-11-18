@@ -583,6 +583,8 @@ func derivationJournalConfigFrom(c config.IngestionConfig) memory.DerivationJour
 		RetryMax:         ms(c.DerivationRetryMaxMs),
 		MaxAttempts:      c.DerivationMaxAttempts,
 		Lease:            ms(c.DerivationLeaseMs),
+		KGSliceChunks:    c.DerivationKGSliceChunks,
+		KGSlicesInFlight: c.DerivationKGSlicesInFlight,
 	}
 }
 

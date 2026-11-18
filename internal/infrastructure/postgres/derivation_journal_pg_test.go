@@ -123,6 +123,16 @@ func TestPg_DerivationJournal_Lifecycle(t *testing.T) {
 			t.Fatalf("a dead job was claimed: %+v", j)
 		}
 	}
+	// ENG-2111: progress shrinks the KG row's chunk ids, for its own version only.
+	if err := a.AdvanceDerivation(ctx, domain.DerivationKey{Kind: domain.DerivationKGTriplets, DocumentID: doc, ContentDigest: "dg-0"}, nil); err != nil {
+		t.Fatalf("advance of another version: %v", err)
+	}
+	if err := a.AdvanceDerivation(ctx, kg.Key(), []string{doc + "-chunk-1"}); err != nil {
+		t.Fatalf("AdvanceDerivation: %v", err)
+	}
+	if n := countRows(t, a, ctx, `SELECT count(*) FROM `+TableDerivationJobs+` WHERE document_id = '`+doc+`' AND kind = 'kg_triplets' AND chunk_ids = ARRAY['`+doc+`-chunk-1']`); n != 1 {
+		t.Fatal("the KG row's chunk ids are not the remaining chunk")
+	}
 	// A deferral counts no attempt (on the KG row).
 	if dead, err := a.RescheduleDerivation(ctx, kg.Key(), time.Now().Add(time.Hour), "queue full", false, 1); err != nil || dead {
 		t.Fatalf("deferral: dead=%v err=%v", dead, err)

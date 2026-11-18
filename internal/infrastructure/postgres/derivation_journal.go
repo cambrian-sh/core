@@ -116,6 +116,18 @@ func (p *PgVectorAdapter) CompleteDerivation(ctx context.Context, k domain.Deriv
 	return mapError("CompleteDerivation", err)
 }
 
+// AdvanceDerivation implements domain.DerivationJournal (ENG-2111): the row's chunk
+// ids shrink to the chunks still to derive.
+func (p *PgVectorAdapter) AdvanceDerivation(ctx context.Context, k domain.DerivationKey, remaining []string) error {
+	if remaining == nil {
+		remaining = []string{}
+	}
+	_, err := p.pool.Exec(ctx, `UPDATE `+TableDerivationJobs+` SET chunk_ids = $4
+		WHERE kind = $1 AND document_id = $2 AND content_digest = $3`,
+		string(k.Kind), k.DocumentID, k.ContentDigest, remaining)
+	return mapError("AdvanceDerivation", err)
+}
+
 // RescheduleDerivation implements domain.DerivationJournal.
 func (p *PgVectorAdapter) RescheduleDerivation(ctx context.Context, k domain.DerivationKey, retryAt time.Time, lastError string, countAttempt bool, maxAttempts int) (bool, error) {
 	inc := 0

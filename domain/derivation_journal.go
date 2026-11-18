@@ -37,7 +37,11 @@ type DerivationJob struct {
 	// is fenced with it (WithSourceVersion), and completion removes only the job of
 	// this version, never a newer ingest's.
 	ContentDigest string
-	// ChunkIDs are the document's stored chunks in ingest order.
+	// ChunkIDs are the document's stored chunks in ingest order that the job still
+	// has to derive. A KG job is fed in slices and its row shrinks to the chunks not
+	// yet extracted after each finished slice (AdvanceDerivation, ENG-2111), so a
+	// replay resumes where the previous run stopped; a fact job keeps every chunk (its
+	// windows and content hash depend on the whole document).
 	ChunkIDs []string
 	// Writer is the principal the ingest wrote as; EvidenceID the ADR-0105 evidence
 	// the facts link to (part of each fact's deterministic id, so a replay writes the
@@ -87,6 +91,10 @@ type DerivationJournal interface {
 	// with lastError. countAttempt adds a failed attempt; when the attempts then reach
 	// maxAttempts (> 0) the job is marked dead instead. It reports whether it died.
 	RescheduleDerivation(ctx context.Context, k DerivationKey, retryAt time.Time, lastError string, countAttempt bool, maxAttempts int) (dead bool, err error)
+	// AdvanceDerivation records the progress of the job of exactly this version: its
+	// chunk ids become remaining (the chunks not yet derived), so a replay resumes
+	// there (ENG-2111). Nothing else changes; a missing row is not an error.
+	AdvanceDerivation(ctx context.Context, k DerivationKey, remaining []string) error
 	// ClaimDerivations takes up to limit live jobs of kind that are orphaned (claimed
 	// before since — the running process's start) or due (next_attempt_at <= now),
 	// oldest due first, and claims them until now+lease. Concurrent claimers never

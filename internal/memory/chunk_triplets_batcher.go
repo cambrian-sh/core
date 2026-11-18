@@ -40,7 +40,10 @@ type streamingGenerator interface {
 // Lifecycle mirrors EdgeBatcher: Start launches the drain goroutine, Stop
 // flushes the tail and returns. Start is idempotent. Enqueue is non-blocking;
 // on queue-full the doc is dropped from the enrichment layer (the doc itself
-// is already saved upstream — see ingest paths).
+// is already saved upstream — see ingest paths). A journaled ingest never meets
+// that drop in practice: the derivation journal feeds each document in slices no
+// larger than the free room, round-robin across documents (ENG-2111), and a
+// deferral that still happens is re-fed from the journal (ENG-2122).
 type ChunkTripletsBatcher struct {
 	gen   domain.Generator
 	store domain.ChunkTripletsStore
@@ -244,11 +247,26 @@ func (b *ChunkTripletsBatcher) enqueueDocument(ctx context.Context, docs []*doma
 	if track {
 		w = newTripletsWait(n)
 	}
+	b.enqueueSlice(ctx, docs, w, done)
+	return w
+}
+
+// enqueueSlice enqueues chunks that settle into one derivation hook, counting each
+// chunk on w (which may be nil, or shared by several slices of one document — the
+// derivation journal feeds a large document slice by slice, ENG-2111). done fires once
+// every chunk of THIS call settled.
+func (b *ChunkTripletsBatcher) enqueueSlice(ctx context.Context, docs []*domain.Document, w *TripletsWait, done derivationHook) {
+	n := 0
+	for _, d := range docs {
+		if d != nil {
+			n++
+		}
+	}
 	tr := newDerivationTracker(n, done)
 	if b == nil || n == 0 {
 		w.settle(n, b != nil)
 		tr.settleAll(n, derivationDone, nil)
-		return w
+		return
 	}
 	origin, _ := domain.IngestOriginFrom(ctx)
 	version, _ := domain.SourceVersionFrom(ctx)
@@ -257,7 +275,14 @@ func (b *ChunkTripletsBatcher) enqueueDocument(ctx context.Context, docs []*doma
 			b.enqueue(tripletItem{doc: d, wait: w, done: tr, origin: origin, version: version})
 		}
 	}
-	return w
+}
+
+// capacity is the queue's size: the most chunks one slice may hold.
+func (b *ChunkTripletsBatcher) capacity() int {
+	if b == nil {
+		return 0
+	}
+	return cap(b.queue)
 }
 
 // headroom is how many more chunks the batcher accepts without dropping: the free

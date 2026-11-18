@@ -1413,6 +1413,15 @@ type IngestionConfig struct {
 	// recovery loop (within one process an in-flight set guards instead). Default
 	// 600000; 0 means the default.
 	DerivationLeaseMs int `json:"derivation_lease_ms,omitempty"`
+	// DerivationKGSliceChunks is the most chunks of one document the derivation journal
+	// feeds to the KG triplet batcher at once (never more than edge_extraction_queue_size),
+	// and DerivationKGSlicesInFlight how many such slices of one document may be queued
+	// at the same time. Documents take turns slice by slice, so one large ingest neither
+	// delays every other document's triplets until it is done nor overflows the queue,
+	// and the journal records the progress after each slice (ENG-2111). Defaults 256 and
+	// 2; 0 means the default.
+	DerivationKGSliceChunks    int `json:"derivation_kg_slice_chunks,omitempty"`
+	DerivationKGSlicesInFlight int `json:"derivation_kg_slices_in_flight,omitempty"`
 }
 
 // DefaultStepTimeoutFloorMs is the default of plan.step_timeout_floor_ms.
@@ -3516,6 +3525,8 @@ func DefaultConfig() *Config {
 				DerivationRetryMaxMs:         1800000,
 				DerivationMaxAttempts:        8,
 				DerivationLeaseMs:            600000,
+				DerivationKGSliceChunks:      256,
+				DerivationKGSlicesInFlight:   2,
 				// Drop OCR/layout junk only from Docling output; chat and other text
 				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
 				StructureJunkFilterBackends: []string{"docling"},
@@ -4533,6 +4544,8 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		{"derivation_retry_max_ms", c.Ingestion.DerivationRetryMaxMs},
 		{"derivation_max_attempts", c.Ingestion.DerivationMaxAttempts},
 		{"derivation_lease_ms", c.Ingestion.DerivationLeaseMs},
+		{"derivation_kg_slice_chunks", c.Ingestion.DerivationKGSliceChunks},
+		{"derivation_kg_slices_in_flight", c.Ingestion.DerivationKGSlicesInFlight},
 		{"source_kind_max_chars", c.Ingestion.SourceKindMaxChars},
 		{"source_title_max_chars", c.Ingestion.SourceTitleMaxChars},
 		{"source_author_max_chars", c.Ingestion.SourceAuthorMaxChars},

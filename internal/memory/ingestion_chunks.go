@@ -356,8 +356,10 @@ func (im *IngestionManager) persistChunksTracked(
 	// enqueues untracked exactly as before.
 	if im.tripletsBatcher != nil {
 		t := time.Now()
-		if hook := journaled.hook(domain.DerivationKGTriplets); hook != nil {
-			outcome.KGWait = im.tripletsBatcher.enqueueDocument(jobCtx, docs, trackKG, hook)
+		// ENG-2111: a journaled job is fed in slices, round-robin across documents, so
+		// one large document neither fills the queue for everyone nor overflows it.
+		if w, ok := journaled.enqueueKG(docs, trackKG); ok {
+			outcome.KGWait = w
 		} else if trackKG {
 			outcome.KGWait = im.tripletsBatcher.EnqueueTracked(jobCtx, docs)
 		} else {

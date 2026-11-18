@@ -31,6 +31,7 @@ type fakeJournal struct {
 	rows       map[[2]string]*fakeJournalRow
 	reschedule []rescheduleCall
 	failRecord error
+	advances   int
 }
 
 type rescheduleCall struct {
@@ -62,6 +63,16 @@ func (f *fakeJournal) CompleteDerivation(_ context.Context, k domain.DerivationK
 	defer f.mu.Unlock()
 	if r, ok := f.rows[jkey(k.Kind, k.DocumentID)]; ok && r.job.ContentDigest == k.ContentDigest {
 		delete(f.rows, jkey(k.Kind, k.DocumentID))
+	}
+	return nil
+}
+
+func (f *fakeJournal) AdvanceDerivation(_ context.Context, k domain.DerivationKey, remaining []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r, ok := f.rows[jkey(k.Kind, k.DocumentID)]; ok && r.job.ContentDigest == k.ContentDigest {
+		r.job.ChunkIDs = append([]string(nil), remaining...)
+		f.advances++
 	}
 	return nil
 }

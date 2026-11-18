@@ -37,7 +37,9 @@ import (
 // The recovery loop (Start/Stop, one goroutine) claims the rows a previous process
 // left behind (claimed before this one started) and the rows whose retry is due, reads
 // their chunks back through the ENFORCING read store, and re-feeds the same extractor
-// and batcher, never claiming more than their queues can take.
+// and batcher, never claiming more than their queues can take. KG jobs, live and
+// recovered, are fed to the batcher in slices, round-robin across documents, with the
+// row's progress written after each slice (ENG-2111, derivation_kg_feed.go).
 //
 // Version fence (ENG-501). A replayed job carries the document id and the content
 // digest it was journaled with (domain.WithSourceVersion) and its ingest origin
@@ -72,10 +74,24 @@ type DerivationJournaler struct {
 	mu       sync.Mutex
 	inflight map[domain.DerivationKey]struct{}
 
+	// ENG-2111: the KG jobs being fed slice by slice (derivation_kg_feed.go): feeds by
+	// job version, the round-robin ring of feeds waiting for their next slice, and the
+	// room reserved by slices taken but not yet enqueued. Guarded by feedMu.
+	feedMu   sync.Mutex
+	feeds    map[domain.DerivationKey]*kgFeed
+	ring     []*kgFeed
+	reserved int
+	// kick wakes the loop to feed the ring (a slice settled, a document arrived).
+	kick chan struct{}
+	// halt is set by Stop: nothing is fed any more.
+	halt atomic.Bool
+
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	stopOnce sync.Once
 	started  atomic.Bool
+
+	kgSlices, kgAdvanced atomic.Uint64
 
 	recorded, recordFailed, completed, failed, deferred, died, recovered atomic.Uint64
 	backlog                                                              atomic.Pointer[map[domain.DerivationKind]domain.DerivationBacklog]
@@ -100,6 +116,12 @@ type DerivationJournalConfig struct {
 	Lease time.Duration
 	// StoreTimeout bounds one journal write (default 10 s).
 	StoreTimeout time.Duration
+	// KGSliceChunks is the most chunks of one document fed to the KG batcher at once
+	// (default 256; never more than the batcher queue holds), and KGSlicesInFlight how
+	// many such slices of one document may be queued at the same time (default 2).
+	// Documents take turns slice by slice, so one large ingest cannot hold the queue
+	// (ENG-2111).
+	KGSliceChunks, KGSlicesInFlight int
 }
 
 func (c DerivationJournalConfig) withDefaults() DerivationJournalConfig {
@@ -124,6 +146,12 @@ func (c DerivationJournalConfig) withDefaults() DerivationJournalConfig {
 	if c.StoreTimeout <= 0 {
 		c.StoreTimeout = 10 * time.Second
 	}
+	if c.KGSliceChunks <= 0 {
+		c.KGSliceChunks = 256
+	}
+	if c.KGSlicesInFlight <= 0 {
+		c.KGSlicesInFlight = 2
+	}
 	return c
 }
 
@@ -140,6 +168,8 @@ func NewDerivationJournaler(journal domain.DerivationJournal, reader domain.Vect
 		journal: journal, reader: reader, facts: facts, kg: kg, cfg: cfg.withDefaults(),
 		since:    time.Now(),
 		inflight: map[domain.DerivationKey]struct{}{},
+		feeds:    map[domain.DerivationKey]*kgFeed{},
+		kick:     make(chan struct{}, 1),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 	}
@@ -301,6 +331,20 @@ func (s *derivationSubmission) hook(kind domain.DerivationKind) derivationHook {
 	return s.d.hookFor(s.ctx, j)
 }
 
+// enqueueKG feeds the submission's KG job to the batcher slice by slice (ENG-2111) and
+// returns the sync ingest's wait (track). ok is false when no KG job is journaled: the
+// caller then enqueues unjournaled, as before.
+func (s *derivationSubmission) enqueueKG(docs []*domain.Document, track bool) (w *TripletsWait, ok bool) {
+	if s == nil || s.d.kg == nil {
+		return nil, false
+	}
+	j, ok := s.jobs[domain.DerivationKGTriplets]
+	if !ok {
+		return nil, false
+	}
+	return s.d.startKG(s.ctx, j, docs, track), true
+}
+
 // hookFor is the completion hook of one journaled job.
 func (d *DerivationJournaler) hookFor(ctx context.Context, j domain.DerivationJob) derivationHook {
 	k := j.Key()
@@ -418,26 +462,31 @@ func (d *DerivationJournaler) Stop() {
 		return
 	}
 	d.stopOnce.Do(func() {
+		d.halt.Store(true)
 		close(d.stopCh)
 		if d.started.CompareAndSwap(false, true) {
 			close(d.doneCh) // never started: no loop to wait for
 		}
 	})
 	<-d.doneCh
+	d.releaseWaitingFeeds()
 }
 
 func (d *DerivationJournaler) loop(ctx context.Context) {
 	defer close(d.doneCh)
 	t := time.NewTicker(d.cfg.RecoveryInterval)
 	defer t.Stop()
+	d.RecoverOnce(ctx)
 	for {
-		d.RecoverOnce(ctx)
 		select {
 		case <-d.stopCh:
 			return
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			d.RecoverOnce(ctx)
+		case <-d.kick:
+			d.pump() // ENG-2111: the next slices, as room frees
 		}
 	}
 }
@@ -472,20 +521,14 @@ func (d *DerivationJournaler) RecoverOnce(ctx context.Context) int {
 }
 
 func (d *DerivationJournaler) recoverKind(ctx context.Context, kind domain.DerivationKind) int {
-	room := 0
-	switch kind {
-	case domain.DerivationFacts:
-		room = d.facts.headroom()
-	case domain.DerivationKGTriplets:
-		room = d.kg.headroom()
+	if kind == domain.DerivationKGTriplets {
+		return d.recoverKG(ctx)
 	}
+	room := d.facts.headroom()
 	if room <= 0 {
 		return 0
 	}
-	limit := d.cfg.RecoveryBatch
-	if kind == domain.DerivationFacts {
-		limit = min(limit, room) // one queue slot per document
-	}
+	limit := min(d.cfg.RecoveryBatch, room) // one queue slot per document
 	jobs, err := d.journal.ClaimDerivations(ctx, kind, d.since, limit, d.cfg.Lease)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -498,14 +541,6 @@ func (d *DerivationJournaler) recoverKind(ctx context.Context, kind domain.Deriv
 		if d.claimInflight(j.Key()) {
 			continue // still queued here: the claim only renewed its lease
 		}
-		if kind == domain.DerivationKGTriplets {
-			if len(j.ChunkIDs) > room && n > 0 {
-				// No room left this pass: due again at once, no attempt counted.
-				d.reschedule(ctx, j, errTripletsQueueFull, false)
-				continue
-			}
-			room -= len(j.ChunkIDs)
-		}
 		if d.replay(ctx, j) {
 			n++
 		}
@@ -514,13 +549,36 @@ func (d *DerivationJournaler) recoverKind(ctx context.Context, kind domain.Deriv
 	return n
 }
 
-// replay re-feeds one claimed job. It reports whether the job was queued.
+// recoverKG claims due and orphaned KG jobs into the feed ring (ENG-2111) and feeds
+// it. It never holds more than RecoveryBatch feeds: a feed costs only its chunk ids
+// until its slices are fed, which happens as the batcher frees room.
+func (d *DerivationJournaler) recoverKG(ctx context.Context) int {
+	n := 0
+	if limit := d.cfg.RecoveryBatch - d.activeFeeds(); limit > 0 && !d.halt.Load() {
+		jobs, err := d.journal.ClaimDerivations(ctx, domain.DerivationKGTriplets, d.since, limit, d.cfg.Lease)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.WarnContext(ctx, "DerivationJournal: journal unreadable; recovery retries next pass", "kind", string(domain.DerivationKGTriplets), "err", err)
+			}
+		}
+		for _, j := range jobs {
+			if d.claimInflight(j.Key()) {
+				continue // still being fed here: the claim only renewed its lease
+			}
+			d.queueFeed(ctx, j)
+			n++
+		}
+	}
+	d.recovered.Add(uint64(n))
+	d.pump()
+	return n
+}
+
+// replay re-feeds one claimed fact job (KG jobs go through the feed ring,
+// recoverKG). It reports whether the job was queued.
 func (d *DerivationJournaler) replay(ctx context.Context, j domain.DerivationJob) bool {
 	// See the type comment (Access): the replay serves no principal.
-	rctx := domain.WithScope(context.WithoutCancel(ctx), domain.ScopeMaintenance)
-	rctx = domain.WithPrincipal(rctx, domain.SystemPrincipal)
-	rctx = domain.WithSourceVersion(rctx, domain.SourceVersion{DocumentID: j.DocumentID, ContentDigest: j.ContentDigest})
-	rctx = domain.WithIngestOrigin(rctx, j.IngestOrigin)
+	rctx := journalReplayCtx(ctx, j)
 	chunks, err := readChunksInOrder(rctx, d.reader, j.ChunkIDs)
 	if err != nil {
 		slog.WarnContext(ctx, "DerivationJournal: chunks of a journaled job unreadable; retried later",
@@ -543,8 +601,6 @@ func (d *DerivationJournaler) replay(ctx context.Context, j domain.DerivationJob
 			actor:  replayFactActor(chunks, j.Writer),
 			source: j.Source, chunks: slimFactChunks(chunks), done: hook,
 		})
-	case domain.DerivationKGTriplets:
-		d.kg.enqueueDocument(rctx, chunks, false, hook)
 	default:
 		d.complete(ctx, j.Key())
 		return false
@@ -570,6 +626,8 @@ type DerivationJournalStats struct {
 	// failure; Deferred queue-full deferrals; Died jobs past their last attempt;
 	// Recovered jobs re-fed by the recovery loop.
 	Recorded, RecordFailed, Completed, Failed, Deferred, Died, Recovered uint64
+	// KGSlices KG slices fed to the batcher; KGAdvanced KG progress writes (ENG-2111).
+	KGSlices, KGAdvanced uint64
 	// Backlog is the journal's rows per kind at the last recovery pass.
 	Backlog map[domain.DerivationKind]domain.DerivationBacklog
 }
@@ -582,6 +640,7 @@ func (d *DerivationJournaler) Stats() DerivationJournalStats {
 	st := DerivationJournalStats{
 		Recorded: d.recorded.Load(), RecordFailed: d.recordFailed.Load(), Completed: d.completed.Load(),
 		Failed: d.failed.Load(), Deferred: d.deferred.Load(), Died: d.died.Load(), Recovered: d.recovered.Load(),
+		KGSlices: d.kgSlices.Load(), KGAdvanced: d.kgAdvanced.Load(),
 	}
 	if b := d.backlog.Load(); b != nil {
 		st.Backlog = *b

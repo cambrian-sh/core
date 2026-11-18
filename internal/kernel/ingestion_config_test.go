@@ -79,13 +79,16 @@ func TestDerivationJournalConfigFrom_Threads(t *testing.T) {
 	got := derivationJournalConfigFrom(config.IngestionConfig{
 		DerivationRecoveryIntervalMs: 1500, DerivationRecoveryBatch: 7, DerivationRetryBaseMs: 2000,
 		DerivationRetryMaxMs: 9000, DerivationMaxAttempts: 4, DerivationLeaseMs: 60000,
+		DerivationKGSliceChunks: 64, DerivationKGSlicesInFlight: 3,
 	})
 	if got.RecoveryInterval != 1500*time.Millisecond || got.RecoveryBatch != 7 || got.RetryBase != 2*time.Second ||
-		got.RetryMax != 9*time.Second || got.MaxAttempts != 4 || got.Lease != time.Minute {
+		got.RetryMax != 9*time.Second || got.MaxAttempts != 4 || got.Lease != time.Minute ||
+		got.KGSliceChunks != 64 || got.KGSlicesInFlight != 3 {
 		t.Fatalf("derivationJournalConfigFrom = %+v", got)
 	}
 	if d := config.DefaultConfig().Execution.Ingestion; !d.DerivationJournalEnabled || d.DerivationMaxAttempts != 8 ||
-		d.DerivationRecoveryIntervalMs != 30000 || d.DerivationLeaseMs != 600000 {
+		d.DerivationRecoveryIntervalMs != 30000 || d.DerivationLeaseMs != 600000 ||
+		d.DerivationKGSliceChunks != 256 || d.DerivationKGSlicesInFlight != 2 {
 		t.Fatalf("defaults = %+v", d)
 	}
 }
