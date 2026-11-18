@@ -1372,6 +1372,19 @@ type IngestionConfig struct {
 	// keyed by id and a response schema (ADR-0139 C1/C4). Both apply the same triplet
 	// filters; the default moves only after an A/B/A retrieval run (AGENTS.md §0.5).
 	KgTripletsLLMFormat string `json:"kg_triplets_llm_format,omitempty"`
+
+	// KgGraphTier selects the graph-node tier of the kg_extractor system agent
+	// (ADR-0053 D2 revised): "svo" (default; "" reads as it) is the dep-parse
+	// SVO + pattern tier (SpaCyPatternExtractor, triplet source spacy_patterns),
+	// "ner" the NER + coreference full-entity co-occurrence tier
+	// (NEREntityExtractor, source ner_coref) from the 2026-07-09 graph-recall
+	// experiment. The metadata and anchor tiers run either way. The kernel hands
+	// it to the agent as CAMBRIAN_KG_GRAPH_TIER in its config-derived agent
+	// environment (kernel.AgentEnvExtras), which is set by the kernel and so
+	// needs no passthrough entry (CAMBRIAN_* names never pass the ADR-0157 agent
+	// env allowlist; T-20261118-kg-extractor-graph-tier-cambrian-kg-graph-tier).
+	// Read only when KgExtractorEnabled routes extraction to the agent.
+	KgGraphTier string `json:"kg_graph_tier,omitempty"`
 }
 
 // DefaultStepTimeoutFloorMs is the default of plan.step_timeout_floor_ms.
@@ -1398,6 +1411,12 @@ const DefaultCallerDeadlineReserveMs = 5000
 const (
 	KgTripletsFormatCompletion = "completion"
 	KgTripletsFormatStructured = "structured"
+)
+
+// KgGraphTier values (execution.ingestion.kg_graph_tier).
+const (
+	KgGraphTierSVO = "svo"
+	KgGraphTierNER = "ner"
 )
 
 // HippocampusConfig (execution.hippocampus: hippocampus_policies,
@@ -3428,6 +3447,7 @@ func DefaultConfig() *Config {
 				KgExtractorRetryBackoffMs: 2000,
 				KgTripletsMaxRequeues:     1,
 				KgTripletsLLMFormat:       KgTripletsFormatCompletion,
+				KgGraphTier:               KgGraphTierSVO,
 				// Drop OCR/layout junk only from Docling output; chat and other text
 				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
 				StructureJunkFilterBackends: []string{"docling"},
@@ -4433,6 +4453,11 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	case "", KgTripletsFormatCompletion, KgTripletsFormatStructured:
 	default:
 		errs = append(errs, fmt.Sprintf("ingestion.kg_triplets_llm_format must be %q or %q (got %q)", KgTripletsFormatCompletion, KgTripletsFormatStructured, c.Ingestion.KgTripletsLLMFormat))
+	}
+	switch c.Ingestion.KgGraphTier {
+	case "", KgGraphTierSVO, KgGraphTierNER:
+	default:
+		errs = append(errs, fmt.Sprintf("ingestion.kg_graph_tier must be %q or %q (got %q)", KgGraphTierSVO, KgGraphTierNER, c.Ingestion.KgGraphTier))
 	}
 	switch c.Ingestion.DocumentIdentity {
 	case "", DocumentIdentityV2, DocumentIdentityLegacy:

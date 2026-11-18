@@ -34,9 +34,26 @@ from kg_extractors.ner_entity_extractor import NEREntityExtractor
 
 # Graph-node extractor selection (2026-07-09 experiment). "ner" builds the
 # retrieval graph from NER+coref full-entity co-occurrence (kgExpand/coherence
-# recall); "svo" is the legacy verb-relation SVO tier. Env-toggled so the A/B
-# needs no code edit between arms.
-_GRAPH_TIER = os.environ.get("CAMBRIAN_KG_GRAPH_TIER", "svo").strip().lower()
+# recall); "svo" is the legacy verb-relation SVO tier. The operator sets it as
+# execution.ingestion.kg_graph_tier; the kernel delivers it in its
+# config-derived agent environment as CAMBRIAN_KG_GRAPH_TIER (kernel
+# AgentEnvExtras; T-20261118-kg-extractor-graph-tier-cambrian-kg-graph-tier).
+GRAPH_TIER_ENV = "CAMBRIAN_KG_GRAPH_TIER"
+GRAPH_TIERS = ("svo", "ner")
+
+
+def graph_tier_from_env(environ=None) -> str:
+    """The graph tier the kernel delivered; unset or empty means "svo".
+
+    An unknown value raises instead of silently running another tier: the
+    kernel validates the config key, so an unknown value here is a bug worth
+    a failed boot, not a quiet A/B arm that measured the wrong extractor.
+    """
+    env = os.environ if environ is None else environ
+    tier = (env.get(GRAPH_TIER_ENV) or "svo").strip().lower()
+    if tier not in GRAPH_TIERS:
+        raise ValueError(f"{GRAPH_TIER_ENV}={tier!r}: want one of {', '.join(GRAPH_TIERS)}")
+    return tier
 
 AGENT_DESCRIPTION = (
     "Deterministic, no-LLM knowledge-graph extractor: turns a batch of chunk texts into "
@@ -61,15 +78,19 @@ def _speaker_of(text: str) -> str:
 class KgExtractorAgent(CognitiveAgent):
     """No-LLM tiered triplet extractor. ``run`` handles one batch handoff."""
 
-    def __init__(self, agent_id: str = "kg_extractor_agent", **kwargs) -> None:
+    def __init__(self, agent_id: str = "kg_extractor_agent", graph_tier: str | None = None, **kwargs) -> None:
+        # Resolve the tier before anything else so a bad value fails the boot
+        # before the SDK runtime or the spaCy model load.
+        tier = graph_tier_from_env({GRAPH_TIER_ENV: graph_tier} if graph_tier is not None else None)
         super().__init__(agent_id=agent_id, description=AGENT_DESCRIPTION, **kwargs)
+        self.graph_tier = tier
         # Build the extractors ONCE — the spaCy model load is the expensive step;
         # amortise it across every handoff for the life of the process.
         self._metadata = MetadataExtractor()
         self._anchor = AnchorExtractor()  # deterministic structural-anchor tier (ADR-0053 D2)
         # Graph-node tier: NER+coref co-occurrence (recall) or legacy SVO. The
         # metadata + anchor tiers are unaffected either way (temporal + anchors).
-        if _GRAPH_TIER == "ner":
+        if tier == "ner":
             self._graph = NEREntityExtractor()
             self._graph_name = "ner_coref"
         else:

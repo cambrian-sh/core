@@ -21,9 +21,10 @@ import (
 // "ner" (NEREntityExtractor), the two tiers that load the model. The tier is
 // set through the kernel's config-derived agent environment
 // (InstanceManager.SetEnvExtras — CAMBRIAN_* names never pass the env
-// allowlist); no config key feeds CAMBRIAN_KG_GRAPH_TIER today
-// (T-20261118-kg-extractor-graph-tier-cambrian-kg-graph-tier), so the test
-// sets the extra directly.
+// allowlist). This package cannot import the kernel, so the test sets the
+// extra directly; app TestE2E_KgGraphTierFromConfigReachesSandboxedAgent
+// drives it from execution.ingestion.kg_graph_tier through
+// kernel.AgentEnvExtras (T-20261118-kg-extractor-graph-tier-cambrian-kg-graph-tier).
 //
 // The call goes through AgentManager.CallAgent (boot, dial, gRPC Execute) with
 // the payload KgExtractorDispatcher sends (internal/substrate/network; that
