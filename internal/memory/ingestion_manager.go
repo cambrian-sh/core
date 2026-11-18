@@ -151,7 +151,7 @@ func (im *IngestionManager) SetEventBus(bus domain.EventBus) {
 // internal unit of retrieval, so a 200-chunk upload would put 200 rows on an
 // operator's feed describing one action they took. The document is the thing the
 // operator did; the chunk count is detail, and it rides in the summary.
-func (im *IngestionManager) publishWritten(doc domain.ExternalDocument, entityID string, chunkCount int) {
+func (im *IngestionManager) publishWritten(ctx context.Context, doc domain.ExternalDocument, entityID string, chunkCount int) {
 	if im == nil || im.bus == nil || entityID == "" {
 		return
 	}
@@ -159,7 +159,7 @@ func (im *IngestionManager) publishWritten(doc domain.ExternalDocument, entityID
 	if summary == "" {
 		summary = doc.SourceURI
 	}
-	_ = im.bus.Publish(domain.MemoryWrittenEvent{
+	_ = im.bus.Publish(ctx, domain.MemoryWrittenEvent{
 		DocID: entityID,
 		// The SOURCE DOCUMENT, not a chunk type: the id is the source-doc entity and
 		// the event describes the document the operator ingested.
@@ -434,7 +434,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount,
 		"dropped_leaves", outcome.DroppedLeaves)
 	t = time.Now()
-	im.publishWritten(doc, entityID, chunkCount)
+	im.publishWritten(ctx, doc, entityID, chunkCount)
 	clock.Since(StagePublish, t)
 	if factsErr != nil {
 		return entityID, factsErr

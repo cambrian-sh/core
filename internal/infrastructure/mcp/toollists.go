@@ -30,24 +30,24 @@ func WithToolLists(store domain.SealedRecordStore) ConnectorOption {
 	return func(c *Connector) { c.toolLists = store }
 }
 
-func (c *Connector) saveToolList(serverID string, adv []advertisedTool) {
+func (c *Connector) saveToolList(ctx context.Context, serverID string, adv []advertisedTool) {
 	if c.toolLists == nil {
 		return
 	}
 	b, err := json.Marshal(adv)
 	if err == nil {
-		err = c.toolLists.PutSealed(serverID, b)
+		err = c.toolLists.PutSealed(ctx, serverID, b)
 	}
 	if err != nil {
 		slog.Warn("ADR-0140: per-user MCP tool list not persisted", "server", serverID, "err", err)
 	}
 }
 
-func (c *Connector) loadToolList(serverID string) ([]advertisedTool, bool) {
+func (c *Connector) loadToolList(ctx context.Context, serverID string) ([]advertisedTool, bool) {
 	if c.toolLists == nil {
 		return nil, false
 	}
-	b, ok, err := c.toolLists.GetSealed(serverID)
+	b, ok, err := c.toolLists.GetSealed(ctx, serverID)
 	if err != nil {
 		slog.Warn("ADR-0140: per-user MCP tool list unreadable", "server", serverID, "err", err)
 		return nil, false
@@ -65,11 +65,11 @@ func (c *Connector) loadToolList(serverID string) ([]advertisedTool, bool) {
 
 // forgetToolList drops a removed server's list, so a server re-added under
 // the same id later does not start from another server's tools.
-func (c *Connector) forgetToolList(serverID string) {
+func (c *Connector) forgetToolList(ctx context.Context, serverID string) {
 	if c.toolLists == nil {
 		return
 	}
-	if _, err := c.toolLists.DeleteSealed(serverID); err != nil {
+	if _, err := c.toolLists.DeleteSealed(ctx, serverID); err != nil {
 		slog.Warn("ADR-0140: per-user MCP tool list not deleted", "server", serverID, "err", err)
 	}
 }
@@ -79,7 +79,7 @@ func (c *Connector) forgetToolList(serverID string) {
 // caller's own session (SessionForCall), so a caller who has not connected
 // gets the NotConnectedError, never another person's credential.
 func (c *Connector) publishKnownTools(ctx context.Context, s ServerConfig, sink ToolSink) int {
-	adv, ok := c.loadToolList(s.ID)
+	adv, ok := c.loadToolList(ctx, s.ID)
 	if !ok || len(adv) == 0 || sink == nil {
 		return 0
 	}

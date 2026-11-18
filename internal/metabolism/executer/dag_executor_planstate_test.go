@@ -9,7 +9,7 @@ import (
 
 func collectPlanState(bus *domain.InMemoryEventBus) *[]domain.PlanStateChanged {
 	var events []domain.PlanStateChanged
-	bus.Subscribe(domain.EventTypePlanState, func(e domain.DomainEvent) {
+	bus.Subscribe(domain.EventTypePlanState, func(_ context.Context, e domain.DomainEvent) {
 		events = append(events, e.(domain.PlanStateChanged))
 	})
 	return &events

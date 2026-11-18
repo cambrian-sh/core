@@ -139,12 +139,12 @@ func TestFaultyTaskEventWriter_FailsAfterNSuccesses(t *testing.T) {
 	fw := chaos.NewFaultyTaskEventWriter(inner, cfg)
 
 	for range 2 {
-		if err := fw.WriteTaskEvent(domain.TaskEvent{}); err != nil {
+		if err := fw.WriteTaskEvent(context.Background(), domain.TaskEvent{}); err != nil {
 			t.Fatalf("expected success, got: %v", err)
 		}
 	}
 
-	err := fw.WriteTaskEvent(domain.TaskEvent{})
+	err := fw.WriteTaskEvent(context.Background(), domain.TaskEvent{})
 	if !errors.Is(err, chaos.ErrDiskFull) {
 		t.Fatalf("got %v, want disk full", err)
 	}
@@ -155,7 +155,7 @@ func TestFaultyTaskEventWriter_FailsAfterNSuccesses(t *testing.T) {
 
 func TestFaultyTaskEventWriter_NilInner(t *testing.T) {
 	fw := chaos.NewFaultyTaskEventWriter(nil, chaos.FaultConfig{AfterSuccesses: 0, Error: chaos.ErrDiskFull})
-	if err := fw.WriteTaskEvent(domain.TaskEvent{}); !errors.Is(err, chaos.ErrDiskFull) {
+	if err := fw.WriteTaskEvent(context.Background(), domain.TaskEvent{}); !errors.Is(err, chaos.ErrDiskFull) {
 		t.Fatalf("got %v, want disk full error", err)
 	}
 }
@@ -205,7 +205,7 @@ type stubTaskEventWriter struct {
 	writes int
 }
 
-func (w *stubTaskEventWriter) WriteTaskEvent(event domain.TaskEvent) error {
+func (w *stubTaskEventWriter) WriteTaskEvent(_ context.Context, event domain.TaskEvent) error {
 	w.writes++
 	return nil
 }

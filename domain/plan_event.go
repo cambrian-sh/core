@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // PlanOutcome describes the final status of a plan execution.
 type PlanOutcome string
@@ -37,7 +40,7 @@ type PlanEvent struct {
 
 // PlanEventWriter persists a PlanEvent after plan execution completes.
 type PlanEventWriter interface {
-	WritePlanEvent(event PlanEvent) error
+	WritePlanEvent(ctx context.Context, event PlanEvent) error
 }
 
 // TraversalLogEntry records a single BFS edge traversal by SpreadingEngine.
@@ -56,8 +59,8 @@ type TraversalLogEntry struct {
 
 // TraversalLogger logs graph BFS edge traversals and retroactively updates plan outcomes.
 type TraversalLogger interface {
-	LogTraversal(entry TraversalLogEntry) error
-	UpdatePlanOutcome(entryID string, planID string, outcome PlanOutcome) error
+	LogTraversal(ctx context.Context, entry TraversalLogEntry) error
+	UpdatePlanOutcome(ctx context.Context, entryID string, planID string, outcome PlanOutcome) error
 }
 
 // ContradictionResolution captures the feature vector of an LLM-arbitrated contradiction.
@@ -81,5 +84,5 @@ type ContradictionResolution struct {
 
 // ContradictionLogger persists contradiction resolution records.
 type ContradictionLogger interface {
-	LogContradiction(resolution ContradictionResolution) error
+	LogContradiction(ctx context.Context, resolution ContradictionResolution) error
 }

@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // JournaledSignal is a durable-journal entry: a Signal paired with the monotonic
 // sequence number assigned when it was appended. Returned by ReplayFrom so the
@@ -20,7 +23,7 @@ type JournaledSignal struct {
 // ListWatchDeadLetters RPC. Satisfied by the OSS bbolt journal decorator; nil in
 // builds that never wire the reactive journal. REACT-01 / ADR-0061.
 type WatchDeadLetterReader interface {
-	ListDeadLetters(limit int) ([]ReactiveDeadLetter, error)
+	ListDeadLetters(ctx context.Context, limit int) ([]ReactiveDeadLetter, error)
 }
 
 // WatchDeadLetterDeleter removes one dead letter by id: an operator resolving an
@@ -28,7 +31,7 @@ type WatchDeadLetterReader interface {
 // found=false when no such entry exists. Satisfied by the OSS bbolt journal
 // decorator beside the reader.
 type WatchDeadLetterDeleter interface {
-	DeleteDeadLetter(id string) (found bool, err error)
+	DeleteDeadLetter(ctx context.Context, id string) (found bool, err error)
 }
 
 // ReactiveDeadLetter records a reactive action that could not be delivered — an

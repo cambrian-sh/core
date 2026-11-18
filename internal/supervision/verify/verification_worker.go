@@ -242,10 +242,10 @@ func (w *VerificationWorker) processOne(ctx context.Context, vreq domain.Verific
 	verifierScore := clamp(float64(verifyResp.QualityScore), 0, 1)
 	critique := verifyResp.Critique
 
-	w.updateTaskEvent(vreq.TaskID, verifierScore)
+	w.updateTaskEvent(ctx, vreq.TaskID, verifierScore)
 	w.storeJudicialRecord(ctx, vreq, verifierScore, critique)
 	w.updateRecentVerifiers(ctx, vreq.AgentID, vreq.SourceHash, verifier.ID, subjectProfile)
-	w.publishRound(vreq, verifierScore, critique)
+	w.publishRound(ctx, vreq, verifierScore, critique)
 
 	if w.Config.CrossVerifyRate > 0 && shouldCrossVerify(vreq.TaskID, verifier.ID, w.Config.CrossVerifyRate) {
 		w.crossVerify(ctx, vreq, verifier, verifierScore, "crossverify-"+vreq.TaskID)
@@ -254,11 +254,11 @@ func (w *VerificationWorker) processOne(ctx context.Context, vreq domain.Verific
 
 // publishRound emits a VerifierRoundEvent for the operator feed (ADR-0047 D3).
 // Best-effort and nil-safe — verification correctness never depends on it.
-func (w *VerificationWorker) publishRound(vreq domain.VerificationRequest, score float64, critique string) {
+func (w *VerificationWorker) publishRound(ctx context.Context, vreq domain.VerificationRequest, score float64, critique string) {
 	if w.EventBus == nil {
 		return
 	}
-	_ = w.EventBus.Publish(domain.VerifierRoundEvent{
+	_ = w.EventBus.Publish(ctx, domain.VerifierRoundEvent{
 		TaskID:       vreq.TaskID,
 		WinnerAgent:  vreq.AgentID,
 		QualityScore: score,
@@ -321,7 +321,7 @@ func (w *VerificationWorker) crossVerify(
 		VerifierScore: crossScore,
 		Verified:      true,
 	}
-	if err := w.EventStore.WriteTaskEvent(event); err != nil {
+	if err := w.EventStore.WriteTaskEvent(ctx, event); err != nil {
 		slog.Warn("VerificationWorker: failed to write cross-verification TaskEvent",
 			"task_id", crossVerifyTaskID, "err", err)
 	}
@@ -334,15 +334,15 @@ func (w *VerificationWorker) crossVerify(
 	)
 }
 
-func (w *VerificationWorker) updateTaskEvent(taskID string, verifierScore float64) {
-	existing, err := w.EventStore.ReadTaskEvent(taskID)
+func (w *VerificationWorker) updateTaskEvent(ctx context.Context, taskID string, verifierScore float64) {
+	existing, err := w.EventStore.ReadTaskEvent(ctx, taskID)
 	if err != nil || existing == nil {
 		slog.Warn("VerificationWorker: TaskEvent not found for update", "task_id", taskID)
 		return
 	}
 	existing.VerifierScore = verifierScore
 	existing.Verified = true
-	if err := w.EventStore.WriteTaskEvent(*existing); err != nil {
+	if err := w.EventStore.WriteTaskEvent(ctx, *existing); err != nil {
 		slog.Warn("VerificationWorker: failed to update TaskEvent",
 			"task_id", taskID, "err", err)
 	}

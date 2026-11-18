@@ -22,7 +22,7 @@ func (f *fakeModelReg) GetAllAgents(_ context.Context) ([]domain.AgentDefinition
 	return f.agents, nil
 }
 
-func (f *fakeModelReg) DeleteAgent(id string) error {
+func (f *fakeModelReg) DeleteAgent(_ context.Context, id string) error {
 	f.deleted = append(f.deleted, id)
 	var out []domain.AgentDefinition
 	for _, a := range f.agents {

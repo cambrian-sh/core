@@ -634,7 +634,7 @@ type mockEventWriter struct {
 	events []domain.TaskEvent
 }
 
-func (m *mockEventWriter) WriteTaskEvent(event domain.TaskEvent) error {
+func (m *mockEventWriter) WriteTaskEvent(_ context.Context, event domain.TaskEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events = append(m.events, event)

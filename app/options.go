@@ -771,7 +771,7 @@ type ReactiveJournal interface {
 	// RecordDeadLetter persists an undeliverable action or an expired signal.
 	RecordDeadLetter(dl domain.ReactiveDeadLetter) error
 	// ListDeadLetters returns dead-letter entries newest-first (limit <= 0 ⇒ all).
-	ListDeadLetters(limit int) ([]domain.ReactiveDeadLetter, error)
+	ListDeadLetters(ctx context.Context, limit int) ([]domain.ReactiveDeadLetter, error)
 	// Prune drops up to limit journal records that are TTL-expired (as of now)
 	// and at or below their stream's floor. floor reports, per stream, the lowest
 	// cursor among the watches consuming it and whether any watch does; a stream

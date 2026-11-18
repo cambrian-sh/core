@@ -110,20 +110,20 @@ func (d *AgentRepoDecorator) GetManifestBatch(ids []string) (map[string]*domain.
 
 // ── domain.AgentUpdater ──────────────────────────────────────────────────────
 
-func (d *AgentRepoDecorator) SetProvisional(agentID string, provisional bool) error {
+func (d *AgentRepoDecorator) SetProvisional(_ context.Context, agentID string, provisional bool) error {
 	return d.store.SetProvisional(agentID, provisional)
 }
 
 // ── executer.TaskEventWriter ─────────────────────────────────────────────────
 
-func (d *AgentRepoDecorator) WriteTaskEvent(event domain.TaskEvent) error {
+func (d *AgentRepoDecorator) WriteTaskEvent(_ context.Context, event domain.TaskEvent) error {
 	rec := d.mapper.TaskEventToRecord(event)
 	return d.store.WriteTaskEventRecord(rec)
 }
 
 // ── aggregator.TaskEventReader ────────────────────────────────────────────────
 
-func (d *AgentRepoDecorator) ReadTaskEvent(taskID string) (*domain.TaskEvent, error) {
+func (d *AgentRepoDecorator) ReadTaskEvent(_ context.Context, taskID string) (*domain.TaskEvent, error) {
 	rec, err := d.store.ReadTaskEventRecord(taskID)
 	if err != nil {
 		return nil, err
@@ -194,7 +194,7 @@ func refuseReservedAgentID(id string) error {
 // eviction half of the startup reconcile (domain.AgentPruner): an orphan that
 // is no longer declared by its source must stop appearing as an auction
 // candidate, since GetAllAgents reads the same bucket. Idempotent.
-func (d *AgentRepoDecorator) DeleteAgent(agentID string) error {
+func (d *AgentRepoDecorator) DeleteAgent(_ context.Context, agentID string) error {
 	return d.store.DeleteAgentRecord(agentID)
 }
 
@@ -278,25 +278,25 @@ func (d *AgentRepoDecorator) ListRunsForSession(ctx context.Context, sessionID d
 
 // ── domain.PlanEventWriter ───────────────────────────────────────────────────
 
-func (d *AgentRepoDecorator) WritePlanEvent(event domain.PlanEvent) error {
+func (d *AgentRepoDecorator) WritePlanEvent(_ context.Context, event domain.PlanEvent) error {
 	rec := d.mapper.PlanEventToRecord(event)
 	return d.store.WritePlanEventRecord(rec)
 }
 
 // ── domain.TraversalLogger ───────────────────────────────────────────────────
 
-func (d *AgentRepoDecorator) LogTraversal(entry domain.TraversalLogEntry) error {
+func (d *AgentRepoDecorator) LogTraversal(_ context.Context, entry domain.TraversalLogEntry) error {
 	rec := d.mapper.TraversalLogEntryToRecord(entry)
 	return d.store.WriteTraversalLogEntryRecord(rec)
 }
 
-func (d *AgentRepoDecorator) UpdatePlanOutcome(entryID string, planID string, outcome domain.PlanOutcome) error {
+func (d *AgentRepoDecorator) UpdatePlanOutcome(_ context.Context, entryID string, planID string, outcome domain.PlanOutcome) error {
 	return d.store.UpdateTraversalLogPlanOutcome(entryID, planID, string(outcome))
 }
 
 // ── domain.ContradictionLogger ───────────────────────────────────────────────
 
-func (d *AgentRepoDecorator) LogContradiction(res domain.ContradictionResolution) error {
+func (d *AgentRepoDecorator) LogContradiction(_ context.Context, res domain.ContradictionResolution) error {
 	rec := d.mapper.ContradictionResolutionToRecord(res)
 	return d.store.WriteContradictionResolutionRecord(rec)
 }

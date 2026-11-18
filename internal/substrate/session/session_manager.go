@@ -85,7 +85,7 @@ func (m *SessionManager) CreateSession(ctx context.Context, goal string, parentI
 	if err := m.store.SaveSession(ctx, ses); err != nil {
 		return nil, err
 	}
-	m.publishState(ses, "")
+	m.publishState(ctx, ses, "")
 	return &ses, nil
 }
 
@@ -108,7 +108,7 @@ func (m *SessionManager) CreateScopedSession(ctx context.Context, goal string, p
 	if err := m.store.SaveSession(ctx, ses); err != nil {
 		return nil, err
 	}
-	m.publishState(ses, "")
+	m.publishState(ctx, ses, "")
 	return &ses, nil
 }
 
@@ -181,7 +181,7 @@ func (m *SessionManager) SaveConversationLink(ctx context.Context, sessionID dom
 	if err := m.store.SaveSession(ctx, *ses); err != nil {
 		return err
 	}
-	m.publishState(*ses, "")
+	m.publishState(ctx, *ses, "")
 	return nil
 }
 
@@ -243,9 +243,9 @@ func (m *SessionManager) TransitionStatusReason(ctx context.Context, sessionID d
 	}
 	// Absolute state first: this is the event that covers ALL five transitions. The
 	// dormant-specific event below is kept for consumers that predate it.
-	m.publishState(*ses, reason)
+	m.publishState(ctx, *ses, reason)
 	if target == domain.SessionDormant && m.eventBus != nil {
-		_ = m.eventBus.Publish(domain.SessionDormantEvent{
+		_ = m.eventBus.Publish(ctx, domain.SessionDormantEvent{
 			SessionID:   ses.ID,
 			DormantAt:   now,
 			TTLDuration: m.ttl,
@@ -256,11 +256,11 @@ func (m *SessionManager) TransitionStatusReason(ctx context.Context, sessionID d
 
 // publishState emits the absolute lifecycle state of a session. Best-effort: a nil bus
 // (or a publish error) must never fail the transition that already committed to the store.
-func (m *SessionManager) publishState(ses domain.Session, reason string) {
+func (m *SessionManager) publishState(ctx context.Context, ses domain.Session, reason string) {
 	if m.eventBus == nil {
 		return
 	}
-	_ = m.eventBus.Publish(domain.SessionStateEvent{
+	_ = m.eventBus.Publish(ctx, domain.SessionStateEvent{
 		SessionID: ses.ID,
 		Status:    ses.Status,
 		Goal:      ses.Goal,

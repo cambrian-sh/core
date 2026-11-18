@@ -25,7 +25,7 @@ func (s *stubWriter) Record(_ context.Context, rec domain.LedgerRecord) (domain.
 
 func capture(bus *domain.InMemoryEventBus) *[]domain.ToolEvidenceRecordedEvent {
 	var got []domain.ToolEvidenceRecordedEvent
-	bus.Subscribe(domain.EventTypeToolEvidenceRecorded, func(e domain.DomainEvent) {
+	bus.Subscribe(domain.EventTypeToolEvidenceRecorded, func(_ context.Context, e domain.DomainEvent) {
 		got = append(got, e.(domain.ToolEvidenceRecordedEvent))
 	})
 	return &got

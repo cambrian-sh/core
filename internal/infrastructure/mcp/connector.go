@@ -581,7 +581,7 @@ func (c *Connector) armWatch(ctx context.Context, s ServerConfig, sink ToolSink,
 // post-condition already holds.
 func (c *Connector) RemoveServer(ctx context.Context, id string, sink ToolSink) {
 	c.StopServer(ctx, id, sink)
-	c.forgetToolList(id)
+	c.forgetToolList(ctx, id)
 	c.mu.Lock()
 	delete(c.health, id)
 	delete(c.gens, id)

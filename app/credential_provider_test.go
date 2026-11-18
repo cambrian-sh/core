@@ -110,7 +110,7 @@ func TestCredentialSource_EndToEndThroughTheSeam(t *testing.T) {
 	if ps := fake.svc.PersonalServers(); len(ps) != 1 || ps[0].ServerID != "gh" {
 		t.Fatalf("personal servers: %+v", ps)
 	}
-	if err := fake.svc.Records.PutSealed("k", []byte("v")); err != nil {
+	if err := fake.svc.Records.PutSealed(context.Background(), "k", []byte("v")); err != nil {
 		t.Fatalf("records: %v", err)
 	}
 	if _, err := fake.svc.RunMutation(context.Background(), "c", "r", "a", "t", "id", func() error { return nil }); err == nil {

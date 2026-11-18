@@ -166,7 +166,7 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 					Depth:             level + 1,
 					Timestamp:         time.Now(),
 				}
-				if err := s.TraversalLogger.LogTraversal(entry); err != nil {
+				if err := s.TraversalLogger.LogTraversal(ctx, entry); err != nil {
 					slog.Warn("SpreadingEngine: failed to log traversal", "err", err)
 				}
 			}

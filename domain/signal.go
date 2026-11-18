@@ -35,10 +35,10 @@ type SignalReceiver interface {
 // return type of the app.Options reactive hook. Implemented by the premium
 // ReactiveEngine's WatchHandler; nil in OSS builds (RPC shells return Unimplemented).
 type WatchConfigHandler interface {
-	RegisterWatch(cfg WatchConfig) (string, error)
-	ListWatches() ([]WatchConfig, error)
-	DeleteWatch(id string) error
-	SetWatchActive(id string, active bool) error
+	RegisterWatch(ctx context.Context, cfg WatchConfig) (string, error)
+	ListWatches(ctx context.Context) ([]WatchConfig, error)
+	DeleteWatch(ctx context.Context, id string) error
+	SetWatchActive(ctx context.Context, id string, active bool) error
 }
 
 // WatchMetricsReader surfaces per-watch observability counters (REACT-05 / ADR-0071).

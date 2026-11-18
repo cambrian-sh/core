@@ -210,7 +210,7 @@ type fakeVault struct {
 	deleted []string
 }
 
-func (f *fakeVault) Delete(hash string) error {
+func (f *fakeVault) Delete(_ context.Context, hash string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, hash)

@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -105,7 +106,7 @@ func TestWatchTriggeredEvent_PublishesViaEventBus(t *testing.T) {
 	bus := domain.NewInMemoryEventBus()
 
 	var received domain.WatchTriggeredEvent
-	bus.Subscribe(domain.EventTypeWatchTriggered, func(e domain.DomainEvent) {
+	bus.Subscribe(domain.EventTypeWatchTriggered, func(_ context.Context, e domain.DomainEvent) {
 		if wt, ok := e.(domain.WatchTriggeredEvent); ok {
 			received = wt
 		}
@@ -117,7 +118,7 @@ func TestWatchTriggeredEvent_PublishesViaEventBus(t *testing.T) {
 		SignalPayload: map[string]any{"temp": float64(99)},
 		ActionTarget:  "",
 	}
-	if err := bus.Publish(want); err != nil {
+	if err := bus.Publish(context.Background(), want); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 

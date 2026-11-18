@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -98,12 +99,12 @@ func (d *AgentRepoDecorator) PruneDeadLetters(before time.Time, limit int) (int,
 }
 
 // DeleteDeadLetter removes one dead letter by id (operator DeleteWatchDeadLetter).
-func (d *AgentRepoDecorator) DeleteDeadLetter(id string) (bool, error) {
+func (d *AgentRepoDecorator) DeleteDeadLetter(_ context.Context, id string) (bool, error) {
 	return d.store.DeleteReactiveDeadLetter(id)
 }
 
 // ListDeadLetters returns dead-letter entries newest-first (limit <= 0 ⇒ all).
-func (d *AgentRepoDecorator) ListDeadLetters(limit int) ([]domain.ReactiveDeadLetter, error) {
+func (d *AgentRepoDecorator) ListDeadLetters(_ context.Context, limit int) ([]domain.ReactiveDeadLetter, error) {
 	recs, err := d.store.ListReactiveDeadLetters(limit)
 	if err != nil {
 		return nil, err

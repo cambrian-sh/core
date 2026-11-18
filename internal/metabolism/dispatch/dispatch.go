@@ -198,11 +198,11 @@ func (d *Dispatcher) randIntn(n int) int {
 	return rand.Intn(n)
 }
 
-func (d *Dispatcher) emit(ev domain.SelectionEventPayload) {
+func (d *Dispatcher) emit(ctx context.Context, ev domain.SelectionEventPayload) {
 	if d.EventBus == nil {
 		return
 	}
-	_ = d.EventBus.Publish(ev)
+	_ = d.EventBus.Publish(ctx, ev)
 }
 
 // Execute runs the full dispatch pipeline: Gatekeeper → select → CallAgent.
@@ -240,7 +240,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 			// The effect-check refusal is surfaced the same way: the feed's ErrorMsg
 			// carries the required effects, each agent's derived effects and the
 			// (empty) eligible set, so the console can show why the step was refused.
-			d.emit(domain.SelectionEventPayload{
+			d.emit(ctx, domain.SelectionEventPayload{
 				TaskID:   task.ID,
 				TaskDesc: task.Description,
 				Status:   "failed",
@@ -252,7 +252,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		return nil, fmt.Errorf("gatekeeper failed: %w", err)
 	}
 
-	d.emit(domain.SelectionEventPayload{
+	d.emit(ctx, domain.SelectionEventPayload{
 		TaskID:   task.ID,
 		TaskDesc: task.Description,
 		Status:   "started",
@@ -263,7 +263,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		// proposals"; here it is named for what it is. The D5 resolution ladder
 		// (alias map → generalist tier) lands in P1 — until then this is a hard,
 		// loud failure rather than a silent misroute.
-		d.emit(domain.SelectionEventPayload{
+		d.emit(ctx, domain.SelectionEventPayload{
 			TaskID:   task.ID,
 			TaskDesc: task.Description,
 			Status:   "failed",
@@ -292,7 +292,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	if d.Composer != nil && in != nil && in.Context != nil && in.Context["_step_index"] != "" {
 		rt, comp, ok, cerr := d.Composer.Compose(ctx, task, winner, scored, in)
 		if cerr != nil {
-			d.emit(domain.SelectionEventPayload{
+			d.emit(ctx, domain.SelectionEventPayload{
 				TaskID:   task.ID,
 				TaskDesc: task.Description,
 				Status:   "failed",
@@ -332,7 +332,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	}
 
 	selMs, selBoots := selectionCost()
-	d.emit(domain.SelectionEventPayload{
+	d.emit(ctx, domain.SelectionEventPayload{
 		TaskID:             task.ID,
 		TaskDesc:           task.Description,
 		Status:             "completed",

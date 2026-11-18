@@ -1,10 +1,16 @@
 package domain
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // EventHandler is invoked synchronously by EventBus.Publish for each subscriber
-// registered under the matching event type.
-type EventHandler func(DomainEvent)
+// registered under the matching event type. ctx is the publisher's context
+// (AGENTS.md §2.7, ENG-1466): a handler that does I/O runs under the caller's
+// deadline, cancellation and scope. A handler that hands the event to work
+// outliving the Publish call detaches with context.WithoutCancel itself.
+type EventHandler func(ctx context.Context, event DomainEvent)
 
 // EventBus is the internal pub/sub contract for system events.
 // It replaces the TUI-coupled EventSink (deleted with ADR-0030).
@@ -16,8 +22,8 @@ type EventBus interface {
 
 	// Publish delivers event to every handler registered for event.EventType().
 	// Returns an error only if the bus itself fails (e.g. shut down); handler
-	// panics are the caller's responsibility.
-	Publish(event DomainEvent) error
+	// panics are the caller's responsibility. ctx is handed to every handler.
+	Publish(ctx context.Context, event DomainEvent) error
 }
 
 // InMemoryEventBus is a synchronous, goroutine-safe EventBus backed by an
@@ -43,14 +49,14 @@ func (b *InMemoryEventBus) Subscribe(eventType string, handler EventHandler) {
 
 // Publish implements EventBus. It copies the handler slice under a read-lock
 // so Publish and Subscribe can be called concurrently without deadlock.
-func (b *InMemoryEventBus) Publish(event DomainEvent) error {
+func (b *InMemoryEventBus) Publish(ctx context.Context, event DomainEvent) error {
 	b.mu.RLock()
 	handlers := make([]EventHandler, len(b.subs[event.EventType()]))
 	copy(handlers, b.subs[event.EventType()])
 	b.mu.RUnlock()
 
 	for _, h := range handlers {
-		h(event)
+		h(ctx, event)
 	}
 	return nil
 }

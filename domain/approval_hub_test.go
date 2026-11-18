@@ -69,12 +69,12 @@ type busLog struct {
 func newBusLog() (*busLog, EventBus) {
 	l := &busLog{}
 	bus := NewInMemoryEventBus()
-	bus.Subscribe(EventTypeHITLRaised, func(e DomainEvent) {
+	bus.Subscribe(EventTypeHITLRaised, func(_ context.Context, e DomainEvent) {
 		l.mu.Lock()
 		l.raised = append(l.raised, e.(HITLRaisedEvent))
 		l.mu.Unlock()
 	})
-	bus.Subscribe(EventTypeHITLResolved, func(e DomainEvent) {
+	bus.Subscribe(EventTypeHITLResolved, func(_ context.Context, e DomainEvent) {
 		l.mu.Lock()
 		l.resolved = append(l.resolved, e.(HITLResolvedEvent))
 		l.mu.Unlock()

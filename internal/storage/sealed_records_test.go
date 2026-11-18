@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,20 +28,20 @@ func TestSealedRecords_NamespacedAndEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 	const plain = "refresh-token-PLAINTEXT-77aa"
-	if err := acc.PutSealed("gmail\x1falice", []byte(plain)); err != nil {
+	if err := acc.PutSealed(context.Background(), "gmail\x1falice", []byte(plain)); err != nil {
 		t.Fatal(err)
 	}
-	if err := other.PutSealed("x", []byte("y")); err != nil {
+	if err := other.PutSealed(context.Background(), "x", []byte("y")); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := acc.GetSealed("gmail\x1falice")
+	got, ok, err := acc.GetSealed(context.Background(), "gmail\x1falice")
 	if err != nil || !ok || string(got) != plain {
 		t.Fatalf("get = %q %v %v", got, ok, err)
 	}
-	if _, ok, _ := other.GetSealed("gmail\x1falice"); ok {
+	if _, ok, _ := other.GetSealed(context.Background(), "gmail\x1falice"); ok {
 		t.Fatal("a namespace must not see another namespace's record")
 	}
-	keys, err := acc.SealedKeys()
+	keys, err := acc.SealedKeys(context.Background())
 	if err != nil || len(keys) != 1 || keys[0] != "gmail\x1falice" {
 		t.Fatalf("keys = %q %v", keys, err)
 	}
@@ -49,11 +50,11 @@ func TestSealedRecords_NamespacedAndEncrypted(t *testing.T) {
 			t.Fatalf("namespace %q must be refused", bad)
 		}
 	}
-	existed, err := acc.DeleteSealed("gmail\x1falice")
+	existed, err := acc.DeleteSealed(context.Background(), "gmail\x1falice")
 	if err != nil || !existed {
 		t.Fatalf("delete = %v %v", existed, err)
 	}
-	if err := acc.PutSealed("k", []byte(plain)); err != nil {
+	if err := acc.PutSealed(context.Background(), "k", []byte(plain)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -107,7 +108,7 @@ func TestSealedRecords_MigratesADR0140Bucket(t *testing.T) {
 	}
 	defer s.Close()
 	acc, _ := s.SealedRecords(LegacyAccountsNamespace)
-	got, ok, err := acc.GetSealed("slack\x1fbob")
+	got, ok, err := acc.GetSealed(context.Background(), "slack\x1fbob")
 	if err != nil || !ok || string(got) != `{"integration_id":"slack"}` {
 		t.Fatalf("migrated record = %q %v %v", got, ok, err)
 	}

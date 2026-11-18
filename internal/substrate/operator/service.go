@@ -471,7 +471,7 @@ func (s *Service) StreamEvents(req *pb.SubscribeRequest, stream pb.OperatorConso
 // bridge (ADR-0047 D2); it keeps the synchronous bus decoupled from the network.
 func SubscribeBridge(bus domain.EventBus, feed *Spool) {
 	for _, t := range feedEventTypes {
-		bus.Subscribe(t, func(e domain.DomainEvent) { feed.Emit(e) })
+		bus.Subscribe(t, func(_ context.Context, e domain.DomainEvent) { feed.Emit(e) })
 	}
 }
 
@@ -480,7 +480,7 @@ func SubscribeBridge(bus domain.EventBus, feed *Spool) {
 // projection and feed stay consistent; Snapshot's lower-bound as_of_seq covers
 // any in-flight race.
 func SubscribeProjection(bus domain.EventBus, projection *Projection) {
-	bus.Subscribe(domain.EventTypePlanState, func(e domain.DomainEvent) { projection.Apply(e) })
+	bus.Subscribe(domain.EventTypePlanState, func(_ context.Context, e domain.DomainEvent) { projection.Apply(e) })
 }
 
 // feedEventTypes is the set of existing DomainEvent types the operator feed

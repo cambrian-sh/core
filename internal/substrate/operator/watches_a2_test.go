@@ -18,25 +18,25 @@ type fakeWatchHandler struct {
 func newFakeWatchHandler() *fakeWatchHandler {
 	return &fakeWatchHandler{watches: map[string]domain.WatchConfig{}}
 }
-func (f *fakeWatchHandler) RegisterWatch(cfg domain.WatchConfig) (string, error) {
+func (f *fakeWatchHandler) RegisterWatch(_ context.Context, cfg domain.WatchConfig) (string, error) {
 	f.seq++
 	id := fmt.Sprintf("w%d", f.seq)
 	cfg.ID = id
 	f.watches[id] = cfg
 	return id, nil
 }
-func (f *fakeWatchHandler) ListWatches() ([]domain.WatchConfig, error) {
+func (f *fakeWatchHandler) ListWatches(_ context.Context) ([]domain.WatchConfig, error) {
 	out := make([]domain.WatchConfig, 0, len(f.watches))
 	for _, w := range f.watches {
 		out = append(out, w)
 	}
 	return out, nil
 }
-func (f *fakeWatchHandler) DeleteWatch(id string) error {
+func (f *fakeWatchHandler) DeleteWatch(_ context.Context, id string) error {
 	delete(f.watches, id)
 	return nil
 }
-func (f *fakeWatchHandler) SetWatchActive(id string, active bool) error {
+func (f *fakeWatchHandler) SetWatchActive(_ context.Context, id string, active bool) error {
 	w := f.watches[id]
 	w.Active = active
 	f.watches[id] = w

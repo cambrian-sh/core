@@ -39,7 +39,7 @@ func (s stubBudget) PlaneBudget() domain.ReactivePlaneBudget { return s.b }
 
 type stubDeadLetters struct{ n int }
 
-func (s stubDeadLetters) ListDeadLetters(int) ([]domain.ReactiveDeadLetter, error) {
+func (s stubDeadLetters) ListDeadLetters(context.Context, int) ([]domain.ReactiveDeadLetter, error) {
 	return make([]domain.ReactiveDeadLetter, s.n), nil
 }
 

@@ -11,7 +11,7 @@ import (
 
 // EventPublisher is the subset of domain.EventBus needed by crash detection. ADR-0033.
 type EventPublisher interface {
-	Publish(event domain.DomainEvent) error
+	Publish(ctx context.Context, event domain.DomainEvent) error
 }
 
 // stoppedSet is a consume-once set of expected-stop instance IDs.
@@ -177,7 +177,9 @@ func (m *AgentManager) publishEvent(evt domain.DomainEvent) {
 	if m.EventBus == nil {
 		return
 	}
-	if err := m.EventBus.Publish(evt); err != nil {
+	// Daemon lifecycle events are kernel-owned: a process exit or a timed
+	// restart has no request whose ctx could ride along (AGENTS.md §2.7).
+	if err := m.EventBus.Publish(context.Background(), evt); err != nil {
 		slog.Error("crash_detection: publish event failed", "type", evt.EventType(), "err", err)
 	}
 }

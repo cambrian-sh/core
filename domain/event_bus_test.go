@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,10 +16,10 @@ func TestInMemoryEventBus_PublishDeliversToSubscriber(t *testing.T) {
 	bus := domain.NewInMemoryEventBus()
 
 	var got domain.DomainEvent
-	bus.Subscribe(domain.EventTypeAgentReady, func(e domain.DomainEvent) { got = e })
+	bus.Subscribe(domain.EventTypeAgentReady, func(_ context.Context, e domain.DomainEvent) { got = e })
 
 	want := domain.AgentReadyEvent{AgentID: "agent-1"}
-	if err := bus.Publish(want); err != nil {
+	if err := bus.Publish(context.Background(), want); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
@@ -34,12 +35,12 @@ func TestInMemoryEventBus_MultipleSubscribersAllReceive(t *testing.T) {
 	bus := domain.NewInMemoryEventBus()
 
 	var count int32
-	inc := func(_ domain.DomainEvent) { atomic.AddInt32(&count, 1) }
+	inc := func(_ context.Context, _ domain.DomainEvent) { atomic.AddInt32(&count, 1) }
 	bus.Subscribe(domain.EventTypeAgentReady, inc)
 	bus.Subscribe(domain.EventTypeAgentReady, inc)
 	bus.Subscribe(domain.EventTypeAgentReady, inc)
 
-	_ = bus.Publish(domain.AgentReadyEvent{AgentID: "a"})
+	_ = bus.Publish(context.Background(), domain.AgentReadyEvent{AgentID: "a"})
 
 	if got := atomic.LoadInt32(&count); got != 3 {
 		t.Fatalf("expected 3 handlers called, got %d", got)
@@ -52,9 +53,9 @@ func TestInMemoryEventBus_TypeRoutingIsIsolated(t *testing.T) {
 	bus := domain.NewInMemoryEventBus()
 
 	var auctionCalled bool
-	bus.Subscribe(domain.EventTypeAuctionEvent, func(_ domain.DomainEvent) { auctionCalled = true })
+	bus.Subscribe(domain.EventTypeAuctionEvent, func(_ context.Context, _ domain.DomainEvent) { auctionCalled = true })
 
-	_ = bus.Publish(domain.AgentReadyEvent{AgentID: "x"}) // different type
+	_ = bus.Publish(context.Background(), domain.AgentReadyEvent{AgentID: "x"}) // different type
 
 	if auctionCalled {
 		t.Fatal("auction subscriber should not fire for AgentReadyEvent")
@@ -67,7 +68,7 @@ func TestInMemoryEventBus_ConcurrentPublishIsSafe(t *testing.T) {
 	bus := domain.NewInMemoryEventBus()
 
 	var count int32
-	bus.Subscribe(domain.EventTypeAgentReady, func(_ domain.DomainEvent) {
+	bus.Subscribe(domain.EventTypeAgentReady, func(_ context.Context, _ domain.DomainEvent) {
 		atomic.AddInt32(&count, 1)
 	})
 
@@ -76,7 +77,7 @@ func TestInMemoryEventBus_ConcurrentPublishIsSafe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = bus.Publish(domain.AgentReadyEvent{})
+			_ = bus.Publish(context.Background(), domain.AgentReadyEvent{})
 		}()
 	}
 	wg.Wait()
@@ -90,7 +91,7 @@ func TestInMemoryEventBus_ConcurrentPublishIsSafe(t *testing.T) {
 func TestInMemoryEventBus_PublishWithNoSubscriberIsNoError(t *testing.T) {
 	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
-	if err := bus.Publish(domain.AgentReadyEvent{AgentID: "none"}); err != nil {
+	if err := bus.Publish(context.Background(), domain.AgentReadyEvent{AgentID: "none"}); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 }
@@ -100,10 +101,10 @@ func TestInMemoryEventBus_LateSubscriberMissesEarlierEvent(t *testing.T) {
 	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 
-	_ = bus.Publish(domain.AgentReadyEvent{AgentID: "early"})
+	_ = bus.Publish(context.Background(), domain.AgentReadyEvent{AgentID: "early"})
 
 	called := false
-	bus.Subscribe(domain.EventTypeAgentReady, func(_ domain.DomainEvent) { called = true })
+	bus.Subscribe(domain.EventTypeAgentReady, func(_ context.Context, _ domain.DomainEvent) { called = true })
 
 	// Give any hypothetical async delivery a moment.
 	time.Sleep(10 * time.Millisecond)

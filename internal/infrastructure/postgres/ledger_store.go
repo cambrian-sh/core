@@ -22,7 +22,7 @@ import (
 type LedgerBodyStore interface {
 	Store(content []byte) (string, error)
 	Load(hash string) ([]byte, error)
-	Delete(hash string) error
+	Delete(ctx context.Context, hash string) error
 }
 
 // PgLedgerStore is the RAW run-ledger store (ADR-0145 D1): metadata in the
@@ -301,7 +301,7 @@ func (s *PgLedgerStore) ReleaseBodies(ctx context.Context, hashes []string) (del
 		if still {
 			continue
 		}
-		if derr := s.bodies.Delete(h); derr != nil {
+		if derr := s.bodies.Delete(ctx, h); derr != nil {
 			failed++
 			errs = append(errs, derr)
 			continue

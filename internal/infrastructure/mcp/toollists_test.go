@@ -18,26 +18,26 @@ type memRecords struct {
 
 func newMemRecords() *memRecords { return &memRecords{m: map[string][]byte{}} }
 
-func (r *memRecords) PutSealed(k string, v []byte) error {
+func (r *memRecords) PutSealed(_ context.Context, k string, v []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.m[k] = append([]byte(nil), v...)
 	return nil
 }
-func (r *memRecords) GetSealed(k string) ([]byte, bool, error) {
+func (r *memRecords) GetSealed(_ context.Context, k string) ([]byte, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	v, ok := r.m[k]
 	return v, ok, nil
 }
-func (r *memRecords) DeleteSealed(k string) (bool, error) {
+func (r *memRecords) DeleteSealed(_ context.Context, k string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, ok := r.m[k]
 	delete(r.m, k)
 	return ok, nil
 }
-func (r *memRecords) SealedKeys() ([]string, error) { return nil, nil }
+func (r *memRecords) SealedKeys(_ context.Context) ([]string, error) { return nil, nil }
 
 // ENG-743 (T-20261106-per-user-mcp-servers-show-no-tools-until-the): a per_user
 // server's tools, once discovered, survive a restart: the next kernel publishes
@@ -59,7 +59,7 @@ func TestPerUser_ToolListSurvivesARestartAndPublishesBeforeAnyoneConnects(t *tes
 	waitFor(t, "first discovery", func() bool { return sink1.count("mail") == 1 })
 	cancel1()
 	first.Close()
-	if _, ok, _ := store.GetSealed("mail"); !ok {
+	if _, ok, _ := store.GetSealed(context.Background(), "mail"); !ok {
 		t.Fatal("the discovered tool list was not persisted")
 	}
 
@@ -89,7 +89,7 @@ func TestPerUser_ToolListSurvivesARestartAndPublishesBeforeAnyoneConnects(t *tes
 	}
 
 	second.RemoveServer(context.Background(), "mail", sink2)
-	if _, ok, _ := store.GetSealed("mail"); ok {
+	if _, ok, _ := store.GetSealed(context.Background(), "mail"); ok {
 		t.Fatal("removing the server must forget its tool list")
 	}
 }

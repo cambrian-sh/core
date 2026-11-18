@@ -603,7 +603,7 @@ func (c *Connector) discoverAs(ctx context.Context, s ServerConfig, sink ToolSin
 		return 0, ctx.Err()
 	}
 	tools := toolsFor(s, adv)
-	c.saveToolList(s.ID, adv)
+	c.saveToolList(ctx, s.ID, adv)
 	if sink != nil {
 		sink.SetServerTools(ctx, s.ID, tools)
 	}

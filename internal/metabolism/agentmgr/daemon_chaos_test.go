@@ -27,7 +27,7 @@ type countingBus struct {
 }
 
 func newCountingBus() *countingBus { return &countingBus{counts: map[string]int{}} }
-func (b *countingBus) Publish(e domain.DomainEvent) error {
+func (b *countingBus) Publish(_ context.Context, e domain.DomainEvent) error {
 	b.mu.Lock()
 	b.counts[e.EventType()]++
 	b.mu.Unlock()

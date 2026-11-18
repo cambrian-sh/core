@@ -185,12 +185,12 @@ func TestSubscribeBridge_PublishedEventsReachTheFeed(t *testing.T) {
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	operator.SubscribeBridge(bus, feed)
 
-	_ = bus.Publish(domain.SelectionEventPayload{TaskID: "t1"})
-	_ = bus.Publish(domain.AgentReadyEvent{AgentID: "a1"})
-	_ = bus.Publish(domain.MemoryWrittenEvent{DocID: "d1", SessionID: "s1"})
-	_ = bus.Publish(domain.HITLRaisedEvent{InterventionID: "i1", SessionID: "s1", IsDestructive: true})
-	_ = bus.Publish(domain.VerifierRoundEvent{TaskID: "t1", QualityScore: 0.8})
-	_ = bus.Publish(domain.LLMHealthEvent{ModelID: "m1", State: "open"})
+	_ = bus.Publish(context.Background(), domain.SelectionEventPayload{TaskID: "t1"})
+	_ = bus.Publish(context.Background(), domain.AgentReadyEvent{AgentID: "a1"})
+	_ = bus.Publish(context.Background(), domain.MemoryWrittenEvent{DocID: "d1", SessionID: "s1"})
+	_ = bus.Publish(context.Background(), domain.HITLRaisedEvent{InterventionID: "i1", SessionID: "s1", IsDestructive: true})
+	_ = bus.Publish(context.Background(), domain.VerifierRoundEvent{TaskID: "t1", QualityScore: 0.8})
+	_ = bus.Publish(context.Background(), domain.LLMHealthEvent{ModelID: "m1", State: "open"})
 
 	got, resync := feed.ReadFrom(0)
 	if resync {

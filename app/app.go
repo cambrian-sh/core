@@ -1071,7 +1071,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0047 0047-14: the LLM provider's circuit breaker publishes LLMHealthEvent
 	// on an open↔closed transition for the operator feed.
 	llmProvider.SetHealthEventBus(eventBus)
-	eventBus.Subscribe(domain.EventTypeAgentReady, func(e domain.DomainEvent) {
+	eventBus.Subscribe(domain.EventTypeAgentReady, func(_ context.Context, e domain.DomainEvent) {
 		if ev, ok := e.(domain.AgentReadyEvent); ok {
 			slog.Info("agent_ready",
 				"agent_id", ev.AgentID,
@@ -2261,8 +2261,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	mcpConnector = mcp.NewConnector(mcpCredentialSources(cfg, cfgStore, credSource), mcpConnectorOptions(cfg, cfgStore)...)
 	// Integrations: every health change of every server goes onto the operator
 	// feed (OperatorEvent.integration_health). Publish is non-blocking.
+	// A health transition is a kernel-owned observation of the server (the
+	// connector's own handshake and restart loops), not part of any request, so
+	// there is no caller ctx to carry (AGENTS.md §2.7).
 	mcpConnector.SetHealthObserver(func(h mcp.ServerHealth) {
-		_ = eventBus.Publish(domain.MCPServerHealthEvent{
+		_ = eventBus.Publish(context.Background(), domain.MCPServerHealthEvent{
 			ServerID: h.ServerID, State: h.State, LastHandshake: h.LastHandshake,
 			ToolCount: h.ToolCount, LastError: h.LastError, Restarts: h.Restarts, ChangedAt: h.ChangedAt,
 		})
@@ -2766,8 +2769,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			}
 			return nil
 		},
-		TriggerConsolidationFn: func(_ context.Context, scope string) error {
-			return eventBus.Publish(domain.MemoryPressureEvent{Trigger: "operator:" + scope})
+		TriggerConsolidationFn: func(ctx context.Context, scope string) error {
+			return eventBus.Publish(ctx, domain.MemoryPressureEvent{Trigger: "operator:" + scope})
 		},
 		// ADR-0054 tuning seam: hot-apply Stage-A blend weights live (no restart).
 		// Merges the provided params over the current live weights; unknown keys are
@@ -4461,7 +4464,7 @@ func reconcileModelAgents(ctx context.Context, reg registryReconciler, generator
 		if a.Trait != domain.TraitModel || declared[a.ID] {
 			continue
 		}
-		if err := reg.DeleteAgent(a.ID); err != nil {
+		if err := reg.DeleteAgent(ctx, a.ID); err != nil {
 			slog.Warn("reconcileModelAgents: prune failed", "id", a.ID, "err", err)
 			continue
 		}
@@ -4514,7 +4517,7 @@ func reconcileFilesystemAgents(ctx context.Context, reg registryReconciler, exis
 		if exists(fullPath) {
 			continue
 		}
-		if err := reg.DeleteAgent(a.ID); err != nil {
+		if err := reg.DeleteAgent(ctx, a.ID); err != nil {
 			slog.Warn("reconcileFilesystemAgents: prune failed", "id", a.ID, "err", err)
 			continue
 		}

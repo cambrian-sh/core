@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -27,12 +28,12 @@ func TestCircuitBreaker_UnknownIDHealthy(t *testing.T) {
 func TestCircuitBreaker_TripsAtThreshold(t *testing.T) {
 	t.Parallel()
 	b, _ := newTestBreaker(3, time.Minute)
-	b.Record("x", false)
-	b.Record("x", false)
+	b.Record(context.Background(), "x", false)
+	b.Record(context.Background(), "x", false)
 	if !b.Healthy("x") {
 		t.Fatal("should still be healthy below threshold (2/3 failures)")
 	}
-	b.Record("x", false) // 3rd consecutive failure trips OPEN
+	b.Record(context.Background(), "x", false) // 3rd consecutive failure trips OPEN
 	if b.Healthy("x") {
 		t.Fatal("should be OPEN at threshold (3/3 failures)")
 	}
@@ -41,7 +42,7 @@ func TestCircuitBreaker_TripsAtThreshold(t *testing.T) {
 func TestCircuitBreaker_OpenBlocksUntilCooldown(t *testing.T) {
 	t.Parallel()
 	b, clk := newTestBreaker(1, time.Minute)
-	b.Record("x", false) // threshold=1 => immediately OPEN
+	b.Record(context.Background(), "x", false) // threshold=1 => immediately OPEN
 	if b.Healthy("x") {
 		t.Fatal("should be OPEN immediately after tripping")
 	}
@@ -58,12 +59,12 @@ func TestCircuitBreaker_OpenBlocksUntilCooldown(t *testing.T) {
 func TestCircuitBreaker_HalfOpenRestoresOnSuccess(t *testing.T) {
 	t.Parallel()
 	b, clk := newTestBreaker(1, time.Minute)
-	b.Record("x", false)
+	b.Record(context.Background(), "x", false)
 	clk.advance(time.Minute)
 	if !b.Healthy("x") {
 		t.Fatal("precondition: half-open after cooldown")
 	}
-	b.Record("x", true) // probe succeeds => restore
+	b.Record(context.Background(), "x", true) // probe succeeds => restore
 	if !b.Healthy("x") {
 		t.Fatal("should be healthy after a successful half-open probe")
 	}
@@ -73,12 +74,12 @@ func TestCircuitBreaker_HalfOpenRestoresOnSuccess(t *testing.T) {
 func TestCircuitBreaker_HalfOpenReopensOnFailure(t *testing.T) {
 	t.Parallel()
 	b, clk := newTestBreaker(1, time.Minute)
-	b.Record("x", false)
+	b.Record(context.Background(), "x", false)
 	clk.advance(time.Minute)
 	if !b.Healthy("x") {
 		t.Fatal("precondition: half-open after cooldown")
 	}
-	b.Record("x", false) // probe fails => re-open, cooldown resets from now
+	b.Record(context.Background(), "x", false) // probe fails => re-open, cooldown resets from now
 	if b.Healthy("x") {
 		t.Fatal("should re-open after a failed half-open probe")
 	}
@@ -95,11 +96,11 @@ func TestCircuitBreaker_HalfOpenReopensOnFailure(t *testing.T) {
 func TestCircuitBreaker_SuccessResetsConsecutiveCounter(t *testing.T) {
 	t.Parallel()
 	b, _ := newTestBreaker(3, time.Minute)
-	b.Record("x", false)
-	b.Record("x", false)
-	b.Record("x", true) // reset
-	b.Record("x", false)
-	b.Record("x", false)
+	b.Record(context.Background(), "x", false)
+	b.Record(context.Background(), "x", false)
+	b.Record(context.Background(), "x", true) // reset
+	b.Record(context.Background(), "x", false)
+	b.Record(context.Background(), "x", false)
 	if !b.Healthy("x") {
 		t.Fatal("counter should have reset on success; 2/3 must not trip")
 	}

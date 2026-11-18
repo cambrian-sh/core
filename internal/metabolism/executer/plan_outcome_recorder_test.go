@@ -253,7 +253,7 @@ func TestRecordPlanOutcome_SuccessIsNotReplanExhausted(t *testing.T) {
 // capturePlanEvents keeps every ADR-0021 plan-level telemetry row.
 type capturePlanEvents struct{ events []domain.PlanEvent }
 
-func (c *capturePlanEvents) WritePlanEvent(e domain.PlanEvent) error {
+func (c *capturePlanEvents) WritePlanEvent(_ context.Context, e domain.PlanEvent) error {
 	c.events = append(c.events, e)
 	return nil
 }

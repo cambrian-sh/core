@@ -111,7 +111,7 @@ func reconcileProfileAgents(ctx context.Context, reg registryReconciler, registe
 		if keep[a.ID] || !isProfileRuntime(a) {
 			continue
 		}
-		if err := reg.DeleteAgent(a.ID); err != nil {
+		if err := reg.DeleteAgent(ctx, a.ID); err != nil {
 			slog.Warn("reconcileProfileAgents: prune failed", "id", a.ID, "err", err)
 			continue
 		}

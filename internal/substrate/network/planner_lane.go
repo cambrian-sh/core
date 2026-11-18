@@ -141,7 +141,7 @@ func (s *Server) executePlanned(ctx context.Context, in *pb.Handoff, r plannerLa
 		}
 		if perr != nil {
 			if errors.Is(perr, llm.ErrSpendCeiling) {
-				return nil, s.endPlanAtSpendCeiling(sessionID, "", spendBase, perr)
+				return nil, s.endPlanAtSpendCeiling(ctx, sessionID, "", spendBase, perr)
 			}
 			return nil, perr
 		}
@@ -628,7 +628,7 @@ func (s *Server) executePlanned(ctx context.Context, in *pb.Handoff, r plannerLa
 		if !errors.Is(cause, llm.ErrSpendCeiling) {
 			cause = llm.ErrSpendCeiling
 		}
-		return nil, s.endPlanAtSpendCeiling(sessionID, executionID, spendBase, cause)
+		return nil, s.endPlanAtSpendCeiling(ctx, sessionID, executionID, spendBase, cause)
 	}
 
 	// ADR-0145 D5.5: under the checklist the first stage stopping part-way is a

@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ type recordingWriter struct {
 	err    error
 }
 
-func (r *recordingWriter) WriteTaskEvent(e domain.TaskEvent) error {
+func (r *recordingWriter) WriteTaskEvent(_ context.Context, e domain.TaskEvent) error {
 	r.events = append(r.events, e)
 	return r.err
 }
@@ -27,9 +28,9 @@ func TestTokenSeries_AccumulatesIntoHourlyBuckets(t *testing.T) {
 	w := ts.Wrap(nil)
 
 	// Two events in the same hour, one in the previous.
-	_ = w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 100, CompletionTokens: 20, Timestamp: now})
-	_ = w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 50, CompletionTokens: 10, Timestamp: now.Add(-5 * time.Minute)})
-	_ = w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 7, CompletionTokens: 3, Timestamp: now.Add(-time.Hour)})
+	_ = w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 100, CompletionTokens: 20, Timestamp: now})
+	_ = w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 50, CompletionTokens: 10, Timestamp: now.Add(-5 * time.Minute)})
+	_ = w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 7, CompletionTokens: 3, Timestamp: now.Add(-time.Hour)})
 
 	series := ts.TokenSeries(3)
 	if len(series) != 3 {
@@ -53,7 +54,7 @@ func TestTokenSeries_IdleHoursAreZeroPointsNotGaps(t *testing.T) {
 	fixedNow(ts, now)
 	w := ts.Wrap(nil)
 
-	_ = w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 10, Timestamp: now})
+	_ = w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 10, Timestamp: now})
 
 	series := ts.TokenSeries(5)
 	if len(series) != 5 {
@@ -77,7 +78,7 @@ func TestTokenSeries_ZeroTokenEventIsNotACall(t *testing.T) {
 	ts := NewTokenSeries()
 	w := ts.Wrap(nil)
 
-	_ = w.WriteTaskEvent(domain.TaskEvent{Timestamp: now}) // cache hit / thought step
+	_ = w.WriteTaskEvent(context.Background(), domain.TaskEvent{Timestamp: now}) // cache hit / thought step
 
 	for _, p := range ts.TokenSeries(2) {
 		if p.Calls != 0 {
@@ -93,7 +94,7 @@ func TestTokenSeries_ForwardsToTheWrappedWriter(t *testing.T) {
 	ts := NewTokenSeries()
 	w := ts.Wrap(inner)
 
-	if err := w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 5, Timestamp: time.Now()}); err != nil {
+	if err := w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 5, Timestamp: time.Now()}); err != nil {
 		t.Fatalf("WriteTaskEvent: %v", err)
 	}
 	if len(inner.events) != 1 {
@@ -101,7 +102,7 @@ func TestTokenSeries_ForwardsToTheWrappedWriter(t *testing.T) {
 	}
 
 	inner.err = errors.New("store down")
-	if err := w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 5, Timestamp: time.Now()}); err == nil {
+	if err := w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 5, Timestamp: time.Now()}); err == nil {
 		t.Fatal("the wrapped writer's error was swallowed")
 	}
 	// …and the usage was still recorded: the tokens were spent regardless of
@@ -122,8 +123,8 @@ func TestTokenSeries_AccumulatorIsSharedAcrossWrappers(t *testing.T) {
 	ts := NewTokenSeries()
 	now := time.Now()
 
-	_ = ts.Wrap(nil).WriteTaskEvent(domain.TaskEvent{PromptTokens: 3, Timestamp: now})
-	_ = ts.Wrap(nil).WriteTaskEvent(domain.TaskEvent{PromptTokens: 4, Timestamp: now})
+	_ = ts.Wrap(nil).WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 3, Timestamp: now})
+	_ = ts.Wrap(nil).WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 4, Timestamp: now})
 
 	var total int64
 	for _, p := range ts.TokenSeries(2) {
@@ -141,8 +142,8 @@ func TestTokenSeries_EvictsBeyondRetention(t *testing.T) {
 	w := ts.Wrap(nil)
 
 	// Well outside the 48h window.
-	_ = w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 99, Timestamp: now.Add(-100 * time.Hour)})
-	_ = w.WriteTaskEvent(domain.TaskEvent{PromptTokens: 1, Timestamp: now})
+	_ = w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 99, Timestamp: now.Add(-100 * time.Hour)})
+	_ = w.WriteTaskEvent(context.Background(), domain.TaskEvent{PromptTokens: 1, Timestamp: now})
 
 	var total int64
 	for _, p := range ts.TokenSeries(DefaultTokenRetentionHours) {
@@ -159,7 +160,7 @@ func TestTokenSeries_ReadTaskEventPassesThrough(t *testing.T) {
 	ts := NewTokenSeries()
 
 	// A plain writer with no read-back: the wrapper must not pretend to have one.
-	got, err := ts.Wrap(&recordingWriter{}).ReadTaskEvent("t1")
+	got, err := ts.Wrap(&recordingWriter{}).ReadTaskEvent(context.Background(), "t1")
 	if err != nil || got != nil {
 		t.Fatalf("got %+v, %v; want nil, nil for a writer with no read-back", got, err)
 	}

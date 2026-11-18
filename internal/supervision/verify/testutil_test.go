@@ -137,14 +137,14 @@ type vwMockTaskEventRW struct {
 	events map[string]domain.TaskEvent
 }
 
-func (m *vwMockTaskEventRW) WriteTaskEvent(e domain.TaskEvent) error {
+func (m *vwMockTaskEventRW) WriteTaskEvent(_ context.Context, e domain.TaskEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events[e.TaskID] = e
 	return nil
 }
 
-func (m *vwMockTaskEventRW) ReadTaskEvent(taskID string) (*domain.TaskEvent, error) {
+func (m *vwMockTaskEventRW) ReadTaskEvent(_ context.Context, taskID string) (*domain.TaskEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.events[taskID]

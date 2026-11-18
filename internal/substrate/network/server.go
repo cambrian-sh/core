@@ -746,7 +746,7 @@ func (s *Server) routePlannerRequest(ctx, routeCtx context.Context, in *pb.Hando
 	if err != nil {
 		if errors.Is(err, llm.ErrSpendCeiling) && callerSession != "" {
 			// The visible ADR-0131 D3 ending, with its TaskEvent record.
-			return nil, true, s.endPlanAtSpendCeiling(callerSession, "", routeBase, err)
+			return nil, true, s.endPlanAtSpendCeiling(ctx, callerSession, "", routeBase, err)
 		}
 		return nil, true, fmt.Errorf("router: %w", err)
 	}

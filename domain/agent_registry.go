@@ -21,7 +21,7 @@ type AgentResolver interface {
 
 // AgentUpdater persists provisional-state transitions for an agent.
 type AgentUpdater interface {
-	SetProvisional(agentID string, provisional bool) error
+	SetProvisional(ctx context.Context, agentID string, provisional bool) error
 }
 
 // AgentPruner deletes an agent from the registry. Used by the startup reconcile
@@ -29,7 +29,7 @@ type AgentUpdater interface {
 // was deleted — so they stop competing in the auction. Idempotent: deleting an
 // absent id is not an error.
 type AgentPruner interface {
-	DeleteAgent(agentID string) error
+	DeleteAgent(ctx context.Context, agentID string) error
 }
 
 // AgentDeclarationSource is the subset of AgentRegistry needed by Gatekeeper:

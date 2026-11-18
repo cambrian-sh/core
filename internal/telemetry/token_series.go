@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -59,21 +60,21 @@ type tokenSeriesWriter struct {
 	inner  domain.TaskEventWriter
 }
 
-func (w *tokenSeriesWriter) WriteTaskEvent(e domain.TaskEvent) error {
+func (w *tokenSeriesWriter) WriteTaskEvent(ctx context.Context, e domain.TaskEvent) error {
 	// Recorded first and unconditionally: a sparkline must never be able to fail
 	// a step, and a write that errors still spent the tokens.
 	w.series.record(e)
 	if w.inner == nil {
 		return nil
 	}
-	return w.inner.WriteTaskEvent(e)
+	return w.inner.WriteTaskEvent(ctx, e)
 }
 
 // ReadTaskEvent forwards when the wrapped writer supports it, so decorating does
 // not strip the read-back the verification worker needs.
-func (w *tokenSeriesWriter) ReadTaskEvent(taskID string) (*domain.TaskEvent, error) {
+func (w *tokenSeriesWriter) ReadTaskEvent(ctx context.Context, taskID string) (*domain.TaskEvent, error) {
 	if rw, ok := w.inner.(domain.TaskEventReadWriter); ok {
-		return rw.ReadTaskEvent(taskID)
+		return rw.ReadTaskEvent(ctx, taskID)
 	}
 	return nil, nil
 }

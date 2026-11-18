@@ -52,11 +52,11 @@ type EventBusEffects struct {
 }
 
 // TriggerConsolidation publishes a manual MemoryPressureEvent (ADR-0030/0047).
-func (e EventBusEffects) TriggerConsolidation(_ context.Context, scope string) error {
+func (e EventBusEffects) TriggerConsolidation(ctx context.Context, scope string) error {
 	if e.Bus == nil {
 		return status.Error(codes.Unimplemented, "event bus not configured")
 	}
-	return e.Bus.Publish(domain.MemoryPressureEvent{Trigger: "operator:" + scope})
+	return e.Bus.Publish(ctx, domain.MemoryPressureEvent{Trigger: "operator:" + scope})
 }
 
 // CommandEffectsFuncs adapts plain functions to CommandEffects so the

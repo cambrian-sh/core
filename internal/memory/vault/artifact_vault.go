@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -63,9 +64,15 @@ func (v *ArtifactVault) Load(hash string) ([]byte, error) {
 // worker check that no ledger_entries row still names it (since ADR-0157 D5 the
 // ledger is the vault's only registry). A hash that is not a plain hex name is refused, so no path can
 // escape the vault directory.
-func (v *ArtifactVault) Delete(hash string) error {
+//
+// A cancelled ctx stops the delete before it touches the disk (domain.VaultEraser
+// carries ctx, ENG-1466); the erasure outbox retries the step.
+func (v *ArtifactVault) Delete(ctx context.Context, hash string) error {
 	if hash == "" || strings.ContainsAny(hash, `/\.:`) {
 		return fmt.Errorf("vault delete: invalid hash %q", hash)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("vault delete: %w", err)
 	}
 	err := os.Remove(filepath.Join(v.VaultPath, hash))
 	if err != nil && !os.IsNotExist(err) {

@@ -207,7 +207,7 @@ type fakeTaskEventWriter struct {
 	events []domain.TaskEvent
 }
 
-func (w *fakeTaskEventWriter) WriteTaskEvent(evt domain.TaskEvent) error {
+func (w *fakeTaskEventWriter) WriteTaskEvent(_ context.Context, evt domain.TaskEvent) error {
 	w.events = append(w.events, evt)
 	return nil
 }

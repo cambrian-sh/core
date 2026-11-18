@@ -51,7 +51,7 @@ type fakeUpdater struct {
 	calls map[string]bool
 }
 
-func (u *fakeUpdater) SetProvisional(id string, prov bool) error {
+func (u *fakeUpdater) SetProvisional(_ context.Context, id string, prov bool) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.calls == nil {
@@ -83,7 +83,7 @@ type captureBus struct {
 }
 
 func (b *captureBus) Subscribe(string, domain.EventHandler) {}
-func (b *captureBus) Publish(e domain.DomainEvent) error {
+func (b *captureBus) Publish(_ context.Context, e domain.DomainEvent) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.events = append(b.events, e)

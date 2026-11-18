@@ -42,7 +42,7 @@ type eventStore struct {
 	events map[string]domain.TaskEvent
 }
 
-func (s *eventStore) WriteTaskEvent(e domain.TaskEvent) error {
+func (s *eventStore) WriteTaskEvent(_ context.Context, e domain.TaskEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.events == nil {

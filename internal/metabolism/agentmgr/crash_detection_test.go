@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ type capturingEventBus struct {
 }
 
 func (b *capturingEventBus) Subscribe(eventType string, handler func(domain.DomainEvent)) {}
-func (b *capturingEventBus) Publish(e domain.DomainEvent) error {
+func (b *capturingEventBus) Publish(_ context.Context, e domain.DomainEvent) error {
 	if evt, ok := e.(domain.DaemonCrashedEvent); ok {
 		b.mu.Lock()
 		b.events = append(b.events, evt)

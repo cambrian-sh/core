@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -102,7 +103,7 @@ func (e *spendCeilingFailure) GRPCStatus() *status.Status {
 // (AGENTS.md §2.6), so a retry of the same record is idempotent. The plan-end
 // receipt and the operator-feed LLMSpendEvent are ADR-0131 D6, deferred to the
 // benchmark phase; this record is what they will read.
-func (s *Server) endPlanAtSpendCeiling(sessionID domain.SessionID, runID domain.RunID, base llm.SessionSpend, cause error) error {
+func (s *Server) endPlanAtSpendCeiling(ctx context.Context, sessionID domain.SessionID, runID domain.RunID, base llm.SessionSpend, cause error) error {
 	if cause == nil {
 		cause = llm.ErrSpendCeiling
 	}
@@ -130,7 +131,9 @@ func (s *Server) endPlanAtSpendCeiling(sessionID domain.SessionID, runID domain.
 			BudgetOverrun:    true,
 			Timestamp:        time.Now(),
 		}
-		if err := w.WriteTaskEvent(ev); err != nil {
+		// The ceiling usually ends the plan through a cancelled or failing
+		// request; the spend record must land regardless (AGENTS.md §2.7).
+		if err := w.WriteTaskEvent(context.WithoutCancel(ctx), ev); err != nil {
 			slog.Warn("could not record the spend-ceiling TaskEvent", "session", sessionID, "err", err)
 		}
 	}

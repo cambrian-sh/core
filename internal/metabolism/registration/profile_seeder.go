@@ -52,7 +52,7 @@ type ProfileStore = domain.VerifierProfileStore
 
 // AgentUpdater marks an agent as no longer Provisional in the registry.
 type AgentUpdater interface {
-	SetProvisional(agentID string, provisional bool) error
+	SetProvisional(ctx context.Context, agentID string, provisional bool) error
 }
 
 // ProfileSeeder is the background pool that drives the Provisional → ready
@@ -171,11 +171,11 @@ func (s *ProfileSeeder) Seed(ctx context.Context, agent domain.AgentDefinition) 
 	// Layer 2 into a user-task slate it has never been part of.
 	if agent.Trait == domain.TraitModel {
 		if agent.Provisional {
-			if err := s.Updater.SetProvisional(agent.ID, false); err != nil {
+			if err := s.Updater.SetProvisional(ctx, agent.ID, false); err != nil {
 				return fmt.Errorf("profile_seeder: set provisional=false for model agent %s: %w", agent.ID, err)
 			}
 		}
-		s.emitReady(agent, []string{}, NeutralPrior)
+		s.emitReady(ctx, agent, []string{}, NeutralPrior)
 		return nil
 	}
 
@@ -198,7 +198,7 @@ func (s *ProfileSeeder) Seed(ctx context.Context, agent domain.AgentDefinition) 
 	if err := s.Store.SaveProfile(ctx, agent.ID, agent.SourceHash, embedding, profile); err != nil {
 		return fmt.Errorf("profile_seeder: save profile for agent %s: %w", agent.ID, err)
 	}
-	if err := s.Updater.SetProvisional(agent.ID, false); err != nil {
+	if err := s.Updater.SetProvisional(ctx, agent.ID, false); err != nil {
 		return fmt.Errorf("profile_seeder: set provisional=false for agent %s: %w", agent.ID, err)
 	}
 	caps := preferCaps(manifest.Capabilities, manifest.Tools)
@@ -208,7 +208,7 @@ func (s *ProfileSeeder) Seed(ctx context.Context, agent domain.AgentDefinition) 
 	slog.Info("profile_seeder: agent routable",
 		"agent_id", agent.ID, "source_hash", agent.SourceHash,
 		"success_rate", profile.SuccessRate, "trust_score", profile.TrustScore)
-	s.emitReady(agent, caps, profile.TrustScore)
+	s.emitReady(ctx, agent, caps, profile.TrustScore)
 	return nil
 }
 
@@ -302,12 +302,12 @@ func preferCaps(capabilities, tools []string) []string {
 
 // emitReady publishes AgentReadyEvent on EventBus and notifies ReadyChan. Both
 // sends are non-blocking / nil-safe.
-func (s *ProfileSeeder) emitReady(agent domain.AgentDefinition, capabilities []string, trustScore float64) {
+func (s *ProfileSeeder) emitReady(ctx context.Context, agent domain.AgentDefinition, capabilities []string, trustScore float64) {
 	if s.EventBus != nil {
 		// Best-effort: the in-memory bus only fails on a nil event, and a lost ready
 		// event costs only the operator feed's freshness (the roster latch seeds from
 		// the manifest anyway).
-		_ = s.EventBus.Publish(domain.AgentReadyEvent{
+		_ = s.EventBus.Publish(ctx, domain.AgentReadyEvent{
 			AgentID:      agent.ID,
 			SourceHash:   agent.SourceHash,
 			TrustScore:   trustScore,

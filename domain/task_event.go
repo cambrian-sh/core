@@ -1,11 +1,14 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // TaskEventWriter persists a TaskEvent after each DAG step completes.
 // Writes are best-effort; implementations must be safe for concurrent use.
 type TaskEventWriter interface {
-	WriteTaskEvent(event TaskEvent) error
+	WriteTaskEvent(ctx context.Context, event TaskEvent) error
 }
 
 // TokenBucket is one hour of token usage (contract 0075), backing the operator
@@ -37,7 +40,7 @@ type TokenSeriesReader interface {
 // VerificationWorker can update an existing event in place.
 type TaskEventReadWriter interface {
 	TaskEventWriter
-	ReadTaskEvent(taskID string) (*TaskEvent, error)
+	ReadTaskEvent(ctx context.Context, taskID string) (*TaskEvent, error)
 }
 
 // TaskEvent is the raw per-task record written to bbolt after every verified task

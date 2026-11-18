@@ -90,11 +90,11 @@ func (s *Service) BacktestWatch(ctx context.Context, req *pb.BacktestWatchOpRequ
 // ListWatchDeadLetters returns reactive actions that could not be delivered
 // (REACT-01 / ADR-0061). Read RPC (any authenticated role). The reader is the OSS
 // bbolt journal; an OSS-only kernel never writes entries, so the list is empty.
-func (s *Service) ListWatchDeadLetters(_ context.Context, req *pb.ListWatchDeadLettersOpRequest) (*pb.ListWatchDeadLettersOpResponse, error) {
+func (s *Service) ListWatchDeadLetters(ctx context.Context, req *pb.ListWatchDeadLettersOpRequest) (*pb.ListWatchDeadLettersOpResponse, error) {
 	if s.deadletters == nil {
 		return nil, status.Error(codes.Unimplemented, "reactive dead-letter surface is not configured")
 	}
-	entries, err := s.deadletters.ListDeadLetters(int(req.GetLimit()))
+	entries, err := s.deadletters.ListDeadLetters(ctx, int(req.GetLimit()))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list dead-letters: %v", err)
 	}
@@ -116,11 +116,11 @@ func (s *Service) ListWatchDeadLetters(_ context.Context, req *pb.ListWatchDeadL
 
 // ListWatches returns the registered reactive watches, filtered + paged. Premium
 // (Unimplemented in OSS). Read RPC (any authenticated role). A2.6.
-func (s *Service) ListWatches(_ context.Context, req *pb.ListWatchesOpRequest) (*pb.ListWatchesOpResponse, error) {
+func (s *Service) ListWatches(ctx context.Context, req *pb.ListWatchesOpRequest) (*pb.ListWatchesOpResponse, error) {
 	if s.watches == nil {
 		return nil, status.Error(codes.Unimplemented, "watch surfaces are a premium capability")
 	}
-	all, err := s.watches.ListWatches()
+	all, err := s.watches.ListWatches(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list watches: %v", err)
 	}
@@ -174,7 +174,7 @@ func (s *Service) RegisterWatch(ctx context.Context, req *pb.RegisterWatchOpRequ
 		return &pb.CommandAck{CommandId: req.GetCommandId(), Deduped: true}, nil
 	}
 
-	id, err := s.watches.RegisterWatch(cfg)
+	id, err := s.watches.RegisterWatch(ctx, cfg)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "register watch: %v", err)
 	}
@@ -198,7 +198,7 @@ func (s *Service) DeleteWatch(ctx context.Context, req *pb.DeleteWatchOpRequest)
 		return nil, status.Error(codes.InvalidArgument, "watch_id is required")
 	}
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(), "delete_watch", "watch", req.GetWatchId(),
-		req.GetWatchId(), func() error { return s.watches.DeleteWatch(req.GetWatchId()) })
+		req.GetWatchId(), func() error { return s.watches.DeleteWatch(ctx, req.GetWatchId()) })
 }
 
 // SetWatchActive toggles a watch's active flag (Operator-only, idempotent, audited). A2.6.
@@ -210,7 +210,7 @@ func (s *Service) SetWatchActive(ctx context.Context, req *pb.SetWatchActiveOpRe
 		return nil, status.Error(codes.InvalidArgument, "watch_id is required")
 	}
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(), "set_watch_active", "watch", req.GetWatchId(),
-		boolStr(req.GetActive()), func() error { return s.watches.SetWatchActive(req.GetWatchId(), req.GetActive()) })
+		boolStr(req.GetActive()), func() error { return s.watches.SetWatchActive(ctx, req.GetWatchId(), req.GetActive()) })
 }
 
 // ── mapping ───────────────────────────────────────────────────────────────────
@@ -421,7 +421,7 @@ func (s *Service) DeleteWatchDeadLetter(ctx context.Context, req *pb.DeleteWatch
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
 		"delete_watch_dead_letter", "watch_dead_letter", id, id,
 		func() error {
-			found, err := deleter.DeleteDeadLetter(id)
+			found, err := deleter.DeleteDeadLetter(ctx, id)
 			if err != nil {
 				return err
 			}
@@ -445,14 +445,14 @@ func (s *Service) SetWatchLiveness(streams domain.StreamRegistry, fires domain.W
 //
 // The dead-letter count comes from the existing reader, so the screen's one
 // already-real figure keeps working even on a kernel that cannot report budgets.
-func (s *Service) GetReactiveBudget(_ context.Context, _ *pb.GetReactiveBudgetOpRequest) (*pb.GetReactiveBudgetOpResponse, error) {
+func (s *Service) GetReactiveBudget(ctx context.Context, _ *pb.GetReactiveBudgetOpRequest) (*pb.GetReactiveBudgetOpResponse, error) {
 	if s.planeBudget == nil && s.deadletters == nil {
 		return nil, status.Error(codes.Unimplemented, "the reactive plane is not configured on this kernel")
 	}
 
 	resp := &pb.GetReactiveBudgetOpResponse{DeadLetterCount: -1}
 	if s.deadletters != nil {
-		if entries, err := s.deadletters.ListDeadLetters(0); err == nil {
+		if entries, err := s.deadletters.ListDeadLetters(ctx, 0); err == nil {
 			resp.DeadLetterCount = int64(len(entries))
 		}
 	}

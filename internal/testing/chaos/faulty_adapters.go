@@ -329,7 +329,7 @@ func (s *FaultyVectorStore) QueryByMetadata(ctx context.Context, filter map[stri
 // taskEventWriter mirrors executer.TaskEventWriter (the bbolt adapter's
 // WriteTaskEvent) without importing the executer package.
 type taskEventWriter interface {
-	WriteTaskEvent(event domain.TaskEvent) error
+	WriteTaskEvent(ctx context.Context, event domain.TaskEvent) error
 }
 
 type FaultyTaskEventWriter struct {
@@ -344,15 +344,15 @@ func NewFaultyTaskEventWriter(inner taskEventWriter, cfg FaultConfig) *FaultyTas
 
 func (w *FaultyTaskEventWriter) Calls() int { return w.sched.count() }
 
-// WriteTaskEvent carries no context, so Delay is an unconditional stall — the
-// shape of a bbolt fsync on a saturated disk. context.Background() (never done) gives
-// exactly that stall through gate, without passing a nil Context (SA1012).
-func (w *FaultyTaskEventWriter) WriteTaskEvent(event domain.TaskEvent) error {
-	if err := gate(context.Background(), w.cfg, &w.sched); err != nil {
+// WriteTaskEvent stalls for Delay under the caller's ctx (ENG-1466: the port
+// carries one), the shape of a bbolt fsync on a saturated disk; a caller that
+// detached with context.WithoutCancel still sees the full stall.
+func (w *FaultyTaskEventWriter) WriteTaskEvent(ctx context.Context, event domain.TaskEvent) error {
+	if err := gate(ctx, w.cfg, &w.sched); err != nil {
 		return err
 	}
 	if w.inner != nil {
-		return w.inner.WriteTaskEvent(event)
+		return w.inner.WriteTaskEvent(ctx, event)
 	}
 	return nil
 }

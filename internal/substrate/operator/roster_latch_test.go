@@ -26,10 +26,10 @@ func TestRosterLatch_ReemitsCachedRoster(t *testing.T) {
 	latch := NewRosterLatch(feed)
 
 	// Two agents become ready (as the bridge would have forwarded them).
-	latch.Observe(domain.AgentReadyEvent{AgentID: "a", Capabilities: []string{"code_search"}})
-	latch.Observe(domain.AgentReadyEvent{AgentID: "b", Capabilities: []string{"file_read"}})
+	latch.Observe(context.Background(), domain.AgentReadyEvent{AgentID: "a", Capabilities: []string{"code_search"}})
+	latch.Observe(context.Background(), domain.AgentReadyEvent{AgentID: "b", Capabilities: []string{"file_read"}})
 	// A later readiness for 'a' with updated caps — last write wins.
-	latch.Observe(domain.AgentReadyEvent{AgentID: "a", Capabilities: []string{"code_search", "file_read"}})
+	latch.Observe(context.Background(), domain.AgentReadyEvent{AgentID: "a", Capabilities: []string{"code_search", "file_read"}})
 
 	// A heartbeat re-emits the current roster to the feed.
 	latch.reemit()
@@ -91,8 +91,8 @@ func TestRosterLatch_SeedFromManifests(t *testing.T) {
 func TestRosterLatch_ObserveIgnoresNonReady(t *testing.T) {
 	t.Parallel()
 	latch := NewRosterLatch(NewSpool(SpoolConfig{}))
-	latch.Observe(domain.SessionStateEvent{})          // wrong type — ignored
-	latch.Observe(domain.AgentReadyEvent{AgentID: ""}) // empty id — ignored
+	latch.Observe(context.Background(), domain.SessionStateEvent{})          // wrong type — ignored
+	latch.Observe(context.Background(), domain.AgentReadyEvent{AgentID: ""}) // empty id — ignored
 	if len(latch.roster) != 0 {
 		t.Errorf("latch cached an invalid event: %v", latch.roster)
 	}
@@ -102,7 +102,7 @@ func TestRosterLatch_StartHeartbeat(t *testing.T) {
 	t.Parallel()
 	feed := NewSpool(SpoolConfig{})
 	latch := NewRosterLatch(feed)
-	latch.Observe(domain.AgentReadyEvent{AgentID: "a", Capabilities: []string{"x"}})
+	latch.Observe(context.Background(), domain.AgentReadyEvent{AgentID: "a", Capabilities: []string{"x"}})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -23,14 +23,14 @@ type journalDeadLetterStep struct{ j *AgentRepoDecorator }
 
 func (s journalDeadLetterStep) Step() string { return "reactive_dead_letters" }
 func (s journalDeadLetterStep) RunErasureStep(_ context.Context, e domain.ErasedRecords) (int, error) {
-	dls, err := s.j.ListDeadLetters(0)
+	dls, err := s.j.ListDeadLetters(context.Background(), 0)
 	if err != nil {
 		return 0, err
 	}
 	ids, n := e.IDs(), 0
 	for _, dl := range dls {
 		if dl.ReferencesAny(ids) {
-			if found, err := s.j.DeleteDeadLetter(dl.ID); err != nil {
+			if found, err := s.j.DeleteDeadLetter(context.Background(), dl.ID); err != nil {
 				return n, err
 			} else if found {
 				n++
@@ -104,7 +104,7 @@ func TestPg_Forget_DeadLettersOfTheErasedDocumentGone(t *testing.T) {
 	if st.Failed != 0 {
 		t.Fatalf("worker pass = %+v", st)
 	}
-	left, err := journal.ListDeadLetters(0)
+	left, err := journal.ListDeadLetters(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

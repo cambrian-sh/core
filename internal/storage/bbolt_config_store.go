@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -330,14 +331,16 @@ func (s *BoltConfigStore) SealedRecords(namespace string) (*SealedRecords, error
 }
 
 // SealedRecords is one namespace of the sealed-record bucket. It implements
-// domain.SealedRecordStore.
+// domain.SealedRecordStore. The port carries ctx (ENG-1466); a local bbolt
+// transaction cannot be cancelled part-way, so the methods ignore it, as the
+// bbolt run and checkpoint store does.
 type SealedRecords struct {
 	s      *BoltConfigStore
 	prefix string
 }
 
 // PutSealed seals plaintext and stores it under key.
-func (r *SealedRecords) PutSealed(key string, plaintext []byte) error {
+func (r *SealedRecords) PutSealed(_ context.Context, key string, plaintext []byte) error {
 	sealed, err := r.s.seal(plaintext)
 	if err != nil {
 		return err
@@ -352,7 +355,7 @@ func (r *SealedRecords) PutSealed(key string, plaintext []byte) error {
 }
 
 // GetSealed returns the decrypted record under key.
-func (r *SealedRecords) GetSealed(key string) ([]byte, bool, error) {
+func (r *SealedRecords) GetSealed(_ context.Context, key string) ([]byte, bool, error) {
 	var sealed []byte
 	if err := r.s.db.View(func(tx *bbolt.Tx) error {
 		if b := tx.Bucket(sealedRecordBucket); b != nil {
@@ -375,7 +378,7 @@ func (r *SealedRecords) GetSealed(key string) ([]byte, bool, error) {
 }
 
 // DeleteSealed removes the record under key, reporting whether one existed.
-func (r *SealedRecords) DeleteSealed(key string) (bool, error) {
+func (r *SealedRecords) DeleteSealed(_ context.Context, key string) (bool, error) {
 	existed := false
 	err := r.s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(sealedRecordBucket)
@@ -390,7 +393,7 @@ func (r *SealedRecords) DeleteSealed(key string) (bool, error) {
 
 // SealedKeys lists the keys (never values) of this namespace's records,
 // without the namespace prefix.
-func (r *SealedRecords) SealedKeys() ([]string, error) {
+func (r *SealedRecords) SealedKeys(_ context.Context) ([]string, error) {
 	var keys []string
 	err := r.s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(sealedRecordBucket)

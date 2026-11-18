@@ -1116,7 +1116,7 @@ func (h *AddressedHub) publishRaised(ctx context.Context, it ApprovalItem) {
 	bus := h.bus
 	h.mu.Unlock()
 	if bus != nil {
-		_ = bus.Publish(HITLRaisedEvent{
+		_ = bus.Publish(ctx, HITLRaisedEvent{
 			InterventionID: it.ID,
 			SessionID:      it.SessionID,
 			AgentID:        it.AgentID,
@@ -1140,11 +1140,15 @@ func (h *AddressedHub) publishRaised(ctx context.Context, it ApprovalItem) {
 }
 
 func (h *AddressedHub) publishResolved(ctx context.Context, it ApprovalItem) {
+	// Delivery of the resolution — to the bus's subscribers (receipts) and to
+	// the hub's — must not stop because the resolving request was cancelled,
+	// but it keeps that request's values (AGENTS.md §2.7).
+	ctx = context.WithoutCancel(ctx)
 	h.mu.Lock()
 	bus := h.bus
 	h.mu.Unlock()
 	if bus != nil {
-		_ = bus.Publish(HITLResolvedEvent{
+		_ = bus.Publish(ctx, HITLResolvedEvent{
 			InterventionID: it.ID,
 			SessionID:      it.SessionID,
 			AgentID:        it.AgentID,
@@ -1154,9 +1158,6 @@ func (h *AddressedHub) publishResolved(ctx context.Context, it ApprovalItem) {
 			Detail:         it.Detail,
 		})
 	}
-	// Delivery to subscribers must not stop because the resolving request was
-	// cancelled, but it keeps that request's values (AGENTS.md §2.7).
-	ctx = context.WithoutCancel(ctx)
 	for _, s := range h.snapshotSubs() {
 		if !s.spec.Resolutions || !kindWanted(s.spec, it.Kind) {
 			continue

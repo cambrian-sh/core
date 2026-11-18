@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ type captureBus struct {
 
 func (b *captureBus) Subscribe(string, domain.EventHandler) {}
 
-func (b *captureBus) Publish(e domain.DomainEvent) error {
+func (b *captureBus) Publish(_ context.Context, e domain.DomainEvent) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.events = append(b.events, e)
@@ -47,7 +48,7 @@ func TestPublishWritten_OneEventPerDocumentNotPerChunk(t *testing.T) {
 	im := &IngestionManager{}
 	im.SetEventBus(bus)
 
-	im.publishWritten(domain.ExternalDocument{
+	im.publishWritten(context.Background(), domain.ExternalDocument{
 		SourceURI: "s3://bucket/report.pdf",
 		Title:     "Q3 report",
 		ThreadID:  "ingest-thread-1",
@@ -80,7 +81,7 @@ func TestPublishWritten_FallsBackToTheSourceURI(t *testing.T) {
 	im := &IngestionManager{}
 	im.SetEventBus(bus)
 
-	im.publishWritten(domain.ExternalDocument{SourceURI: "file:///notes.md"}, "source_doc:notes", 3)
+	im.publishWritten(context.Background(), domain.ExternalDocument{SourceURI: "file:///notes.md"}, "source_doc:notes", 3)
 
 	got := bus.written()
 	if len(got) != 1 || !strings.Contains(got[0].Summary, "notes.md") {
@@ -92,13 +93,13 @@ func TestPublishWritten_FallsBackToTheSourceURI(t *testing.T) {
 // nil-safety every other optional seam on this manager has.
 func TestPublishWritten_NilSafe(t *testing.T) {
 	t.Parallel()
-	(&IngestionManager{}).publishWritten(domain.ExternalDocument{SourceURI: "x"}, "e", 1)
+	(&IngestionManager{}).publishWritten(context.Background(), domain.ExternalDocument{SourceURI: "x"}, "e", 1)
 
 	bus := &captureBus{}
 	im := &IngestionManager{}
 	im.SetEventBus(bus)
 	// An empty entity id means the mint failed; there is no document to announce.
-	im.publishWritten(domain.ExternalDocument{SourceURI: "x"}, "", 1)
+	im.publishWritten(context.Background(), domain.ExternalDocument{SourceURI: "x"}, "", 1)
 	if n := len(bus.written()); n != 0 {
 		t.Fatalf("published %d events with no source-doc entity, want 0", n)
 	}
@@ -119,7 +120,7 @@ func TestPublishWritten_NotCalledWhenTheIngestFails(t *testing.T) {
 	// ProcessSync's contract: publishWritten runs only after chunks persist. The
 	// two failure shapes are a mint failure (empty entity) and zero chunks; both
 	// return before the publish, so neither announces anything.
-	im.publishWritten(domain.ExternalDocument{SourceURI: "x"}, "", 0)
+	im.publishWritten(context.Background(), domain.ExternalDocument{SourceURI: "x"}, "", 0)
 
 	if n := len(bus.written()); n != 0 {
 		t.Fatalf("a failed ingest published %d events, want 0", n)
@@ -131,7 +132,7 @@ func TestPublishWritten_SingularChunkReadsCorrectly(t *testing.T) {
 	bus := &captureBus{}
 	im := &IngestionManager{}
 	im.SetEventBus(bus)
-	im.publishWritten(domain.ExternalDocument{Title: "note"}, "source_doc:n", 1)
+	im.publishWritten(context.Background(), domain.ExternalDocument{Title: "note"}, "source_doc:n", 1)
 	got := bus.written()
 	if len(got) != 1 || !strings.Contains(got[0].Summary, "(1 chunk)") {
 		t.Fatalf("summary should read '1 chunk', got %q", got[0].Summary)

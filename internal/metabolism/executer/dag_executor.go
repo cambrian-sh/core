@@ -25,7 +25,7 @@ import (
 // to persist TaskEvent records after each DAG step completes.
 // The EventWriter field on DAGExecutor may be nil — all writes are best-effort.
 type TaskEventWriter interface {
-	WriteTaskEvent(event domain.TaskEvent) error
+	WriteTaskEvent(ctx context.Context, event domain.TaskEvent) error
 }
 
 // LLMGateway is the narrow consumer-side interface DAGExecutor needs for
@@ -494,7 +494,9 @@ func (d *DAGExecutor) executeStep(
 			UsageEstimated:       usage.Estimated,
 		}
 		if d.EventWriter != nil {
-			if err := d.EventWriter.WriteTaskEvent(event); err != nil {
+			// The step already ran and spent its tokens: its merit record must
+			// land even when the request is cancelled now (AGENTS.md §2.7).
+			if err := d.EventWriter.WriteTaskEvent(context.WithoutCancel(ctx), event); err != nil {
 				slog.Warn("DAGExecutor: failed to write TaskEvent", "step", stepIndex, "err", err)
 			}
 		}
@@ -752,11 +754,11 @@ func (d *DAGExecutor) closeSession(runCtx context.Context) {
 	}
 }
 
-func (d *DAGExecutor) publishPlanState(planID, status string, activeStep int, cost float64, terminal bool, steps []domain.PlanStepState) {
+func (d *DAGExecutor) publishPlanState(ctx context.Context, planID, status string, activeStep int, cost float64, terminal bool, steps []domain.PlanStepState) {
 	if d.EventBus == nil {
 		return
 	}
-	_ = d.EventBus.Publish(domain.PlanStateChanged{
+	_ = d.EventBus.Publish(ctx, domain.PlanStateChanged{
 		SessionID:  string(d.CurrentSessionID),
 		PlanID:     planID,
 		ActiveStep: activeStep,
@@ -1049,13 +1051,15 @@ func (d *DAGExecutor) ExecuteFrom(
 	// re-delivery folds idempotently. The plan enters "Plans in Flight" now and a
 	// single deferred terminal removes it on any return path.
 	lastActiveStep := startFromStepIndex
-	d.publishPlanState(planID, "running", lastActiveStep, runningCost, false, buildSteps())
+	d.publishPlanState(ctx, planID, "running", lastActiveStep, runningCost, false, buildSteps())
 	defer func() {
 		status := "completed"
 		if retErr != nil {
 			status = "failed"
 		}
-		d.publishPlanState(planID, status, lastActiveStep, runningCost, true, buildSteps())
+		// The terminal state must reach the operator feed even when the plan
+		// ended because its request was cancelled (AGENTS.md §2.7).
+		d.publishPlanState(context.WithoutCancel(ctx), planID, status, lastActiveStep, runningCost, true, buildSteps())
 
 		// The task is finished when its work is. ONLY on success: a failed plan
 		// leaves the task open, because a failure is the state that most needs a
@@ -1358,7 +1362,7 @@ coordinate:
 				// (Zero-Hardcode); the swapped-out plan's results reach its root
 				// steps as prior-plan StepDependency entries.
 				if injection != "" {
-					d.publishPlanState(planID, "replanning", lastActiveStep, runningCost, false, buildSteps())
+					d.publishPlanState(ctx, planID, "replanning", lastActiveStep, runningCost, false, buildSteps())
 					completedIdx := make([]int, 0, len(completed))
 					for idx := range completed {
 						completedIdx = append(completedIdx, idx)
@@ -1488,7 +1492,7 @@ coordinate:
 		runningCost += r.estimatedCost
 		completed[r.index] = true
 		lastActiveStep = r.index
-		d.publishPlanState(planID, "running", r.index, runningCost, false, buildSteps()) // ADR-0047 0047-17: step completed
+		d.publishPlanState(ctx, planID, "running", r.index, runningCost, false, buildSteps()) // ADR-0047 0047-17: step completed
 
 		// Budget check: if plan cost exceeds limit, pause for replan or operator approval.
 		if d.MaxPlanCost > 0 && runningCost > d.MaxPlanCost {
@@ -1637,7 +1641,9 @@ coordinate:
 		CachePolicy:           plan.CachePolicy,
 	}
 	if d.PlanEventWriter != nil {
-		if err := d.PlanEventWriter.WritePlanEvent(planEvent); err != nil {
+		// Plan telemetry records how the plan ended, cancellation included, so
+		// it must not be dropped with the cancelled request (AGENTS.md §2.7).
+		if err := d.PlanEventWriter.WritePlanEvent(context.WithoutCancel(ctx), planEvent); err != nil {
 			slog.Warn("DAGExecutor: failed to write PlanEvent", "plan_id", planID, "err", err)
 		}
 	}

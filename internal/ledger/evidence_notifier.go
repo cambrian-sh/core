@@ -39,7 +39,7 @@ func (n *EvidenceNotifier) Record(ctx context.Context, rec domain.LedgerRecord) 
 	if !ok {
 		return ent, nil
 	}
-	_ = n.bus.Publish(domain.ToolEvidenceRecordedEvent{ // best-effort: observation never fails the call
+	_ = n.bus.Publish(ctx, domain.ToolEvidenceRecordedEvent{ // best-effort: observation never fails the call
 		LedgerID:       ent.ID,
 		ToolName:       rec.ToolName,
 		ServerID:       server,

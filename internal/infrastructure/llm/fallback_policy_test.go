@@ -83,7 +83,7 @@ func TestFallbackPolicy_PinnedUnhealthyFirstChoiceFailsFast(t *testing.T) {
 	p := policyProvider(t, a, b, true, nil)
 	p.SetRole("planner", "b")
 	for i := 0; i < 5; i++ {
-		p.breaker.Record("b", false)
+		p.breaker.Record(context.Background(), "b", false)
 	}
 	if id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposePlanner}); err == nil {
 		t.Fatalf("resolved %q; the pinned first choice b is open, nothing else may serve", id)

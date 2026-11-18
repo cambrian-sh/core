@@ -167,7 +167,7 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 				cross++
 			}
 		}
-		_ = s.EventBus.Publish(domain.AgentStepEvent{
+		_ = s.EventBus.Publish(ctx, domain.AgentStepEvent{
 			SessionID:        string(sessionID),
 			AgentID:          callerID,
 			Action:           "memory_query",

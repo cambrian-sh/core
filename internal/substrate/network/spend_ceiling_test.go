@@ -78,13 +78,15 @@ type capturedEvents struct {
 }
 
 func (c *capturedEvents) Wrap(domain.TaskEventWriter) domain.TaskEventReadWriter { return c }
-func (c *capturedEvents) WriteTaskEvent(e domain.TaskEvent) error {
+func (c *capturedEvents) WriteTaskEvent(_ context.Context, e domain.TaskEvent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, e)
 	return nil
 }
-func (c *capturedEvents) ReadTaskEvent(string) (*domain.TaskEvent, error) { return nil, nil }
+func (c *capturedEvents) ReadTaskEvent(context.Context, string) (*domain.TaskEvent, error) {
+	return nil, nil
+}
 
 func ceilingServer(t *testing.T, meter *llm.SpendMeter, gw *SubstrateLLMGateway, steps int) (*Server, *streamingDispatcher, *capturedEvents) {
 	t.Helper()

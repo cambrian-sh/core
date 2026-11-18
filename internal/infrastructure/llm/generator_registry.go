@@ -91,7 +91,7 @@ func newHealthGenerator(id string, inner domain.Generator, breaker *CircuitBreak
 func (h *healthGenerator) Generate(ctx context.Context, prompt string) (string, error) {
 	out, err := h.inner.Generate(ctx, prompt)
 	if !isRequestFault(err) {
-		h.breaker.Record(h.id, err == nil && strings.TrimSpace(out) != "")
+		h.breaker.Record(ctx, h.id, err == nil && strings.TrimSpace(out) != "")
 	}
 	return out, err
 }
@@ -126,7 +126,7 @@ func (h *healthGenerator) GenerateWithTools(
 	// Same health signal as Generate: a turn that produced neither text nor a tool
 	// call is a failed call, even without an error.
 	if !isRequestFault(err) {
-		h.breaker.Record(h.id, err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0))
+		h.breaker.Record(ctx, h.id, err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0))
 	}
 	return out, err
 }
@@ -150,7 +150,7 @@ func (h *healthGenerator) GenerateStream(ctx context.Context, prompt string) (<-
 	}
 	in, err := sg.GenerateStream(ctx, prompt)
 	if err != nil {
-		h.breaker.Record(h.id, false)
+		h.breaker.Record(ctx, h.id, false)
 		return nil, err
 	}
 	// Wrap the stream so the breaker sees the final outcome (empty body or
@@ -169,7 +169,7 @@ func (h *healthGenerator) GenerateStream(ctx context.Context, prompt string) (<-
 				break
 			}
 		}
-		h.breaker.Record(h.id, hadContent)
+		h.breaker.Record(ctx, h.id, hadContent)
 	}()
 	return out, nil
 }
@@ -184,7 +184,7 @@ func (h *healthGenerator) GenerateRequest(ctx context.Context, req domain.Genera
 	}
 	out, err := rg.GenerateRequest(ctx, req)
 	if !isRequestFault(err) {
-		h.breaker.Record(h.id, err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0))
+		h.breaker.Record(ctx, h.id, err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0))
 	}
 	return out, err
 }
@@ -198,7 +198,7 @@ func (h *healthGenerator) StreamRequest(ctx context.Context, req domain.Generate
 	in, err := rg.StreamRequest(ctx, req)
 	if err != nil {
 		if !isRequestFault(err) {
-			h.breaker.Record(h.id, false)
+			h.breaker.Record(ctx, h.id, false)
 		}
 		return nil, err
 	}
@@ -215,7 +215,7 @@ func (h *healthGenerator) StreamRequest(ctx context.Context, req domain.Generate
 			out <- c
 		}
 		if !fault {
-			h.breaker.Record(h.id, hadContent)
+			h.breaker.Record(ctx, h.id, hadContent)
 		}
 	}()
 	return out, nil

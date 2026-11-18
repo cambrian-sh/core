@@ -94,7 +94,7 @@ func (r *RosterLatch) Seed(ctx context.Context, src AgentCapabilitySource) {
 
 // Observe caches an AgentReadyEvent. Wire it to the EventBus alongside SubscribeBridge so
 // the latch sees the same ready events the bridge forwards. Non-AgentReady events are ignored.
-func (r *RosterLatch) Observe(e domain.DomainEvent) {
+func (r *RosterLatch) Observe(_ context.Context, e domain.DomainEvent) {
 	ev, ok := e.(domain.AgentReadyEvent)
 	if !ok || ev.AgentID == "" {
 		return

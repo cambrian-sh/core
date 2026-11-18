@@ -15,7 +15,7 @@ type recordingBus struct {
 	events []domain.DomainEvent
 }
 
-func (b *recordingBus) Publish(e domain.DomainEvent) error {
+func (b *recordingBus) Publish(_ context.Context, e domain.DomainEvent) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.events = append(b.events, e)

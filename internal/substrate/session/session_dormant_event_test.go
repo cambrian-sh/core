@@ -15,7 +15,7 @@ type captureEventBus struct {
 }
 
 func (b *captureEventBus) Subscribe(_ string, _ domain.EventHandler) {}
-func (b *captureEventBus) Publish(e domain.DomainEvent) error {
+func (b *captureEventBus) Publish(_ context.Context, e domain.DomainEvent) error {
 	b.events = append(b.events, e)
 	return nil
 }

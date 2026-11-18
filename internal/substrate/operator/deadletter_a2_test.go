@@ -17,7 +17,7 @@ type fakeDeadLetterReader struct {
 	entries []domain.ReactiveDeadLetter
 }
 
-func (f *fakeDeadLetterReader) ListDeadLetters(limit int) ([]domain.ReactiveDeadLetter, error) {
+func (f *fakeDeadLetterReader) ListDeadLetters(_ context.Context, limit int) ([]domain.ReactiveDeadLetter, error) {
 	out := append([]domain.ReactiveDeadLetter(nil), f.entries...)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
@@ -70,7 +70,7 @@ type fakeDeadLetterStore struct {
 	deleted []string
 }
 
-func (f *fakeDeadLetterStore) DeleteDeadLetter(id string) (bool, error) {
+func (f *fakeDeadLetterStore) DeleteDeadLetter(_ context.Context, id string) (bool, error) {
 	for i, e := range f.entries {
 		if e.ID == id {
 			f.entries = append(f.entries[:i], f.entries[i+1:]...)

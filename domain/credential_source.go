@@ -220,8 +220,8 @@ type ServerCredentialModel struct {
 // enumerate its own records — the namespace confines that to the provider's
 // own records, unlike the named-secret seam, which never enumerates.
 type SealedRecordStore interface {
-	PutSealed(key string, plaintext []byte) error
-	GetSealed(key string) (plaintext []byte, ok bool, err error)
-	DeleteSealed(key string) (existed bool, err error)
-	SealedKeys() ([]string, error)
+	PutSealed(ctx context.Context, key string, plaintext []byte) error
+	GetSealed(ctx context.Context, key string) (plaintext []byte, ok bool, err error)
+	DeleteSealed(ctx context.Context, key string) (existed bool, err error)
+	SealedKeys(ctx context.Context) ([]string, error)
 }

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -73,12 +74,15 @@ func (b *CircuitBreaker) Healthy(id string) bool {
 // Record feeds a call outcome (ok=false covers transport errors, non-200,
 // timeouts, and empty/unparseable responses — see the health decorator). It
 // trips the circuit at the failure threshold and handles half-open recovery.
-func (b *CircuitBreaker) Record(id string, ok bool) {
+func (b *CircuitBreaker) Record(ctx context.Context, id string, ok bool) {
 	state, changed := b.recordLocked(id, ok)
 	// Publish outside the lock (EventBus delivery is synchronous; never hold the
-	// breaker lock across handler calls).
+	// breaker lock across handler calls). A breaker transition is a fact about
+	// the model, not about the call that tripped it, so its delivery must not
+	// stop when that call's context is cancelled (a stream torn down by its
+	// client); it keeps the call's values (AGENTS.md §2.7).
 	if changed && b.Bus != nil {
-		_ = b.Bus.Publish(domain.LLMHealthEvent{ModelID: id, State: state})
+		_ = b.Bus.Publish(context.WithoutCancel(ctx), domain.LLMHealthEvent{ModelID: id, State: state})
 	}
 }
 

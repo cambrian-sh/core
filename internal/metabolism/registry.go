@@ -70,6 +70,6 @@ func (r *InMemoryRegistry) SetAgent(agent domain.AgentDefinition) {
 	r.agents[agent.ID] = agent
 }
 
-func (r *InMemoryRegistry) SetProvisional(agentID string, provisional bool) error {
+func (r *InMemoryRegistry) SetProvisional(_ context.Context, agentID string, provisional bool) error {
 	return nil
 }

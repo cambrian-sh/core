@@ -86,7 +86,7 @@ func TestProvider_FailsOverWhenRoleModelUnhealthy(t *testing.T) {
 	p := testProvider(t)
 	// ENG-453: only to a generator marked equivalent.
 	p.fallback = newFallbackPolicy(false, [][]string{{"qwen-local", "deepseek"}})
-	p.breaker.Record("qwen-local", false) // threshold 1 => qwen-local OPEN
+	p.breaker.Record(context.Background(), "qwen-local", false) // threshold 1 => qwen-local OPEN
 	// router role prefers qwen-local (open) -> default deepseek (healthy, equivalent).
 	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter})
 	if err != nil || id != "deepseek" {
@@ -100,7 +100,7 @@ func TestProvider_FailsOverWhenRoleModelUnhealthy(t *testing.T) {
 func TestProvider_NoFailoverToAnUnmarkedGenerator(t *testing.T) {
 	t.Parallel()
 	p := testProvider(t)
-	p.breaker.Record("qwen-local", false)
+	p.breaker.Record(context.Background(), "qwen-local", false)
 	id, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter})
 	if !errors.Is(err, ErrNoHealthyModel) || id != "" {
 		t.Fatalf("resolve = %q, %v; want ErrNoHealthyModel (deepseek is not marked equivalent)", id, err)
@@ -113,8 +113,8 @@ func TestProvider_NoFailoverToAnUnmarkedGenerator(t *testing.T) {
 func TestProvider_NoHealthyModelReturnsError(t *testing.T) {
 	t.Parallel()
 	p := testProvider(t)
-	p.breaker.Record("qwen-local", false)
-	p.breaker.Record("deepseek", false)
+	p.breaker.Record(context.Background(), "qwen-local", false)
+	p.breaker.Record(context.Background(), "deepseek", false)
 	if _, err := p.resolve(domain.LLMRequest{Purpose: domain.PurposeRouter}); !errors.Is(err, ErrNoHealthyModel) {
 		t.Fatalf("want ErrNoHealthyModel, got %v", err)
 	}
@@ -132,8 +132,8 @@ func TestProvider_AcquireReturnsGeneratorForHealthyRequest(t *testing.T) {
 func TestProvider_AcquirePropagatesNoHealthyError(t *testing.T) {
 	t.Parallel()
 	p := testProvider(t)
-	p.breaker.Record("qwen-local", false)
-	p.breaker.Record("deepseek", false)
+	p.breaker.Record(context.Background(), "qwen-local", false)
+	p.breaker.Record(context.Background(), "deepseek", false)
 	if _, err := p.Acquire(context.Background(), domain.LLMRequest{Purpose: domain.PurposeMemory}); !errors.Is(err, ErrNoHealthyModel) {
 		t.Fatalf("Acquire should propagate ErrNoHealthyModel, got %v", err)
 	}

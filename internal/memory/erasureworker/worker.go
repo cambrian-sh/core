@@ -184,7 +184,7 @@ func (w *Worker) run(ctx context.Context, r domain.ErasureOutboxRow) (shared boo
 			// the same bytes, an unrelated entry) still names the body.
 			return true, ""
 		}
-		if err := w.cfg.Vault.Delete(r.Ref); err != nil {
+		if err := w.cfg.Vault.Delete(ctx, r.Ref); err != nil {
 			return false, "vault_delete_failed"
 		}
 		return false, ""

@@ -19,7 +19,7 @@ func TestTriggerConsolidation_PublishesAndIsIdempotent(t *testing.T) {
 	svc, _, audit, _ := newCommandService()
 	bus := domain.NewInMemoryEventBus()
 	var pressures int
-	bus.Subscribe(domain.EventTypeMemoryPressure, func(domain.DomainEvent) { pressures++ })
+	bus.Subscribe(domain.EventTypeMemoryPressure, func(context.Context, domain.DomainEvent) { pressures++ })
 	svc.SetCommandEffects(operator.EventBusEffects{Bus: bus})
 
 	req := &pb.TriggerConsolidationRequest{CommandId: "cons-1", Reason: "manual sweep", Scope: "session-x"}

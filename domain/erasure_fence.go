@@ -124,7 +124,7 @@ type ErasureOutbox interface {
 // VaultEraser deletes one artifact-vault body by its hash (satisfied by
 // *vault.ArtifactVault). Deleting an absent hash is not an error.
 type VaultEraser interface {
-	Delete(hash string) error
+	Delete(ctx context.Context, hash string) error
 }
 
 // ContentEraser deletes one content-addressed blob by CID (the ADR-0137 D7 targeted

@@ -92,7 +92,7 @@ type capturingEventBus struct {
 }
 
 func (b *capturingEventBus) Subscribe(_ string, _ domain.EventHandler) {}
-func (b *capturingEventBus) Publish(ev domain.DomainEvent) error {
+func (b *capturingEventBus) Publish(_ context.Context, ev domain.DomainEvent) error {
 	if auctionEv, ok := ev.(domain.SelectionEventPayload); ok {
 		b.events = append(b.events, auctionEv)
 	}

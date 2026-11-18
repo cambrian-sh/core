@@ -46,6 +46,6 @@ func (r *HarnessRegistry) GetAgentByName(_ context.Context, name string) (*domai
 	return nil, nil
 }
 
-func (r *HarnessRegistry) SetProvisional(string, bool) error { return nil }
+func (r *HarnessRegistry) SetProvisional(context.Context, string, bool) error { return nil }
 
 var _ domain.AgentRegistry = (*HarnessRegistry)(nil)
