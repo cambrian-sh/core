@@ -64,7 +64,7 @@ func tokenProbeAgent(id string) *domain.AgentDefinition {
 
 func tokenProbeManager(t *testing.T) *InstanceManager {
 	t.Helper()
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetEnvExtras([]string{"AGENTMGR_CHAOS_HELPER=token"})
 	t.Cleanup(func() { _ = im.KillAllAgents(context.Background()) })
 	return im
@@ -267,7 +267,7 @@ func TestInstanceToken_EveryTeardownRevokes(t *testing.T) {
 // A boot that fails after the token was minted leaves no live token.
 func TestInstanceToken_FailedBootRevokes(t *testing.T) {
 	skipShort(t)
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	if _, err := im.GetOrBootInstance(context.Background(), noSocketAgent(), ""); err == nil {
 		t.Fatal("boot of an agent that exits at once must fail")
 	}
@@ -279,7 +279,7 @@ func TestInstanceToken_FailedBootRevokes(t *testing.T) {
 // Building a command issues no credential (only the boot path mints), so a
 // command built and never started cannot leave a usable token behind.
 func TestBuildAgentCmd_IssuesNoCredential(t *testing.T) {
-	im := NewInstanceManager("python", "localhost:0")
+	im := withPython(NewInstanceManager("localhost:0"), "python")
 	def := &domain.AgentDefinition{ID: "analyst_agent", Runtime: domain.RuntimePython, ExecPath: "agent.py"}
 	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "inst-1"}, "")
 	if err != nil {
@@ -347,7 +347,7 @@ func waitNoExits(t *testing.T, im *InstanceManager) {
 // and health probe: the token is live from the start, so the SignalStream gate
 // answers from the token before the instance is registered.
 func TestFindInstanceByToken_AnswersWhileBooting(t *testing.T) {
-	im := NewInstanceManager("python", "localhost:0")
+	im := withPython(NewInstanceManager("localhost:0"), "python")
 	tok, err := im.tokens.Mint("pulse_agent", "inst-booting")
 	if err != nil {
 		t.Fatal(err)

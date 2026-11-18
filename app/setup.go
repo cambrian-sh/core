@@ -58,7 +58,7 @@ type setupState struct {
 	// when setup manages the database; "" for an existing / remote Postgres.
 	pgContainer string
 	ollamaOK    bool
-	venvPy      string
+	envPy       string // the kernel-managed env's interpreter (self-check, model pre-fetch)
 	bunBin      string
 	nodeBin     string
 	agentsDir   string
@@ -87,7 +87,7 @@ func RunSetup(ctx context.Context, args []string) int {
 	fl.BoolVar(&yShort, "y", false, "shorthand for --yes")
 	fl.StringVar(&home, "home", "", "install prefix (default $CAMBRIAN_HOME, else ~/.cambrian)")
 	fl.BoolVar(&skipModels, "skip-models", false, "skip embedder/reranker/docling model pre-fetch")
-	fl.BoolVar(&skipPython, "skip-python", false, "skip Python agent-runtime provisioning (venv/SDK/deps)")
+	fl.BoolVar(&skipPython, "skip-python", false, "skip building the kernel-managed sandbox Python env (pinned CPython + hashed base lock, ADR-0157 D7)")
 	fl.BoolVar(&skipJS, "skip-js", false, "skip JS agent-runtime provisioning (bun/node probe + installs, ADR-0125)")
 	fl.BoolVar(&noStart, "no-start", false, "configure and migrate, but do not start the kernel")
 	fl.BoolVar(&waitReady, "wait", false, "block until the started kernel reports DB-gated SERVING (default: fire-and-forget)")

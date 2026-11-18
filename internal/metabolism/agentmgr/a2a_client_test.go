@@ -47,7 +47,7 @@ func TestAgentManager_CallAgent_RuntimeA2A_UsesA2AClient(t *testing.T) {
 		A2AEndpoint: srv.URL,
 	}
 
-	manager := NewAgentManager(reg, "python", "127.0.0.1:50051", nil)
+	manager := withPythonM(NewAgentManager(reg, "127.0.0.1:50051", nil), "python")
 
 	handoff := &domain.Handoff{
 		ID:      "test-handoff",

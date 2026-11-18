@@ -39,7 +39,7 @@ func loadRealTools(t *testing.T) (*ProcessHandler, string) {
 	if len(reg.All()) == 0 {
 		t.Skipf("no tool manifests under %s; these E2E tests need a populated tools/ tree", toolsDir)
 	}
-	return &ProcessHandler{PythonExec: py, ToolFiles: files, DefaultTimeout: 15 * time.Second}, root
+	return &ProcessHandler{Interpreter: fixedInterpreter(py), ToolFiles: files, DefaultTimeout: 15 * time.Second}, root
 }
 
 // Capability-unlock demo (DoD): the real terminal tool runs an actual command and

@@ -39,9 +39,10 @@ type InstanceManager struct {
 	agentIndex map[string][]string     // agentID → []instanceID
 	cmds       map[string]*exec.Cmd    // instanceID → cmd
 	exits      map[string]*processExit // instanceID → the one Wait per child (process_exit.go)
-	// runtimeExes maps an interpreted runtime to its executable (ADR-0125):
-	// python from metabolism.python_executable, bun/node from their config keys
-	// (empty ⇒ $PATH fallback at spawn). RuntimeBinary needs no interpreter.
+	// runtimeExes maps a JS runtime to its executable (ADR-0125): bun/node from
+	// their config keys (empty ⇒ $PATH fallback at spawn). Python agents launch
+	// only on the kernel-managed env (pythonEnv, ADR-0157 D7); RuntimeBinary
+	// needs no interpreter.
 	runtimeExes   map[domain.AgentRuntime]string
 	substrateAddr string
 	// envPassthrough names extra non-secret environment variables an operator
@@ -91,9 +92,9 @@ type InstanceManager struct {
 	// containment is execution.agents.sandbox (containment.go); its zero value
 	// refuses third-party agents (fail closed).
 	containment AgentContainment
-	// pythonEnv is the managed Python env's readiness gate (ADR-0157 D7,
-	// python_env_gate.go); nil ⇒ no gate.
-	pythonEnv PythonEnvGate
+	// pythonEnv is the kernel-managed Python env every Python agent launches
+	// on (ADR-0157 D7, python_env_gate.go); nil ⇒ Python agents are refused.
+	pythonEnv PythonEnv
 	// reported records the agent ids whose ADR-0157 containment report was
 	// already logged at INFO/WARN (agent_sandbox.go reportContainment).
 	reported sync.Map
@@ -169,7 +170,7 @@ func (im *InstanceManager) spawnMemLimitMB(ctx context.Context, def *domain.Agen
 }
 
 // NewInstanceManager creates an InstanceManager with empty maps.
-func NewInstanceManager(pythonPath, substrateAddr string) *InstanceManager {
+func NewInstanceManager(substrateAddr string) *InstanceManager {
 	return &InstanceManager{
 		instances:     make(map[string]*domain.Instance),
 		agentIndex:    make(map[string][]string),
@@ -177,15 +178,19 @@ func NewInstanceManager(pythonPath, substrateAddr string) *InstanceManager {
 		exits:         make(map[string]*processExit),
 		capCleanups:   make(map[string]func()),
 		tokens:        authz.NewInstanceTokens(),
-		runtimeExes:   map[domain.AgentRuntime]string{domain.RuntimePython: pythonPath},
+		runtimeExes:   map[domain.AgentRuntime]string{},
 		substrateAddr: substrateAddr,
 	}
 }
 
 // SetRuntimeExecutable configures the interpreter for an interpreted runtime
 // (ADR-0125). An empty path clears any prior value (JS runtimes then fall back
-// to $PATH at spawn; Python keeps failing at Start as before).
+// to $PATH at spawn). Python is not configurable here: its interpreter is the
+// kernel-managed env's (SetPythonEnv, ADR-0157 D7).
 func (im *InstanceManager) SetRuntimeExecutable(rt domain.AgentRuntime, path string) {
+	if rt == domain.RuntimePython {
+		return
+	}
 	if path == "" {
 		delete(im.runtimeExes, rt)
 		return
@@ -386,7 +391,13 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 	var cmd *exec.Cmd
 	switch def.Runtime {
 	case domain.RuntimePython:
-		cmd = exec.Command(im.runtimeExes[domain.RuntimePython], def.ExecPath,
+		// ADR-0157 D7: the managed env's current generation, read per spawn; no
+		// host-Python fallback.
+		pi, err := im.pythonInterpreter(def)
+		if err != nil {
+			return nil, err
+		}
+		cmd = exec.Command(pi.Path, def.ExecPath,
 			"--socket", sockPath,
 			"--substrate-addr", im.substrateAddr)
 		// SEC-01: deny-by-default env — never inherit the kernel's secrets.

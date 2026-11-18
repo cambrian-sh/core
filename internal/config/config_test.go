@@ -20,13 +20,13 @@ import (
 func TestConfig_LoadConfig_EnvVarOverridesFileValue(t *testing.T) {
 	// New convention (ADR-0024): env vars use CAMBRIAN_ prefix with __ as hierarchy separator.
 	// No ${VAR} placeholders in files — env.Provider injects values directly.
-	t.Setenv("CAMBRIAN_METABOLISM__PYTHON_EXECUTABLE", "/ci/python")
+	t.Setenv("CAMBRIAN_METABOLISM__BUN_EXECUTABLE", "/ci/bun")
 	t.Setenv("CAMBRIAN_METABOLISM__AGENTS_DIR", "/ci/agents/")
 	t.Setenv("CAMBRIAN_STORAGE__DATA_DIR", "/ci/data")
 
 	jsonStr := `{
 		"llm": {"endpoint":"http://localhost:11434","model":"llama3"},
-		"metabolism": {"python_executable":"/default/python","agents_dir":"/default/agents"},
+		"metabolism": {"bun_executable":"/default/bun","agents_dir":"/default/agents"},
 		"storage": {"data_dir":"/default/data","db_name":"test.db"},
 		"database": {"host":"localhost","port":"5432","user":"u","password":"p","dbname":"d"},
 		"server": {"port":"50051"}
@@ -40,8 +40,8 @@ func TestConfig_LoadConfig_EnvVarOverridesFileValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Metabolism.PythonExecutable != "/ci/python" {
-		t.Errorf("PythonExecutable: want /ci/python, got %q", cfg.Metabolism.PythonExecutable)
+	if cfg.Metabolism.BunExecutable != "/ci/bun" {
+		t.Errorf("BunExecutable: want /ci/bun, got %q", cfg.Metabolism.BunExecutable)
 	}
 	if cfg.Metabolism.AgentsDir != "/ci/agents/" {
 		t.Errorf("AgentsDir: want /ci/agents/, got %q", cfg.Metabolism.AgentsDir)

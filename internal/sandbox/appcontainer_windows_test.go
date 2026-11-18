@@ -301,3 +301,49 @@ func currentUserSID(t *testing.T) *windows.SID {
 	}
 	return tu.User.Sid
 }
+
+// ADR-0157 D7.7.5 (P2): the kernel-managed Python generation is pre-granted
+// while empty (GrantAgentRuntimeRead), so what the build then writes inherits
+// the runtime ACE and the agent reads it; a Granted bind is NOT walked — the
+// proof is a protected descendant the walk would have granted staying
+// unreadable.
+func TestAppContainerPreGrantedTreeIsInheritedAndNotWalked(t *testing.T) {
+	f := newACFixture(t)
+	gen := filepath.Join(f.root, "runtime", "python", "base", "0123456789abcdef")
+	if err := os.MkdirAll(gen, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantAgentRuntimeRead(gen); err != nil {
+		t.Fatalf("pre-grant: %v", err)
+	}
+	inherited := filepath.Join(gen, "Lib", "site-packages", "cambrian_agent_sdk", "__init__.py")
+	protected := filepath.Join(gen, "Lib", "site-packages", "hardlinked", "__init__.py")
+	for _, p := range []string{inherited, protected} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setProtectedOwnerOnly(t, protected)
+
+	p, spec := f.spec(t, TierFirstParty, "pregranted", Bind{Path: gen, Granted: true})
+	ac, pl := appContainerFor(p, spec, spec.tierPolicy(p), true)
+	if !pl.ok {
+		t.Fatalf("appcontainer unusable: %s", pl.why)
+	}
+	defer ac.close()
+	if !mustCanRead(t, ac.token, inherited) {
+		t.Fatal("a file written after the pre-grant did not inherit the runtime ACE")
+	}
+	if mustCanRead(t, ac.token, protected) {
+		t.Fatal("a Granted bind was walked: its protected descendant was granted")
+	}
+	if !mustCanRead(t, ac.token, f.codeFile) {
+		t.Fatal("ordinary binds must still be granted")
+	}
+	if mustCanRead(t, ac.token, f.configDB) {
+		t.Fatal("kernel state readable")
+	}
+}

@@ -1048,7 +1048,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0157 D7.11: the managed Python env's boot check (+ build_on_boot
 	// background build) before any agent boots; Python spawns wait on its gate.
 	pyEnv := startPythonEnv(ctx, cfg, config.ResolveBaseDir())
-	meta.Manager.SetPythonEnvGate(pyEnv)
+	meta.Manager.SetPythonEnv(pyEnv)
 	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, supervisionGen, cfg, observer)
 
 	// 3. Wire storage callback so newly-registered agents are enqueued for profile
@@ -2522,7 +2522,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Consent:      workerConsent,
 		ParkDeadline: time.Duration(cfg.MCP.WorkerParkDeadlineMs) * time.Millisecond,
 		Handler: &toolproc.ProcessHandler{
-			PythonExec:     cfg.Metabolism.PythonExecutable,
+			Interpreter:    pythonInterpreterPath(pyEnv),
 			ToolFiles:      toolFiles,
 			DefaultTimeout: 30 * time.Second,
 			// Deny-by-default env scrub, with an explicit passthrough allowlist for

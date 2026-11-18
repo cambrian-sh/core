@@ -2506,6 +2506,8 @@ type Config struct {
 	//	2             — `execution` grouped into named blocks (retrieval, routing, …).
 	//	3             — v2 minus the keys retired 2026-11-14 (retiredConfigKeys): a v2
 	//	                layer that still sets one loads with a WARN and the value dropped.
+	//	4             — v3 minus metabolism.python_executable (retiredV4ConfigKeys,
+	//	                ADR-0157 D7.14): Python agents run on the kernel-managed env.
 	//
 	// Absent means 1, because every config written before v2 existed has no such
 	// field and treating "unstamped" as "current" would skip the migration for
@@ -2514,11 +2516,14 @@ type Config struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 
 	Metabolism struct {
-		PythonExecutable string `json:"python_executable"`
+		// python_executable was retired by schema v4 (ADR-0157 D7.14): Python
+		// agents and tools run only on the kernel-managed env
+		// (execution.agents.python).
+		//
 		// BunExecutable / NodeExecutable are the JS agent-runtime interpreters
 		// (ADR-0125). Empty ⇒ the kernel falls back to `bun`/`node` on $PATH at
 		// spawn time; a spawn of a bun/node agent errors (naming the key) only
-		// when neither resolves. Additive keys — python_executable is untouched.
+		// when neither resolves.
 		BunExecutable  string `json:"bun_executable"`
 		NodeExecutable string `json:"node_executable"`
 		AgentsDir      string `json:"agents_dir"`

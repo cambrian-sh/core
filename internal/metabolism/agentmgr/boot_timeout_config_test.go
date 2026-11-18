@@ -18,7 +18,7 @@ func TestAgentBootTimeout_ConfiguredValueBoundsTheWait(t *testing.T) {
 		t.Skip("launches a real subprocess; skipped in -short")
 	}
 	shortBootTimeout(t, time.Hour) // the built-in default must not be what ends the wait
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetEnvExtras([]string{chaosSleepEnv})
 	im.SetAgentBootTimeout(700 * time.Millisecond)
 	def := noSocketAgent()
@@ -44,7 +44,7 @@ func TestGetOrBootInstance_ReplacesAnExitedInstance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("launches a real subprocess; skipped in -short")
 	}
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	def := noSocketAgent() // a fresh boot of it exits at once: the attempt is observable
 	dead := domain.NewInstance(def.ID)
 	exited := &processExit{done: make(chan struct{})}

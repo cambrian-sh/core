@@ -532,13 +532,32 @@ func (a *appContainer) grantBinds(binds []Bind, hide []string) (notes []string, 
 		if b.Write {
 			mask = accessModify
 		}
-		if gerr := ensureGrant(target, sid, mask); gerr != nil {
+		grant := ensureGrant
+		if b.Granted && !b.Private && !b.Write {
+			// ADR-0157 D7.7.5: the tree inherited the runtime ACE from its root
+			// when it was built; re-check (or add) the root's ACE, never walk it.
+			grant = func(p string, s *windows.SID, m windows.ACCESS_MASK) error { return grantOne(p, s, m, true) }
+		}
+		if gerr := grant(target, sid, mask); gerr != nil {
 			return notes, fmt.Errorf("cannot grant the agent container %s on %s (%v); an administrator can grant it once: icacls \"%s\" /grant *%s:(OI)(CI)%s /T",
 				map[bool]string{true: "write", false: "read"}[b.Write], target, gerr, target, sid.String(),
 				map[bool]string{true: "M", false: "RX"}[b.Write])
 		}
 	}
 	return notes, nil
+}
+
+// GrantAgentRuntimeRead puts the shared agent runtime capability's inheritable
+// read ACE on dir — the same grant grantBinds gives a kernel-known read path.
+// The kernel-managed Python env calls it on a new generation's empty build
+// directory (ADR-0157 D7.7.5), so every file the build creates inherits the
+// grant and the launch path need not walk the tree (Bind.Granted).
+func GrantAgentRuntimeRead(dir string) error {
+	sid, err := deriveCapabilitySID(runtimeCapabilityName)
+	if err != nil {
+		return fmt.Errorf("agent runtime capability: %w", err)
+	}
+	return grantOne(dir, sid, accessRead, true)
 }
 
 // grantInstanceDir gives the instance's package SID full control of one of its

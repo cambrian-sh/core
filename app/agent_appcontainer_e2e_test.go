@@ -36,16 +36,18 @@ import (
 //     unreachable; per_tier first-party: reachable when this test process can
 //     reach it (the internetClient capability).
 //
-// It needs a Python with the SDK that the AppContainer can be granted — a
-// user-owned interpreter (an Administrators-owned C:\PythonXY cannot be granted
-// by a non-admin kernel, and the runner then falls back to low integrity):
+// It runs on the kernel-managed sandbox Python env (ADR-0157 D7 P2): the
+// kernel owns that tree, so it can always grant it, and every case refuses on
+// any missing control — a fallback to the low-integrity token (no AppContainer)
+// fails the boot. The spawn time (grant + boot) is logged per case: the D7
+// grant-cost measurement.
 //
-//	KERNEL_ONLY_E2E_PY  the interpreter (a venv with cambrian_agent_sdk)
+//	KERNEL_ONLY_E2E_PY  the managed env's interpreter (python-env status prints it)
 //	KERNEL_ONLY_E2E_INTERNET  optional public host:port (default 1.1.1.1:443)
 func TestE2E_AppContainerNetworkAndStateByTier(t *testing.T) {
 	py := os.Getenv("KERNEL_ONLY_E2E_PY")
 	if py == "" {
-		t.Skip("set KERNEL_ONLY_E2E_PY to a user-owned Python with the agent SDK to run the AppContainer e2e")
+		t.Skip("set KERNEL_ONLY_E2E_PY to the kernel-managed env's interpreter (python-env status) to run the AppContainer e2e")
 	}
 	internet := os.Getenv("KERNEL_ONLY_E2E_INTERNET")
 	if internet == "" {
@@ -126,7 +128,7 @@ func TestE2E_AppContainerNetworkAndStateByTier(t *testing.T) {
 				FirstPartyRefuse: true,
 				KernelOnlyAll:    tc.kernelOnlyAll,
 			})
-			im := agentmgr.NewInstanceManager(py, tcp.Addr().String())
+			im := instanceManagerWithPython(t, agentmgr.NewInstanceManager(tcp.Addr().String()), py)
 			im.SetAgentContainment(agentmgr.AgentContainment{Sandbox: sb})
 			im.SetAgentTransport(agentmgr.AgentTransport{KernelSocket: sockets.Open})
 			im.SetAgentBootTimeout(60 * time.Second)
@@ -136,10 +138,12 @@ func TestE2E_AppContainerNetworkAndStateByTier(t *testing.T) {
 					"--internet", internet, "--secret", configDB}}
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
+			start := time.Now()
 			inst, err := im.GetOrBootInstance(ctx, def, "")
 			if err != nil {
 				t.Fatalf("boot (refuse on any missing control): %v", err)
 			}
+			t.Logf("spawn (AppContainer grant + boot to socket): %s", time.Since(start).Round(time.Millisecond))
 			defer im.EvictInstance(inst.ID)
 			got := rec.waitFor(ctx, "probe="+id+";")
 			if got == "" {

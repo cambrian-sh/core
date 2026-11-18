@@ -21,7 +21,9 @@ import (
 // It needs a Python with the agent SDK and a prepared kernel directory, so it
 // runs only when they are named:
 //
-//	AGENTMGR_E2E_PY      the interpreter (a venv outside the kernel dir is fine)
+//	AGENTMGR_E2E_PY      the kernel-managed env's interpreter (ADR-0157 D7 P2;
+//	                     `python-env status` prints it): the agents run on the
+//	                     managed base generation, shown read-only and alone
 //	AGENTMGR_E2E_KERNEL  a kernel directory holding agents/, prompts/, skills/
 //	                     and configs/{config.db,secret.key}
 //
@@ -42,7 +44,8 @@ func TestE2E_ShippedAgentsServeUnderConfinement(t *testing.T) {
 	if !slices.Contains(planAgent(sb).Enforced, sandbox.ControlHideState) {
 		t.Log("note: no read confinement on this host; the agents still run through the sandbox")
 	}
-	im := NewInstanceManager(py, "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
+	im.SetPythonEnv(fixedPythonEnv{pi: managedInterpreterForTest(t, py)})
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetAgentBootTimeout(60 * time.Second)

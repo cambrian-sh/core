@@ -29,7 +29,8 @@ import (
 //     TEMP/TMP/TMPDIR/HOME, removed when the process exits (D1.2);
 //   - a socket directory, <work_root>/sock/<instance>, shown at its own path
 //     (D2.6: --socket and --substrate-addr are unchanged);
-//   - read-only: its code directory, the configured interpreters' prefixes, the
+//   - read-only: its code directory, its interpreter's tree (for Python the
+//     kernel-managed env's current generation, ADR-0157 D7), the
 //     kernel-known runtime paths (agents/, prompts/, skills/) and the kernel's
 //     TLS CA file when it has one (ADR-0130 D4: a public certificate);
 //   - the paths its manifest declares (sandbox_paths), each admitted by the
@@ -358,14 +359,30 @@ func (im *InstanceManager) agentBinds(ctx context.Context, def *domain.AgentDefi
 			ro = append(ro, abs)
 		}
 	}
-	ro = append(ro, runtimePaths(interp)...)
+	// A Python agent's runtime is exactly the managed env's current generation
+	// (ADR-0157 D7.1.3), pre-granted when the build set the AppContainer ACE
+	// (D7.7.5); any other interpreter's prefix (and venv base) as before.
+	grantedHome, managed := "", false
+	if def.Runtime == domain.RuntimePython {
+		var home string
+		var granted bool
+		if home, granted, managed = im.pythonRuntimeBind(interp); managed {
+			ro = append(ro, home)
+			if granted {
+				grantedHome = home
+			}
+		}
+	}
+	if !managed {
+		ro = append(ro, runtimePaths(interp)...)
+	}
 	ro = append(ro, sb.runtimeRead...)
 	if im.agentTLSCA != "" {
 		ro = append(ro, im.agentTLSCA)
 	}
 	var binds []sandbox.Bind
 	for _, p := range dedupePaths(ro) {
-		binds = append(binds, sandbox.Bind{Path: p})
+		binds = append(binds, sandbox.Bind{Path: p, Granted: grantedHome != "" && filepath.Clean(p) == grantedHome})
 	}
 	return append(binds, decl...), nil
 }

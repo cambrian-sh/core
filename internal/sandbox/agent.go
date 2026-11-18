@@ -59,6 +59,13 @@ type Bind struct {
 	// instance only its own binds anyway; the Windows AppContainer runner,
 	// whose grants are ACEs on the path, needs the distinction.
 	Private bool
+	// Granted marks a kernel-known read-only tree that already carries the
+	// shared runtime grant on its root, inherited by every file because it was
+	// set before the tree was filled: the kernel-managed Python generation
+	// (ADR-0157 D7.7.5, pyenv's PrepareGeneration). The AppContainer runner
+	// then checks the root's ACE only and skips the per-file walk; the other
+	// runners treat it as any read-only bind.
+	Granted bool
 }
 
 // Launched is one agent process started by StartCmd.

@@ -13,7 +13,7 @@ import (
 // SEC-01 per-agent memory cap resolution: declared manifest limit wins; system
 // organs are exempt from the fleet-wide default; user agents get the default.
 func TestEffectiveMemLimitMB(t *testing.T) {
-	im := NewInstanceManager("python", "localhost:0")
+	im := withPython(NewInstanceManager("localhost:0"), "python")
 	im.SetAgentMemoryLimitMB(1024) // global default
 	manifests := map[string]*domain.AgentManifest{
 		"heavy_user_agent": {MemoryLimitMB: 8192}, // declares its own headroom
@@ -58,7 +58,7 @@ func envHas(env []string, name string) (string, bool) {
 func TestBuildAgentCmd_EnvIsAllowlisted(t *testing.T) {
 	t.Setenv("OPENCODE_API_KEY", "sk-super-secret")
 	t.Setenv("SOME_UNRELATED_VAR", "nope")
-	im := NewInstanceManager("python", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "python")
 	def := &domain.AgentDefinition{ID: "a", Runtime: domain.RuntimePython, ExecPath: "agent.py"}
 	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "i1"}, "")
 	if err != nil {
@@ -81,7 +81,7 @@ func TestBuildAgentCmd_EnvExtrasComeFromConfigNotKernelEnv(t *testing.T) {
 	// Deliberately NOT set in the kernel's environment.
 	os.Unsetenv("CAMBRIAN_TOOL_MENU_K")
 
-	im := NewInstanceManager("python", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "python")
 	im.SetEnvExtras([]string{"CAMBRIAN_TOOL_MENU_K=5"})
 
 	def := &domain.AgentDefinition{ID: "a", Runtime: domain.RuntimePython, ExecPath: "agent.py"}

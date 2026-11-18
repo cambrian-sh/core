@@ -15,7 +15,7 @@ import (
 // ── ADR-0125: bun/node spawn branch ──────────────────────────────────────────
 
 func TestBuildAgentCmd_JSRuntimes(t *testing.T) {
-	m := NewAgentManager(nil, "/usr/bin/python3", "localhost:50051", nil)
+	m := withPythonM(NewAgentManager(nil, "localhost:50051", nil), "/usr/bin/python3")
 	m.SetRuntimeExecutable(domain.RuntimeBun, "/opt/bun/bun")
 	m.SetRuntimeExecutable(domain.RuntimeNode, "/usr/bin/node")
 	inst := domain.NewInstance("js-agent")
@@ -104,7 +104,7 @@ func TestBuildAgentCmd_JSRuntimes(t *testing.T) {
 func TestRuntimeExecutable_UnresolvedNamesConfigKey(t *testing.T) {
 	// Empty PATH defeats the $PATH fallback deterministically.
 	t.Setenv("PATH", "")
-	im := NewInstanceManager("/usr/bin/python3", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "/usr/bin/python3")
 	_, err := im.runtimeExecutable(domain.RuntimeBun)
 	if err == nil {
 		t.Fatal("want error when bun is neither configured nor on PATH")
@@ -115,7 +115,7 @@ func TestRuntimeExecutable_UnresolvedNamesConfigKey(t *testing.T) {
 }
 
 func TestSetRuntimeExecutable_EmptyClears(t *testing.T) {
-	im := NewInstanceManager("/usr/bin/python3", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "/usr/bin/python3")
 	im.SetRuntimeExecutable(domain.RuntimeNode, "/usr/bin/node")
 	im.SetRuntimeExecutable(domain.RuntimeNode, "")
 	if p := im.runtimeExes[domain.RuntimeNode]; p != "" {
@@ -126,7 +126,7 @@ func TestSetRuntimeExecutable_EmptyClears(t *testing.T) {
 // ── ADR-0125 D6: JS deps presence check ──────────────────────────────────────
 
 func TestVerifyJSDeps(t *testing.T) {
-	im := NewInstanceManager("/usr/bin/python3", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "/usr/bin/python3")
 
 	def := func(dir string) *domain.AgentDefinition {
 		return &domain.AgentDefinition{
@@ -209,7 +209,7 @@ func TestVerifyJSDeps(t *testing.T) {
 // ── ADR-0125 D8: Linux RLIMIT_AS exemption for V8 runtimes ───────────────────
 
 func TestSpawnMemLimitMB_JSExemption(t *testing.T) {
-	im := NewInstanceManager("/usr/bin/python3", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "/usr/bin/python3")
 	im.SetAgentMemoryLimitMB(512)
 
 	py := &domain.AgentDefinition{ID: "py_agent", Runtime: domain.RuntimePython}

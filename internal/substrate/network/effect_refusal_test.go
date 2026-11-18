@@ -56,7 +56,7 @@ func TestServer_EffectRefusalEndsAsAClarification(t *testing.T) {
 		}}},
 		ExecCfg:    tokenTestExecCfg(), // MaxReplanAttempts 0: the one replan is not available, ask at once
 		Dispatcher: disp,
-		Manager:    agentmgr.NewAgentManager(metabolism.NewInMemoryRegistry(), "python", "unix:///tmp/test.sock", nil),
+		Manager:    agentmgr.NewAgentManager(metabolism.NewInMemoryRegistry(), "unix:///tmp/test.sock", nil),
 	}
 	resp, err := s.Execute(context.Background(), handoffWithBody("file my receipts"))
 	if err != nil {
@@ -95,7 +95,7 @@ func TestServer_LegacyStepDispatchesWithNilEffects(t *testing.T) {
 		Planner:    &effectPlanner{plan: &domain.ExecutionPlan{Subject: "x", Steps: []domain.Step{{Query: "do it"}}}},
 		ExecCfg:    tokenTestExecCfg(),
 		Dispatcher: disp,
-		Manager:    agentmgr.NewAgentManager(metabolism.NewInMemoryRegistry(), "python", "unix:///tmp/test.sock", nil),
+		Manager:    agentmgr.NewAgentManager(metabolism.NewInMemoryRegistry(), "unix:///tmp/test.sock", nil),
 	}
 	resp, err := s.Execute(context.Background(), handoffWithBody("do it"))
 	if err != nil || resp.Payload.Type == "clarification" {

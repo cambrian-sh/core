@@ -141,6 +141,23 @@ func (e *Env) Status() Status {
 func (e *Env) Ready() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.readyLocked()
+}
+
+// Interpreter is the current base generation's interpreter for the next agent
+// spawn (ADR-0157 D7 P2), or Ready's error when Python agents may not start.
+// It is read on every spawn, so a background build that switches generations
+// is picked up by the next instance while running ones keep theirs (D7.10.1).
+func (e *Env) Interpreter() (Interpreter, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := e.readyLocked(); err != nil {
+		return Interpreter{}, err
+	}
+	return Interpreter{Path: e.status.Interpreter, Home: e.status.Home, Granted: e.status.Granted}, nil
+}
+
+func (e *Env) readyLocked() error {
 	switch {
 	case e.status.Usable():
 		return nil

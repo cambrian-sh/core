@@ -345,7 +345,7 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 		Trait:   "",
 	})
 
-	mgr := agentmgr.NewAgentManager(reg, "python", "unix://tmp/cambrian.sock", nil)
+	mgr := agentmgr.NewAgentManager(reg, "unix://tmp/cambrian.sock", nil)
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{
 		Gatekeeper: config.GatekeeperConfig{
 			GatekeeperMaxCandidates: 5,
@@ -456,7 +456,7 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 		Trait:   "",
 	})
 
-	mgr := agentmgr.NewAgentManager(reg, "python", "unix://tmp/cambrian.sock", nil)
+	mgr := agentmgr.NewAgentManager(reg, "unix://tmp/cambrian.sock", nil)
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{
 		Gatekeeper: config.GatekeeperConfig{
 			GatekeeperMaxCandidates: 5,

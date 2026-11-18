@@ -85,7 +85,7 @@ func NewMetabolismStack(
 	_ domain.TelemetryObserver,
 	leases verify.LeaseGateway,
 ) *MetabolismStack {
-	manager := agentmgr.NewAgentManager(reg, cfg.Metabolism.PythonExecutable, "localhost:"+cfg.Server.Port, memoryAgent)
+	manager := agentmgr.NewAgentManager(reg, "localhost:"+cfg.Server.Port, memoryAgent)
 	// ADR-0125: JS agent runtimes. Empty config values are fine — the instance
 	// manager falls back to $PATH lookup at spawn time.
 	manager.SetRuntimeExecutable(domain.RuntimeBun, cfg.Metabolism.BunExecutable)

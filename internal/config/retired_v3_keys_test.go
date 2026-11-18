@@ -83,8 +83,8 @@ func TestRetiredV3Keys_AbsentFromSchema(t *testing.T) {
 			}
 		}
 	}
-	if CurrentSchemaVersion != SchemaV3Retired {
-		t.Errorf("CurrentSchemaVersion = %d, want %d", CurrentSchemaVersion, SchemaV3Retired)
+	if CurrentSchemaVersion < SchemaV3Retired {
+		t.Errorf("CurrentSchemaVersion = %d, want at least %d", CurrentSchemaVersion, SchemaV3Retired)
 	}
 }
 
@@ -110,7 +110,7 @@ func TestMigrateFileInPlace_RemovesRetiredV3Keys(t *testing.T) {
 			t.Errorf("%s still in the migrated file:\n%s", gone, b)
 		}
 	}
-	for _, kept := range []string{`"max_replan_attempts": 1`, `"enable_stdout_exporter": true`, `"schema_version": 3`} {
+	for _, kept := range []string{`"max_replan_attempts": 1`, `"enable_stdout_exporter": true`, `"schema_version": 4`} {
 		if !strings.Contains(string(b), kept) {
 			t.Errorf("%s missing from the migrated file:\n%s", kept, b)
 		}

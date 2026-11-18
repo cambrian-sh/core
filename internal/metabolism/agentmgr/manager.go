@@ -47,8 +47,8 @@ func (am *AgentManager) GetManifest(ctx context.Context, agentID string) (*domai
 }
 
 // NewAgentManager creates a wired AgentManager.
-func NewAgentManager(reg domain.AgentRegistry, pyPath string, substrateAddr string, memoryAgent domain.MemoryAgent) *AgentManager {
-	im := NewInstanceManager(pyPath, substrateAddr)
+func NewAgentManager(reg domain.AgentRegistry, substrateAddr string, memoryAgent domain.MemoryAgent) *AgentManager {
+	im := NewInstanceManager(substrateAddr)
 	// SEC-01: let the InstanceManager honor each agent's declared memory_limit_mb
 	// over the global default at spawn time.
 	// The boot path's ctx (the caller's, ENG-1467 item 7) reaches the registry read.

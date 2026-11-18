@@ -12,7 +12,7 @@ import (
 // third-party agent is refused by default (fail closed, the zero-value
 // containment) and, under degrade, runs with the tier memory cap.
 func TestAdmitLaunch_ByTrustTier(t *testing.T) {
-	im := NewInstanceManager("python", "")
+	im := withPython(NewInstanceManager(""), "python")
 	im.SetAgentMemoryLimitMB(1024)
 
 	first := &domain.AgentDefinition{ID: "worker", TrustTier: "first-party"}
@@ -55,7 +55,7 @@ func TestAdmitLaunch_ByTrustTier(t *testing.T) {
 // The refusal happens before anything is spawned: the boot path returns the
 // tier error, not a spawn error, for a third-party agent.
 func TestBootAgentInstance_RefusesThirdPartyBeforeSpawn(t *testing.T) {
-	im := NewInstanceManager("definitely-not-an-interpreter", "")
+	im := withPython(NewInstanceManager(""), "definitely-not-an-interpreter")
 	_, err := im.bootAgentInstance(context.Background(),
 		&domain.AgentDefinition{ID: "vendor-bot", TrustTier: "third-party", Runtime: domain.RuntimePython}, false)
 	if err == nil || !strings.Contains(err.Error(), "ADR-0139 D8") {
@@ -69,7 +69,7 @@ func TestBootAgentInstance_RefusesThirdPartyBeforeSpawn(t *testing.T) {
 // ENG-1467 item 7: the boot path's ctx reaches the manifest read (it used to be
 // context.Background() inside the resolver closure).
 func TestAdmitLaunch_ManifestReadUsesTheBootContext(t *testing.T) {
-	im := NewInstanceManager("python", "")
+	im := withPython(NewInstanceManager(""), "python")
 	var got context.Context
 	im.SetManifestResolver(func(ctx context.Context, _ string) *domain.AgentManifest {
 		got = ctx

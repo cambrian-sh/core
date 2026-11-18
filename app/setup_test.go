@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -76,6 +75,15 @@ func TestWriteConfigBundleFreshAndIdempotent(t *testing.T) {
 		serverPort: "50051",
 		db:         setupDB{host: "db.example", port: "5433", user: "u", password: "p", dbname: "d"},
 	}
+	// A <prefix>/venv an older setup built: no longer a fallback (ADR-0157 D7.14).
+	for _, old := range []string{filepath.Join(prefix, "venv", "bin", "python"), filepath.Join(prefix, "venv", "Scripts", "python.exe")} {
+		if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(old, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if err := s.writeConfigBundle(); err != nil {
 		t.Fatalf("writeConfigBundle (fresh): %v", err)
@@ -108,6 +116,11 @@ func TestWriteConfigBundleFreshAndIdempotent(t *testing.T) {
 	if met["agents_dir"] != filepath.Join(prefix, "agents") {
 		t.Errorf("metabolism.agents_dir = %v", met["agents_dir"])
 	}
+	// ADR-0157 D7.14 (schema v4): setup records no interpreter at all, even
+	// with a <prefix>/venv from an older setup lying around.
+	if _, has := met["python_executable"]; has {
+		t.Errorf("fresh setup wrote metabolism.python_executable = %v", met["python_executable"])
+	}
 	if !fileExists(filepath.Join(prefix, "configs", "tuning.json")) {
 		t.Error("tuning.json sentinel not written")
 	}
@@ -115,8 +128,10 @@ func TestWriteConfigBundleFreshAndIdempotent(t *testing.T) {
 		t.Error("data dir not created")
 	}
 
-	// Re-run must preserve hand-edits (custom keys, an existing embedder block).
+	// Re-run must preserve hand-edits (custom keys, an existing embedder block)
+	// and drops the retired python_executable an older setup wrote.
 	cfg["custom_key"] = "keep-me"
+	cfg["metabolism"].(map[string]any)["python_executable"] = filepath.Join(prefix, "venv", "bin", "python")
 	cfg["embedder"] = map[string]any{"provider": "custom", "dimensions": float64(768)}
 	edited, _ := json.Marshal(cfg)
 	if err := os.WriteFile(cfgPath, edited, 0o644); err != nil {
@@ -133,6 +148,9 @@ func TestWriteConfigBundleFreshAndIdempotent(t *testing.T) {
 	}
 	if cfg2["custom_key"] != "keep-me" {
 		t.Error("rerun dropped a hand-edited key")
+	}
+	if _, has := cfg2["metabolism"].(map[string]any)["python_executable"]; has {
+		t.Error("rerun kept the retired metabolism.python_executable (ADR-0157 D7.14)")
 	}
 	if cfg2["embedder"].(map[string]any)["provider"] != "custom" {
 		t.Error("rerun overwrote an existing embedder block")
@@ -282,17 +300,6 @@ func TestStepOperatorIdempotent(t *testing.T) {
 	}
 	if s2.degraded {
 		t.Error("generation path must not degrade")
-	}
-}
-
-func TestVenvPythonPath(t *testing.T) {
-	p := venvPython(filepath.Join("x", "venv"))
-	if runtime.GOOS == "windows" {
-		if !strings.HasSuffix(p, filepath.Join("Scripts", "python.exe")) {
-			t.Errorf("venvPython = %s", p)
-		}
-	} else if !strings.HasSuffix(p, filepath.Join("bin", "python")) {
-		t.Errorf("venvPython = %s", p)
 	}
 }
 

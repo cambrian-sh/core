@@ -45,7 +45,7 @@ func TestE2E_OutCollectedBeforeTheScratchIsRemoved(t *testing.T) {
 	root := e2eRoot(t)
 	workRoot := filepath.Join(root, "w")
 	sb := NewAgentSandbox(AgentSandboxOptions{WorkRoot: workRoot, KernelDir: filepath.Join(root, "kernel")})
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	col := &recordingCollector{files: map[string]string{}}
@@ -88,6 +88,6 @@ func TestE2E_OutCollectedBeforeTheScratchIsRemoved(t *testing.T) {
 
 // Without a collector out/ goes with the scratch: nothing leaves.
 func TestCollectOutputs_NoCollectorIsANoop(t *testing.T) {
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.collectOutputs(context.Background(), "a", "i", t.TempDir()) // must not panic
 }

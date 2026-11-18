@@ -211,7 +211,7 @@ func (s *setupState) stepPython(ctx context.Context) {
 	}
 	if s.skipPython {
 		if st, err := b.Check(ctx); err == nil && st.Usable() {
-			s.venvPy = st.Interpreter
+			s.envPy = st.Interpreter
 		}
 		s.ui.line("ok", "python runtime", "skipped (--skip-python)")
 		return
@@ -246,7 +246,7 @@ func (s *setupState) stepPython(ctx context.Context) {
 		s.warnf("sandbox Python env not built", err.Error()+" — fix and re-run: cambrian-orchestrator python-env build")
 		return
 	}
-	s.venvPy = res.Interpreter
+	s.envPy = res.Interpreter
 	if res.Reused {
 		s.ui.line("ok", "sandbox Python env present", res.Generation)
 	} else {
@@ -255,7 +255,7 @@ func (s *setupState) stepPython(ctx context.Context) {
 
 	// Per-agent import self-check (PLAT-01): name EXACTLY which agent is
 	// missing which dist, not a vague "some import failed".
-	out, _ := s.exec(ctx, time.Minute, s.venvPy, "-c", setupSelfCheckPy, s.agentsDir)
+	out, _ := s.exec(ctx, time.Minute, s.envPy, "-c", setupSelfCheckPy, s.agentsDir)
 	missing := parseSelfCheck(out)
 	if len(missing) == 0 {
 		s.ui.line("ok", "per-agent dependency self-check", "")
@@ -265,7 +265,7 @@ func (s *setupState) stepPython(ctx context.Context) {
 		}
 		s.degraded = true
 	}
-	s.ui.line("ok", "python runtime", s.venvPy)
+	s.ui.line("ok", "python runtime", s.envPy)
 }
 
 // stepJSRuntime provisions the JS agent runtime (ADR-0125 D7): probe node,
@@ -349,19 +349,19 @@ func (s *setupState) stepModels(ctx context.Context) {
 	} else {
 		s.ui.line("warn", "ollama missing — embedder model not pulled", "install ollama, then: ollama pull "+setupEmbedderModel)
 	}
-	if s.venvPy != "" {
+	if s.envPy != "" {
 		rerank := os.Getenv("RERANK_MODEL")
 		if rerank == "" {
 			rerank = setupRerankModel
 		}
 		fmt.Print("  pre-fetching reranker (" + rerank + ")… ")
-		if _, ok := s.exec(ctx, 15*time.Minute, s.venvPy, "-c", "import sys; from huggingface_hub import snapshot_download as s; s(sys.argv[1])", rerank); ok {
+		if _, ok := s.exec(ctx, 15*time.Minute, s.envPy, "-c", "import sys; from huggingface_hub import snapshot_download as s; s(sys.argv[1])", rerank); ok {
 			fmt.Println(s.ui.green("done"))
 		} else {
 			fmt.Println(s.ui.yellow("deferred"))
 			s.ui.line("warn", "reranker pre-fetch deferred", "downloads on first use (a few hundred MB)")
 		}
-		if _, ok := s.exec(ctx, 15*time.Minute, s.venvPy, "-m", "docling.cli.models", "download"); ok {
+		if _, ok := s.exec(ctx, 15*time.Minute, s.envPy, "-m", "docling.cli.models", "download"); ok {
 			s.ui.line("ok", "docling models pre-fetched", "")
 		} else {
 			s.ui.line("warn", "docling models deferred", "download on first document parse")

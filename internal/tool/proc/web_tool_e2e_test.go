@@ -36,7 +36,7 @@ func TestWebTool_FailClosedWhenUnconfigured(t *testing.T) {
 		t.Fatal("web tool not discovered")
 	}
 	// No EnvPassthrough → provider config is scrubbed → fail-closed.
-	h := &ProcessHandler{PythonExec: py, ToolFiles: files, DefaultTimeout: 20 * time.Second}
+	h := &ProcessHandler{Interpreter: fixedInterpreter(py), ToolFiles: files, DefaultTimeout: 20 * time.Second}
 
 	args, _ := json.Marshal(map[string]string{"query": "anything"})
 	out, err := h.Execute(context.Background(), domain.ToolCall{ToolName: "web_search", ArgsJSON: args})
@@ -96,7 +96,7 @@ func TestWebTool_FirecrawlSearchAndExtract(t *testing.T) {
 		t.Skip("no tool manifests in this checkout; these E2E tests need a populated tools/ tree")
 	}
 	h := &ProcessHandler{
-		PythonExec:     py,
+		Interpreter:    fixedInterpreter(py),
 		ToolFiles:      files,
 		DefaultTimeout: 30 * time.Second,
 		EnvPassthrough: []string{"CAMBRIAN_WEB_PROVIDER", "CAMBRIAN_FIRECRAWL_URL", "CAMBRIAN_WEB_EXTRACT_PROVIDER"},
@@ -149,7 +149,7 @@ func TestWebTool_LiveSearch(t *testing.T) {
 	reg := domain.NewInMemoryToolRegistry()
 	files, _ := discovery.LoadRegistry(root+"/tools", reg, false)
 	h := &ProcessHandler{
-		PythonExec:     py,
+		Interpreter:    fixedInterpreter(py),
 		ToolFiles:      files,
 		DefaultTimeout: 30 * time.Second,
 		EnvPassthrough: []string{"CAMBRIAN_WEB_PROVIDER", "CAMBRIAN_WEB_API_KEY", "CAMBRIAN_SEARXNG_URL"},

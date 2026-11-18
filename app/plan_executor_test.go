@@ -65,7 +65,7 @@ func TestKernelPlanExecutor_RunsPlanThroughRealDAGExecutor(t *testing.T) {
 	srv := &subnetwork.Server{
 		// No Planner: the plugin already planned, and the authored-plan branch must
 		// not call one. A nil planner would panic if it did.
-		Manager:    agentmgr.NewAgentManager(metabolism.NewInMemoryRegistry(), "python", "unix:///tmp/x.sock", nil),
+		Manager:    agentmgr.NewAgentManager(metabolism.NewInMemoryRegistry(), "unix:///tmp/x.sock", nil),
 		Dispatcher: disp,
 		LLMGateway: gw,
 		ExecCfg:    cfg,

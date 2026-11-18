@@ -15,7 +15,7 @@ func TestBuildAgentCmd_LeaksNoKernelSecret(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "kernel-secret-must-not-leak")
 	t.Setenv("CAMBRIAN_OPERATOR_PASSWORD", "also-must-not-leak")
 	t.Setenv(AgentTokenEnv, "kernel-own-agent-token-must-not-leak")
-	im := NewInstanceManager("python", "localhost:0")
+	im := withPython(NewInstanceManager("localhost:0"), "python")
 	def := &domain.AgentDefinition{ID: "analyst_agent", Runtime: domain.RuntimePython, ExecPath: "agent.py"}
 	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "inst-1"}, "")
 	if err != nil {
@@ -52,7 +52,7 @@ func TestAgentConnector_TransportSelection(t *testing.T) {
 // a TLS transport the spawned agent is told the reachable address and the TLS
 // root (and server-name override), next to its credential.
 func TestBuildAgentCmd_TLSTransportReachesTheAgent(t *testing.T) {
-	im := NewInstanceManager("python", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "python")
 	im.SetAgentTransport(AgentTransport{Addr: "192.168.1.10:50051", TLSCAFile: "/etc/cambrian/tls.crt", TLSServerName: "kernel.lan"})
 	def := &domain.AgentDefinition{ID: "analyst_agent", Runtime: domain.RuntimePython, ExecPath: "agent.py"}
 	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "inst-1"}, "")
@@ -72,7 +72,7 @@ func TestBuildAgentCmd_TLSTransportReachesTheAgent(t *testing.T) {
 // Plaintext (loopback) transport injects no TLS variables, and an empty Addr
 // keeps the constructed address.
 func TestBuildAgentCmd_PlaintextTransportInjectsNoTLS(t *testing.T) {
-	im := NewInstanceManager("python", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "python")
 	im.SetAgentTransport(AgentTransport{TLSServerName: "ignored-without-a-root"})
 	def := &domain.AgentDefinition{ID: "a", Runtime: domain.RuntimeBinary, ExecPath: "agent"}
 	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "inst-1"}, "")

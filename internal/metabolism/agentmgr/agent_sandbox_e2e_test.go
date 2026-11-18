@@ -128,7 +128,7 @@ func TestE2E_SandboxedAgentBootsConfined(t *testing.T) {
 		KernelStatePaths: []string{filepath.Join(kernel, "configs"), data},
 		AllowlistCap:     []string{filepath.Join(root, "caches")},
 	})
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetManifestResolver(func(context.Context, string) *domain.AgentManifest {
@@ -278,7 +278,7 @@ func TestE2E_SandboxedAgentBootsConfined(t *testing.T) {
 func TestE2E_SandboxRefusesAnUndeclaredPathAtBoot(t *testing.T) {
 	root := e2eRoot(t)
 	sb := NewAgentSandbox(AgentSandboxOptions{WorkRoot: filepath.Join(root, "w"), AllowlistCap: []string{filepath.Join(root, "caches")}})
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	bad := filepath.Join(root, "home", ".ssh")
 	im.SetManifestResolver(func(context.Context, string) *domain.AgentManifest {

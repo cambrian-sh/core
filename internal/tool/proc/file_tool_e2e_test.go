@@ -57,7 +57,7 @@ func TestFileTool_JailSweepToCAS(t *testing.T) {
 		t.Skip("no tool manifests in this checkout; these E2E tests need a populated tools/ tree")
 	}
 	cas := newFakeContentStore()
-	h := &ProcessHandler{PythonExec: py, ToolFiles: files, DefaultTimeout: 10 * time.Second, ContentStore: cas}
+	h := &ProcessHandler{Interpreter: fixedInterpreter(py), ToolFiles: files, DefaultTimeout: 10 * time.Second, ContentStore: cas}
 
 	// Relative path → resolves against the jail cwd (the lossy case).
 	wargs, _ := json.Marshal(map[string]string{"path": "hello.txt", "content": "Hello from cambrian filesystem"})
@@ -112,7 +112,7 @@ func TestFileTool_RealIO(t *testing.T) {
 	if files["read_file"] == "" || files["write_file"] == "" {
 		t.Fatalf("file tool not discovered from %s (got %v)", toolsDir, files)
 	}
-	h := &ProcessHandler{PythonExec: py, ToolFiles: files, DefaultTimeout: 10 * time.Second}
+	h := &ProcessHandler{Interpreter: fixedInterpreter(py), ToolFiles: files, DefaultTimeout: 10 * time.Second}
 
 	work := filepath.Join(t.TempDir(), "note.txt")
 

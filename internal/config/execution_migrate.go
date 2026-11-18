@@ -24,14 +24,51 @@ import (
 // (retireConfigKeys for files and the ADR-0101 store, retiredEnvKey for CAMBRIAN_*
 // variables): a retired key is dropped with one WARN naming it, so an existing
 // deployment keeps starting and learns the setting never had an effect.
+//
+// SchemaV4PythonRetired is v3 minus metabolism.python_executable (ADR-0157 D7.14,
+// owner A1-Q13, ENG-2008): Python agents and the Python system tools run only on
+// the kernel-managed sandbox Python env, so the operator-chosen interpreter is
+// gone. Unlike the v3 keys it HAD an effect; every layer is migrated v3→v4 the
+// same way (dropped with one WARN naming D7), so a deployment that still sets it
+// keeps starting — on the managed interpreter.
 const (
-	SchemaV1Flat    = 1
-	SchemaV2Nested  = 2
-	SchemaV3Retired = 3
+	SchemaV1Flat          = 1
+	SchemaV2Nested        = 2
+	SchemaV3Retired       = 3
+	SchemaV4PythonRetired = 4
 
 	// CurrentSchemaVersion is what this build writes and expects.
-	CurrentSchemaVersion = SchemaV3Retired
+	CurrentSchemaVersion = SchemaV4PythonRetired
 )
+
+// retiredV4ConfigKeys are the keys schema v4 removed, with the reason.
+var retiredV4ConfigKeys = map[string]string{
+	"metabolism.python_executable": "ADR-0157 D7: Python agents and Python system tools run only on the kernel-managed sandbox Python env (execution.agents.python; `cambrian-orchestrator python-env status` names it); the kernel launches no other interpreter",
+}
+
+// retiredKeyReason looks a path up in both retirements: its reason, and the
+// schema version that retired it.
+func retiredKeyReason(path string) (reason string, schema int, ok bool) {
+	if r, ok := retiredConfigKeys[path]; ok {
+		return r, SchemaV3Retired, true
+	}
+	if r, ok := retiredV4ConfigKeys[path]; ok {
+		return r, SchemaV4PythonRetired, true
+	}
+	return "", 0, false
+}
+
+// allRetiredKeys lists every retired path (v3 and v4).
+func allRetiredKeys() []string {
+	out := make([]string, 0, len(retiredConfigKeys)+len(retiredV4ConfigKeys))
+	for k := range retiredConfigKeys {
+		out = append(out, k)
+	}
+	for k := range retiredV4ConfigKeys {
+		out = append(out, k)
+	}
+	return out
+}
 
 // retiredConfigKeys are the keys schema v3 removed, by their v2 path, with the
 // reason. A v1 flat spelling ("execution.max_recursion_depth") is retired with its
@@ -77,10 +114,19 @@ func logRetiredKey(path, origin string) {
 	if _, seen := retiredLogged.LoadOrStore(path+"|"+origin, true); seen {
 		return
 	}
+	reason, schema, _ := retiredKeyReason(path)
+	if schema == SchemaV4PythonRetired {
+		slog.Warn("config: retired key ignored (schema v4); Python agents run on the kernel-managed sandbox Python env (ADR-0157 D7), remove it",
+			slog.String("key", path),
+			slog.String("origin", origin),
+			slog.String("reason", reason),
+			slog.String("ticket", "ENG-2008"))
+		return
+	}
 	slog.Warn("config: retired key ignored (schema v3); it never had an effect, remove it",
 		slog.String("key", path),
 		slog.String("origin", origin),
-		slog.String("reason", retiredConfigKeys[path]),
+		slog.String("reason", reason),
 		slog.String("ticket", "ENG-1502"))
 }
 
@@ -129,7 +175,7 @@ func retireConfigKeys(doc map[string]any, origin string) []string {
 		logRetiredKey(reportAs, origin)
 		removed = append(removed, path)
 	}
-	for path := range retiredConfigKeys {
+	for _, path := range allRetiredKeys() {
 		drop(path, path)
 		if flat := retiredFlatSpelling(path); flat != "" {
 			drop(flat, path)
@@ -142,14 +188,14 @@ func retireConfigKeys(doc map[string]any, origin string) []string {
 // retiredEnvKey reports whether an environment-derived config path names a retired
 // key (nested or v1 flat spelling), logging it once. The caller drops the variable.
 func retiredEnvKey(path string) bool {
-	if _, ok := retiredConfigKeys[path]; ok {
+	if _, _, ok := retiredKeyReason(path); ok {
 		logRetiredKey(path, "environment")
 		return true
 	}
 	// A variable may also name a path INSIDE a retired map key
 	// (CAMBRIAN_EXECUTION__HIPPOCAMPUS__HIPPOCAMPUS_POLICIES__CODEGEN__SIMILARITY).
 	under := func(p, key string) bool { return p == key || strings.HasPrefix(p, key+".") }
-	for retired := range retiredConfigKeys {
+	for _, retired := range allRetiredKeys() {
 		if under(path, retired) {
 			logRetiredKey(retired, "environment")
 			return true

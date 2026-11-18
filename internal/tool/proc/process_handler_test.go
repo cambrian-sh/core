@@ -3,9 +3,11 @@ package proc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +62,12 @@ func isRealPython(p string) bool {
 	return err == nil && bytesHasPrefix(out, "Python ")
 }
 
+// fixedInterpreter is the handler's resolver for one interpreter (the kernel
+// resolves the managed env's per call, app.pythonInterpreterPath).
+func fixedInterpreter(py string) func() (string, error) {
+	return func() (string, error) { return py, nil }
+}
+
 func bytesHasPrefix(b []byte, s string) bool {
 	return len(b) >= len(s) && string(b[:len(s)]) == s
 }
@@ -77,7 +85,7 @@ func newHandler(t *testing.T, py string) (*ProcessHandler, string) {
 		t.Fatal(err)
 	}
 	return &ProcessHandler{
-		PythonExec:     py,
+		Interpreter:    fixedInterpreter(py),
 		ToolFiles:      map[string]string{"echo": filepath.Join(dir, "echo_tool.py")},
 		DefaultTimeout: 5 * time.Second,
 		EnvPassthrough: nil, // deny-by-default
@@ -127,7 +135,7 @@ func TestProcessHandler_TimeoutKills(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "sleep_tool.py"), []byte("import time\ntime.sleep(30)\n"), 0o644)
 	h := &ProcessHandler{
-		PythonExec:     py,
+		Interpreter:    fixedInterpreter(py),
 		ToolFiles:      map[string]string{"sleep": filepath.Join(dir, "sleep_tool.py")},
 		DefaultTimeout: 150 * time.Millisecond,
 	}
@@ -159,7 +167,7 @@ func TestProcessHandler_RelativeToolPathResolves(t *testing.T) {
 		t.Skip("tool path could not be made relative on this volume")
 	}
 	h := &ProcessHandler{
-		PythonExec:     py,
+		Interpreter:    fixedInterpreter(py),
 		ToolFiles:      map[string]string{"echo": rel}, // relative, like production discovery
 		DefaultTimeout: 5 * time.Second,
 	}
@@ -176,3 +184,26 @@ func TestProcessHandler_RelativeToolPathResolves(t *testing.T) {
 }
 
 var _ domain.ToolHandler = (*ProcessHandler)(nil)
+
+// ADR-0157 D7.14: Python system tools run on the kernel-managed interpreter,
+// resolved per call. While it is not ready the call is refused with the env's
+// reason — no tool process is started on anything else.
+func TestProcessHandler_RefusesWhileTheManagedEnvIsNotReady(t *testing.T) {
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "echo_tool.py")
+	if err := os.WriteFile(tool, []byte(echoTool), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &ProcessHandler{
+		Interpreter: func() (string, error) { return "", errors.New("sandbox Python env building (step: health probe)") },
+		ToolFiles:   map[string]string{"echo": tool},
+	}
+	_, err := h.Execute(context.Background(), domain.ToolCall{ToolName: "echo", ArgsJSON: []byte(`{}`)})
+	if err == nil || !strings.Contains(err.Error(), "sandbox Python env building") || !strings.Contains(err.Error(), "not run") {
+		t.Fatalf("err = %v, want the env refusal", err)
+	}
+	if _, err := (&ProcessHandler{ToolFiles: map[string]string{"echo": tool}}).Execute(context.Background(),
+		domain.ToolCall{ToolName: "echo"}); err == nil {
+		t.Fatal("no resolver must refuse")
+	}
+}

@@ -98,7 +98,7 @@ func dockerRunnerProbe(t *testing.T, image, tier string) {
 		RuntimeReadPaths: []string{runtimeDir},
 		AllowlistCap:     []string{filepath.Join(root, "caches")},
 	})
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetManifestResolver(func(context.Context, string) *domain.AgentManifest {

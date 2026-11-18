@@ -23,7 +23,7 @@ func (r *ctxRecordingRegistry) GetAgentByName(ctx context.Context, name string) 
 // run on context.Background().
 func TestSpawnDaemon_UsesTheCallersContext(t *testing.T) {
 	reg := &ctxRecordingRegistry{testRegistry: newTestRegistry()}
-	m := NewAgentManager(reg, "python", "", nil)
+	m := withPythonM(NewAgentManager(reg, "", nil), "python")
 	caller := domain.AgentPrincipal("operator-x")
 	ctx := domain.WithPrincipal(context.Background(), caller)
 

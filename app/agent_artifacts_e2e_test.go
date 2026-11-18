@@ -59,7 +59,7 @@ import (
 //
 // Needs a Python with the agent SDK and a migrated Postgres:
 //
-//	ARTIFACT_E2E_PY   the interpreter (e.g. sdk/.venv/Scripts/python.exe)
+//	ARTIFACT_E2E_PY   the kernel-managed env's interpreter (python-env status prints it)
 //	PG_TEST_DSN       a migrated, disposable database (through 0053)
 //
 // Linux runs the sandbox as bubblewrap, Windows as low integrity + a job object.
@@ -121,7 +121,7 @@ func TestE2E_ArtifactsLeaveOnlyThroughTheKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := agentmgr.NewAgentManager(reg, py, lis.Addr().String(), nil)
+	mgr := agentManagerWithPython(t, agentmgr.NewAgentManager(reg, lis.Addr().String(), nil), py)
 	im := mgr.InstanceManager
 	im.SetAgentBootTimeout(60 * time.Second)
 	kernelDir := filepath.Join(base, "kernel")

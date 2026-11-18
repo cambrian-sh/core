@@ -246,19 +246,31 @@ jobs:
       - name: Install bubblewrap and allow unprivileged user namespaces
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap python3-venv
+          sudo apt-get install -y -qq bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
           bwrap --version
           bwrap --ro-bind / / --unshare-user --unshare-net --dev /dev --proc /proc -- /bin/true
           echo "bubblewrap can create user and network namespaces"
 
-      - name: Build a venv with the agent SDK
+      # ADR-0157 D7 P2: agents launch only on the kernel-managed sandbox Python
+      # env, so the e2es get one, built by the CLI an operator runs: the pinned,
+      # hash-verified CPython and uv, the SDK built from its checkout (the agents
+      # speak its current channel), and the release base lock narrowed to the
+      # SDK's own dependencies (the full Linux base pulls ~3 GB of CUDA wheels).
+      # Still hash-checked and wheels only. The e2es refuse any other Python.
+      - name: Build the kernel-managed sandbox Python env (SDK only)
         run: |
-          python3 -m venv "$RUNNER_TEMP/agent-venv"
-          "$RUNNER_TEMP/agent-venv/bin/pip" install -q ./.sdk
-          "$RUNNER_TEMP/agent-venv/bin/python" -c 'import cambrian_agent_sdk.channel'
-          echo "AGENT_PY=$RUNNER_TEMP/agent-venv/bin/python" >> "$GITHUB_ENV"
+          awk '/^[A-Za-z0-9]/{n=tolower($1); sub(/[=;].*/,"",n);
+                 keep=(n=="cambrian-agent-sdk"||n=="grpcio"||n=="grpcio-health-checking"||n=="protobuf"||n=="typing-extensions")}
+               /^[A-Za-z0-9]/||/^ +--hash/{if(keep)print}' agents/base.lock > "$RUNNER_TEMP/sdk.lock"
+          mkdir -p "$RUNNER_TEMP/pyenv"
+          go run ./cmd/orchestrator python-env build --dir "$RUNNER_TEMP/pyenv" \
+            --lock "$RUNNER_TEMP/sdk.lock" --sdk-dir ./.sdk | tee "$RUNNER_TEMP/pyenv.log"
+          py=$(awk '/^  interpreter:/{print $2}' "$RUNNER_TEMP/pyenv.log")
+          test -x "$py"
+          "$py" -I -c 'import cambrian_agent_sdk.channel'
+          echo "AGENT_PY=$py" >> "$GITHUB_ENV"
 
       - name: Apply migrations to the test database
         env:

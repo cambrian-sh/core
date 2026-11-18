@@ -13,14 +13,24 @@ import (
 	"github.com/cambrian-sh/core/internal/pyenv"
 )
 
-const pythonEnvUsage = `usage: cambrian-orchestrator python-env <status|build> [--dir DIR]
+const pythonEnvUsage = `usage: cambrian-orchestrator python-env <status|build> [--dir DIR] [--sdk-dir SDK] [--lock FILE]
 
   status   run the boot check of the kernel-managed sandbox Python env (ADR-0157 D7)
   build    build (or repair) it now: pinned + hash-verified Python, the release's
            hashed base lock, wheels only; honours execution.agents.python
            (python_mirror_url, installer_mirror_url, index_url, wheelhouse, offline)
 
-The block is read from DIR/configs/config.json.
+The block is read from DIR/configs/config.json. Python agents and the Python
+system tools launch only on the interpreter status prints.
+
+Development and CI (build only):
+  --sdk-dir SDK  install the agent SDK built from this checkout (the directory
+                 holding pyproject.toml) instead of the lock's published SDK,
+                 as setup does in a dev tree (D7.4.5)
+  --lock FILE    install this fully hashed lock instead of the release's base
+                 lock (e.g. the SDK's dependencies only). The kernel's boot check
+                 reports such a generation stale, and build_on_boot replaces it
+                 with the release lock.
 `
 
 // RunPythonEnv implements the `python-env` subcommand: the boot check and the
@@ -39,6 +49,8 @@ func runPythonEnv(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs := flag.NewFlagSet("python-env "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", config.ResolveBaseDir(), "kernel base directory (the one holding configs/)")
+	sdkDir := fs.String("sdk-dir", "", "build: install the agent SDK built from this checkout (dev trees, CI)")
+	lockFile := fs.String("lock", "", "build: a fully hashed lock replacing the release base lock (dev, CI)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -56,6 +68,16 @@ func runPythonEnv(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if verb != "build" && (*sdkDir != "" || *lockFile != "") {
+		fmt.Fprintln(stderr, "--sdk-dir and --lock apply to build only")
+		return 2
+	}
+	if *lockFile != "" {
+		if b.Lock, err = os.ReadFile(*lockFile); err != nil {
+			fmt.Fprintln(stderr, "lock:", err)
+			return 1
+		}
+	}
 	switch verb {
 	case "status":
 		st, err := b.Check(ctx)
@@ -72,6 +94,14 @@ func runPythonEnv(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	case "build":
 		b.Actor = "operator-cli"
 		b.Progress = func(s string) { fmt.Fprintln(stdout, "  "+s) }
+		if *sdkDir != "" {
+			wheel, err := b.BuildSDKWheel(ctx, *sdkDir)
+			if err != nil {
+				fmt.Fprintln(stderr, "SDK wheel:", err)
+				return 1
+			}
+			b.SDKWheel = wheel
+		}
 		res, err := b.Build(ctx)
 		if err != nil {
 			fmt.Fprintln(stderr, "build failed:", err)
@@ -103,6 +133,7 @@ func printPythonEnvStatus(w io.Writer, root string, st pyenv.Status) {
 	}
 	if st.Interpreter != "" {
 		fmt.Fprintf(w, "  interpreter: %s\n", st.Interpreter)
+		fmt.Fprintf(w, "  pre-granted: %v\n", st.Granted)
 	}
 	if st.Reason != "" {
 		fmt.Fprintf(w, "  reason:      %s\n", st.Reason)

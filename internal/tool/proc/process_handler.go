@@ -24,8 +24,12 @@ import (
 
 // ProcessHandler invokes Python tool modules. It implements domain.ToolHandler.
 type ProcessHandler struct {
-	// PythonExec is the interpreter (e.g. the repo .venv python).
-	PythonExec string
+	// Interpreter resolves the Python a tool runs on, per call: in the kernel
+	// the kernel-managed env's current interpreter (ADR-0157 D7.14 — one
+	// interpreter for every Python process the kernel spawns; the retired
+	// metabolism.python_executable is gone). An error, e.g. the env still
+	// building, refuses the call with that reason.
+	Interpreter func() (string, error)
 	// ToolFiles maps a tool name to its *tool.py path (from discovery).
 	ToolFiles map[string]string
 	// DefaultTimeout caps each invocation; the child is killed on expiry.
@@ -63,8 +67,12 @@ func (h *ProcessHandler) Execute(ctx context.Context, call domain.ToolCall) ([]b
 	if !ok {
 		return nil, fmt.Errorf("tool %q has no registered handler module", call.ToolName)
 	}
-	if h.PythonExec == "" {
+	if h.Interpreter == nil {
 		return nil, fmt.Errorf("no python interpreter configured for tool execution")
+	}
+	python, err := h.Interpreter()
+	if err != nil {
+		return nil, fmt.Errorf("tool %q not run: %w", call.ToolName, err)
 	}
 
 	// Resolve the tool module to an absolute path BEFORE jailing the child's cwd
@@ -101,7 +109,7 @@ func (h *ProcessHandler) Execute(ctx context.Context, call domain.ToolCall) ([]b
 	}
 	stdin, _ := json.Marshal(toolInput{Tool: call.ToolName, Args: args})
 
-	cmd := exec.CommandContext(runCtx, h.PythonExec, file)
+	cmd := exec.CommandContext(runCtx, python, file)
 	cmd.Dir = jail
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = h.scrubbedEnv(jail)

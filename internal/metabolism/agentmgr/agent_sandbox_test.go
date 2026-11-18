@@ -49,7 +49,7 @@ func pythonDef() *domain.AgentDefinition {
 // Disabled (no sandbox): argv and env are exactly what the launch built before
 // ADR-0157 — socket under the OS temp directory, the SEC-01 env.
 func TestBuildAgentCmd_DisabledIsUnchanged(t *testing.T) {
-	im := NewInstanceManager("/opt/venv/bin/python", "127.0.0.1:50051")
+	im := withPython(NewInstanceManager("127.0.0.1:50051"), "/opt/venv/bin/python")
 	im.SetEnvExtras([]string{"CAMBRIAN_TOOL_MENU_K=8"})
 	def, inst := pythonDef(), domain.NewInstance("worker")
 	cmd, err := im.buildAgentCmd(def, inst, "")
@@ -74,8 +74,8 @@ func TestBuildAgentCmd_DisabledIsUnchanged(t *testing.T) {
 // socket directory under the sandbox work root (D2.6).
 func TestBuildAgentCmd_SandboxedMovesOnlyTheSocket(t *testing.T) {
 	sb, _ := testAgentSandbox(t, nil)
-	plain := NewInstanceManager("/opt/venv/bin/python", "127.0.0.1:50051")
-	boxed := NewInstanceManager("/opt/venv/bin/python", "127.0.0.1:50051")
+	plain := withPython(NewInstanceManager("127.0.0.1:50051"), "/opt/venv/bin/python")
+	boxed := withPython(NewInstanceManager("127.0.0.1:50051"), "/opt/venv/bin/python")
 	boxed.SetAgentContainment(AgentContainment{Sandbox: sb})
 	def, inst := pythonDef(), domain.NewInstance("worker")
 	a, _ := plain.buildAgentCmd(def, inst, "")
@@ -128,7 +128,7 @@ func TestSandboxLaunch_SpecFromTierAndAllowlist(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		py = filepath.Join(venv, "Scripts", "python.exe")
 	}
-	im := NewInstanceManager(py, "127.0.0.1:1")
+	im := withPython(NewInstanceManager("127.0.0.1:1"), py)
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	cache := filepath.Join(root, "caches", "hf")
 	im.SetManifestResolver(func(context.Context, string) *domain.AgentManifest {
@@ -207,7 +207,7 @@ func TestRuntimePrefixAndBindsNeverCoverThePrivateTmp(t *testing.T) {
 		}
 	}
 	sb, _ := testAgentSandbox(t, nil)
-	im := NewInstanceManager("/tmp/bin/python", "127.0.0.1:1")
+	im := withPython(NewInstanceManager("127.0.0.1:1"), "/tmp/bin/python")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	binds, err := im.agentBinds(context.Background(), pythonDef(), "/tmp/bin/python")
 	if err != nil {
@@ -256,13 +256,13 @@ func TestNewAgentSandbox_PolicyAndHideList(t *testing.T) {
 // refused, naming the missing controls.
 func TestAdmitLaunch_ThirdPartyWithSandboxIsAdmitted(t *testing.T) {
 	sb, _ := testAgentSandbox(t, nil)
-	im := NewInstanceManager("python", "")
+	im := withPython(NewInstanceManager(""), "python")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb, ThirdPartyMemoryMB: 768})
 	mem, err := im.admitLaunch(context.Background(), &domain.AgentDefinition{ID: "vendor", Runtime: domain.RuntimePython, TrustTier: "third-party"})
 	if err != nil || mem != 768 {
 		t.Fatalf("admit = %d, %v", mem, err)
 	}
-	bare := NewInstanceManager("python", "")
+	bare := withPython(NewInstanceManager(""), "python")
 	if _, err := bare.admitLaunch(context.Background(), &domain.AgentDefinition{ID: "vendor", TrustTier: "third-party"}); err == nil ||
 		!strings.Contains(err.Error(), "network") || !strings.Contains(err.Error(), "fs_confine") {
 		t.Fatalf("unsandboxed third-party: err = %v", err)
@@ -289,7 +289,7 @@ func TestNewAgentSandbox_KernelOnlyAll(t *testing.T) {
 // kernel socket; over TLS the unix authority's server name replaces the TCP one
 // (and is dropped when the certificate names localhost).
 func TestKernelOnlyCommand(t *testing.T) {
-	im := NewInstanceManager("python", "127.0.0.1:50051")
+	im := withPython(NewInstanceManager("127.0.0.1:50051"), "python")
 	c := sandbox.Command{Path: "python", Args: []string{"a.py", "--socket", "/s/a.sock", "--substrate-addr", "127.0.0.1:50051", "--profile", "x"},
 		Env: []string{"PATH=/bin", TLSCAEnv + "=/ca.pem", TLSServerNameEnv + "=kernel.lan"}}
 	got := im.kernelOnlyCommand(c, "/s/kernel.sock")
@@ -321,7 +321,7 @@ func TestStartSandboxed_KernelOnlyNeedsTheKernelSocket(t *testing.T) {
 	// Windows (ADR-0157 S5): the AppContainer has no loopback, so every tier
 	// there needs the kernel socket too.
 	sb, _ := testAgentSandbox(t, func(o *AgentSandboxOptions) { o.KernelOnlyAll = true })
-	im := NewInstanceManager("/bin/sh", "127.0.0.1:1")
+	im := withPython(NewInstanceManager("127.0.0.1:1"), "/bin/sh")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	def := &domain.AgentDefinition{ID: "probe", Runtime: domain.RuntimeBinary, ExecPath: "/bin/true"}
 	inst := domain.NewInstance(def.ID)
@@ -345,7 +345,7 @@ func TestReportContainment_OncePerAgent(t *testing.T) {
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	im := NewInstanceManager("python", "")
+	im := withPython(NewInstanceManager(""), "python")
 	def := &domain.AgentDefinition{ID: "chat_agent"}
 	degraded := sandbox.Report{ServerID: "chat_agent-1", Tier: sandbox.TierFirstParty, Runner: "native",
 		Enforced: []sandbox.Control{sandbox.ControlEnv, sandbox.ControlFSConfine},

@@ -9,7 +9,7 @@ import (
 
 // Cycle 1: SubstrateAddr field exists and is set by NewAgentManager
 func TestNewAgentManager_SubstrateAddr(t *testing.T) {
-	m := NewAgentManager(nil, "/usr/bin/python3", "localhost:50051", nil)
+	m := withPythonM(NewAgentManager(nil, "localhost:50051", nil), "/usr/bin/python3")
 	if m.InstanceManager.substrateAddr != "localhost:50051" {
 		t.Errorf("expected SubstrateAddr=%q, got %q", "localhost:50051", m.InstanceManager.substrateAddr)
 	}
@@ -17,7 +17,7 @@ func TestNewAgentManager_SubstrateAddr(t *testing.T) {
 
 // Cycle 0033-02: TraitDaemon injects --daemon-mode and --stream-id flags.
 func TestBuildAgentCmd_DaemonFlags(t *testing.T) {
-	m := NewAgentManager(nil, "/usr/bin/python3", "unix:/tmp/sub.sock", nil)
+	m := withPythonM(NewAgentManager(nil, "unix:/tmp/sub.sock", nil), "/usr/bin/python3")
 	inst := domain.NewInstance("gold-tracker")
 
 	t.Run("daemon injects --daemon-mode and --stream-id", func(t *testing.T) {
@@ -83,7 +83,7 @@ func TestBuildAgentCmd_DaemonFlags(t *testing.T) {
 
 // Cycle 2: buildAgentCmd includes --socket and --substrate-addr args
 func TestBuildAgentCmd_ArgsInjection(t *testing.T) {
-	m := NewAgentManager(nil, "/usr/bin/python3", "/tmp/cambrian_substrate.sock", nil)
+	m := withPythonM(NewAgentManager(nil, "/tmp/cambrian_substrate.sock", nil), "/usr/bin/python3")
 	inst := domain.NewInstance("test-agent")
 
 	t.Run("python runtime args", func(t *testing.T) {

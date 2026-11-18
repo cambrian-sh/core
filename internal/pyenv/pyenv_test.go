@@ -611,3 +611,91 @@ func TestEnvReadyWhileBuilding(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ADR-0157 D7.7.5 (P2): PrepareGeneration runs on the generation's build
+// directory while it is still EMPTY — before the interpreter is extracted or
+// anything installed — so an inheritable grant on it reaches every file; the
+// marker then records granted. A failing hook builds anyway, ungranted.
+func TestBuildPreGrantsTheEmptyGeneration(t *testing.T) {
+	f := newFixture(t)
+	b := f.builder(t)
+	var seen []string
+	b.PrepareGeneration = func(dir string) error {
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, e := range ents {
+			seen = append(seen, e.Name())
+		}
+		f.mu.Lock()
+		calls := len(f.calls)
+		f.mu.Unlock()
+		if calls != 0 {
+			t.Errorf("installer ran before the pre-grant: %v", f.calls)
+		}
+		if filepath.Dir(dir) != filepath.Join(f.root, dirBase) || !strings.HasPrefix(filepath.Base(dir), ".build-") {
+			t.Errorf("hook ran on %s, want the build directory under base/", dir)
+		}
+		return nil
+	}
+	res, err := b.Build(context.Background())
+	must(t, err)
+	if len(seen) != 0 {
+		t.Fatalf("the build directory was not empty at the pre-grant: %v", seen)
+	}
+	var m Marker
+	must(t, readJSON(filepath.Join(res.Generation, fileMarker), &m))
+	if !m.Granted {
+		t.Fatal("marker must record the pre-grant")
+	}
+	st, err := b.Check(context.Background())
+	must(t, err)
+	if !st.Granted || st.Home != res.Generation {
+		t.Fatalf("status %+v: want Granted and Home %s", st, res.Generation)
+	}
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(res.Generation)
+		must(t, err)
+		if fi.Mode().Perm()&0o005 != 0o005 {
+			t.Fatalf("generation mode %v: agents under another uid must read it", fi.Mode().Perm())
+		}
+	}
+
+	f2 := newFixture(t)
+	b2 := f2.builder(t)
+	b2.PrepareGeneration = func(string) error { return errors.New("no WRITE_DAC") }
+	res2, err := b2.Build(context.Background())
+	must(t, err)
+	var m2 Marker
+	must(t, readJSON(filepath.Join(res2.Generation, fileMarker), &m2))
+	if m2.Granted {
+		t.Fatal("a failed pre-grant must be recorded as not granted")
+	}
+}
+
+// Env.Interpreter is what the agent launch path reads per spawn (P2): the
+// real interpreter, its generation directory and the pre-grant once usable;
+// the gate's refusal before.
+func TestEnvInterpreter(t *testing.T) {
+	f := newFixture(t)
+	off := NewEnv(f.builder(t), false)
+	off.Start(context.Background())
+	if _, err := off.Interpreter(); err == nil || !strings.Contains(err.Error(), FixCommand) {
+		t.Fatalf("missing env: %v", err)
+	}
+	b := f.builder(t)
+	b.PrepareGeneration = func(string) error { return nil }
+	on := NewEnv(b, true)
+	on.Start(context.Background())
+	on.Wait()
+	pi, err := on.Interpreter()
+	must(t, err)
+	st := on.Status()
+	if pi.Path != st.Interpreter || pi.Home != filepath.Join(f.root, dirBase, st.Generation) || !pi.Granted {
+		t.Fatalf("interpreter %+v vs status %+v", pi, st)
+	}
+	if filepath.Dir(filepath.Dir(pi.Path)) != pi.Home {
+		t.Fatalf("interpreter %s is not inside its generation %s", pi.Path, pi.Home)
+	}
+}

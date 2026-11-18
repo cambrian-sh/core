@@ -92,7 +92,7 @@ func minimalServer(t *testing.T) *Server {
 	plan := &domain.ExecutionPlan{Subject: "test", Steps: []domain.Step{{Query: "do it"}}}
 	planner := &mockPlanner{responses: []plannerResponse{{plan: plan}}}
 	reg := metabolism.NewInMemoryRegistry()
-	mgr := agentmgr.NewAgentManager(reg, "python", "unix:///tmp/test.sock", nil)
+	mgr := agentmgr.NewAgentManager(reg, "unix:///tmp/test.sock", nil)
 	return &Server{
 		Planner: planner,
 		Manager: mgr,

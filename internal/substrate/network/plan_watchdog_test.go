@@ -195,7 +195,7 @@ func watchdogServer(t *testing.T, steps int, plan config.PlanConfig, caller call
 	t.Helper()
 	reg := metabolism.NewInMemoryRegistry()
 	reg.SetAgent(domain.AgentDefinition{ID: "worker", Name: "worker", Runtime: domain.RuntimePython, Trait: domain.TraitCognitive})
-	mgr := agentmgr.NewAgentManager(reg, "python", "unix://tmp/cambrian.sock", nil)
+	mgr := agentmgr.NewAgentManager(reg, "unix://tmp/cambrian.sock", nil)
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{Gatekeeper: config.GatekeeperConfig{
 		GatekeeperMaxCandidates: 5, GatekeeperW1: 0.4, GatekeeperW2: 0.4, GatekeeperW3: 0.2,
 	}})

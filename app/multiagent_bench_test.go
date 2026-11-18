@@ -67,26 +67,6 @@ func loadMAPlans(b *testing.B) []maPlan {
 
 // ── Health checks ─────────────────────────────────────────────────────────────
 
-// resolvePythonExecutable prefers the repo-local Cambrian venv (built by
-// scripts/setup-python-runtime.ps1 / .sh) so booted agents have the SDK
-// installed. Falls back to system "python" when the venv is absent.
-func resolvePythonExecutable() string {
-	candidates := []string{
-		filepath.Join("..", "..", ".venv", "Scripts", "python.exe"), // Windows
-		filepath.Join("..", "..", ".venv", "bin", "python"),         // Unix
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			abs, aerr := filepath.Abs(c)
-			if aerr == nil {
-				return abs
-			}
-			return c
-		}
-	}
-	return "python"
-}
-
 func ollamaUp() bool {
 	c := &http.Client{Timeout: 2 * time.Second}
 	resp, err := c.Get("http://localhost:11434/api/tags")
@@ -133,9 +113,9 @@ func bootstrapBenchmarkKernel(b *testing.B) (*Kernel, context.CancelFunc) {
 		b.Fatalf("resolve agents dir: %v", err)
 	}
 	cfg.Metabolism.AgentsDir = agentsDir
-	if cfg.Metabolism.PythonExecutable == "" || strings.Contains(cfg.Metabolism.PythonExecutable, "${") {
-		cfg.Metabolism.PythonExecutable = resolvePythonExecutable()
-	}
+	// Python agents run on the kernel-managed env (ADR-0157 D7):
+	// bootstrapKernel's boot check finds or builds it under
+	// execution.agents.python.root.
 
 	ctx, cancel := context.WithCancel(context.Background())
 

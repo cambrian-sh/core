@@ -45,7 +45,7 @@ import (
 //
 // Needs a Python with the agent SDK:
 //
-//	TOKEN_E2E_PY       the interpreter (e.g. sdk/.venv/Scripts/python.exe)
+//	TOKEN_E2E_PY       the kernel-managed env's interpreter (python-env status prints it)
 //	TOKEN_E2E_SANDBOX  (Linux, bubblewrap) non-empty: launch under the ADR-0157
 //	                   sandbox as third-party agents, so each instance is
 //	                   kernel-only and authenticates over its per-instance
@@ -55,7 +55,7 @@ import (
 func TestE2E_PerInstanceAgentTokens(t *testing.T) {
 	py := os.Getenv("TOKEN_E2E_PY")
 	if py == "" {
-		t.Skip("set TOKEN_E2E_PY to a Python with the agent SDK to run the per-instance token e2e")
+		t.Skip("set TOKEN_E2E_PY to the kernel-managed env's interpreter to run the per-instance token e2e")
 	}
 	sandboxed := os.Getenv("TOKEN_E2E_SANDBOX") != ""
 	if sandboxed && runtime.GOOS != "linux" {
@@ -99,7 +99,7 @@ func TestE2E_PerInstanceAgentTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := agentmgr.NewAgentManager(reg, py, lis.Addr().String(), nil)
+	mgr := agentManagerWithPython(t, agentmgr.NewAgentManager(reg, lis.Addr().String(), nil), py)
 	im := mgr.InstanceManager
 	im.SetAgentBootTimeout(60 * time.Second)
 	sockets := newAgentSocketServer()

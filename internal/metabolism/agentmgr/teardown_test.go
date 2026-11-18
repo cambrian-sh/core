@@ -98,7 +98,7 @@ func TestTeardownPaths_CleanupOutsideTheLockAndSocketRemoved(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	t.Run("EvictInstance", func(t *testing.T) {
-		im := NewInstanceManager("", "127.0.0.1:1")
+		im := NewInstanceManager("127.0.0.1:1")
 		p := &teardownProbe{}
 		inst := placeInstance(t, im, "a", domain.ModeJIT, p)
 		im.EvictInstance(inst.ID)
@@ -106,7 +106,7 @@ func TestTeardownPaths_CleanupOutsideTheLockAndSocketRemoved(t *testing.T) {
 		assertTornDown(t, im, p, 1, inst)
 	})
 	t.Run("ReleaseInstance", func(t *testing.T) {
-		im := NewInstanceManager("", "127.0.0.1:1")
+		im := NewInstanceManager("127.0.0.1:1")
 		p := &teardownProbe{}
 		daemon := placeInstance(t, im, "d", domain.ModeDaemon, &teardownProbe{})
 		im.ReleaseInstance(daemon.ID) // only a JIT instance is released
@@ -119,7 +119,7 @@ func TestTeardownPaths_CleanupOutsideTheLockAndSocketRemoved(t *testing.T) {
 		assertTornDown(t, im, p, 1, inst)
 	})
 	t.Run("EvictAgent", func(t *testing.T) {
-		im := NewInstanceManager("", "127.0.0.1:1")
+		im := NewInstanceManager("127.0.0.1:1")
 		p := &teardownProbe{}
 		i1 := placeInstance(t, im, "a", domain.ModeDaemon, p)
 		i2 := placeInstance(t, im, "a", domain.ModeJIT, p)
@@ -127,7 +127,7 @@ func TestTeardownPaths_CleanupOutsideTheLockAndSocketRemoved(t *testing.T) {
 		assertTornDown(t, im, p, 2, i1, i2)
 	})
 	t.Run("KillAllAgents", func(t *testing.T) {
-		im := NewInstanceManager("", "127.0.0.1:1")
+		im := NewInstanceManager("127.0.0.1:1")
 		p := &teardownProbe{}
 		i1 := placeInstance(t, im, "a", domain.ModeJIT, p)
 		i2 := placeInstance(t, im, "b", domain.ModeDaemon, p)
@@ -143,7 +143,7 @@ func TestTeardownPaths_CleanupOutsideTheLockAndSocketRemoved(t *testing.T) {
 // handle), and exactly once: a later eviction does not run it again.
 func TestCapCleanupOnExit_RunsOnceAfterTheProcessExits(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	p := &teardownProbe{}
 	inst := placeInstance(t, im, "a", domain.ModeJIT, p)
 

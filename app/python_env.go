@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 
 	core "github.com/cambrian-sh/core"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/pyenv"
+	"github.com/cambrian-sh/core/internal/sandbox"
 )
 
 // baseLockPath is the release's hashed base lock inside the embedded agents
@@ -33,11 +35,19 @@ func newPythonEnvBuilder(pc config.AgentPythonConfig, baseDir, configDir string)
 	if err != nil {
 		return nil, fmt.Errorf("embedded base lock %s: %w", baseLockPath, err)
 	}
+	// ADR-0157 D7.7.5: on Windows a new generation gets the AppContainer
+	// agents' inheritable read ACE while it is still empty, so the launch path
+	// never walks its ~1 GiB tree. The Unix runners bind paths and need none.
+	var prepare func(string) error
+	if runtime.GOOS == "windows" {
+		prepare = sandbox.GrantAgentRuntimeRead
+	}
 	return &pyenv.Builder{
-		Root:     pc.ResolvedRoot(absOr(baseDir)),
-		Pins:     pins,
-		Platform: platform,
-		Lock:     lock,
+		PrepareGeneration: prepare,
+		Root:              pc.ResolvedRoot(absOr(baseDir)),
+		Pins:              pins,
+		Platform:          platform,
+		Lock:              lock,
 		Sources: pyenv.Sources{
 			PythonMirror:    pc.PythonMirrorURL,
 			InstallerMirror: pc.InstallerMirrorURL,
@@ -65,16 +75,27 @@ func startPythonEnv(ctx context.Context, cfg *config.Config, baseDir string) pyt
 	return env
 }
 
-// pythonEnvGate is what the kernel keeps of the env: the agentmgr launch gate
-// plus Stop for shutdown.
+// pythonEnvGate is what the kernel keeps of the env: the interpreter every
+// Python agent and Python system tool launches on (agentmgr.PythonEnv), plus
+// Stop for shutdown.
 type pythonEnvGate interface {
-	Ready() error
+	Interpreter() (pyenv.Interpreter, error)
 	Stop()
 }
 
 type refusedPythonEnv struct{ err error }
 
-func (r refusedPythonEnv) Ready() error {
-	return fmt.Errorf("sandbox Python env unavailable: %w", r.err)
+func (r refusedPythonEnv) Interpreter() (pyenv.Interpreter, error) {
+	return pyenv.Interpreter{}, fmt.Errorf("sandbox Python env unavailable: %w", r.err)
 }
 func (refusedPythonEnv) Stop() {}
+
+// pythonInterpreterPath adapts the env to the Python system tools' resolver
+// (toolproc.ProcessHandler.Interpreter): the same managed interpreter as the
+// agents, read per call (ADR-0157 D7.14, one interpreter).
+func pythonInterpreterPath(env pythonEnvGate) func() (string, error) {
+	return func() (string, error) {
+		pi, err := env.Interpreter()
+		return pi.Path, err
+	}
+}

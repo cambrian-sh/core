@@ -64,7 +64,11 @@ func (im *InstanceManager) verifyPythonDeps(ctx context.Context, def *domain.Age
 	if m == nil || len(m.PythonDeps) == 0 {
 		return nil
 	}
-	if err := checkPythonDeps(ctx, im.runtimeExes[domain.RuntimePython], m.PythonDeps); err != nil {
+	pi, err := im.pythonInterpreter(def)
+	if err != nil {
+		return err
+	}
+	if err := checkPythonDeps(ctx, pi.Path, m.PythonDeps); err != nil {
 		return fmt.Errorf("agent %q: %w", def.ID, err)
 	}
 	return nil

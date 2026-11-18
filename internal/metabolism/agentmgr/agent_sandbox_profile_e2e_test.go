@@ -122,7 +122,7 @@ func TestE2E_ProfileAgentDeclaredPathInsideTheCapBoots(t *testing.T) {
 		KernelStatePaths: []string{filepath.Join(root, "data")},
 		AllowlistCap:     []string{filepath.Join(root, "caches")},
 	})
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetAgentContainment(AgentContainment{Sandbox: sb})
 	im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 	im.SetManifestResolver(resolve)
@@ -189,7 +189,7 @@ func TestE2E_ProfileAgentDeclaredPathRefusedAtBoot(t *testing.T) {
 			}
 			sb := NewAgentSandbox(AgentSandboxOptions{WorkRoot: filepath.Join(root, "w"),
 				KernelStatePaths: []string{filepath.Join(root, "data")}, AllowlistCap: []string{capRoot}})
-			im := NewInstanceManager("", "127.0.0.1:1")
+			im := NewInstanceManager("127.0.0.1:1")
 			im.SetAgentContainment(AgentContainment{Sandbox: sb})
 			im.SetAgentTransport(AgentTransport{KernelSocket: listenKernelSocketForTest})
 			im.SetManifestResolver(resolve)

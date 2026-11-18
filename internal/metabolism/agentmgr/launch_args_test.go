@@ -10,7 +10,7 @@ import (
 // A profile agent is the one runtime launched with its profile and its registry id
 // (agent stack v2): the per-agent LaunchArgs follow the kernel's own flags.
 func TestBuildAgentCmd_AppendsLaunchArgs(t *testing.T) {
-	im := NewInstanceManager("python", "localhost:50051")
+	im := withPython(NewInstanceManager("localhost:50051"), "python")
 	def := &domain.AgentDefinition{
 		ID: "data-analyst", Runtime: domain.RuntimePython, ExecPath: "worker_agent.py", Dir: "/agents",
 		LaunchArgs: []string{"--profile", "data-analyst", "--agent-id", "data-analyst"},

@@ -99,7 +99,7 @@ func TestChaos_AgentBoot_ChildExitFailsFast(t *testing.T) {
 	if testing.Short() {
 		t.Skip("chaos test launches a real subprocess; skipped in -short")
 	}
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	def := noSocketAgent()
 
 	start := time.Now()
@@ -131,7 +131,7 @@ func TestChaos_AgentBootTimeout_SocketNeverAppears(t *testing.T) {
 		t.Skip("chaos test launches a real subprocess; skipped in -short")
 	}
 	shortBootTimeout(t, 600*time.Millisecond)
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetEnvExtras([]string{chaosSleepEnv})
 	def := noSocketAgent()
 
@@ -162,7 +162,7 @@ func TestChaos_AgentBootTimeout_CallerCancelAbortsPoll(t *testing.T) {
 	if testing.Short() {
 		t.Skip("chaos test launches a real subprocess; skipped in -short")
 	}
-	im := NewInstanceManager("", "127.0.0.1:1")
+	im := NewInstanceManager("127.0.0.1:1")
 	im.SetEnvExtras([]string{chaosSleepEnv})
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()

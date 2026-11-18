@@ -73,11 +73,15 @@ type Marker struct {
 	// "+dev-sdk-wheel" when a dev tree's SDK wheel replaced the published SDK.
 	Source string `json:"source"`
 	// Actor is who built it: the setup user or system:kernel (boot builds).
-	Actor    string    `json:"actor"`
-	Packages int       `json:"packages"`
-	Health   string    `json:"health"`
-	Granted  bool      `json:"granted"` // set by P2 when the kernel pre-grants the tree
-	BuiltAt  time.Time `json:"built_at"`
+	Actor    string `json:"actor"`
+	Packages int    `json:"packages"`
+	Health   string `json:"health"`
+	// Granted records that PrepareGeneration put the agent sandbox's read grant
+	// on the generation directory before anything was extracted or installed
+	// into it, so every file inherited it (ADR-0157 D7.7.5; Windows
+	// AppContainer). The launch path then skips the per-file grant walk.
+	Granted bool      `json:"granted"`
+	BuiltAt time.Time `json:"built_at"`
 }
 
 // Current is current.json: which base generation new spawns use (D7.1.2).
@@ -112,6 +116,14 @@ type Builder struct {
 	HTTPClient *http.Client
 	// Progress, when set, receives each build step's name.
 	Progress func(step string)
+	// PrepareGeneration, when set, runs on a new generation's (still empty)
+	// build directory before the interpreter is extracted into it. The
+	// composition root sets it to the agent sandbox's grant on Windows
+	// (sandbox.GrantAgentRuntimeRead): an inheritable read ACE on the empty
+	// directory reaches every file the build then creates, so the launch path
+	// never walks the multi-GB tree (D7.7.5). nil, or an error, records the
+	// generation as not granted (the launch path then grants it as before).
+	PrepareGeneration func(dir string) error
 
 	run runFunc // nil ⇒ execRun; tests substitute it
 }
@@ -219,6 +231,21 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 			_ = os.RemoveAll(tmp)
 		}
 	}()
+	// MkdirTemp makes the directory 0700. The generation is read by agents
+	// that may run under another uid (the docker runner's non-root user, the
+	// separate uid of a root kernel, D2.2), so it is world-readable like the
+	// rest of the tree; only the kernel writes (D7.1.3).
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		return Result{}, err
+	}
+	granted := false
+	if b.PrepareGeneration != nil {
+		if err := b.PrepareGeneration(tmp); err != nil {
+			b.step("generation not pre-granted (" + err.Error() + "); agents launch with the per-file grant")
+		} else {
+			granted = true
+		}
+	}
 	b.step("extracting Python " + in.PythonVersion)
 	if err := extractTarGz(pyArchive, tmp, "python/"); err != nil {
 		return Result{}, fmt.Errorf("extract interpreter: %w", err)
@@ -268,7 +295,8 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 	}
 	m := Marker{
 		Kind: "base", ID: id, Inputs: in, Interpreter: interpreterRel(b.Platform), InterpreterSHA256: interpSum,
-		Source: source, Actor: actor, Packages: len(lock.Requirements), Health: "ok", BuiltAt: time.Now().UTC(),
+		Source: source, Actor: actor, Packages: len(lock.Requirements), Health: "ok", Granted: granted,
+		BuiltAt: time.Now().UTC(),
 	}
 	if err := writeJSON(filepath.Join(tmp, fileMarker), m); err != nil {
 		return Result{}, err

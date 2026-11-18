@@ -41,7 +41,7 @@ import (
 //
 // It needs bubblewrap and a Python with the SDK:
 //
-//	KERNEL_ONLY_E2E_PY  the interpreter (a venv with cambrian_agent_sdk)
+//	KERNEL_ONLY_E2E_PY  the kernel-managed env's interpreter (python-env status prints it)
 //
 // Run as a non-root uid the third-party tier lacks low_privilege (no lower uid
 // to drop to), so it runs with on_unavailable degrade and the network control
@@ -50,7 +50,7 @@ import (
 func TestE2E_NetworkByTrustTier(t *testing.T) {
 	py := os.Getenv("KERNEL_ONLY_E2E_PY")
 	if py == "" {
-		t.Skip("set KERNEL_ONLY_E2E_PY to a Python with the agent SDK to run the kernel-only network e2e")
+		t.Skip("set KERNEL_ONLY_E2E_PY to the kernel-managed env's interpreter to run the kernel-only network e2e")
 	}
 	if out, err := exec.Command("bwrap", "--ro-bind", "/", "/", "--unshare-net", "--unshare-user", "--", "/bin/true").CombinedOutput(); err != nil {
 		t.Skipf("bubblewrap unusable here: %v %s", err, out)
@@ -126,7 +126,7 @@ func TestE2E_NetworkByTrustTier(t *testing.T) {
 				ThirdPartyRefuse: asRoot,
 				KernelOnlyAll:    tc.kernelOnlyAll,
 			})
-			im := agentmgr.NewInstanceManager(py, tcp.Addr().String())
+			im := instanceManagerWithPython(t, agentmgr.NewInstanceManager(tcp.Addr().String()), py)
 			im.SetAgentContainment(agentmgr.AgentContainment{Sandbox: sb, ThirdPartyDegrade: !asRoot})
 			im.SetAgentTransport(agentmgr.AgentTransport{KernelSocket: sockets.Open})
 			im.SetAgentBootTimeout(60 * time.Second)

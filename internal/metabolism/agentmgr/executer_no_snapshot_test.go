@@ -51,7 +51,7 @@ func TestCallAgent_DoesNotCommitAgentDir(t *testing.T) {
 	reg.agents["agent-d"] = domain.AgentDefinition{ID: "agent-d", Dir: dir}
 	// A python path that does not exist: the boot fails, which is fine — the
 	// old snapshot ran before boot, so a failing call still exercised it.
-	m := NewAgentManager(reg, filepath.Join(t.TempDir(), "no-such-python"), "localhost:0", nil)
+	m := withPythonM(NewAgentManager(reg, "localhost:0", nil), filepath.Join(t.TempDir(), "no-such-python"))
 	_, _ = m.CallAgent(t.Context(), "agent-d", &domain.Handoff{
 		Context: map[string]string{"task_id": "task-0"},
 	})

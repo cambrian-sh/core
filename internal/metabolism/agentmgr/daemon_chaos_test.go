@@ -64,7 +64,7 @@ func TestChaos_DaemonKillRestartQuarantine(t *testing.T) {
 	var procs []*exec.Cmd
 	bootCount := 0
 
-	m := NewAgentManager(nil, "", "", nil)
+	m := withPythonM(NewAgentManager(nil, "", nil), "")
 	bus := newCountingBus()
 	m.EventBus = bus
 	// Small, fast backoff; quarantine after 2 restarts in the window.

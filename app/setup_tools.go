@@ -68,7 +68,7 @@ volumes:
 
 // setupSelfCheckPy is the per-agent import self-check (PLAT-01): for each
 // agents/**/requirements.txt, verify every pinned dist is installed in the
-// venv, and report which AGENT is missing which package.
+// kernel-managed env, and report which AGENT is missing which package.
 const setupSelfCheckPy = `import sys, glob, os
 from importlib.metadata import version, PackageNotFoundError
 root = sys.argv[1]
@@ -524,11 +524,10 @@ func (s *setupState) writeConfigBundle() error {
 	if met == nil {
 		met = map[string]any{}
 	}
-	if s.venvPy != "" {
-		met["python_executable"] = s.venvPy
-	} else if vp := venvPython(filepath.Join(s.prefix, "venv")); fileExists(vp) {
-		met["python_executable"] = vp
-	}
+	// ADR-0157 D7.14: Python agents run only on the kernel-managed env, so
+	// setup records no interpreter, and drops a python_executable an older
+	// setup wrote (schema v4 would ignore it with a WARN on every boot).
+	delete(met, "python_executable")
 	// ADR-0125: record the JS runtimes when resolved; absent keys keep the
 	// kernel's $PATH fallback.
 	if s.bunBin != "" {
@@ -688,13 +687,6 @@ func exeName(base string) string {
 		return base + ".exe"
 	}
 	return base
-}
-
-func venvPython(venvDir string) string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(venvDir, "Scripts", "python.exe")
-	}
-	return filepath.Join(venvDir, "bin", "python")
 }
 
 func fileExists(p string) bool {

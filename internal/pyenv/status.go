@@ -30,8 +30,22 @@ type Status struct {
 	State       State  `json:"state"`
 	Generation  string `json:"generation,omitempty"`  // directory name under base/
 	Interpreter string `json:"interpreter,omitempty"` // absolute path
-	Reason      string `json:"reason,omitempty"`
-	Packages    int    `json:"packages,omitempty"`
+	// Home is the generation directory (absolute): the one tree of the env an
+	// agent is shown, read-only (D7.1.3).
+	Home     string `json:"home,omitempty"`
+	Granted  bool   `json:"granted,omitempty"` // the marker's pre-grant (D7.7.5)
+	Reason   string `json:"reason,omitempty"`
+	Packages int    `json:"packages,omitempty"`
+}
+
+// Interpreter is what the agent launch path takes from the env (ADR-0157 D7
+// P2): the real interpreter to exec, the generation directory to show the
+// agent read-only, and whether that directory already carries the agent
+// sandbox's inheritable read grant.
+type Interpreter struct {
+	Path    string
+	Home    string
+	Granted bool
 }
 
 // Usable reports whether Python agents may run on the env as it is.
@@ -77,6 +91,7 @@ func inspect(ctx context.Context, run runFunc, root, dir string, want Inputs) St
 		return st
 	}
 	st.Packages = m.Packages
+	st.Home, st.Granted = gen, m.Granted
 	interp := filepath.Join(gen, filepath.FromSlash(m.Interpreter))
 	st.Interpreter = interp
 	sum, err := fileSHA256(interp)
