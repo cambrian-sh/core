@@ -54,8 +54,8 @@ func TestIdentityScanSource_RefusesNilScopeAndEmptyNamespace(t *testing.T) {
 			_, err := s.CandidateLinksSince(ctx, sc, ns, []string{"declared"}, pos, 10)
 			return err
 		},
-		"EntityExists": func(sc *domain.TagPredicate, ns string) error {
-			_, err := s.EntityExists(ctx, sc, ns, "a/1")
+		"EntityByID": func(sc *domain.TagPredicate, ns string) error {
+			_, _, err := s.EntityByID(ctx, sc, ns, "a/1")
 			return err
 		},
 		"EntitiesByLocal": func(sc *domain.TagPredicate, ns string) error {

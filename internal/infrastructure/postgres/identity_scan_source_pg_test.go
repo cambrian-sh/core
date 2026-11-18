@@ -139,9 +139,9 @@ func TestPg_IdentityScan_EveryQueryRuns(t *testing.T) {
 	check("confirmed links", len(l), err)
 	l, err = scans.CandidateLinksSince(ctx, sc, ns, []string{"declared", "reference"}, pos, 10)
 	check("candidate links", len(l), err)
-	ok, err := scans.EntityExists(ctx, sc, ns, "customer/nobody")
+	_, ok, err := scans.EntityByID(ctx, sc, ns, "customer/nobody")
 	if err != nil || ok {
-		t.Errorf("entity exists = %v, %v; want false, nil", ok, err)
+		t.Errorf("entity by id = %v, %v; want false, nil", ok, err)
 	}
 	ids, err := scans.EntitiesByLocal(ctx, sc, ns, `%\`, 8)
 	check("entities by local (metacharacters are data)", len(ids), err)

@@ -22,6 +22,14 @@ import (
 // access predicate on every row, keyed by the evidence it rests on: viaTypedRow
 // for a typed row (its own row classification can only narrow, ADR-0158 D2),
 // viaEvidence for an entity's minting evidence, evidenceRow for evidence itself. Neither is optional and neither is the caller's to apply.
+//
+// Every row also reads back the row classification it rests on (ADR-0158 D1,
+// ENG-1999): the producers read at ScopeSystem, so they see restricted rows, and a
+// link they derive must inherit those rows' tags. A read that reaches the same
+// fact by several routes reports the LEAST restricted route (fewest tags, then
+// the tag text), so the tags are always those of one real supporting row: never a
+// union that restricts more than any route did, never a guess that restricts
+// less.
 type PgIdentityScanSource struct {
 	pool *pgxpool.Pool
 }
@@ -65,7 +73,7 @@ func (s *PgIdentityScanSource) AliasObservations(ctx context.Context, scope *dom
 		return nil, nil
 	}
 	a := &sqlArgs{}
-	q := `SELECT o.id, o.entity_id, o.value_text, COALESCE(o.evidence_id, ''), o.occurred_at
+	q := `SELECT o.id, o.entity_id, o.value_text, COALESCE(o.evidence_id, ''), o.occurred_at, o.classification
 		 FROM observations o
 		 WHERE o.namespace_id=` + a.add(namespace) + `::text
 		   AND o.predicate = ANY(` + a.add(predicates) + `::text[])
@@ -80,7 +88,8 @@ func (s *PgIdentityScanSource) AliasObservations(ctx context.Context, scope *dom
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.IdentityAliasRow, error) {
 		var o domain.IdentityAliasRow
-		err := r.Scan(&o.ID, &o.EntityID, &o.Value, &o.EvidenceID, &o.OccurredAt)
+		err := r.Scan(&o.ID, &o.EntityID, &o.Value, &o.EvidenceID, &o.OccurredAt, &o.Classification)
+		o.Classification = rowClassificationRead(o.Classification)
 		return o, err
 	})
 }
@@ -95,7 +104,7 @@ func (s *PgIdentityScanSource) EntitiesSince(ctx context.Context, scope *domain.
 		return nil, err
 	}
 	a := &sqlArgs{}
-	q := `SELECT en.id, en.kind, en.created_at, COALESCE(en.first_seen_evidence, '')
+	q := `SELECT ` + identityScanEntityColumns + `
 		 FROM entities en
 		 WHERE en.namespace_id=` + a.add(namespace) + `::text
 		   AND (en.created_at, en.id) > (` + a.add(after.At) + `::timestamptz, ` + a.add(after.ID) + `::text)` +
@@ -120,25 +129,25 @@ func (s *PgIdentityScanSource) PartiesForEntity(ctx context.Context, scope *doma
 	a := &sqlArgs{}
 	ns, ent := a.add(namespace), a.add(entityID)
 	q := `WITH ev AS (
-			SELECT en.first_seen_evidence AS id FROM entities en
+			SELECT en.first_seen_evidence AS id, en.first_seen_classification AS cls FROM entities en
 			  WHERE en.namespace_id=` + ns + `::text AND en.id=` + ent + `::text AND en.first_seen_evidence IS NOT NULL` +
 		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 			UNION
-			SELECT o.evidence_id FROM observations o
+			SELECT o.evidence_id, o.classification FROM observations o
 			  WHERE o.namespace_id=` + ns + `::text AND o.entity_id=` + ent + `::text AND o.evidence_id IS NOT NULL` + notRetired("o") +
 		a.viaTypedRow(scope, "o.evidence_id", "o.classification") + `
 			UNION
-			SELECT x.evidence_id FROM events x
+			SELECT x.evidence_id, x.classification FROM events x
 			  JOIN event_roles r ON r.event_id = x.id
 			  WHERE x.namespace_id=` + ns + `::text AND r.entity_id=` + ent + `::text AND x.evidence_id IS NOT NULL` + notRetired("x") +
 		a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
 		)
-		SELECT DISTINCT p.party, e.id
+		SELECT DISTINCT ON (p.party, e.id) p.party, e.id, COALESCE(ev.cls, '{}')
 		FROM evidence e
 		JOIN ev ON ev.id = e.id
 		CROSS JOIN LATERAL unnest(e.parties) AS p(party)
 		WHERE e.namespace_id=` + ns + `::text` + a.evidenceRow(scope, "e") + `
-		ORDER BY p.party, e.id
+		ORDER BY p.party, e.id, ` + leastRestrictedOrder("ev.cls") + `
 		LIMIT ` + a.add(limit) + `::int`
 	rows, err := s.pool.Query(ctx, q, a.args...)
 	if err != nil {
@@ -146,7 +155,8 @@ func (s *PgIdentityScanSource) PartiesForEntity(ctx context.Context, scope *doma
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.IdentityPartyRow, error) {
 		var p domain.IdentityPartyRow
-		err := r.Scan(&p.Party, &p.EvidenceID)
+		err := r.Scan(&p.Party, &p.EvidenceID, &p.Classification)
+		p.Classification = rowClassificationRead(p.Classification)
 		return p, err
 	})
 }
@@ -173,25 +183,29 @@ func (s *PgIdentityScanSource) EntitiesWithParty(ctx context.Context, scope *dom
 			ORDER BY e.ingested_at DESC
 			LIMIT ` + a.add(identityPartyEvidenceScanLimit) + `::int
 		), ent AS (
-			SELECT en.id AS entity_id FROM entities en
+			SELECT en.id AS entity_id, en.first_seen_classification AS cls FROM entities en
 			  JOIN ev ON ev.id = en.first_seen_evidence
 			  WHERE en.namespace_id=` + ns + `::text` +
 		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 			UNION
-			SELECT o.entity_id FROM observations o
+			SELECT o.entity_id, o.classification FROM observations o
 			  JOIN ev ON ev.id = o.evidence_id
 			  WHERE o.namespace_id=` + ns + `::text` + notRetired("o") +
 		a.viaTypedRow(scope, "o.evidence_id", "o.classification") + `
 			UNION
-			SELECT r.entity_id FROM event_roles r
+			SELECT r.entity_id, x.classification FROM event_roles r
 			  JOIN events x ON x.id = r.event_id
 			  JOIN ev ON ev.id = x.evidence_id
 			  WHERE x.namespace_id=` + ns + `::text` + notRetired("x") +
 		a.viaTypedRow(scope, "x.evidence_id", "x.classification") + `
+		), route AS (
+			SELECT DISTINCT ON (entity_id) entity_id, COALESCE(cls, '{}') AS cls FROM ent
+			ORDER BY entity_id, ` + leastRestrictedOrder("cls") + `
 		)
-		SELECT en.id, en.kind, en.created_at, COALESCE(en.first_seen_evidence, '')
+		SELECT en.id, en.kind, en.created_at, COALESCE(en.first_seen_evidence, ''),
+		       ARRAY(SELECT DISTINCT u.t FROM unnest(COALESCE(en.first_seen_classification, '{}') || route.cls) AS u(t) ORDER BY u.t)
 		FROM entities en
-		JOIN ent ON ent.entity_id = en.id
+		JOIN route ON route.entity_id = en.id
 		WHERE en.namespace_id=` + ns + `::text AND en.kind=` + a.add(kind) + `::text` +
 		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 		ORDER BY en.created_at, en.id
@@ -206,7 +220,8 @@ func (s *PgIdentityScanSource) entities(ctx context.Context, what, q string, arg
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.IdentityEntityRow, error) {
 		var e domain.IdentityEntityRow
-		err := r.Scan(&e.ID, &e.Kind, &e.CreatedAt, &e.FirstSeenEvidence)
+		err := r.Scan(&e.ID, &e.Kind, &e.CreatedAt, &e.FirstSeenEvidence, &e.Classification)
+		e.Classification = rowClassificationRead(e.Classification)
 		return e, err
 	})
 	if err != nil {
@@ -221,7 +236,7 @@ func (s *PgIdentityScanSource) EventsSince(ctx context.Context, scope *domain.Ta
 		return nil, err
 	}
 	a := &sqlArgs{}
-	q := `SELECT x.id, x.event_type, x.occurred_at, COALESCE(x.evidence_id, '')
+	q := `SELECT x.id, x.event_type, x.occurred_at, COALESCE(x.evidence_id, ''), x.classification
 		 FROM events x
 		 WHERE x.namespace_id=` + a.add(namespace) + `::text
 		   AND (x.occurred_at, x.id) > (` + a.add(after.At) + `::timestamptz, ` + a.add(after.ID) + `::text)` +
@@ -264,7 +279,7 @@ func (s *PgIdentityScanSource) PriorEventsSharingEntity(ctx context.Context, sco
 		return nil, nil
 	}
 	a := &sqlArgs{}
-	q := `SELECT DISTINCT x.id, x.event_type, x.occurred_at, COALESCE(x.evidence_id, '')
+	q := `SELECT DISTINCT x.id, x.event_type, x.occurred_at, COALESCE(x.evidence_id, ''), x.classification
 		 FROM events x
 		 JOIN event_roles r ON r.event_id = x.id
 		 WHERE x.namespace_id=` + a.add(namespace) + `::text
@@ -284,7 +299,8 @@ func (s *PgIdentityScanSource) events(ctx context.Context, what, q string, args 
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.IdentityEventRow, error) {
 		var e domain.IdentityEventRow
-		err := r.Scan(&e.ID, &e.EventType, &e.OccurredAt, &e.EvidenceID)
+		err := r.Scan(&e.ID, &e.EventType, &e.OccurredAt, &e.EvidenceID, &e.Classification)
+		e.Classification = rowClassificationRead(e.Classification)
 		return e, err
 	})
 	if err != nil {
@@ -295,7 +311,18 @@ func (s *PgIdentityScanSource) events(ctx context.Context, what, q string, args 
 
 const identityScanLinkColumns = `l.id, l.namespace_id, l.family, l.from_ref, l.to_ref, l.relation, l.state, l.mechanism,
 		        l.producer, l.confidence, COALESCE(l.evidence_id, ''), l.asserted_by, l.asserted_at,
-		        l.recorded_at, l.valid_from, l.valid_to, l.source_ref`
+		        l.recorded_at, l.valid_from, l.valid_to, l.source_ref, l.classification`
+
+// identityScanEntityColumns is the projection of the scans that read an entity on
+// its own: the mint's classification is the row classification such a row rests
+// on.
+const identityScanEntityColumns = `en.id, en.kind, en.created_at, COALESCE(en.first_seen_evidence, ''), en.first_seen_classification`
+
+// leastRestrictedOrder orders route rows so DISTINCT ON keeps the least
+// restricted one: fewest tags, then the tag text for a stable choice.
+func leastRestrictedOrder(col string) string {
+	return `cardinality(COALESCE(` + col + `, '{}')), array_to_string(COALESCE(` + col + `, '{}'), ',')`
+}
 
 // ConfirmedIdentityLinks implements domain.IdentityScanSource. A link is fenced
 // on its own evidence (the query plane's filterLinks rule), so an evidence-less
@@ -345,8 +372,9 @@ func (s *PgIdentityScanSource) links(ctx context.Context, what, q string, args [
 		var evidence string
 		err := r.Scan(&l.ID, &l.NamespaceID, &l.Family, &l.FromRef, &l.ToRef,
 			&l.Relation, &l.State, &l.Mechanism, &l.Producer, &l.Confidence, &evidence,
-			&l.AssertedBy, &l.AssertedAt, &l.RecordedAt, &l.ValidFrom, &l.ValidTo, &l.SourceRef)
+			&l.AssertedBy, &l.AssertedAt, &l.RecordedAt, &l.ValidFrom, &l.ValidTo, &l.SourceRef, &l.Classification)
 		l.EvidenceID = domain.EvidenceID(evidence)
+		l.Classification = rowClassificationRead(l.Classification)
 		return l, err
 	})
 	if err != nil {
@@ -355,41 +383,38 @@ func (s *PgIdentityScanSource) links(ctx context.Context, what, q string, args [
 	return out, nil
 }
 
-// EntityExists implements domain.IdentityScanSource.
-func (s *PgIdentityScanSource) EntityExists(ctx context.Context, scope *domain.TagPredicate, namespace, id string) (bool, error) {
+// EntityByID implements domain.IdentityScanSource.
+func (s *PgIdentityScanSource) EntityByID(ctx context.Context, scope *domain.TagPredicate, namespace, id string) (domain.IdentityEntityRow, bool, error) {
 	if err := s.check(scope, namespace); err != nil {
-		return false, err
+		return domain.IdentityEntityRow{}, false, err
 	}
 	a := &sqlArgs{}
-	q := `SELECT EXISTS (SELECT 1 FROM entities en
+	q := `SELECT ` + identityScanEntityColumns + ` FROM entities en
 		 WHERE en.namespace_id=` + a.add(namespace) + `::text AND en.id=` + a.add(id) + `::text` +
-		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `)`
-	var exists bool
-	if err := s.pool.QueryRow(ctx, q, a.args...).Scan(&exists); err != nil {
-		return false, identityScanErr("entity exists", err)
+		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
+		 LIMIT 1`
+	rows, err := s.entities(ctx, "entity by id", q, a.args)
+	if err != nil || len(rows) == 0 {
+		return domain.IdentityEntityRow{}, false, err
 	}
-	return exists, nil
+	return rows[0], true, nil
 }
 
 // EntitiesByLocal implements domain.IdentityScanSource. A LIKE with the local
 // part escaped: a local id comes off a source's text and may carry % or _, and an
 // unescaped pattern would turn "OPS_412" into a wildcard. Exactly one hit is a
 // resolution; anything else is an ambiguity for a human.
-func (s *PgIdentityScanSource) EntitiesByLocal(ctx context.Context, scope *domain.TagPredicate, namespace, local string, limit int) ([]string, error) {
+func (s *PgIdentityScanSource) EntitiesByLocal(ctx context.Context, scope *domain.TagPredicate, namespace, local string, limit int) ([]domain.IdentityEntityRow, error) {
 	if err := s.check(scope, namespace); err != nil {
 		return nil, err
 	}
 	a := &sqlArgs{}
-	q := `SELECT en.id FROM entities en
+	q := `SELECT ` + identityScanEntityColumns + ` FROM entities en
 		 WHERE en.namespace_id=` + a.add(namespace) + `::text AND en.id LIKE ` + a.add("%/"+escapeLikeLiteral(local)) + `::text ESCAPE '\'` +
 		a.viaTypedRow(scope, "en.first_seen_evidence", "en.first_seen_classification") + `
 		 ORDER BY en.id
 		 LIMIT ` + a.add(limit) + `::int`
-	rows, err := s.pool.Query(ctx, q, a.args...)
-	if err != nil {
-		return nil, identityScanErr("entities by local id", err)
-	}
-	return pgx.CollectRows(rows, pgx.RowTo[string])
+	return s.entities(ctx, "entities by local id", q, a.args)
 }
 
 // escapeLikeLiteral makes source text safe inside a LIKE pattern with ESCAPE '\':

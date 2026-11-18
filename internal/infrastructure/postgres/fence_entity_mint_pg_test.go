@@ -12,7 +12,7 @@ import (
 // ADR-0158 stage 5 (D4 b) against a real migrated Postgres (PG_TEST_DSN): an
 // entity's mint is a typed row. Every first-seen read — the entity op's existence
 // gate (mayKnowEntityExists), the EntityHandles listing, the identity scans
-// (EntitiesSince, EntityExists, EntitiesByLocal, EntitiesWithParty and the mint
+// (EntitiesSince, EntityByID, EntitiesByLocal, EntitiesWithParty and the mint
 // route of PartiesForEntity) — fences the minting evidence AND the minting row's
 // classification (entities.first_seen_classification), so an entity minted only
 // by a row a mapping restricted is, for a reader the tag restricts, exactly a
@@ -76,11 +76,11 @@ func (f *slFixture) mintSnapshot(t *testing.T, scope *domain.TagPredicate, id st
 	}
 	since, err := scans.EntitiesSince(ctx, scope, "default", domain.IdentityScanPosition{}, 100000)
 	put("scan entities since", ids(since), err)
-	exists, err := scans.EntityExists(ctx, scope, "default", id)
+	_, exists, err := scans.EntityByID(ctx, scope, "default", id)
 	put("scan entity exists", exists, err)
 	local := id[strings.Index(id, "/")+1:]
 	byLocal, err := scans.EntitiesByLocal(ctx, scope, "default", local, 10)
-	put("scan by local", byLocal, err)
+	put("scan by local", ids(byLocal), err)
 	withParty, err := scans.EntitiesWithParty(ctx, scope, "default", emParty, emKind, 10)
 	put("scan with party", ids(withParty), err)
 	parties, err := scans.PartiesForEntity(ctx, scope, "default", id, 10)
@@ -166,7 +166,7 @@ func TestPg_EntityMint_ReadableRowStillRevealsTheEntity(t *testing.T) {
 		t.Errorf("a readable observation of a restricted-mint entity: rows=%v err=%v, want 1", point.Rows, err)
 	}
 	// The handle scans still answer by the mint only: no wider than before.
-	if ok, err := NewPgIdentityScanSource(f.pool).EntityExists(f.ctx, trNoGrant, "default", emMinted); err != nil || ok {
-		t.Errorf("EntityExists(restricted mint) = %v err=%v, want false", ok, err)
+	if _, ok, err := NewPgIdentityScanSource(f.pool).EntityByID(f.ctx, trNoGrant, "default", emMinted); err != nil || ok {
+		t.Errorf("EntityByID(restricted mint) = %v err=%v, want false", ok, err)
 	}
 }

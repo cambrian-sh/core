@@ -29,6 +29,12 @@ import (
 //     seed a shared identity proposal;
 //   - every read is confined to one namespace, and an empty namespace is refused.
 //
+// Every row also carries back the ROW classification it rests on (ADR-0158 D1;
+// ENG-1999). A kernel lane reading at ScopeSystem sees rows a mapping restricted,
+// so whatever it derives from them must carry their tags forward: a candidate link
+// proposed from a restricted observation inherits the observation's R, and is then
+// fenced like it. nil ≡ empty.
+//
 // Every method is bounded by limit; none can return "all of it".
 type IdentityScanSource interface {
 	// AliasObservations pages text-valued observations whose predicate is in
@@ -56,12 +62,13 @@ type IdentityScanSource interface {
 	// CandidateLinksSince pages unretracted candidate links written by one of
 	// mechanisms after a (recorded_at, id) position, oldest first.
 	CandidateLinksSince(ctx context.Context, scope *TagPredicate, namespace string, mechanisms []string, after IdentityScanPosition, limit int) ([]Link, error)
-	// EntityExists reports whether a scoped handle has been minted (and may be
-	// known under scope).
-	EntityExists(ctx context.Context, scope *TagPredicate, namespace, id string) (bool, error)
-	// EntitiesByLocal returns the scoped ids ending in "/"+local; local is data,
-	// never a pattern.
-	EntitiesByLocal(ctx context.Context, scope *TagPredicate, namespace, local string, limit int) ([]string, error)
+	// EntityByID returns a scoped handle when it has been minted and may be known
+	// under scope; ok is false otherwise. The row carries the mint's
+	// classification, which a link that names the handle must inherit.
+	EntityByID(ctx context.Context, scope *TagPredicate, namespace, id string) (row IdentityEntityRow, ok bool, err error)
+	// EntitiesByLocal returns the scoped handles whose id ends in "/"+local;
+	// local is data, never a pattern.
+	EntitiesByLocal(ctx context.Context, scope *TagPredicate, namespace, local string, limit int) ([]IdentityEntityRow, error)
 }
 
 // IdentityScanPosition is a (time, id) scan bookmark. Time alone is not a cursor:
@@ -81,6 +88,8 @@ type IdentityAliasRow struct {
 	Value      string
 	EvidenceID string
 	OccurredAt time.Time
+	// Classification is the observation's own row classification.
+	Classification []string
 }
 
 // IdentityEntityRow is a minted handle as a scan sees it.
@@ -89,12 +98,22 @@ type IdentityEntityRow struct {
 	Kind              string
 	CreatedAt         time.Time
 	FirstSeenEvidence string
+	// Classification is what a proposal derived from this row must carry: the
+	// mint's first_seen_classification and, for EntitiesWithParty, also the row
+	// classification of the route row (mint, observation or event) that put the
+	// handle on the party's evidence — the least restricted such route, so the
+	// tags are those of one real supporting row.
+	Classification []string
 }
 
 // IdentityPartyRow pairs a party identity with an evidence row carrying it.
 type IdentityPartyRow struct {
 	Party      string
 	EvidenceID string
+	// Classification is the row classification of the route row (the mint, an
+	// observation or an event) that put the handle on this evidence — the least
+	// restricted such route, so the tags are those of one real supporting row.
+	Classification []string
 }
 
 // IdentityEventRow is an occurrence as a scan sees it.
@@ -103,4 +122,6 @@ type IdentityEventRow struct {
 	EventType  string
 	OccurredAt time.Time
 	EvidenceID string
+	// Classification is the event's own row classification.
+	Classification []string
 }
