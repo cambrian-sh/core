@@ -533,9 +533,12 @@ func (a *appContainer) grantBinds(binds []Bind, hide []string) (notes []string, 
 			mask = accessModify
 		}
 		grant := ensureGrant
-		if b.Granted && !b.Private && !b.Write {
-			// ADR-0157 D7.7.5: the tree inherited the runtime ACE from its root
-			// when it was built; re-check (or add) the root's ACE, never walk it.
+		if b.Granted && !b.Write {
+			// ADR-0157 D7.7.5: the tree inherited the read ACE from its root when
+			// it was built — the shared runtime capability's for the base
+			// generation, this agent's own capability's for its package layer
+			// (Private, GrantAgentPrivateRead); re-check (or add) the root's ACE,
+			// never walk it.
 			grant = func(p string, s *windows.SID, m windows.ACCESS_MASK) error { return grantOne(p, s, m, true) }
 		}
 		if gerr := grant(target, sid, mask); gerr != nil {
@@ -556,6 +559,23 @@ func GrantAgentRuntimeRead(dir string) error {
 	sid, err := deriveCapabilitySID(runtimeCapabilityName)
 	if err != nil {
 		return fmt.Errorf("agent runtime capability: %w", err)
+	}
+	return grantOne(dir, sid, accessRead, true)
+}
+
+// GrantAgentPrivateRead puts agent identity's own capability
+// (cambrianAgent.<identity>) inheritable read ACE on dir — the grant grantBinds
+// gives a Private read bind. The kernel calls it on a new per-agent package
+// layer's empty build directory (ADR-0157 D7.5, D7.7.5), so every file the
+// install creates inherits it, no other agent's container can read the layer,
+// and the launch path need not walk it (Bind.Granted).
+func GrantAgentPrivateRead(identity, dir string) error {
+	if strings.TrimSpace(identity) == "" {
+		return fmt.Errorf("agent private grant of %s: no agent identity", dir)
+	}
+	sid, err := deriveCapabilitySID(containerName("cambrianAgent.", identity))
+	if err != nil {
+		return fmt.Errorf("agent capability: %w", err)
 	}
 	return grantOne(dir, sid, accessRead, true)
 }

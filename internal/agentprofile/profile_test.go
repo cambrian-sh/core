@@ -185,6 +185,30 @@ func rawCases(t *testing.T) []profileCase {
 		{Name: "sandbox-paths-scalar", Text: baseProfile + "sandbox_paths: " + `/srv/models` + "\n", ExpectedName: "tester"},
 		{Name: "sandbox-paths-flow-strings", Text: baseProfile + "sandbox_paths: " + `[/srv/models]` + "\n", ExpectedName: "tester"},
 		{Name: "sandbox-paths-block-strings", Text: baseProfile + "sandbox_paths:\n  - /srv/models\n", ExpectedName: "tester"},
+		// ADR-0157 D7.6 (ENG-2009): python_packages, one-line JSON [{"name", "version", "extras"}];
+		// exact versions, no URL/path/hash keys, no project twice (PEP 503 normalized).
+		{Name: "python-packages-ok", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": "1.9.0"}, {"name": "httpx", "version": "0.27.2", "extras": ["http2"]}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-epoch-local", Text: baseProfile + "python_packages: " + `[{"name": "Foo.Bar_baz", "version": "1!2.0.post1+local.7"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-extras-null", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": "1.9.0", "extras": null}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-empty-list", Text: baseProfile + "python_packages: " + `[]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-null", Text: baseProfile + "python_packages: " + `~` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-range", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": ">=1.9"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-eq-prefix", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": "==1.9.0"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-wildcard", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": "1.*"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-version-number", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": 1.9}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-missing-version", Text: baseProfile + "python_packages: " + `[{"name": "polars"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-missing-name", Text: baseProfile + "python_packages: " + `[{"version": "1.9.0"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-bad-name", Text: baseProfile + "python_packages: " + `[{"name": "polars @ https://x/p.whl", "version": "1.9.0"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-url-key", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": "1.9.0", "url": "https://x/p.whl"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-hash-key", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": "1.9.0", "hash": "sha256:00"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-duplicate-normalized", Text: baseProfile + "python_packages: " + `[{"name": "Foo_Bar", "version": "1.0"}, {"name": "foo-bar", "version": "2.0"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-extras-string", Text: baseProfile + "python_packages: " + `[{"name": "httpx", "version": "0.27.2", "extras": "http2"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-extras-bad", Text: baseProfile + "python_packages: " + `[{"name": "httpx", "version": "0.27.2", "extras": ["http 2"]}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-extras-duplicate", Text: baseProfile + "python_packages: " + `[{"name": "httpx", "version": "0.27.2", "extras": ["http2", "HTTP2"]}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-version-newline", Text: baseProfile + "python_packages: " + `[{"name": "polars", "version": "1.9.0\n"}]` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-object", Text: baseProfile + "python_packages: " + `{"name": "polars", "version": "1.9.0"}` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-scalar", Text: baseProfile + "python_packages: " + `polars==1.9.0` + "\n", ExpectedName: "tester"},
+		{Name: "python-packages-flow-strings", Text: baseProfile + "python_packages: " + `[polars]` + "\n", ExpectedName: "tester"},
 	}
 	// The shipped profiles, against the shipped skills (the kernel's view).
 	shipped := shippedSkillTools(t)
@@ -339,6 +363,28 @@ func TestParseVerdicts(t *testing.T) {
 		"sandbox-paths-path-not-string": false, "sandbox-paths-whitespace": false, "sandbox-paths-mixed": false,
 		"sandbox-paths-bad-json": false, "sandbox-paths-object": false, "sandbox-paths-scalar": false,
 		"sandbox-paths-flow-strings": false, "sandbox-paths-block-strings": false,
+		"python-packages-ok":                   true,
+		"python-packages-epoch-local":          true,
+		"python-packages-extras-null":          true,
+		"python-packages-empty-list":           true,
+		"python-packages-null":                 true,
+		"python-packages-range":                false,
+		"python-packages-eq-prefix":            false,
+		"python-packages-wildcard":             false,
+		"python-packages-version-number":       false,
+		"python-packages-missing-version":      false,
+		"python-packages-missing-name":         false,
+		"python-packages-bad-name":             false,
+		"python-packages-url-key":              false,
+		"python-packages-hash-key":             false,
+		"python-packages-duplicate-normalized": false,
+		"python-packages-extras-string":        false,
+		"python-packages-extras-bad":           false,
+		"python-packages-extras-duplicate":     false,
+		"python-packages-version-newline":      false,
+		"python-packages-object":               false,
+		"python-packages-scalar":               false,
+		"python-packages-flow-strings":         false,
 	} {
 		if byName[name].Valid != valid {
 			t.Errorf("%s: valid=%v, want %v", name, byName[name].Valid, valid)
@@ -360,6 +406,13 @@ func TestParseVerdicts(t *testing.T) {
 	}
 	if p := byName["sandbox-paths-windows"].Profile; p == nil || p.SandboxPaths[0].Path != `C:\models` {
 		t.Errorf("a JSON-escaped Windows path must decode to one backslash: %+v", p)
+	}
+	if p := byName["python-packages-ok"].Profile; p == nil || len(p.PythonPackages) != 2 ||
+		p.PythonPackages[0].Spec() != "polars==1.9.0" || p.PythonPackages[1].Spec() != "httpx[http2]==0.27.2" {
+		t.Errorf("python_packages parsed wrong: %+v", p)
+	}
+	if p := byName["base"].Profile; p == nil || p.PythonPackages != nil {
+		t.Errorf("python_packages defaults to none: %+v", p)
 	}
 	if p := byName["base"].Profile; p == nil || p.SandboxPaths != nil {
 		t.Errorf("sandbox_paths defaults to none: %+v", p)

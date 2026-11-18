@@ -95,6 +95,11 @@ type InstanceManager struct {
 	// pythonEnv is the kernel-managed Python env every Python agent launches
 	// on (ADR-0157 D7, python_env_gate.go); nil ⇒ Python agents are refused.
 	pythonEnv PythonEnv
+	// pythonLayers holds an agent until its declared python_packages are
+	// approved and installed, and names the layer it launches with (ADR-0157
+	// D7.6, P3; python_layers.go). nil refuses every agent that declares
+	// packages; agents that declare none are unaffected.
+	pythonLayers PythonLayers
 	// reported records the agent ids whose ADR-0157 containment report was
 	// already logged at INFO/WARN (agent_sandbox.go reportContainment).
 	reported sync.Map
@@ -406,6 +411,13 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 			"PYTHONUTF8=1",
 		)
 		cmd.Env = append(cmd.Env, im.envExtras...)
+		// ADR-0157 D7.5: the agent's own package layer, loaded by the base
+		// generation's real interpreter (no venv launcher).
+		layerEnv, err := im.pythonLayerEnv(def, pi)
+		if err != nil {
+			return nil, err
+		}
+		cmd.Env = withPythonPath(cmd.Env, layerEnv)
 	case domain.RuntimeBun, domain.RuntimeNode:
 		// ADR-0125: same argv contract as Python; the interpreter comes from
 		// config or $PATH (runtimeExecutable errors with the config key named).

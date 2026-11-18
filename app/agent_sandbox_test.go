@@ -46,3 +46,24 @@ func TestAnchorAgentSandboxPaths(t *testing.T) {
 		}
 	}
 }
+
+// ADR-0157 D7.1.3: the managed env root is the kernel's; under the kernel dir
+// (the default) that hide covers it, a root elsewhere is hidden explicitly so
+// bubblewrap's read-only / never shows another agent's package layer.
+func TestAnchorAgentSandboxPaths_HidesAnOutsidePythonRoot(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "cambrian")
+	configPath := filepath.Join(base, "configs", "config.json")
+	cfg := &config.Config{Backup: config.DefaultBackupConfig()}
+	anchorAgentSandboxPaths(cfg, configPath, base)
+	defRoot := filepath.Join(base, "runtime", "python")
+	if slices.Contains(cfg.Execution.Agents.Sandbox.KernelStatePaths, defRoot) {
+		t.Errorf("the default root lies in the hidden kernel dir; it needs no own entry: %v", cfg.Execution.Agents.Sandbox.KernelStatePaths)
+	}
+	outside := filepath.Join(t.TempDir(), "pyenv")
+	cfg = &config.Config{Backup: config.DefaultBackupConfig()}
+	cfg.Execution.Agents.Python.Root = outside
+	anchorAgentSandboxPaths(cfg, configPath, base)
+	if !slices.Contains(cfg.Execution.Agents.Sandbox.KernelStatePaths, outside) {
+		t.Fatalf("an env root outside the kernel dir must be hidden: %v", cfg.Execution.Agents.Sandbox.KernelStatePaths)
+	}
+}

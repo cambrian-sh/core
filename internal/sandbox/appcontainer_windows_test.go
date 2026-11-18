@@ -347,3 +347,45 @@ func TestAppContainerPreGrantedTreeIsInheritedAndNotWalked(t *testing.T) {
 		t.Fatal("kernel state readable")
 	}
 }
+
+// ADR-0157 D7.5 (P3): a per-agent package layer pre-granted to its agent's own
+// capability is read by that agent's container through inheritance (a Granted
+// Private bind is not walked) and by no other agent's container.
+func TestAppContainerPrivatePreGrantedLayerIsThatAgentsOnly(t *testing.T) {
+	f := newACFixture(t)
+	layer := filepath.Join(f.root, "runtime", "python", "layers", "analyst", "fedcba9876543210")
+	if err := os.MkdirAll(layer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantAgentPrivateRead("analyst", layer); err != nil {
+		t.Fatalf("pre-grant: %v", err)
+	}
+	if err := GrantAgentPrivateRead(" ", layer); err == nil {
+		t.Fatal("a grant with no agent identity must be refused")
+	}
+	mod := filepath.Join(layer, "site-packages", "dateutil", "__init__.py")
+	if err := os.MkdirAll(filepath.Dir(mod), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mod, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, spec := f.spec(t, TierFirstParty, "analyst", Bind{Path: layer, Private: true, Granted: true})
+	ac, pl := appContainerFor(p, spec, spec.tierPolicy(p), true)
+	if !pl.ok {
+		t.Fatalf("appcontainer unusable: %s", pl.why)
+	}
+	defer ac.close()
+	if !mustCanRead(t, ac.token, mod) {
+		t.Fatal("the owning agent must read a file written after the pre-grant")
+	}
+	p2, spec2 := f.spec(t, TierFirstParty, "reporter")
+	other, pl2 := appContainerFor(p2, spec2, spec2.tierPolicy(p2), true)
+	if !pl2.ok {
+		t.Fatalf("appcontainer unusable: %s", pl2.why)
+	}
+	defer other.close()
+	if mustCanRead(t, other.token, mod) {
+		t.Fatal("another agent's container read the layer")
+	}
+}

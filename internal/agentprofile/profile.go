@@ -48,7 +48,7 @@ var ModelRoles = []string{"planner", "verifier", "router", "memory", "facts"}
 var Fields = []string{
 	"name", "description", "capabilities", "skills", "tools", "model", "trust_tier",
 	"max_tool_rounds", "max_tokens", "role", "version", "examples", "streams_output",
-	"sandbox_paths",
+	"sandbox_paths", "python_packages",
 }
 
 // Required are the keys a profile must set.
@@ -115,6 +115,12 @@ type Profile struct {
 	// admitted at boot exactly like an AGENT_MANIFEST's sandbox_paths. Optional;
 	// one-line JSON: [{"path": "/srv/models"}, {"path": "~/cache", "write": true}].
 	SandboxPaths []domain.SandboxPath `json:"sandbox_paths"`
+	// PythonPackages are the packages the agent needs beyond the kernel-managed
+	// base env (ADR-0157 D7.6), carried into its manifest by discovery; the
+	// kernel resolves, card-approves and installs each into the agent's own
+	// layer before it starts the agent. Optional; one-line JSON:
+	// [{"name": "polars", "version": "1.9.0"}, {"name": "httpx", "version": "0.27.2", "extras": ["http2"]}].
+	PythonPackages []domain.PythonPackage `json:"python_packages"`
 	// Warnings are non-fatal findings (a capability new to the fleet vocabulary).
 	Warnings []string `json:"-"`
 }
@@ -279,6 +285,10 @@ func Parse(text string, opt Options) (Profile, error) {
 	}
 
 	if p.SandboxPaths, err = sandboxPathsField(data); err != nil {
+		return Profile{}, err
+	}
+
+	if p.PythonPackages, err = pythonPackagesField(data); err != nil {
 		return Profile{}, err
 	}
 
@@ -483,6 +493,68 @@ func sandboxPathsField(data map[string]any) ([]domain.SandboxPath, error) {
 		}
 		seen[path] = true
 		out = append(out, domain.SandboxPath{Path: path, Write: write})
+	}
+	return out, nil
+}
+
+// pythonPackagesField reads the optional python_packages (the SDK's
+// _python_packages_field, ADR-0157 D7.6): a list of {"name", "version",
+// "extras"} objects — name a PEP 508 project name, version one exact version
+// (no range, no "==", no wildcard), extras an optional list of extra names —
+// no other key (no URL, path, VCS reference or index), no project twice
+// (PEP 503 normalized). Absent, null or [] ⇒ none. Hashes are never declared:
+// the kernel resolves and pins them per platform (D7.6.1).
+func pythonPackagesField(data map[string]any) ([]domain.PythonPackage, error) {
+	v, present := data["python_packages"]
+	if !present || isEmpty(v) {
+		return nil, nil
+	}
+	l, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf(`"python_packages" must be a one-line JSON list of {"name": ..., "version": ...} objects`)
+	}
+	var out []domain.PythonPackage
+	for _, e := range l {
+		m, ok := e.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(`python_packages entry %s must be an object {"name": ..., "version": ...}`, pyRepr(e))
+		}
+		var extra []string
+		for k := range m {
+			if k != "name" && k != "version" && k != "extras" {
+				extra = append(extra, k)
+			}
+		}
+		if len(extra) > 0 {
+			sort.Strings(extra)
+			return nil, fmt.Errorf("python_packages entry has unknown key(s) %v; allowed: [extras name version]", extra)
+		}
+		name, ok := m["name"].(string)
+		if !ok || name == "" {
+			return nil, fmt.Errorf(`python_packages "name" must be a non-empty string`)
+		}
+		version, ok := m["version"].(string)
+		if !ok || version == "" {
+			return nil, fmt.Errorf(`python_packages %q: "version" must be a non-empty string`, name)
+		}
+		pkg := domain.PythonPackage{Name: name, Version: version}
+		if x, has := m["extras"]; has && x != nil {
+			xl, isList := x.([]any)
+			if !isList {
+				return nil, fmt.Errorf(`python_packages %q: "extras" must be a list of strings`, name)
+			}
+			for _, xe := range xl {
+				s, isStr := xe.(string)
+				if !isStr {
+					return nil, fmt.Errorf(`python_packages %q: "extras" must be a list of strings`, name)
+				}
+				pkg.Extras = append(pkg.Extras, s)
+			}
+		}
+		out = append(out, pkg)
+	}
+	if err := domain.ValidatePythonPackages(out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

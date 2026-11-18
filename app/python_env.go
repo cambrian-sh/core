@@ -80,6 +80,9 @@ func startPythonEnv(ctx context.Context, cfg *config.Config, baseDir string) pyt
 // Stop for shutdown.
 type pythonEnvGate interface {
 	Interpreter() (pyenv.Interpreter, error)
+	// Builder is the env's builder (nil when the env is unavailable on this
+	// host): the per-agent package layers resolve and install with it.
+	Builder() *pyenv.Builder
 	Stop()
 }
 
@@ -88,7 +91,8 @@ type refusedPythonEnv struct{ err error }
 func (r refusedPythonEnv) Interpreter() (pyenv.Interpreter, error) {
 	return pyenv.Interpreter{}, fmt.Errorf("sandbox Python env unavailable: %w", r.err)
 }
-func (refusedPythonEnv) Stop() {}
+func (refusedPythonEnv) Stop()                   {}
+func (refusedPythonEnv) Builder() *pyenv.Builder { return nil }
 
 // pythonInterpreterPath adapts the env to the Python system tools' resolver
 // (toolproc.ProcessHandler.Interpreter): the same managed interpreter as the

@@ -16,7 +16,7 @@ import (
 // torch/docling import just to check presence). It returns an error naming the
 // missing modules, so a missing package becomes an install-time failure with the
 // dep named rather than a silent post-spawn ImportError crash (PLAT-01).
-func checkPythonDeps(ctx context.Context, pythonPath string, deps []string) error {
+func checkPythonDeps(ctx context.Context, pythonPath string, deps []string, extraEnv ...string) error {
 	if len(deps) == 0 {
 		return nil
 	}
@@ -29,7 +29,7 @@ func checkPythonDeps(ctx context.Context, pythonPath string, deps []string) erro
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, pythonPath, "-c", script)
-	cmd.Env = procenv.Allowlisted(nil) // SEC-01: the check runs deny-by-default too
+	cmd.Env = append(procenv.Allowlisted(nil), extraEnv...) // SEC-01: the check runs deny-by-default too
 
 	out, err := cmd.Output()
 	if err == nil {
@@ -68,7 +68,12 @@ func (im *InstanceManager) verifyPythonDeps(ctx context.Context, def *domain.Age
 	if err != nil {
 		return err
 	}
-	if err := checkPythonDeps(ctx, pi.Path, m.PythonDeps); err != nil {
+	// The import check sees what the agent will: the base plus its layer.
+	layerEnv, err := im.pythonLayerEnv(def, pi)
+	if err != nil {
+		return err
+	}
+	if err := checkPythonDeps(ctx, pi.Path, m.PythonDeps, layerEnv...); err != nil {
 		return fmt.Errorf("agent %q: %w", def.ID, err)
 	}
 	return nil
@@ -80,10 +85,19 @@ func (im *InstanceManager) verifyPythonDeps(ctx context.Context, def *domain.Age
 // gets the PLAT-01 import self-check above; bun/node agents get the
 // node_modules presence check (js_deps_check.go); other runtimes have no check.
 func (im *InstanceManager) verifyRuntimeDeps(ctx context.Context, def *domain.AgentDefinition) error {
+	// ADR-0157 D7.6.4: python_packages apply only to Python agents.
+	if def.Runtime != domain.RuntimePython && len(im.declaredPythonPackages(ctx, def)) > 0 {
+		return fmt.Errorf("agent %s not started: python_packages is declared but the agent's runtime is %s; only Python agents the kernel spawns take packages (ADR-0157 D7.6)", def.ID, def.Runtime)
+	}
 	if domain.IsJSRuntime(def.Runtime) {
 		return im.verifyJSDeps(def)
 	}
 	if err := im.checkPythonEnv(def); err != nil {
+		return err
+	}
+	// ADR-0157 D7.6.3: held until every declared package is approved and
+	// installed into the agent's own layer.
+	if err := im.ensurePythonLayer(ctx, def); err != nil {
 		return err
 	}
 	return im.verifyPythonDeps(ctx, def)

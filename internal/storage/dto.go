@@ -57,12 +57,23 @@ type ManifestRecord struct {
 	StreamsOutput bool `json:"streams_output,omitempty"`
 	// SandboxPaths: the agent's declared confinement allowlist (ADR-0157 D1.2).
 	SandboxPaths []SandboxPathRecord `json:"sandbox_paths,omitempty"`
+	// PythonPackages: the packages the agent's own layer needs beyond the
+	// managed base env, each installed only after an Operator approved it
+	// (ADR-0157 D7.6).
+	PythonPackages []PythonPackageRecord `json:"python_packages,omitempty"`
 }
 
 // SandboxPathRecord is one declared sandbox path (domain.SandboxPath).
 type SandboxPathRecord struct {
 	Path  string `json:"path"`
 	Write bool   `json:"write,omitempty"`
+}
+
+// PythonPackageRecord is one declared Python package (domain.PythonPackage).
+type PythonPackageRecord struct {
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	Extras  []string `json:"extras,omitempty"`
 }
 
 // TaskEventRecord is the raw JSON shape stored in the bbolt task_events bucket.

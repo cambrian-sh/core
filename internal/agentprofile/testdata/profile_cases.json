@@ -21,6 +21,7 @@
       "max_tool_rounds",
       "model",
       "name",
+      "python_packages",
       "role",
       "sandbox_paths",
       "skills",
@@ -102,7 +103,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -142,7 +144,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -174,7 +177,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -246,7 +250,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -342,7 +347,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -406,7 +412,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -494,7 +501,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 1
     },
@@ -582,7 +590,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -622,7 +631,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -662,7 +672,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -718,7 +729,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -766,7 +778,8 @@
         "version": "1.0.0",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -830,7 +843,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -870,7 +884,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -958,7 +973,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -998,7 +1014,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1046,7 +1063,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1086,7 +1104,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1126,7 +1145,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1222,7 +1242,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1274,7 +1295,8 @@
           "Padded example"
         ],
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1317,7 +1339,8 @@
           "another task"
         ],
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1357,7 +1380,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1397,7 +1421,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1469,7 +1494,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": true,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1501,7 +1527,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1533,7 +1560,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": true,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1565,7 +1593,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1639,7 +1668,8 @@
           "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
         ],
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1679,7 +1709,8 @@
             "path": "~/cache/hf",
             "write": true
           }
-        ]
+        ],
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1718,7 +1749,8 @@
           {
             "path": "D:/data"
           }
-        ]
+        ],
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1757,7 +1789,8 @@
           {
             "path": "~\\cache"
           }
-        ]
+        ],
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1793,7 +1826,8 @@
           {
             "path": "/srv/a"
           }
-        ]
+        ],
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1825,7 +1859,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1857,7 +1892,8 @@
         "version": "1.2.3",
         "examples": null,
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -1998,6 +2034,329 @@
       "warnings": 0
     },
     {
+      "name": "python-packages-ok",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"1.9.0\"}, {\"name\": \"httpx\", \"version\": \"0.27.2\", \"extras\": [\"http2\"]}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": null,
+        "python_packages": [
+          {
+            "name": "polars",
+            "version": "1.9.0"
+          },
+          {
+            "name": "httpx",
+            "version": "0.27.2",
+            "extras": [
+              "http2"
+            ]
+          }
+        ]
+      },
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-epoch-local",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"Foo.Bar_baz\", \"version\": \"1!2.0.post1+local.7\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": null,
+        "python_packages": [
+          {
+            "name": "Foo.Bar_baz",
+            "version": "1!2.0.post1+local.7"
+          }
+        ]
+      },
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-extras-null",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"1.9.0\", \"extras\": null}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": null,
+        "python_packages": [
+          {
+            "name": "polars",
+            "version": "1.9.0"
+          }
+        ]
+      },
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-empty-list",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: []\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": null,
+        "python_packages": null
+      },
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-null",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: ~\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": true,
+      "profile": {
+        "name": "tester",
+        "description": "Tests things. Second sentence.",
+        "role": "You test: carefully.",
+        "capabilities": [
+          "analysis",
+          "file_read"
+        ],
+        "skills": [
+          "alpha"
+        ],
+        "tools": [
+          "mcp:filesystem/read_*",
+          "mcp:time/*"
+        ],
+        "trust_tier": "first-party",
+        "model": "",
+        "max_tool_rounds": 8,
+        "max_tokens": null,
+        "version": "1.2.3",
+        "examples": null,
+        "streams_output": false,
+        "sandbox_paths": null,
+        "python_packages": null
+      },
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-range",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"\u003e=1.9\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-eq-prefix",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"==1.9.0\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-wildcard",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"1.*\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-version-number",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": 1.9}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-missing-version",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-missing-name",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"version\": \"1.9.0\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-bad-name",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars @ https://x/p.whl\", \"version\": \"1.9.0\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-url-key",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"1.9.0\", \"url\": \"https://x/p.whl\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-hash-key",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"1.9.0\", \"hash\": \"sha256:00\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-duplicate-normalized",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"Foo_Bar\", \"version\": \"1.0\"}, {\"name\": \"foo-bar\", \"version\": \"2.0\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-extras-string",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"httpx\", \"version\": \"0.27.2\", \"extras\": \"http2\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-extras-bad",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"httpx\", \"version\": \"0.27.2\", \"extras\": [\"http 2\"]}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-extras-duplicate",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"httpx\", \"version\": \"0.27.2\", \"extras\": [\"http2\", \"HTTP2\"]}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-version-newline",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [{\"name\": \"polars\", \"version\": \"1.9.0\\n\"}]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-object",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: {\"name\": \"polars\", \"version\": \"1.9.0\"}\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-scalar",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: polars==1.9.0\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
+      "name": "python-packages-flow-strings",
+      "text": "# a comment\nname: tester\nversion: 1.2.3\ndescription: Tests things. Second sentence.\nrole: \"You test: carefully.\"\ncapabilities:\n  - analysis\n  - file_read\nskills:\n  - alpha\ntools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\ntrust_tier: first-party\nmax_tool_rounds: 8\npython_packages: [polars]\n",
+      "expected_name": "tester",
+      "skills": null,
+      "valid": false,
+      "warnings": 0
+    },
+    {
       "name": "shipped-assistant",
       "text": "# Agent stack v2 starter profile (agents/profiles/README.md). Run by agents/worker_agent.py.\nname: assistant\nversion: 1.1.0\ndescription: General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully, writes structured reports checked against their sources, and organises files and folders by creating folders and moving or renaming files.\nrole: \"You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head. To file, move or rename files, use the organise-files skill: move files with move_file and never rewrite a file to move it.\"\ncapabilities:\n  - general_purpose\n  - summarisation\n  - file_read\n  - file_write\n  - file_organisation\nskills:\n  - file-report\n  - summarise\n  - organise-files\ntools:\n  - mcp:filesystem/read_*\n  - mcp:filesystem/list_*\n  - mcp:filesystem/directory_tree\n  - mcp:filesystem/search_files\n  - mcp:filesystem/get_file_info\n  - mcp:filesystem/write_file\n  - mcp:filesystem/create_directory\n  - mcp:filesystem/move_file\n  - mcp:pdf-reader/*\n  - mcp:markitdown/*\n  - mcp:time/*\n  - mcp:calculator/calculate\nexamples:\n  - Summarise the PDF report in my downloads folder in five bullet points\n  - Read these meeting notes and write a structured report of the decisions and owners\n  - What is 18.5 percent of 4,382,950?\n  - Move last month's PDF receipts from Downloads into Documents/Receipts and rename them by date and title\ntrust_tier: first-party\nmax_tool_rounds: 24\n",
       "expected_name": "assistant",
@@ -2091,7 +2450,8 @@
           "Move last month's PDF receipts from Downloads into Documents/Receipts and rename them by date and title"
         ],
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -2180,7 +2540,8 @@
           "Compute summary statistics for each numeric column and explain the caveats"
         ],
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     },
@@ -2268,7 +2629,8 @@
           "Compare the published benchmarks of two open-source vector databases"
         ],
         "streams_output": false,
-        "sandbox_paths": null
+        "sandbox_paths": null,
+        "python_packages": null
       },
       "warnings": 0
     }

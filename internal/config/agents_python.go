@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // AgentPythonConfig is execution.agents.python: the kernel-managed Python
@@ -18,9 +19,11 @@ import (
 //
 // The Python version and every digest are in the kernel's embedded pin table
 // (internal/pyenv/pins.json), never here. P1 (ENG-2007) adds the keys the env
-// builder reads; allow_sdists, request_wait_seconds, approval_ttl_hours and gc
-// arrive with the stages that read them (P3-P5), so no key is parsed without a
-// consumer (AGENTS.md §3.4).
+// builder reads; P3 (ENG-2009) adds approval_ttl_hours; request_wait_seconds
+// and gc arrive with the stages that read them (P4-P5), so no key is parsed
+// without a consumer (AGENTS.md §3.4). allow_sdists is not added: wheels only
+// is fixed, because a source build would run arbitrary code in the kernel
+// (A1-Q7).
 type AgentPythonConfig struct {
 	// Root is the env root; relative paths resolve against the kernel base
 	// directory. "" ⇒ <kernel base dir>/runtime/python (D7.1.1).
@@ -44,6 +47,18 @@ type AgentPythonConfig struct {
 	// <root>/downloads or behind a file:// mirror, wheels come only from the
 	// wheelhouse.
 	Offline bool `json:"offline,omitempty"`
+	// ApprovalTTLHours bounds an unanswered python_package approval card
+	// (ADR-0157 D7.8.7, P3): it then expires fail-closed and the kernel asks
+	// again at the agent's next spawn. 0 ⇒ 72.
+	ApprovalTTLHours int `json:"approval_ttl_hours,omitempty"`
+}
+
+// ApprovalTTL is approval_ttl_hours as a duration (0 ⇒ 72 h).
+func (c AgentPythonConfig) ApprovalTTL() time.Duration {
+	if c.ApprovalTTLHours <= 0 {
+		return 72 * time.Hour
+	}
+	return time.Duration(c.ApprovalTTLHours) * time.Hour
 }
 
 // validate checks execution.agents.python (D7.15).
@@ -74,6 +89,9 @@ func (c AgentPythonConfig) validate() []string {
 				errs = append(errs, fmt.Sprintf("execution.agents.python.wheelhouse relative path %q leaves the config directory; use an absolute path", w))
 			}
 		}
+	}
+	if c.ApprovalTTLHours < 0 {
+		errs = append(errs, fmt.Sprintf("execution.agents.python.approval_ttl_hours must be 0 (default 72) or positive (got %d)", c.ApprovalTTLHours))
 	}
 	if c.Offline && len(c.Wheelhouse) == 0 {
 		errs = append(errs, "execution.agents.python.offline requires execution.agents.python.wheelhouse: offline wheels come only from a local wheelhouse")

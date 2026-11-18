@@ -81,7 +81,8 @@ func (m *AgentMapper) ManifestToDomain(rec storage.ManifestRecord) domain.AgentM
 		Skills:           rec.Skills,
 		Examples:         rec.Examples,
 		StreamsOutput:    rec.StreamsOutput,
-		SandboxPaths:     sandboxPathsToDomain(rec.SandboxPaths), // ADR-0157 D1.2
+		SandboxPaths:     sandboxPathsToDomain(rec.SandboxPaths),     // ADR-0157 D1.2
+		PythonPackages:   pythonPackagesToDomain(rec.PythonPackages), // ADR-0157 D7.6
 	}
 }
 
@@ -105,7 +106,8 @@ func (m *AgentMapper) ManifestToRecord(man domain.AgentManifest) storage.Manifes
 		Skills:           man.Skills,
 		Examples:         man.Examples,
 		StreamsOutput:    man.StreamsOutput,
-		SandboxPaths:     sandboxPathsToRecord(man.SandboxPaths), // ADR-0157 D1.2
+		SandboxPaths:     sandboxPathsToRecord(man.SandboxPaths),     // ADR-0157 D1.2
+		PythonPackages:   pythonPackagesToRecord(man.PythonPackages), // ADR-0157 D7.6
 	}
 }
 
@@ -127,6 +129,28 @@ func sandboxPathsToRecord(in []domain.SandboxPath) []storage.SandboxPathRecord {
 	out := make([]storage.SandboxPathRecord, len(in))
 	for i, p := range in {
 		out[i] = storage.SandboxPathRecord{Path: p.Path, Write: p.Write}
+	}
+	return out
+}
+
+func pythonPackagesToDomain(in []storage.PythonPackageRecord) []domain.PythonPackage {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]domain.PythonPackage, len(in))
+	for i, p := range in {
+		out[i] = domain.PythonPackage{Name: p.Name, Version: p.Version, Extras: append([]string(nil), p.Extras...)}
+	}
+	return out
+}
+
+func pythonPackagesToRecord(in []domain.PythonPackage) []storage.PythonPackageRecord {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]storage.PythonPackageRecord, len(in))
+	for i, p := range in {
+		out[i] = storage.PythonPackageRecord{Name: p.Name, Version: p.Version, Extras: append([]string(nil), p.Extras...)}
 	}
 	return out
 }

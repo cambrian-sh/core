@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -243,5 +244,51 @@ func TestDiscover_ProfileSandboxPathsReachTheManifest(t *testing.T) {
 	}
 	if !slices.Equal(rec.SandboxPaths, want) {
 		t.Fatalf("stored manifest sandbox_paths = %+v, want %+v", rec.SandboxPaths, want)
+	}
+}
+
+// ADR-0157 D7.6 (ENG-2009): a profile's python_packages reach its manifest and
+// survive the JSON round trip of the registry record; an invalid declaration
+// (a version range) skips the profile.
+func TestDiscover_ProfilePythonPackagesReachTheManifest(t *testing.T) {
+	dir := writeProfileTree(t)
+	p := filepath.Join(dir, ProfilesDirName, "alpha.yaml")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decl := `python_packages: [{"name": "polars", "version": "1.9.0"}, {"name": "httpx", "version": "0.27.2", "extras": ["http2"]}]` + "\n"
+	if err := os.WriteFile(p, append(b, []byte(decl)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := strings.ReplaceAll(testProfile, "%s", "gamma") + `python_packages: [{"name": "polars", "version": ">=1"}]` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ProfilesDirName, "gamma.yaml"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiscoverFilesystemAgentsWith(dir, nil, DiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]DiscoveredAgent{}
+	for _, da := range got {
+		byID[da.Agent.ID] = da
+	}
+	raw, err := json.Marshal(byID["alpha"].Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back ManifestRecord
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.PythonPackages) != 2 || back.PythonPackages[0].Name != "polars" || back.PythonPackages[0].Version != "1.9.0" ||
+		len(back.PythonPackages[1].Extras) != 1 || back.PythonPackages[1].Extras[0] != "http2" {
+		t.Fatalf("alpha manifest python_packages = %+v", back.PythonPackages)
+	}
+	if byID["beta"].Manifest.PythonPackages != nil {
+		t.Errorf("a profile without python_packages must carry none: %+v", byID["beta"].Manifest.PythonPackages)
+	}
+	if _, ok := byID["gamma"]; ok {
+		t.Error("a profile with a version range was registered")
 	}
 }

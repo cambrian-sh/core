@@ -158,6 +158,10 @@ func DefaultApprovalPolicyConfig() ApprovalPolicyConfig {
 		Rules: []ApprovalClassRule{
 			{Class: ApprovalClassTool, Approvers: []string{"operator"}, AllowStanding: true},
 			{Class: ApprovalKindSkillAccess, Approvers: []string{"operator"}},
+			// ADR-0157 D7.8.3: an Operator approves each package + exact version;
+			// never a standing approval (that would turn the unit into a blanket
+			// grant).
+			{Class: ApprovalKindPythonPackage, Approvers: []string{"operator"}},
 			{Class: ApprovalKindProactivePlan, Approvers: []string{"operator"}},
 			// A person's own recurring task is their own resource (D11.1); an
 			// operator may still answer, as before.

@@ -146,7 +146,10 @@ func profileAgentRecords(agentsDir string, isSystemAgent func(string) bool, opt 
 				// manifest, so the boot admits them exactly like an AGENT_MANIFEST's
 				// (agentmgr.AgentSandbox.admitDeclared against allowlist_cap).
 				SandboxPaths: profileSandboxPaths(p.SandboxPaths),
-				ReleaseNotes: "worker_agent profile " + p.Name + " (agent stack v2).",
+				// ADR-0157 D7.6: the packages the agent's layer needs; the boot holds
+				// the agent until an Operator approved each (agentmgr.PythonLayers).
+				PythonPackages: profilePythonPackages(p.PythonPackages),
+				ReleaseNotes:   "worker_agent profile " + p.Name + " (agent stack v2).",
 			},
 		})
 	}
@@ -205,6 +208,19 @@ func profileSandboxPaths(in []domain.SandboxPath) []SandboxPathRecord {
 	out := make([]SandboxPathRecord, len(in))
 	for i, p := range in {
 		out[i] = SandboxPathRecord{Path: p.Path, Write: p.Write}
+	}
+	return out
+}
+
+// profilePythonPackages copies a profile's python_packages into the manifest's
+// record shape (nil when it declares none).
+func profilePythonPackages(in []domain.PythonPackage) []PythonPackageRecord {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]PythonPackageRecord, len(in))
+	for i, p := range in {
+		out[i] = PythonPackageRecord{Name: p.Name, Version: p.Version, Extras: append([]string(nil), p.Extras...)}
 	}
 	return out
 }

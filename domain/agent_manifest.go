@@ -49,6 +49,12 @@ type AgentManifest struct {
 	// admit, or one inside the kernel's own state, refuses the boot with the
 	// path named. Read only when execution.agents.sandbox.enabled.
 	SandboxPaths []SandboxPath `json:"sandbox_paths,omitempty"`
+	// PythonPackages are the Python packages this agent needs beyond the
+	// kernel-managed base env (ADR-0157 D7.6): exact versions, resolved and
+	// hash-pinned by the kernel, installed into the agent's own layer only after
+	// an Operator approved each one (kind python_package). Until then the agent
+	// is not started, with the approvals it waits on named. Python agents only.
+	PythonPackages []PythonPackage `json:"python_packages,omitempty"`
 }
 
 // SandboxPath is one declared path of an agent's confinement allowlist.

@@ -371,6 +371,16 @@ func (im *InstanceManager) agentBinds(ctx context.Context, def *domain.AgentDefi
 			if granted {
 				grantedHome = home
 			}
+			// ADR-0157 D7.1.3: the agent's own package layer, read-only and
+			// private to it (the AppContainer grants it to this agent's
+			// capability only; the other runners bind it into this sandbox only).
+			lb, err := im.pythonLayerBind(def, home)
+			if err != nil {
+				return nil, err
+			}
+			if lb.Path != "" {
+				decl = append(decl, lb)
+			}
 		}
 	}
 	if !managed {

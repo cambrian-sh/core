@@ -14,3 +14,10 @@ import (
 func GrantAgentRuntimeRead(dir string) error {
 	return fmt.Errorf("pre-grant of %s: %w (the agent runners on this OS bind paths, they need no ACE)", dir, errors.ErrUnsupported)
 }
+
+// GrantAgentPrivateRead is the Windows AppContainer's pre-grant of one agent's
+// package layer to that agent alone (ADR-0157 D7.5). The Unix runners bind the
+// layer into that agent's sandbox only, so there is nothing to pre-grant.
+func GrantAgentPrivateRead(identity, dir string) error {
+	return fmt.Errorf("pre-grant of %s for %s: %w (the agent runners on this OS bind paths, they need no ACE)", dir, identity, errors.ErrUnsupported)
+}

@@ -42,6 +42,10 @@ func NewEnv(b *Builder, buildOnBoot bool) *Env {
 // Root is the env root.
 func (e *Env) Root() string { return e.b.Root }
 
+// Builder is the env's builder: the per-agent package layers (P3) resolve and
+// install with the same pins, sources and root.
+func (e *Env) Builder() *Builder { return e.b }
+
 // Start runs the boot check synchronously and, when the env is missing, broken
 // or stale and build_on_boot is on, starts one background build. The kernel
 // itself never waits for it: only Python agent spawns do (Ready).

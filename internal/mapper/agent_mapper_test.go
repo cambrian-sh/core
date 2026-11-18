@@ -232,3 +232,19 @@ func TestParseTime_MalformedStampIsLogged(t *testing.T) {
 		t.Fatalf("round trip: got %v, want %v", got, want)
 	}
 }
+
+// ADR-0157 D7.6 (ENG-2009): a manifest's python_packages survive the record
+// round trip the boot reads them from (the bbolt registry).
+func TestAgentMapper_PythonPackages_RoundTrip(t *testing.T) {
+	m := &AgentMapper{}
+	in := domain.AgentManifest{PythonPackages: []domain.PythonPackage{
+		{Name: "polars", Version: "1.9.0"}, {Name: "httpx", Version: "0.27.2", Extras: []string{"http2"}},
+	}}
+	out := m.ManifestToDomain(m.ManifestToRecord(in))
+	if len(out.PythonPackages) != 2 || out.PythonPackages[0].Spec() != "polars==1.9.0" || out.PythonPackages[1].Spec() != "httpx[http2]==0.27.2" {
+		t.Fatalf("python_packages round trip: %+v", out.PythonPackages)
+	}
+	if got := m.ManifestToDomain(m.ManifestToRecord(domain.AgentManifest{})); got.PythonPackages != nil {
+		t.Errorf("no declaration must stay none: %+v", got.PythonPackages)
+	}
+}

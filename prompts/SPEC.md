@@ -78,7 +78,7 @@ The frontmatter is YAML, restricted to a subset both loaders parse identically
 - `response_schema` may instead be an inline JSON object on one line
   (`{"type": "object"}`); prefer a schema file;
 - a flow list whose first item starts with `{` is an inline JSON list of
-  objects on one line (an agent profile's `sandbox_paths`,
+  objects on one line (an agent profile's `sandbox_paths` or `python_packages`,
   `agents/profiles/README.md`): `[{"path": "/srv/models"}]`;
 - full-line `#` comments are allowed; no anchors, tags, or multi-line scalars.
 

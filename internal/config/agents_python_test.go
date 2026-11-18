@@ -80,3 +80,18 @@ func TestReadAgentPythonBlock(t *testing.T) {
 		t.Fatal("an invalid block must be refused")
 	}
 }
+
+// ADR-0157 D7.8.7 (P3): approval_ttl_hours bounds an unanswered package card;
+// 0 is the 72 h default, a negative value is refused.
+func TestAgentPythonApprovalTTL(t *testing.T) {
+	if got := DefaultConfig().Execution.Agents.Python.ApprovalTTL(); got.Hours() != 72 {
+		t.Fatalf("default approval TTL = %s, want 72h", got)
+	}
+	if got := (AgentPythonConfig{ApprovalTTLHours: 4}).ApprovalTTL(); got.Hours() != 4 {
+		t.Fatalf("approval TTL = %s, want 4h", got)
+	}
+	errs := AgentPythonConfig{ApprovalTTLHours: -1}.validate()
+	if len(errs) == 0 || !strings.Contains(strings.Join(errs, ";"), "approval_ttl_hours") {
+		t.Fatalf("a negative approval_ttl_hours must be refused: %v", errs)
+	}
+}

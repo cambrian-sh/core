@@ -1147,6 +1147,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if apprErr != nil {
 		return nil, apprErr
 	}
+	// ADR-0157 D7.6-D7.8 (P3): agents that declare python_packages are held
+	// until an Operator approved each package (python_package cards on this
+	// hub) and the kernel installed the agent's own layer. The kind handler is
+	// registered here, at boot, so a card answered after a restart still
+	// installs.
+	pyPackages := wirePythonPackages(ctx, cfg.Execution.Agents.Python, vec.Pool(), pyEnv, toolApproval, reg.GetManifest)
+	if pyPackages != nil {
+		meta.Manager.SetPythonLayers(pyPackages)
+	}
 	planExec := &kernelPlanExecutor{}
 	watcher := supwatcher.New(
 		meta.Manager,
@@ -1477,6 +1486,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// The hub's recovery + expiry sweeper: pending approvals left by a previous
 	// process expire (and publish) once their window passes.
 	lifecycles = append(lifecycles, Lifecycle{Name: "approval-hub", Start: toolApproval.Start, Stop: toolApproval.Stop})
+	if pyPackages != nil {
+		// Stop waits for layer installs an approval started in the background.
+		lifecycles = append(lifecycles, Lifecycle{Name: "python-packages", Start: func(context.Context) {}, Stop: pyPackages.Stop})
+	}
 
 	// The knowledge proposal -> approval -> commit bridge
 	// (T-20261107-knowledge-substrate-extensions-for-case). It holds the RAW knowledge

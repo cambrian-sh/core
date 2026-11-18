@@ -49,6 +49,15 @@ func anchorAgentSandboxPaths(cfg *config.Config, configPath, baseDir string) {
 			slog.Warn("agent sandbox: backup paths not hidden (invalid backup block)", "err", err)
 		}
 	}
+	// ADR-0157 D7.1.3: the managed Python env root (downloads/, cache/,
+	// current.json and every agent's package layer) is the kernel's; an agent is
+	// shown only its base generation and its own layer, as binds. Under the
+	// kernel directory (the default) that hide already covers it; an operator
+	// root elsewhere is hidden explicitly, so bubblewrap's read-only / never
+	// shows another agent's layer.
+	if root := absOr(cfg.Execution.Agents.Python.ResolvedRoot(absOr(baseDir))); !pathWithin(root, sb.KernelDir) {
+		state = append(state, root)
+	}
 	sb.KernelStatePaths = nil
 	for _, p := range state {
 		if p = strings.TrimSpace(p); p != "" {
@@ -65,6 +74,12 @@ func anchorAgentSandboxPaths(cfg *config.Config, configPath, baseDir string) {
 			sb.RuntimeReadPaths = append(sb.RuntimeReadPaths, absOr(p))
 		}
 	}
+}
+
+// pathWithin reports whether p is dir or lies under it.
+func pathWithin(p, dir string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func absOr(p string) string {

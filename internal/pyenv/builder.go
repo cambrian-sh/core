@@ -438,18 +438,7 @@ func (b *Builder) installArgs(interp string) []string {
 		// The kernel owns this interpreter; the marker (when a build carries
 		// one) protects distribution-managed Pythons, which this is not.
 		"--break-system-packages"}
-	if b.Sources.Offline {
-		args = append(args, "--offline", "--no-index")
-	} else {
-		args = append(args, "--index-url", orDefault(b.Sources.IndexURL, DefaultIndexURL))
-	}
-	for _, w := range b.Sources.Wheelhouse {
-		if p, ok := localPath(w); ok {
-			w = p
-		}
-		args = append(args, "--find-links", w)
-	}
-	return args
+	return append(args, b.sourceArgs()...)
 }
 
 // installerEnv is the kernel's environment without installer/pip/Python
