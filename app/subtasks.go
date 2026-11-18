@@ -29,7 +29,8 @@ import (
 // reg is the subtask registry the executor was CONSTRUCTED with (its lease
 // ceiling and Subtasks control, buildExecutorLeases, AGENTS.md §2.3), over the
 // ADR-0154 durable action record so a subtask resumed after a restart never
-// repeats a write; nil when the config does not serve run_subtasks.
+// repeats a write and a finished subtask is answered from its stored result
+// (ENG-1760); nil when the config does not serve run_subtasks.
 func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server, reg *domain.Subtasks) {
 	sc := cfg.Lane.Subtasks
 	if !sc.On() || server == nil || server.ToolExecutor == nil {
@@ -54,6 +55,7 @@ func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server, reg *do
 			MaxParallel: sc.Parallel(), MaxPerCall: sc.PerCall(), MaxPerRequest: sc.PerRequest(),
 			MaxDepth: sc.Depth(), AllowedEffects: sc.Effects(), SummaryMaxChars: sc.SummaryChars(),
 			WorkerMaxRounds: sc.WorkerToolRounds(), WorkerMaxWall: sc.WorkerWall(),
+			WorkerSummaryGrace: sc.WorkerSummaryGrace(),
 		},
 		Registry: reg,
 		Runner:   server,
@@ -68,5 +70,5 @@ func wireSubtasks(cfg config.ExecutionConfig, server *subnetwork.Server, reg *do
 	slog.Info("ADR-0150: run_subtasks served", "max_parallel", sc.Parallel(), "max_per_call", sc.PerCall(),
 		"max_per_request", sc.PerRequest(), "max_depth", sc.Depth(), "allowed_effects", sc.Effects(),
 		"summary_max_chars", sc.SummaryChars(), "worker_max_tool_rounds", sc.WorkerToolRounds(),
-		"worker_max_wall", sc.WorkerWall(), "runtime", server.ComposedRuntimeID)
+		"worker_max_wall", sc.WorkerWall(), "worker_summary_grace", sc.WorkerSummaryGrace(), "runtime", server.ComposedRuntimeID)
 }

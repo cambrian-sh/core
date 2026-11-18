@@ -95,7 +95,7 @@ func TestRunSubtask_ChildLeaseBoundLikeTheParentAndComposed(t *testing.T) {
 		ParentAgentID: "composed_worker",
 		Binding: domain.SubtaskBinding{SubtaskID: "sub-x", Label: "acme", ParentLease: "parent", RootLease: "parent",
 			Depth: 1, AllowedEffects: []domain.ToolEffect{domain.EffectRead}, Tools: []string{"crm_search"}},
-		Task: "Objective: find invoices", Inputs: []string{"led_in"}, MaxToolRounds: 7,
+		Task: "Objective: find invoices", Inputs: []string{"led_in"}, MaxToolRounds: 7, MaxWallSeconds: 90,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,9 +113,13 @@ func TestRunSubtask_ChildLeaseBoundLikeTheParentAndComposed(t *testing.T) {
 		t.Fatalf("during the call the child lease is a bound, composed subtask lease: bound=%v composed=%v", seenBound, seenComposed)
 	}
 	h := disp.handoff
+	// ENG-1760: the worker runs under the lane's D4 stopping rule with its own
+	// caps, so at the wall-time cap it is forced to summarise (no ask-back: the
+	// "_subtask" key turns ask_person off in the SDK).
 	if string(h.Payload.Data) != "Objective: find invoices" || h.Context[domain.HandoffKeyLaneMaxToolRounds] != "7" ||
-		h.Context[domain.HandoffKeyLane] != "" {
-		t.Fatalf("the worker gets the brief and its cap, never the lane marker (no ask-back): %+v", h.Context)
+		h.Context[domain.HandoffKeyLaneMaxWallSeconds] != "90" || h.Context[domain.HandoffKeyLane] != domain.LaneSingleAgent ||
+		h.Context[domain.HandoffKeyLaneSameResult] == "" {
+		t.Fatalf("the worker gets the brief and the stopping rule with its caps: %+v", h.Context)
 	}
 	// The subtask marker: the SDK's is_subtask and the runtimes' hidden
 	// delegate_to_planner key off it (T-20261113-composed-runtime-still-offers-delegate-to).

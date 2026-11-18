@@ -337,12 +337,29 @@ func (r *Subtasks) CallKey(lease LeaseID, tool string, args []byte) (string, boo
 	return hex.EncodeToString(h.Sum(nil)), true
 }
 
-// Idempotency is the store of subtask side-effecting results.
+// Idempotency is the store of subtask side-effecting results (CallKey) and of
+// finished subtasks' results (SubtaskResultKey): durable when the registry was
+// built with the ADR-0154 action record.
 func (r *Subtasks) Idempotency() *IdempotencyCache {
 	if r == nil {
 		return nil
 	}
 	return r.idem
+}
+
+// SubtaskResultKey is the deterministic key (AGENTS.md §2.6) under which a
+// FINISHED subtask's result is kept in the registry's idempotency store — the
+// ADR-0154 durable action record, beside the subtask's write keys (CallKey) —
+// so a resumed subtask, even after a kernel restart, is answered from its
+// result instead of running again (ENG-1760). Never equal to a CallKey (a
+// different first part).
+func SubtaskResultKey(subtaskID string) string {
+	h := sha256.New()
+	for _, p := range []string{"subtask-result", subtaskID} {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // SubtaskIDFor is the deterministic id of a subtask (AGENTS.md §2.6): the parent
@@ -412,6 +429,12 @@ type SubtaskDispatch struct {
 	Skills []string
 	// MaxToolRounds is the worker's runaway cap (execution.lane.subtasks.worker_max_tool_rounds).
 	MaxToolRounds int
+	// MaxWallSeconds is the worker's wall-time cap
+	// (execution.lane.subtasks.worker_max_wall_seconds), stamped with the lane's
+	// D4 stopping rule: at it the worker makes ONE tool-less summary call and
+	// answers partial (exit_reason wall), so a capped subtask returns what it
+	// found (owner 2026-11-18, ENG-1760). 0 ⇒ not stamped.
+	MaxWallSeconds int
 }
 
 // SubtaskOutcome is what a subtask worker returned.

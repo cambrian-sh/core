@@ -1,6 +1,6 @@
 {
   "_comment": "Keyed / per-customer MCP integrations. This file is NOT loaded by the kernel: it is a catalog of ready-made `servers` entries. To enable one, copy its object into the `mcp.servers` array of configs/mcp.json, set the credential variables it names in the kernel's environment (or save the token from the console, which stores it under mcp:<id>:token), and restart or save it from the console. Do not paste the whole file in: every server in mcp.json is dialled at boot, concurrently, and there is no `enabled` flag yet. See configs/MCP.md for each entry's credentials, scopes and risks. Versions were checked on their registries 2026-11-05; live handshakes are NOT verified.",
-  "_comment_policy": "Same rules as mcp.json.example. Remote (http) servers: every call leaves the host, so reads declare read+egress (plain egress: these SaaS reads stay outside run_subtasks, owner 2026-11-13) and tools that send, post or change state outside declare egress_send (ENG-917). Servers that can send, post, write or delete carry NO default_tool_policy, so every tool not explicitly listed is dangerous (approval) with read+write+egress. Where a server has a read-only mode (flag or URL) the entry uses it and marks the whole server read+egress; removing that flag means you must also remove the default_tool_policy. Credentials are ONE static credential per server today (ADR-0043 D9): every principal acts as that account. Per-principal OAuth is a gap (MCP.md).",
+  "_comment_policy": "Same rules as mcp.json.example. Remote (http) servers: every call leaves the host, so reads declare read+egress (plain egress: these SaaS reads stay outside run_subtasks, owner 2026-11-13), except pure web search and GET reads (brave-search, tavily, exa, searxng), which declare read+egress_read so they run inside a run_subtasks subtask (ADR-0150 D9; a copy made from an older version of this file still says plain egress there: change it, ENG-1760) and tools that send, post or change state outside declare egress_send (ENG-917). Servers that can send, post, write or delete carry NO default_tool_policy, so every tool not explicitly listed is dangerous (approval) with read+write+egress. Where a server has a read-only mode (flag or URL) the entry uses it and marks the whole server read+egress; removing that flag means you must also remove the default_tool_policy. Credentials are ONE static credential per server today (ADR-0043 D9): every principal acts as that account. Per-principal OAuth is a gap (MCP.md).",
 
   "mcp": {
     "servers": [
@@ -27,7 +27,7 @@
         "args": ["-y", "@brave/brave-search-mcp-server@2.1.4"],
         "auth": {"type": "none"},
         "env": ["BRAVE_API_KEY"],
-        "default_tool_policy": {"effects": ["read", "egress"]}
+        "default_tool_policy": {"effects": ["read", "egress_read"]}
       },
       {
         "id": "tavily",
@@ -37,7 +37,7 @@
         "args": ["-y", "tavily-mcp@0.2.22"],
         "auth": {"type": "none"},
         "env": ["TAVILY_API_KEY"],
-        "default_tool_policy": {"effects": ["read", "egress"]}
+        "default_tool_policy": {"effects": ["read", "egress_read"]}
       },
       {
         "id": "exa",
@@ -47,7 +47,7 @@
         "args": ["-y", "exa-mcp-server@3.4.3"],
         "auth": {"type": "none"},
         "env": ["EXA_API_KEY"],
-        "default_tool_policy": {"effects": ["read", "egress"]}
+        "default_tool_policy": {"effects": ["read", "egress_read"]}
       },
       {
         "id": "searxng",
@@ -58,8 +58,8 @@
         "auth": {"type": "none"},
         "env": ["SEARXNG_URL"],
         "tools": [
-          {"name": "searxng_web_search", "dangerous": false, "effects": ["read", "egress"]},
-          {"name": "web_url_read",       "dangerous": false, "effects": ["read", "egress"]}
+          {"name": "searxng_web_search", "dangerous": false, "effects": ["read", "egress_read"]},
+          {"name": "web_url_read",       "dangerous": false, "effects": ["read", "egress_read"]}
         ]
       },
       {

@@ -22,6 +22,9 @@ const (
 	DefaultSubtaskSummaryMaxChars     = 4000
 	DefaultSubtaskWorkerMaxToolRounds = 200
 	DefaultSubtaskWorkerMaxWall       = 900 * time.Second
+	// DefaultSubtaskWorkerSummaryGrace is the time past the wall-time cap the
+	// kernel leaves the worker for its one forced summary call (ENG-1760).
+	DefaultSubtaskWorkerSummaryGrace = 60 * time.Second
 )
 
 // DefaultSubtaskAllowedEffects is the effect ceiling of a subtask's lease: read
@@ -54,8 +57,15 @@ type LaneSubtasksConfig struct {
 	// 0 ⇒ 200.
 	WorkerMaxToolRounds int `json:"worker_max_tool_rounds,omitempty"`
 	// WorkerMaxWallSeconds is a subtask worker's runaway cap on wall time (D4).
-	// 0 ⇒ 900.
+	// At it the worker makes ONE tool-less "summarise what you have" call and
+	// answers partial (owner 2026-11-18, ENG-1760: a capped subtask is forced to
+	// summarise, never ends with nothing). 0 ⇒ 900.
 	WorkerMaxWallSeconds int `json:"worker_max_wall_seconds,omitempty"`
+	// WorkerSummaryGraceSeconds is how long past worker_max_wall_seconds the
+	// kernel waits for that summary before it ends the worker itself; a worker
+	// ended there still returns partial, with a kernel-written summary of the
+	// tool results it gathered. 0 ⇒ 60.
+	WorkerSummaryGraceSeconds int `json:"worker_summary_grace_seconds,omitempty"`
 }
 
 // On reports whether run_subtasks is enabled (default true).
@@ -95,6 +105,14 @@ func (c LaneSubtasksConfig) WorkerWall() time.Duration {
 	return DefaultSubtaskWorkerMaxWall
 }
 
+// WorkerSummaryGrace is WorkerSummaryGraceSeconds with its default.
+func (c LaneSubtasksConfig) WorkerSummaryGrace() time.Duration {
+	if c.WorkerSummaryGraceSeconds > 0 {
+		return time.Duration(c.WorkerSummaryGraceSeconds) * time.Second
+	}
+	return DefaultSubtaskWorkerSummaryGrace
+}
+
 // Effects is AllowedEffects as domain effects, with its default. Validation has
 // already refused a value outside the closed set.
 func (c LaneSubtasksConfig) Effects() []domain.ToolEffect {
@@ -115,6 +133,7 @@ func (c LaneSubtasksConfig) validate() []string {
 		"max_parallel": c.MaxParallel, "max_per_call": c.MaxPerCall, "max_per_request": c.MaxPerRequest,
 		"max_depth": c.MaxDepth, "summary_max_chars": c.SummaryMaxChars,
 		"worker_max_tool_rounds": c.WorkerMaxToolRounds, "worker_max_wall_seconds": c.WorkerMaxWallSeconds,
+		"worker_summary_grace_seconds": c.WorkerSummaryGraceSeconds,
 	} {
 		if v < 0 {
 			errs = append(errs, fmt.Sprintf("execution.lane.subtasks.%s must be >= 0 (0 = default)", k))

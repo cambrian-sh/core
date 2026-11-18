@@ -67,27 +67,33 @@ func policies(id string, tools []config.MCPToolConfig, def *config.MCPToolConfig
 }
 
 // Exactly the read-only web tools reach a subtask by their effects, in the
-// reference config (what the use-case suite renders its bundle from) and in the
+// reference configs (mcp.json.example, what the use-case suite renders its
+// bundle from, and mcp.integrations.json.example, which operators copy — it
+// kept plain egress on its web-search servers until ENG-1760) and in the
 // built-in catalog (what a console install renders); every other egress tool
 // (mail, chat, SaaS reads, file converters, shells) stays outside the ceiling.
 func TestShippedManifests_OnlyReadOnlyWebToolsDeclareEgressRead(t *testing.T) {
 	declared := map[string]mcp.ToolPolicy{}
 
-	raw, err := os.ReadFile(filepath.Join("..", "configs", "mcp.json.example"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc struct {
-		MCP struct {
-			Servers []config.MCPServerConfig `json:"servers"`
-		} `json:"mcp"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range doc.MCP.Servers {
-		for k, v := range policies(s.ID, s.Tools, s.DefaultToolPolicy) {
-			declared["example:"+k] = v
+	for _, ex := range []struct{ file, prefix string }{
+		{"mcp.json.example", "example:"}, {"mcp.integrations.json.example", "integrations:"},
+	} {
+		raw, err := os.ReadFile(filepath.Join("..", "configs", ex.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			MCP struct {
+				Servers []config.MCPServerConfig `json:"servers"`
+			} `json:"mcp"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", ex.file, err)
+		}
+		for _, s := range doc.MCP.Servers {
+			for k, v := range policies(s.ID, s.Tools, s.DefaultToolPolicy) {
+				declared[ex.prefix+k] = v
+			}
 		}
 	}
 	cat, err := integrations.Load("")
@@ -115,7 +121,8 @@ func TestShippedManifests_OnlyReadOnlyWebToolsDeclareEgressRead(t *testing.T) {
 		}
 	}
 	sort.Strings(gotWeb)
-	for _, must := range []string{"example:fetch/fetch", "example:web-search/search", "catalog:fetch/fetch"} {
+	for _, must := range []string{"example:fetch/fetch", "example:web-search/search", "catalog:fetch/fetch",
+		"integrations:searxng/searxng_web_search", "integrations:brave-search/*", "integrations:tavily/*", "integrations:exa/*"} {
 		if i := sort.SearchStrings(gotWeb, must); i >= len(gotWeb) || gotWeb[i] != must {
 			t.Errorf("%s missing from the subtask-reachable web tools %v", must, gotWeb)
 		}

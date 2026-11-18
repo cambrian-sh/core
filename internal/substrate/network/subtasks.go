@@ -122,9 +122,15 @@ func (s *Server) RunSubtask(ctx context.Context, d domain.SubtaskDispatch) (out 
 			domain.HandoffKeySubtask:     d.Binding.SubtaskID,
 		},
 	}
-	if d.MaxToolRounds > 0 {
-		handoff.Context[domain.HandoffKeyLaneMaxToolRounds] = strconv.Itoa(d.MaxToolRounds)
-	}
+	// ADR-0150 D4 on the worker (ENG-1760, owner 2026-11-18 "force a summary"):
+	// the lane's stopping rule runs in the worker loop (sdk stopping.py) — at the
+	// tool-round or wall-time cap, or stuck, it makes ONE tool-less summary call
+	// and answers partial with its exit_reason, which the tool's classify reads.
+	// The lane marker brings no ask-back here: the SDK never offers ask_person to
+	// a request with a "_subtask" key (stopping.is_subtask, SDK >= 0.1.6).
+	lim := s.laneLimits()
+	lim.MaxToolRounds, lim.MaxWallSeconds = d.MaxToolRounds, d.MaxWallSeconds
+	lim.Stamp(handoff.Context)
 	actingForID, actingForName := s.actingForRun(ctx, parent.SessionID, parent.RunID)
 	domain.StampActingFor(handoff.Context, actingForID, actingForName)
 

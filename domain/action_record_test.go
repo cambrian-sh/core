@@ -127,6 +127,48 @@ func TestIdempotencyCache_NoStoreIsInMemoryOnly(t *testing.T) {
 	}
 }
 
+// ENG-1760: Lookup answers from memory or an accepted durable record without
+// claiming the key; an unsettled record or an unknown key is not found.
+func TestIdempotencyCache_LookupDoesNotClaim(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemActionRecordStore()
+	c := NewDurableIdempotencyCache(time.Hour, store)
+	if _, found := c.Lookup(ctx, "k"); found {
+		t.Fatal("unknown key found")
+	}
+	_, _, finish := c.BeginAction(ctx, DurableAction{Key: "k", Tool: "run_subtasks"})
+	if _, found := c.Lookup(ctx, "k"); found {
+		t.Fatal("an in-flight (dispatched) key must not be found")
+	}
+	finish(ToolCallResponse{ResultJSON: []byte(`"done"`)}, true)
+	if r, found := c.Lookup(ctx, "k"); !found || string(r.ResultJSON) != `"done"` {
+		t.Fatalf("in-memory lookup = %v %s", found, r.ResultJSON)
+	}
+	fresh := NewDurableIdempotencyCache(time.Hour, store) // restarted
+	if r, found := fresh.Lookup(ctx, "k"); !found || string(r.ResultJSON) != `"done"` {
+		t.Fatalf("durable lookup after a restart = %v %s", found, r.ResultJSON)
+	}
+	// Lookup claimed nothing: a new key can still be begun and finished.
+	if _, found, fin := fresh.BeginAction(ctx, DurableAction{Key: "k2"}); found {
+		t.Fatal("k2 found")
+	} else {
+		fin(ToolCallResponse{Error: "x"}, false)
+	}
+	if _, found := fresh.Lookup(ctx, "k2"); found {
+		t.Fatal("a failed call must not be found")
+	}
+	if _, found := NewIdempotencyCache(time.Hour).Lookup(ctx, "k"); found {
+		t.Fatal("a fresh in-memory cache found a key")
+	}
+	var nilCache *IdempotencyCache
+	if _, found := nilCache.Lookup(ctx, "k"); found {
+		t.Fatal("nil cache found a key")
+	}
+	if SubtaskResultKey("sub-a") == SubtaskResultKey("sub-b") || SubtaskResultKey("sub-a") != SubtaskResultKey("sub-a") {
+		t.Fatal("SubtaskResultKey must be deterministic and distinct per subtask")
+	}
+}
+
 // metaHandler records the _meta each call carried.
 type metaHandler struct{ metas []map[string]any }
 

@@ -1939,8 +1939,11 @@ message ToolOp {
   // ADR-0085 D2: what DOMAIN this tool touches (`crm`, `filesystem`, `payments`).
   repeated string classification_tags = 8;
   // ADR-0086: the closed-set verb classes it exercises —
-  // read | write | egress | spend | admin. A tag says what a tool is about; an
-  // effect says what the invocation does to it, and policy checks both.
+  // read | egress_read | write | egress | egress_send | spend | admin (ADR-0150
+  // D9 split egress: egress_read reads from outside with no state change there,
+  // egress_send transmits or changes state outside, plain egress means both).
+  // A tag says what a tool is about; an effect says what the invocation does
+  // to it, and policy checks both.
   repeated string effects = 9;
   // effects_inferred marks a tool whose effects were DERIVED from its other
   // manifest fields rather than declared. It is the migration checklist: an
@@ -2674,7 +2677,7 @@ message ExplainAccessOpRequest {
   string resource_kind = 5;  // "memory" | "skill" | "agent" | "tool" | "artifact"
   string resource_id = 6;    // the specific resource ("" = a class-level question)
   repeated string tags = 7;  // the resource's classification tags
-  repeated string effects = 8; // declared effect classes (tools): read|write|egress|spend|admin
+  repeated string effects = 8; // declared effect classes (tools): read|egress_read|write|egress|egress_send|spend|admin
 }
 
 // PolicyContributionOp records that a named policy, linked at a named container,
@@ -4499,7 +4502,7 @@ message IntegrationFieldOp {
 message IntegrationToolPolicyOp {
   string name = 1;               // tool name as advertised (unqualified); "" for a default
   bool dangerous = 2;
-  repeated string effects = 3;   // ADR-0086: read, write, egress, spend, admin
+  repeated string effects = 3;   // ADR-0086/ADR-0150 D9: read, egress_read, write, egress, egress_send, spend, admin
 }
 
 message ListIntegrationsOpRequest {}

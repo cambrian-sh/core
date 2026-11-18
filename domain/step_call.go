@@ -172,6 +172,37 @@ func (c *IdempotencyCache) BeginAction(ctx context.Context, meta DurableAction) 
 	}
 }
 
+// Lookup returns the stored response for key without claiming it: the
+// in-memory result within the TTL, else (durable) an accepted or confirmed
+// record. A caller that then runs the call still claims it with BeginAction,
+// which re-checks. Record I/O fails open (found=false, logged).
+func (c *IdempotencyCache) Lookup(ctx context.Context, key string) (ToolCallResponse, bool) {
+	if c == nil || key == "" {
+		return ToolCallResponse{}, false
+	}
+	c.mu.Lock()
+	c.sweepLocked()
+	if e, ok := c.done[key]; ok {
+		c.mu.Unlock()
+		return e.resp, true
+	}
+	c.mu.Unlock()
+	if c.durable == nil {
+		return ToolCallResponse{}, false
+	}
+	rec, err := c.durable.Get(ctx, key)
+	if err != nil {
+		if !errors.Is(err, ErrActionRecordNotFound) {
+			slog.WarnContext(ctx, "ADR-0154: action record unreadable on lookup", "key", key, "err", err)
+		}
+		return ToolCallResponse{}, false
+	}
+	if rec.Result == nil || (rec.State != ActionStateAccepted && rec.State != ActionStateConfirmed) {
+		return ToolCallResponse{}, false
+	}
+	return *rec.Result, true
+}
+
 func (c *IdempotencyCache) sweepLocked() {
 	cut := c.now().Add(-c.ttl)
 	for k, e := range c.done {

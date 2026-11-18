@@ -16,7 +16,12 @@
 //     ceiling (default read + egress_read; never wider than the parent's own);
 //   - the deterministic subtask id (parent run + the call + the canonical brief),
 //     so an identical retried call is the same subtask and a finished subtask is
-//     answered from its result instead of running again;
+//     answered from its result instead of running again — the result is kept in
+//     the registry's idempotency store, the ADR-0154 durable action record beside
+//     the subtask's write keys, so this holds across a kernel restart (ENG-1760);
+//   - a worker at its wall-time cap is forced to summarise (the lane's stopping
+//     rule in the worker, then a kernel-written summary of its evidence if the
+//     grace runs out too): a capped subtask is partial, never empty (ENG-1760);
 //   - each status from the worker's outcome — a failure is never reported as
 //     success (ADR-0145 D14.4's rule, kept);
 //   - the summary cap, the full answer as a ledger entry (result_ref), a ledger
@@ -29,6 +34,8 @@ package subtasks
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,6 +73,9 @@ const (
 	ExitDenied    = "denied"
 	ExitError     = "error"
 	ExitCancelled = "cancelled"
+	// ExitWall: the worker reached its wall-time cap (the SDK's stopping rule
+	// reports the same value).
+	ExitWall = "wall"
 )
 
 // The worker's end-of-answer markers (written in the brief; parsed here, in code).
@@ -76,9 +86,6 @@ const (
 
 // Shapes the brief's expect.shape may name.
 var shapes = map[string]bool{"list": true, "table": true, "text": true, "json": true}
-
-// maxCached bounds the in-memory record of finished subtasks.
-const maxCached = 4096
 
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
@@ -92,7 +99,11 @@ type Config struct {
 	AllowedEffects  []domain.ToolEffect
 	SummaryMaxChars int
 	WorkerMaxRounds int
-	WorkerMaxWall   time.Duration
+	// WorkerMaxWall is the worker's wall-time cap, stamped on its request (the
+	// worker summarises at it); WorkerSummaryGrace is how long past it the
+	// kernel waits for that summary before ending the worker itself.
+	WorkerMaxWall      time.Duration
+	WorkerSummaryGrace time.Duration
 }
 
 // ParentTools returns the tools the parent lease's holder may call: its menu
@@ -111,9 +122,6 @@ type Tool struct {
 	// Writer records the full answers, the subtask entries and the call's result.
 	// nil ⇒ nothing is recorded and result_ref is empty (the summary still returns).
 	Writer domain.LedgerWriter
-
-	mu    sync.Mutex
-	cache map[string]Result // finished subtasks by deterministic id (a resume answers from it)
 }
 
 var (
@@ -237,7 +245,7 @@ func (t *Tool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, er
 		canon, _ := json.Marshal(b)
 		id := domain.SubtaskIDFor(prov.RunID, lease, call.ArgsJSON, canon)
 		plan[i] = planned{brief: b, id: id, tools: childTools(parentTools, b.Guidance.Tools, allowed)}
-		if r, ok := t.cached(id); ok {
+		if r, ok := t.finished(ctx, id); ok {
 			r.ID, r.Resumed = b.ID, true
 			plan[i].cached = &r
 			continue
@@ -422,33 +430,78 @@ func childTools(parent []domain.SystemTool, guidance []string, allowed []domain.
 	return out
 }
 
-func (t *Tool) cached(id string) (Result, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	r, ok := t.cache[id]
-	return r, ok
+// finished returns a finished subtask's result from the registry's idempotency
+// store (in memory for its TTL; the ADR-0154 durable record across a restart).
+func (t *Tool) finished(ctx context.Context, id string) (Result, bool) {
+	resp, ok := t.Registry.Idempotency().Lookup(ctx, domain.SubtaskResultKey(id))
+	if !ok {
+		return Result{}, false
+	}
+	return decodeFinished(ctx, id, resp)
 }
 
-func (t *Tool) remember(r Result) {
-	// Only a finished answer is kept: a stopped, failed, refused, partial or
-	// needs_input subtask runs again when the same call is retried (resume).
-	if r.Status != StatusDone && r.Status != StatusNotFound {
-		return
+func decodeFinished(ctx context.Context, id string, resp domain.ToolCallResponse) (Result, bool) {
+	var r Result
+	if err := json.Unmarshal(resp.ResultJSON, &r); err != nil || r.SubtaskID != id {
+		slog.WarnContext(ctx, "ADR-0150: stored subtask result unreadable; the subtask runs again", "subtask", id, "err", err)
+		return Result{}, false
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.cache == nil || len(t.cache) >= maxCached {
-		// Bounded memory: past the cap the record starts over (a later retry of
-		// an evicted subtask runs it again; its writes stay idempotent through the
-		// executor's subtask keys).
-		t.cache = map[string]Result{}
+	return r, true
+}
+
+// finishedOK reports whether a result is kept: only a finished answer. A
+// stopped, failed, refused, partial or needs_input subtask runs again when the
+// same call is retried (resume).
+func finishedOK(r Result) bool { return r.Status == StatusDone || r.Status == StatusNotFound }
+
+// claim claims the subtask's result key in the idempotency store. found: an
+// identical subtask finished meanwhile (or before a restart) — its result.
+// Otherwise the caller runs it and MUST call finish with the result; a finished
+// one is stored durably, anything else releases the key so a retry runs again.
+func (t *Tool) claim(ctx context.Context, prov domain.LedgerProvenance, b Brief, id string) (Result, bool, func(Result)) {
+	idem := t.Registry.Idempotency()
+	if idem == nil {
+		return Result{}, false, func(Result) {}
 	}
-	t.cache[r.SubtaskID] = r
+	canon, _ := json.Marshal(b)
+	sum := sha256.Sum256(domain.CanonicalJSON(canon))
+	stored, found, finish := idem.BeginAction(ctx, domain.DurableAction{
+		Key: domain.SubtaskResultKey(id), Tool: ToolName, RunID: domain.RunID(prov.RunID), StepIndex: prov.StepIndex,
+		Principal: prov.Owner, SessionID: domain.SessionID(prov.SessionID), ArgsHash: hex.EncodeToString(sum[:]),
+	})
+	if found {
+		if r, ok := decodeFinished(ctx, id, stored); ok {
+			return r, true, nil
+		}
+		// An unreadable stored result (or a cancelled wait): run it again, unclaimed.
+		return Result{}, false, func(Result) {}
+	}
+	return Result{}, false, func(r Result) {
+		if !finishedOK(r) {
+			finish(domain.ToolCallResponse{Error: "subtask " + r.Status}, false)
+			return
+		}
+		body, err := json.Marshal(r)
+		if err != nil {
+			finish(domain.ToolCallResponse{Error: err.Error()}, false)
+			return
+		}
+		finish(domain.ToolCallResponse{ResultJSON: body}, true)
+	}
 }
 
 func (t *Tool) runOne(ctx context.Context, parentAgent string, lease, root domain.LeaseID, depth int, b Brief, id string,
 	tools []string, allowed []domain.ToolEffect, prov domain.LedgerProvenance) Result {
+	// The result key is claimed for the whole run: an identical subtask finishing
+	// meanwhile (a concurrent retry) answers this one, and the outcome is stored
+	// before the key is released.
+	prev, found, finish := t.claim(ctx, prov, b, id)
+	if found {
+		prev.ID, prev.Resumed = b.ID, true
+		return prev
+	}
 	res := Result{ID: b.ID, SubtaskID: id}
+	defer func() { finish(res) }()
 	binding := domain.SubtaskBinding{SubtaskID: id, Label: b.ID, ParentLease: lease, RootLease: root,
 		Depth: depth + 1, AllowedEffects: allowed, Tools: tools}
 	if t.Runner == nil {
@@ -456,28 +509,67 @@ func (t *Tool) runOne(ctx context.Context, parentAgent string, lease, root domai
 		t.record(ctx, prov, parentAgent, b, binding, &res, "")
 		return res
 	}
+	// The worker summarises at its wall-time cap itself (the stamped stopping
+	// rule); the kernel's own deadline leaves it the grace for that one call.
 	wctx := ctx
 	cancel := func() {}
+	wallSeconds := 0
 	if t.Cfg.WorkerMaxWall > 0 {
-		wctx, cancel = context.WithTimeout(ctx, t.Cfg.WorkerMaxWall)
+		wallSeconds = int((t.Cfg.WorkerMaxWall + time.Second - 1) / time.Second)
+		wctx, cancel = context.WithTimeout(ctx, t.Cfg.WorkerMaxWall+max(t.Cfg.WorkerSummaryGrace, 0))
 	}
 	defer cancel()
 	start := time.Now()
 	out, err := t.Runner.RunSubtask(wctx, domain.SubtaskDispatch{
 		ParentAgentID: parentAgent, Binding: binding, Task: RenderTask(b, tools, allowed),
-		Inputs: b.Inputs, Skills: b.Guidance.Skills, MaxToolRounds: t.Cfg.WorkerMaxRounds,
+		Inputs: b.Inputs, Skills: b.Guidance.Skills, MaxToolRounds: t.Cfg.WorkerMaxRounds, MaxWallSeconds: wallSeconds,
 	})
 	res.EvidenceRefs = out.Evidence
 	answer := classify(ctx, wctx, out, err, &res)
 	if out.ReadWeb {
 		res.Untrusted = true
 	}
+	if res.ExitReason == ExitWall && strings.TrimSpace(res.Summary) == "" {
+		// The worker did not even answer within the grace: the kernel writes the
+		// summary from what the worker gathered (owner: "force a summary").
+		res.Summary = t.evidenceSummary(ctx, res.EvidenceRefs)
+		answer = res.Summary
+	}
 	t.record(ctx, prov, parentAgent, b, binding, &res, answer)
 	slog.InfoContext(ctx, "ADR-0150: subtask finished", "subtask", id, "label", b.ID, "status", res.Status,
 		"exit", res.ExitReason, "tools", len(tools), "evidence", len(res.EvidenceRefs), "read_web", out.ReadWeb,
 		"ms", time.Since(start).Milliseconds())
-	t.remember(res)
 	return res
+}
+
+// evidenceExcerptChars bounds each tool result's excerpt in a kernel-written
+// wall-time summary; the summary as a whole is bounded by summary_max_chars.
+const evidenceExcerptChars = 300
+
+// evidenceSummary is the kernel-written summary of a subtask the wall-time cap
+// ended before its worker answered: which tool results it gathered, each with
+// a short excerpt read through the parent's enforced reader, and how to read
+// them in full. Never empty.
+func (t *Tool) evidenceSummary(ctx context.Context, evidence []string) string {
+	var sb strings.Builder
+	sb.WriteString("The subtask reached its wall-time cap (execution.lane.subtasks.worker_max_wall_seconds) before its worker summarised. ")
+	if len(evidence) == 0 {
+		sb.WriteString("It gathered no tool results. Re-run it with a narrower objective, or do it yourself.")
+		return sb.String()
+	}
+	fmt.Fprintf(&sb, "What it gathered (%d tool results; read one in full with ledger_get):", len(evidence))
+	for _, ref := range evidence {
+		sb.WriteString("\n- " + ref)
+		if t.Reader == nil {
+			continue
+		}
+		if e, err := t.Reader.Get(ctx, ref); err == nil && e != nil {
+			if ex := strings.Join(strings.Fields(string(e.Body)), " "); ex != "" {
+				sb.WriteString(": " + truncate(ex, evidenceExcerptChars))
+			}
+		}
+	}
+	return sb.String()
 }
 
 // classify sets the status from the worker's outcome; it returns the answer text
@@ -497,8 +589,10 @@ func classify(parent, worker context.Context, out domain.SubtaskOutcome, err err
 		res.Status, res.ExitReason, res.Reason = StatusStopped, ExitCancelled, "the parent's turn ended"
 		return ""
 	case err != nil && worker.Err() != nil:
-		res.Status, res.ExitReason = StatusStopped, ExitCap
-		res.Reason = "the subtask reached its wall-time cap (execution.lane.subtasks.worker_max_wall_seconds) before answering"
+		// The worker passed its wall-time cap and the summary grace: partial, with
+		// the summary the caller writes from the evidence (ENG-1760).
+		res.Status, res.ExitReason = StatusPartial, ExitWall
+		res.Reason = "the subtask reached its wall-time cap (execution.lane.subtasks.worker_max_wall_seconds) before its worker summarised; the summary lists what it gathered"
 		return ""
 	case err != nil:
 		res.Status, res.ExitReason, res.Reason = StatusFailed, ExitError, err.Error()
@@ -507,6 +601,11 @@ func classify(parent, worker context.Context, out domain.SubtaskOutcome, err err
 		res.Status, res.ExitReason = StatusRefused, ExitDenied
 		res.Reason = "the subtask needs something outside its tools: " + out.Meta[domain.HandoffKeyCapabilityNeeded]
 		return ""
+	case out.PayloadType == domain.PayloadTypeInputRequired:
+		// A subtask never asks the person itself (D5); a worker that did anyway
+		// is reported as needs_input so the parent decides.
+		res.Status, res.ExitReason, res.Question = StatusNeedsInput, ExitCompleted, inputQuestions(out.Text)
+		return out.Text
 	case out.PayloadType == "error":
 		res.Status, res.ExitReason = StatusFailed, ExitError
 		res.Reason = firstLine(out.Text, 300)
@@ -543,6 +642,27 @@ func classify(parent, worker context.Context, out domain.SubtaskOutcome, err err
 	}
 	res.Summary = text
 	return text
+}
+
+// inputQuestions renders an input_required payload ({"questions":[{"id",
+// "question"}],"reason"}) as one question line; the raw text when it is not one.
+func inputQuestions(data string) string {
+	var p struct {
+		Questions []struct {
+			Question string `json:"question"`
+		} `json:"questions"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal([]byte(data), &p) != nil || len(p.Questions) == 0 {
+		return firstLine(data, 300)
+	}
+	qs := make([]string, 0, len(p.Questions))
+	for _, q := range p.Questions {
+		if s := strings.TrimSpace(q.Question); s != "" {
+			qs = append(qs, s)
+		}
+	}
+	return strings.Join(qs, " ")
 }
 
 // lastMarker finds a final line starting with marker: the value after it and the

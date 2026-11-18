@@ -74,8 +74,8 @@ func (l *memLedger) Get(_ context.Context, id string) (*domain.LedgerEntry, erro
 	if id == "led_readable" {
 		return &domain.LedgerEntry{ID: id}, nil
 	}
-	if _, ok := l.entries[id]; ok {
-		return &domain.LedgerEntry{ID: id}, nil
+	if r, ok := l.entries[id]; ok {
+		return &domain.LedgerEntry{ID: id, Body: r.Body}, nil
 	}
 	return nil, nil
 }
@@ -358,10 +358,136 @@ func TestStatuses_NeverReportFailureAsSuccess(t *testing.T) {
 	if !strings.Contains(res[6].Reason, "send an email") {
 		t.Fatalf("capability_missing must name the need: %s", res[6].Reason)
 	}
-	// The wall-time cap stops a subtask, reported as stopped/cap.
+	// A worker past its wall-time cap and the summary grace is never "stopped
+	// with nothing": partial/wall with a kernel-written summary (ENG-1760).
 	slow, _, err := call(t, tool, "parent", brief("slow"))
-	if err != nil || slow[0].Status != StatusStopped || slow[0].ExitReason != ExitCap {
+	if err != nil || slow[0].Status != StatusPartial || slow[0].ExitReason != ExitWall || slow[0].Summary == "" {
 		t.Fatalf("wall cap: %+v %v", slow, err)
+	}
+}
+
+// ENG-1760 (owner 2026-11-18, "force a summary"): the worker gets its wall-time
+// cap on its request and answers with a forced summary there; the kernel waits
+// the grace for it. A worker that never answers is ended by the kernel, which
+// writes the summary from the tool results the worker gathered.
+func TestWallCap_ForcesASummary(t *testing.T) {
+	r := &fakeRunner{answer: func(d domain.SubtaskDispatch) (domain.SubtaskOutcome, error) {
+		// The SDK's stopping rule at the stamped cap: one tool-less summary call,
+		// partial with exit_reason wall.
+		return domain.SubtaskOutcome{Text: "Found 2 of 5 invoices: INV-1, INV-2. Missing: the rest.",
+			Meta: map[string]string{domain.AgentResultPartial: "true", domain.AgentResultExitReason: ExitWall}}, nil
+	}}
+	tool, _ := newTool(t, r)
+	tool.Cfg.WorkerMaxWall, tool.Cfg.WorkerSummaryGrace = 1500*time.Millisecond, time.Second
+	res, _, err := call(t, tool, "parent", brief("acme"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.calls[0].MaxWallSeconds; got != 2 {
+		t.Fatalf("the worker's request carries its wall cap in whole seconds (rounded up): %d", got)
+	}
+	if res[0].Status != StatusPartial || res[0].ExitReason != ExitWall || !strings.Contains(res[0].Summary, "INV-2") {
+		t.Fatalf("the worker's forced summary comes back as partial/wall: %+v", res[0])
+	}
+
+	// The worker hangs past the cap AND the grace: the kernel ends it and writes
+	// the summary from the evidence it gathered (read through the parent's reader).
+	tool2, led := newTool(t, nil)
+	tool2.Cfg.WorkerMaxWall, tool2.Cfg.WorkerSummaryGrace = 30*time.Millisecond, 20*time.Millisecond
+	ev, _ := led.Record(context.Background(), domain.LedgerRecord{Kind: domain.LedgerToolResult, Body: []byte("INV-9 open, 1 200 EUR, due 2026-12-01")})
+	tool2.Runner = runnerFunc(func(ctx context.Context, d domain.SubtaskDispatch) (domain.SubtaskOutcome, error) {
+		<-ctx.Done()
+		return domain.SubtaskOutcome{Evidence: []string{ev.ID}}, ctx.Err()
+	})
+	start := time.Now()
+	res, _, err = call(t, tool2, "parent", brief("zeta"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el < 50*time.Millisecond {
+		t.Fatalf("the kernel waits the summary grace past the cap: ended after %v", el)
+	}
+	s := res[0].Summary
+	if res[0].Status != StatusPartial || res[0].ExitReason != ExitWall || !strings.Contains(s, ev.ID) ||
+		!strings.Contains(s, "INV-9 open") || res[0].ResultRef == "" {
+		t.Fatalf("kernel-written summary of the evidence, recorded as the answer: %+v", res[0])
+	}
+	// Nothing gathered: the summary still says so.
+	tool2.Runner = runnerFunc(func(ctx context.Context, d domain.SubtaskDispatch) (domain.SubtaskOutcome, error) {
+		<-ctx.Done()
+		return domain.SubtaskOutcome{}, ctx.Err()
+	})
+	res, _, _ = call(t, tool2, "parent", brief("empty"))
+	if res[0].Status != StatusPartial || !strings.Contains(res[0].Summary, "no tool results") {
+		t.Fatalf("an empty capped subtask still returns a summary: %+v", res[0])
+	}
+}
+
+type runnerFunc func(ctx context.Context, d domain.SubtaskDispatch) (domain.SubtaskOutcome, error)
+
+func (f runnerFunc) RunSubtask(ctx context.Context, d domain.SubtaskDispatch) (domain.SubtaskOutcome, error) {
+	return f(ctx, d)
+}
+
+// A worker that asks the person anyway (input_required) is needs_input to the
+// parent, with its questions.
+func TestInputRequired_IsNeedsInput(t *testing.T) {
+	r := &fakeRunner{answer: func(domain.SubtaskDispatch) (domain.SubtaskOutcome, error) {
+		return domain.SubtaskOutcome{PayloadType: domain.PayloadTypeInputRequired,
+			Text: `{"questions":[{"id":"q1","question":"Which ACME, Berlin or Lyon?"}],"reason":"two matches"}`}, nil
+	}}
+	tool, _ := newTool(t, r)
+	res, _, err := call(t, tool, "parent", brief("acme"))
+	if err != nil || res[0].Status != StatusNeedsInput || res[0].Question != "Which ACME, Berlin or Lyon?" {
+		t.Fatalf("input_required: %+v %v", res, err)
+	}
+}
+
+// ENG-1760: a finished subtask's result is kept in the ADR-0154 action record
+// (beside the subtask's write keys), so a FRESH tool and registry over the same
+// record (a restarted kernel) answer it from there instead of running it again.
+func TestResume_AcrossARestart_FromTheDurableRecord(t *testing.T) {
+	store := domain.NewMemActionRecordStore()
+	led := &memLedger{}
+	boot := func(r domain.SubtaskRunner) *Tool {
+		tool, _ := newTool(t, nil)
+		tool.Registry = domain.NewSubtasks(time.Hour, store)
+		tool.Registry.RegisterParent("parent", "main")
+		tool.Runner, tool.Reader, tool.Writer = r, led, led
+		return tool
+	}
+	var fail atomic.Bool
+	fail.Store(true)
+	r1 := &fakeRunner{answer: func(d domain.SubtaskDispatch) (domain.SubtaskOutcome, error) {
+		if d.Binding.Label == "flaky" && fail.Load() {
+			return domain.SubtaskOutcome{}, errors.New("approval expired")
+		}
+		return domain.SubtaskOutcome{Text: "ok " + d.Binding.Label}, nil
+	}}
+	first, _, err := call(t, boot(r1), "parent", brief("stable"), brief("flaky"))
+	if err != nil || first[0].Status != StatusDone || first[1].Status != StatusFailed {
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	rec, err := store.Get(context.Background(), domain.SubtaskResultKey(first[0].SubtaskID))
+	if err != nil || rec.State != domain.ActionStateAccepted || rec.Tool != ToolName || rec.RunID != "run-1" || rec.ArgsHash == "" {
+		t.Fatalf("the finished result is an accepted action record: %+v %v", rec, err)
+	}
+	if rec, err := store.Get(context.Background(), domain.SubtaskResultKey(first[1].SubtaskID)); err != nil || rec.State.Settled() {
+		t.Fatalf("a failed subtask is not settled (a retry runs it again): %+v %v", rec, err)
+	}
+
+	fail.Store(false)
+	r2 := &fakeRunner{}
+	again, _, err := call(t, boot(r2), "parent", brief("stable"), brief("flaky"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again[0].Resumed || again[0].Summary != "ok stable" || again[0].ResultRef == "" ||
+		again[0].ResultRef != first[0].ResultRef || again[0].SubtaskID != first[0].SubtaskID {
+		t.Fatalf("after the restart the finished subtask answers from its record: %+v", again[0])
+	}
+	if len(r2.calls) != 1 || r2.calls[0].Binding.Label != "flaky" || again[1].Status != StatusDone {
+		t.Fatalf("only the unfinished subtask runs again: %+v", r2.calls)
 	}
 }
 

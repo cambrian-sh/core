@@ -7240,8 +7240,11 @@ type ToolOp struct {
 	// ADR-0085 D2: what DOMAIN this tool touches (`crm`, `filesystem`, `payments`).
 	ClassificationTags []string `protobuf:"bytes,8,rep,name=classification_tags,json=classificationTags,proto3" json:"classification_tags,omitempty"`
 	// ADR-0086: the closed-set verb classes it exercises —
-	// read | write | egress | spend | admin. A tag says what a tool is about; an
-	// effect says what the invocation does to it, and policy checks both.
+	// read | egress_read | write | egress | egress_send | spend | admin (ADR-0150
+	// D9 split egress: egress_read reads from outside with no state change there,
+	// egress_send transmits or changes state outside, plain egress means both).
+	// A tag says what a tool is about; an effect says what the invocation does
+	// to it, and policy checks both.
 	Effects []string `protobuf:"bytes,9,rep,name=effects,proto3" json:"effects,omitempty"`
 	// effects_inferred marks a tool whose effects were DERIVED from its other
 	// manifest fields rather than declared. It is the migration checklist: an
@@ -11939,7 +11942,7 @@ type ExplainAccessOpRequest struct {
 	ResourceKind  string                 `protobuf:"bytes,5,opt,name=resource_kind,json=resourceKind,proto3" json:"resource_kind,omitempty"`    // "memory" | "skill" | "agent" | "tool" | "artifact"
 	ResourceId    string                 `protobuf:"bytes,6,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`          // the specific resource ("" = a class-level question)
 	Tags          []string               `protobuf:"bytes,7,rep,name=tags,proto3" json:"tags,omitempty"`                                        // the resource's classification tags
-	Effects       []string               `protobuf:"bytes,8,rep,name=effects,proto3" json:"effects,omitempty"`                                  // declared effect classes (tools): read|write|egress|spend|admin
+	Effects       []string               `protobuf:"bytes,8,rep,name=effects,proto3" json:"effects,omitempty"`                                  // declared effect classes (tools): read|egress_read|write|egress|egress_send|spend|admin
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -23434,7 +23437,7 @@ type IntegrationToolPolicyOp struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"` // tool name as advertised (unqualified); "" for a default
 	Dangerous     bool                   `protobuf:"varint,2,opt,name=dangerous,proto3" json:"dangerous,omitempty"`
-	Effects       []string               `protobuf:"bytes,3,rep,name=effects,proto3" json:"effects,omitempty"` // ADR-0086: read, write, egress, spend, admin
+	Effects       []string               `protobuf:"bytes,3,rep,name=effects,proto3" json:"effects,omitempty"` // ADR-0086/ADR-0150 D9: read, egress_read, write, egress, egress_send, spend, admin
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
