@@ -74,28 +74,56 @@ func TestEmitDecision_HopsExtendTheCorrelationPrefix(t *testing.T) {
 	}
 }
 
-// Without a seeded handle NOTHING changes: the minted id is what every existing
-// deployment already records, and this plumbing must not alter it.
-func TestEmitDecision_NoCorrelationStillMintsDistinctIDs(t *testing.T) {
+// ENG-2068 (AGENTS.md §2.6): without a seeded handle the entry point derives
+// one from the request — no clock, no process-local counter — so the same
+// request asked again (a retry, or a second QueryService after a restart) names
+// the same receipts, hops still get their own ids, and a different question,
+// principal, session or plan step gets different ones.
+func TestEmitDecision_NoCorrelationDerivesStableIDsFromTheRequest(t *testing.T) {
 	t.Parallel()
+	run := func(ctx context.Context, query, caller string) []string {
+		t.Helper()
+		obs := &recordingObserver{}
+		q := NewQueryService(&fakeEmbedder{}, corpusOfOne(), &recordingAuthorizer{})
+		q.SetDecisionObserver(obs, "fp-1")
+		q.EnableAgenticRetrieval(&fakePlanner{rewrite: "planned", bridge: "bridge-1"}, 2)
+		if _, err := q.Search(ctx, query, caller); err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		return obs.queryIDs
+	}
+	bg := context.Background()
+	first := run(bg, "a bridge question", "ci-bot")
+	if len(first) != 2 {
+		t.Fatalf("query ids = %v, want one per hop (2)", first)
+	}
+	prefix := domain.DerivedQueryCorrelation(bg, "ci-bot", "a bridge question")
+	if first[0] != prefix+"-h1" || first[1] != prefix+"-h2" {
+		t.Fatalf("query ids = %v, want [%s-h1 %s-h2]", first, prefix, prefix)
+	}
+	if again := run(bg, "a bridge question", "ci-bot"); again[0] != first[0] || again[1] != first[1] {
+		t.Fatalf("a retry of the same request must name the same receipts: %v vs %v", again, first)
+	}
+	sess := domain.WithSessionID(bg, "conv-1")
+	for name, ids := range map[string][]string{
+		"other question":  run(bg, "another question", "ci-bot"),
+		"other principal": run(bg, "a bridge question", "other-bot"),
+		"other session":   run(sess, "a bridge question", "ci-bot"),
+		"plan step":       run(domain.WithStepCall(sess, domain.StepCall{RunID: "run-9", StepIndex: 2}), "a bridge question", "ci-bot"),
+	} {
+		if ids[0] == first[0] || !strings.HasSuffix(ids[0], "-h1") {
+			t.Errorf("%s: id %q must differ from %q and keep the hop shape", name, ids[0], first[0])
+		}
+	}
+	// The single-pass lanes derive the same way.
 	obs := &recordingObserver{}
 	q := NewQueryService(&fakeEmbedder{}, corpusOfOne(), &recordingAuthorizer{})
 	q.SetDecisionObserver(obs, "fp-1")
-	q.EnableAgenticRetrieval(&fakePlanner{rewrite: "planned", bridge: "bridge-1"}, 2)
-
-	if _, err := q.Search(context.Background(), "a bridge question", "ci-bot"); err != nil {
-		t.Fatalf("Search: %v", err)
+	if _, err := q.SearchActions(bg, "what did I do", "ci-bot"); err != nil {
+		t.Fatal(err)
 	}
-	if len(obs.queryIDs) != 2 {
-		t.Fatalf("query ids = %v, want 2", obs.queryIDs)
-	}
-	for _, id := range obs.queryIDs {
-		if !strings.HasPrefix(id, "q-") {
-			t.Errorf("minted id %q lost its shape", id)
-		}
-	}
-	if obs.queryIDs[0] == obs.queryIDs[1] {
-		t.Errorf("two hops minted the same id %q", obs.queryIDs[0])
+	if want := domain.DerivedQueryCorrelation(bg, "ci-bot", "what did I do") + "-h1"; len(obs.queryIDs) != 1 || obs.queryIDs[0] != want {
+		t.Fatalf("single-pass ids = %v, want [%s]", obs.queryIDs, want)
 	}
 }
 

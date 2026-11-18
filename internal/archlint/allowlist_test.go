@@ -44,6 +44,7 @@ var allowBackground = map[string]string{
 // allowClockIDs: rule 5, clock-derived identifiers (AGENTS.md §2.6). Keys are
 // "<file> <func> <target> #<k-th hit for that target in that func>".
 var allowClockIDs = map[string]string{
-	// Known defects, each tracked by its ticket, which deletes the entry.
-	"internal/memory/query.go QueryService.emitDecision queryID #1": "known defect, T-20261118-retrieval-decision-queryid-is-minted-from-time: minted receipt QueryID persisted by premium receipts",
+	// Known defects, each tracked by its ticket, which deletes the entry. (The
+	// receipt QueryID entry left with ENG-2068: the id is now derived from the
+	// request, domain.DerivedQueryCorrelation.)
 }

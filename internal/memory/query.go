@@ -81,7 +81,6 @@ type QueryService struct {
 	// to describe a config that cannot change without a restart would be pure cost.
 	decisionObs    domain.DecisionObserver
 	cfgFingerprint string
-	queryCounter   atomic.Uint64 // monotonic within a process; feeds QueryID
 	// ADR-0118 D5: the substrate consultant. nil (the OSS default) ⇒ the consult
 	// site is a nil check and behaviour is bit-identical. Premium injects an
 	// implementation that answers the MODELLED part of a query exactly through
@@ -535,19 +534,23 @@ func (q *QueryService) SetSubstrateConsultant(c domain.SubstrateConsultant) {
 // deliberately does not defend against a wedged one by spawning a goroutine per
 // query, which would convert a slow consumer into unbounded goroutine growth on
 // the hottest path in the kernel.
-// ADR-0126 D6: the QueryID PREFERS a correlation handle seeded by the boundary
-// (the MCP endpoint mints one per tool call) over minting one, so a caller can
-// name the receipts its own question produced. Because this site fires once per
-// HOP, the seeded handle is a prefix each hop extends — `<corr>-h1`, `<corr>-h2`
-// — rather than a 1:1 id, which would make hop 2 overwrite hop 1 and leave the
-// chain reading incomplete. No context, no change: the minted id is unchanged.
+// ADR-0126 D6: the QueryID is the call's correlation handle extended per HOP —
+// `<corr>-h1`, `<corr>-h2` — rather than a 1:1 id, which would make hop 2
+// overwrite hop 1 and leave the chain reading incomplete. The handle is the
+// boundary's (the MCP endpoint mints one per tool call) or, when the boundary
+// seeded none, the one every retrieval entry point derives from the request
+// (domain.EnsureQueryCorrelation: plan step or session, principal, question).
+// Never a clock or a process-local counter (AGENTS.md §2.6, ENG-2068): a
+// retried request names the same receipts again.
 func (q *QueryService) emitDecision(ctx context.Context, query, callerID, sessionID, docType string, topK int, results []domain.SearchResult, primaryIDs map[string]bool) {
 	if q.decisionObs == nil {
 		return
 	}
 	queryID, ok := domain.NextQueryCorrelationID(ctx)
 	if !ok {
-		queryID = fmt.Sprintf("q-%d-%d", time.Now().UnixNano(), q.queryCounter.Add(1))
+		// An internal path that reached searchByType without an entry point:
+		// still deterministic, numbered as a single hop.
+		queryID = domain.DerivedQueryCorrelation(ctx, callerID, query) + "-h1"
 	}
 	sum := sha256.Sum256([]byte(query))
 	chunks := make([]domain.RetrievedChunk, 0, len(results))
@@ -1632,6 +1635,7 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 // Search embeds query, searches the vector store (memory docs only), and filters by ACL.
 // callerID is the agent requesting access; documents owned by other agents are excluded.
 func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+	ctx = domain.EnsureQueryCorrelation(ctx, callerID, query) // ENG-2068: one hop counter per call
 	// AGENTIC_RETRIEVAL_SPEC: the mnemonic_fact lane (the DocTypeMnemonicFact recall
 	// lane of ADR-0049 D4 — NOT the ADR-0136 "fact lane" over memory_fact items,
 	// injectFactHits, which runs inside every pass when facts.lane_enabled) runs the
@@ -1670,6 +1674,7 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 // is a direct query, not an agent's grounding loop (like SearchSystem, single pass),
 // and must not reinforce edges among the very records it is about to erase.
 func (q *QueryService) SearchMatches(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+	ctx = domain.EnsureQueryCorrelation(ctx, callerID, query)
 	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicFact, false)
 }
 
@@ -1681,6 +1686,7 @@ func (q *QueryService) SearchMatches(ctx context.Context, query, callerID string
 // direct query, not an agent's grounding retrieval.
 func (q *QueryService) SearchSystem(ctx context.Context, query string) ([]domain.SearchResult, error) {
 	ctx = domain.WithScope(ctx, domain.ScopeSystem)
+	ctx = domain.EnsureQueryCorrelation(ctx, "operator:system", query)
 	return q.searchByType(ctx, query, "operator:system", domain.DocTypeMnemonicFact, true)
 }
 
@@ -1725,6 +1731,7 @@ func (q *QueryService) Answer(ctx context.Context, query, callerID string) (stat
 // on the context and the caller id — kept as one function so a change to the
 // synthesis or the abstention rule cannot land on one lane and miss the other.
 func (q *QueryService) answer(ctx context.Context, query, callerID string) (status, answer string, evidence []domain.SearchResult, err error) {
+	ctx = domain.EnsureQueryCorrelation(ctx, callerID, query)
 	cs, ok := q.planner.(CitedSynthesizer)
 	if !ok {
 		return "", "", nil, errAgenticDisabled
@@ -1805,6 +1812,7 @@ func (q *QueryService) answer(ctx context.Context, query, callerID string) (stat
 // never re-bloat fact grounding. Same ACL/scope/relevance-floor gating; no graph
 // spreading (actions are events, not associatively-expanded knowledge).
 func (q *QueryService) SearchActions(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+	ctx = domain.EnsureQueryCorrelation(ctx, callerID, query)
 	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicAction, false)
 }
 
@@ -1821,6 +1829,7 @@ func (q *QueryService) SearchActions(ctx context.Context, query, callerID string
 // deleted (see procedureActivation), so they fall out of contention here without losing
 // the record that they once worked.
 func (q *QueryService) SearchProcedures(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+	ctx = domain.EnsureQueryCorrelation(ctx, callerID, query)
 	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicProcedure, false)
 }
 

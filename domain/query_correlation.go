@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"sync/atomic"
 )
@@ -74,12 +76,50 @@ func QueryCorrelationFromContext(ctx context.Context) (string, bool) {
 // `<prefix>-h1`, then `<prefix>-h2`, and so on — advancing the counter.
 //
 // Call it exactly once per emitted decision. It returns false when ctx carries no
-// correlation, which is the signal to mint a local id instead: a deployment
-// without this plumbing must keep behaving exactly as it did.
+// correlation; the retrieval entry points seed one first (EnsureQueryCorrelation),
+// so that is a wiring gap, not a normal path.
 func NextQueryCorrelationID(ctx context.Context) (string, bool) {
 	c, ok := ctx.Value(queryCorrelationCtxKey{}).(*queryCorrelation)
 	if !ok || c == nil || c.prefix == "" {
 		return "", false
 	}
 	return c.prefix + "-h" + strconv.FormatUint(c.hops.Add(1), 10), true
+}
+
+// DerivedQueryCorrelation is the correlation prefix of a retrieval whose
+// boundary seeded none (ENG-2068, owner decision 2026-11-18): derived from what
+// the request already carries, never from a clock or a process-local counter
+// (AGENTS.md §2.6), so a retried request names the same receipts again.
+//
+// The anchor is the most specific request handle on ctx: the plan step the call
+// serves (run id + step index, set from the caller's lease), else the
+// conversation/session id; then the principal and the question text. Two
+// different questions, principals, sessions or plan steps get different
+// prefixes; the same request asked twice gets the same one — that is the point:
+// a retry is the same retrieval, and its receipts must say so. Hops extend the
+// prefix as for a seeded handle (`<prefix>-h1`, `-h2`, …).
+func DerivedQueryCorrelation(ctx context.Context, principal, query string) string {
+	anchor := ""
+	if s, ok := StepCallFrom(ctx); ok {
+		anchor = "run:" + string(s.RunID) + "/" + strconv.Itoa(s.StepIndex)
+	} else if sid, ok := SessionIDFromContext(ctx); ok {
+		anchor = "session:" + string(sid)
+	}
+	h := sha256.New()
+	for _, part := range []string{anchor, principal, query} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return "q-" + hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// EnsureQueryCorrelation returns ctx unchanged when it carries a correlation
+// (the boundary's handle wins), else a child carrying DerivedQueryCorrelation
+// with a fresh hop counter. The retrieval entry points call it once per call,
+// before any hop runs, so every hop of the call shares one counter.
+func EnsureQueryCorrelation(ctx context.Context, principal, query string) context.Context {
+	if _, ok := QueryCorrelationFromContext(ctx); ok {
+		return ctx
+	}
+	return WithQueryCorrelation(ctx, DerivedQueryCorrelation(ctx, principal, query))
 }

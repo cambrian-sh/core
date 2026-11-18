@@ -59,5 +59,6 @@ func (q *QueryService) RecallFor(ctx context.Context, p domain.PrincipalRef, que
 	}
 	ctx = domain.WithScope(ctx, nil)
 	ctx = context.WithValue(ctx, readAsCtxKey{}, p)
+	ctx = domain.EnsureQueryCorrelation(ctx, p.String(), query)
 	return q.searchByType(ctx, query, p.String(), docType, docType == domain.DocTypeMnemonicFact)
 }

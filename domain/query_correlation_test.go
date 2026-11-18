@@ -97,3 +97,56 @@ func TestNextQueryCorrelationID_ConcurrentHopsAreDistinct(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+// ENG-2068: the derived handle is a pure function of the request (plan step or
+// session, principal, question) — same input, same handle; any part changed, a
+// different one — and it never replaces a boundary's handle.
+func TestDerivedQueryCorrelation_IsDeterministicPerRequest(t *testing.T) {
+	t.Parallel()
+	bg := context.Background()
+	base := DerivedQueryCorrelation(bg, "p", "q")
+	if base != DerivedQueryCorrelation(bg, "p", "q") || len(base) != 34 || base[:2] != "q-" {
+		t.Fatalf("derived handle %q is not stable / q-<32 hex>", base)
+	}
+	sess := WithSessionID(bg, "s1")
+	step := WithStepCall(sess, StepCall{RunID: "r1", StepIndex: 0})
+	seen := map[string]string{"bare": base}
+	for name, got := range map[string]string{
+		"principal":   DerivedQueryCorrelation(bg, "p2", "q"),
+		"question":    DerivedQueryCorrelation(bg, "p", "q2"),
+		"session":     DerivedQueryCorrelation(sess, "p", "q"),
+		"other sess":  DerivedQueryCorrelation(WithSessionID(bg, "s2"), "p", "q"),
+		"plan step":   DerivedQueryCorrelation(step, "p", "q"),
+		"other step":  DerivedQueryCorrelation(WithStepCall(sess, StepCall{RunID: "r1", StepIndex: 1}), "p", "q"),
+		"split parts": DerivedQueryCorrelation(bg, "pq", ""),
+	} {
+		for other, prev := range seen {
+			if got == prev {
+				t.Errorf("%s collides with %s: %q", name, other, got)
+			}
+		}
+		seen[name] = got
+	}
+	if DerivedQueryCorrelation(sess, "p", "q") != DerivedQueryCorrelation(WithSessionID(bg, "s1"), "p", "q") {
+		t.Error("same session, principal and question must derive the same handle")
+	}
+}
+
+func TestEnsureQueryCorrelation_KeepsTheBoundaryHandleAndNumbersHops(t *testing.T) {
+	t.Parallel()
+	seeded := WithQueryCorrelation(context.Background(), "mcp-1")
+	if got, _ := QueryCorrelationFromContext(EnsureQueryCorrelation(seeded, "p", "q")); got != "mcp-1" {
+		t.Fatalf("the boundary's handle must win, got %q", got)
+	}
+	ctx := EnsureQueryCorrelation(context.Background(), "p", "q")
+	want := DerivedQueryCorrelation(context.Background(), "p", "q")
+	h1, _ := NextQueryCorrelationID(ctx)
+	h2, _ := NextQueryCorrelationID(ctx)
+	if h1 != want+"-h1" || h2 != want+"-h2" {
+		t.Fatalf("hops %q %q, want %s-h1/-h2", h1, h2, want)
+	}
+	// A retry is a fresh call: its hops start at 1 again, so it names the same ids.
+	if r1, _ := NextQueryCorrelationID(EnsureQueryCorrelation(context.Background(), "p", "q")); r1 != h1 {
+		t.Fatalf("retry hop 1 = %q, want %q", r1, h1)
+	}
+}
