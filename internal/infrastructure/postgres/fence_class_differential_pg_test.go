@@ -293,6 +293,55 @@ func TestPg_FenceClassDifferential(t *testing.T) {
 				p.PartyIdentities = []string{rapid.SampledFrom(diffParties).Draw(rt, "identity")}
 			}
 		}
+		// Two cases, forced (ENG-1834): left to the generator, a run of 100
+		// sometimes drew no object existing through its minted evidence alone
+		// (it needs a drawn evidence row p passes while none of the object's
+		// properties pass) or no value hidden by its row tags, and the coverage
+		// check failed. So, whenever p admits some (tags, parties) pair (the
+		// first by bitmask over the vocabulary: no draws, so the draw stream is
+		// unchanged), add an object with no properties minted by evidence on
+		// that pair, and, when some row classification hides that pair from p,
+		// an object whose one property carries it. All three verdicts must
+		// agree on both, as on every drawn object.
+		if !p.Unfiltered() {
+			if tags, parties, ok := firstAdmitted(p); ok {
+				if _, err := conn.Exec(ctx, `INSERT INTO evidence VALUES ($1,$2,$3)`, "evm", tags, parties); err != nil {
+					rt.Fatalf("seed forced evidence: %v", err)
+				}
+				evs["evm"] = fenceRow{id: "evm", tags: tags, parties: parties}
+				forced := []classObject{{id: "om", minted: "evm"}}
+				vis := [][]int32{{classOf(tags, parties, nil)}}
+				if rowTags, ok := firstHiding(p, tags, parties); ok {
+					o := classObject{id: "or"}
+					o.props[0] = &fenceRow{tags: tags, parties: parties}
+					o.rowTags[0] = rowTags
+					forced = append(forced, o)
+					vis = append(vis, []int32{classOf(tags, parties, rowTags)})
+				}
+				for k, o := range forced {
+					var minted any
+					if o.minted != "" {
+						minted = o.minted
+					}
+					args := []any{o.id, minted, vis[k]}
+					for pi := 0; pi < classObjectProps; pi++ {
+						if o.props[pi] == nil {
+							args = append(args, nil, nil, nil)
+							continue
+						}
+						args = append(args, o.props[pi].tags, o.props[pi].parties, o.rowTags[pi])
+					}
+					ph := make([]string, len(args))
+					for a := range args {
+						ph[a] = fmt.Sprintf("$%d", a+1)
+					}
+					if _, err := conn.Exec(ctx, `INSERT INTO class_objects VALUES (`+strings.Join(ph, ",")+`)`, args...); err != nil {
+						rt.Fatalf("seed forced object %s: %v", o.id, err)
+					}
+					objs = append(objs, o)
+				}
+			}
+		}
 
 		// (1) Go, authoritative.
 		want := []string{}
@@ -418,6 +467,43 @@ func TestPg_FenceClassDifferential(t *testing.T) {
 		t.Fatalf("the generator stopped covering a case: minted-only %d, property-only %d, party %d, denied %d, row-restricted %d",
 			viaMintOnly, viaPropOnly, viaParty, denied, restrictedByRow)
 	}
+}
+
+// firstAdmitted is the first (tags, parties) pair over the differential
+// vocabulary, by bitmask, that p admits (ENG-1834's forced cases).
+func firstAdmitted(p *domain.TagPredicate) ([]string, []string, bool) {
+	for tm := 0; tm < 1<<len(diffTags); tm++ {
+		for pm := 0; pm < 1<<len(diffParties); pm++ {
+			tags, parties := maskOf(diffTags, tm), maskOf(diffParties, pm)
+			if _, ok := p.CheckRow(tags, parties); ok {
+				return tags, parties, true
+			}
+		}
+	}
+	return nil, nil, false
+}
+
+// firstHiding is the first non-empty row classification over diffPlain, by
+// bitmask, that hides the admitted pair (tags, parties) from p under
+// ADR-0158 D2, if any (p forbids one of its tags, say).
+func firstHiding(p *domain.TagPredicate, tags, parties []string) ([]string, bool) {
+	for rm := 1; rm < 1<<len(diffPlain); rm++ {
+		if rowTags := maskOf(diffPlain, rm); !classTyped(p, tags, parties, rowTags) {
+			return rowTags, true
+		}
+	}
+	return nil, false
+}
+
+// maskOf is the members of from whose bit is set in mask, never nil.
+func maskOf(from []string, mask int) []string {
+	out := []string{}
+	for k, x := range from {
+		if mask&(1<<k) != 0 {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func describe(objs []classObject, evs map[string]fenceRow) []string {
