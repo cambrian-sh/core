@@ -44,8 +44,18 @@ cambrian-core/configs/mcp.json
 **/secret.key
 **/.env
 
-# Other repos in the monorepo not needed by the kernel image
+# The kernel-managed sandbox Python env of a dev checkout (ADR-0157 D7, ~1-4 GB):
+# the image builds its own generation.
+cambrian-core/runtime
+
+# Other repos in the monorepo not needed by the kernel image. Since ENG-2077 that
+# includes the agent SDK: the env is built from the release base lock (the published
+# SDK), not from the sibling sdk/ checkout.
 ui
 cli
+sdk
 cambrian-premium
 cambrian-benchmarks
+cambrian-worldsim
+cambrian-knowledge
+www

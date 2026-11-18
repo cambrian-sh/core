@@ -4,8 +4,12 @@
 # The kernel (Go) and its agents (Python) COLOCATE: the Go binary spawns the agents in
 # agents/ as subprocesses on the kernel-managed sandbox Python env (ADR-0157 D7), which
 # is built INTO the image here, so a container boots Python agents at once, air-gapped
-# included, and never downloads an env at first boot (ENG-2034). Because the agent SDK
-# lives in the sibling `sdk/` repo, the build context is the MONOREPO ROOT:
+# included, and never downloads an env at first boot (ENG-2034). The env is built from
+# the RELEASE base lock alone (the published agent SDK it pins ships the agent channel
+# since ENG-2033), so the image needs nothing outside cambrian-core/ (ENG-2077). The
+# build context stays the monorepo root, which the workspace compose files and the
+# premium image already use; Dockerfile.dockerignore next to this file narrows it to
+# cambrian-core/ minus local state (the managed env, config store and secrets):
 #
 #     docker build -f cambrian-core/Dockerfile -t ghcr.io/cambrian-sh/core:dev .
 
@@ -99,17 +103,15 @@ RUN mkdir -p /app/data /app/state /app/runtime /run/cambrian \
 # hashed base lock (agents/base.lock, embedded in the binary), wheels only. Its root is
 # the default execution.agents.python.root, <base dir>/runtime/python = /app/runtime/
 # python: owned by the runtime user (built as it), outside /app/data (a corpus reset
-# truncates that) and /app/state (the config store volume). The agent SDK is built from
-# the sibling sdk/ checkout (--sdk-dir), as the image always did: the base lock's
-# published SDK lags the kernel's agent channel (ENG-2033); the boot check counts a dev
-# SDK wheel as current, so the kernel finds the env healthy and builds nothing at boot.
+# truncates that) and /app/state (the config store volume). No --sdk-dir: the generation
+# is exactly what a released install builds (the lock's published SDK, the pin table's
+# model assets), so the kernel's boot check finds it healthy without a dev-SDK
+# exception and builds nothing at boot (ENG-2077; --sdk-dir stays for dev trees and CI).
 # downloads/ and cache/ (the verified archives and the wheel cache, several GB) only
 # serve rebuilds: an image is rebuilt, not repaired, so they are dropped in this layer.
 USER cambrian
-RUN --mount=type=bind,source=sdk,target=/tmp/sdk-src \
-    cp -r /tmp/sdk-src /tmp/sdk \
- && /app/orchestrator python-env build --dir /app --sdk-dir /tmp/sdk \
- && rm -rf /tmp/sdk /app/runtime/python/downloads /app/runtime/python/cache \
+RUN /app/orchestrator python-env build --dir /app \
+ && rm -rf /app/runtime/python/downloads /app/runtime/python/cache \
  && /app/orchestrator python-env status --dir /app
 
 # Optional model pre-fetch (HF reranker/docling weights baked into the image cache), so

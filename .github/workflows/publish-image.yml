@@ -1,7 +1,8 @@
 # PLAT-04 / ADR-0066 — publish the kernel image to GHCR on a version tag.
 # Builds the CPU image and the `-cuda` variant (GPU support is a wheel swap: the runtime
 # stage pulls CUDA torch wheels via TORCH_INDEX_URL, no code change). The build context
-# is the MONOREPO ROOT, so the sibling sdk/ repo is checked out alongside cambrian-core.
+# is the MONOREPO ROOT with only cambrian-core/ checked out under it (ENG-2077: the
+# sandbox Python env comes from the release base lock, not an sdk/ checkout).
 name: publish-image
 
 on:
@@ -31,17 +32,13 @@ jobs:
             # CUDA torch wheels — swapped in with zero Dockerfile change.
             torch_index_url: "https://download.pytorch.org/whl/cu124"
     steps:
-      # The build context is the monorepo root; lay out cambrian-core/ + sdk/ under it.
+      # The build context is the monorepo root with cambrian-core/ under it. The agent
+      # SDK is not checked out: the image's sandbox Python env is built from the release
+      # base lock, which pins the published SDK (ENG-2077).
       - name: Checkout cambrian-core
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: cambrian-core
-      - name: Checkout sdk (sibling repo the agents import)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: cambrian-sh/sdk
-          path: sdk
-          token: ${{ secrets.SDK_CHECKOUT_TOKEN }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
