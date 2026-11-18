@@ -2,39 +2,38 @@ package postgres
 
 import (
 	"context"
+	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/cambrian-sh/core/internal/config"
 )
 
 // ENG-277: a projection-read kernel ensures its model's partial HNSW index on
 // chunk_embeddings at boot (ADR-0107 D2), the index matches the read path's SQL so
 // the planner can use it, the ensure is idempotent, and an INVALID index left by
 // an interrupted concurrent build is rebuilt. Runs against PG_TEST_DSN (a migrated
-// database at 1536 dims) or skips.
+// scratch database at 1536 dims) or skips.
 func TestPg_ProjectionIndexEnsuredAtBoot(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
-	}
+	// Its own scratch database at 1536 (dimScratchDB skips without PG_TEST_DSN): the
+	// shared test database is migrated at 1024, and since ENG-2038 a projection boot
+	// at another dimension refuses while the descriptor columns are at 1024.
+	const dims = 1536
+	cfg := dimScratchDB(t)(dims)
 	ctx := context.Background()
-	pc, err := pgxpool.ParseConfig(dsn)
+	u, err := url.Parse(os.Getenv("PG_TEST_DSN"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin, err := pgxpool.New(ctx, dsn)
+	u.Path = "/" + cfg.Database.DBName
+	admin, err := pgxpool.New(ctx, u.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admin.Close()
 
 	const model = "eng277-Test.model"
-	const dims = 1536
 	name := ProjectionIndexName(model)
 	drop := func() {
 		if _, err := admin.Exec(ctx, `DROP INDEX IF EXISTS "`+name+`"`); err != nil {
@@ -53,14 +52,6 @@ func TestPg_ProjectionIndexEnsuredAtBoot(t *testing.T) {
 		return true, v
 	}
 
-	cc := pc.ConnConfig
-	cfg := &config.Config{}
-	cfg.Database.Host = cc.Host
-	cfg.Database.Port = strconv.Itoa(int(cc.Port))
-	cfg.Database.User = cc.User
-	cfg.Database.Password = cc.Password
-	cfg.Database.DBName = cc.Database
-	cfg.Embedder.Dimensions = dims
 	cfg.Embedder.Model = model
 	cfg.Storage.AutoMigrate = true
 	cfg.Database.Migrations.Mode = "auto"

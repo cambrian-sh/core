@@ -444,9 +444,13 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 	// columns are all typed at the dimension the store was migrated with (memory_facts,
 	// 0020, was dropped by 0021; fact items keep their vectors in the untyped
 	// knowledge_item_embeddings projection, 0022, which needs no coexistence of its own).
-	// The projection covers chunks only: under coexistence the descriptor tables lose
-	// their vectors and their dense search fails on the dimension
-	// (T-20261118-adr-0107-coexistence-breaks-tool-skill-and, ENG-2038).
+	// The projection covers chunks only, so a DIMENSION change cannot coexist: the
+	// descriptor tables (tools, skills, agent_profiles) would lose their vectors and
+	// their dense search would fail on the dimension. Boot refuses while any of their
+	// columns is at another dimension than the embedder (owner decision 2026-11-18,
+	// option C of T-20261118-adr-0107-coexistence-breaks-tool-skill-and, ENG-2038;
+	// rejected: descriptor projection tables, untyped columns + model_id, recreating
+	// the columns at boot). A model change at the SAME dimension still coexists.
 	//
 	// A mismatch is never a migration (ENG-2002). With the projection read on it is
 	// ADR-0107 coexistence; without it boot REFUSES, whatever the document count.
@@ -475,6 +479,11 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 	// is the end of the destructive dim-migration for projection deployments:
 	// switching models is a backfill plus a config change, and switching BACK
 	// is the same config change again.
+	if existingDim != 0 && p.projectionRead {
+		if err := p.refuseDescriptorDimMismatch(ctx); err != nil {
+			return err
+		}
+	}
 	if existingDim != 0 && existingDim != p.dim && p.projectionRead {
 		slog.Info("ADR-0107: embedder dimension differs from the legacy column; projection coexistence active",
 			"column_dim", existingDim, "embedder_dim", p.dim,
@@ -488,14 +497,59 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		return fmt.Errorf(
 			"REFUSING to boot: the store's embedding dimension is %d but embedder.dimensions is %d, and "+
 				"a vector column cannot change dimension in place. Either set embedder.dimensions back to %d; or "+
-				"switch models side by side (ADR-0107): set embedder.model, enable "+
+				"point the kernel at a new database and rebuild the store there. (A model change at the SAME "+
+				"dimension can run side by side, ADR-0107: set embedder.model, enable "+
 				"execution.retrieval.embedding_projection_write and embedding_projection_read, and run "+
-				"cmd/embed-backfill for the new model; or, for a disposable store, point the kernel at a new "+
-				"database. Nothing was changed",
+				"cmd/embed-backfill. A dimension change cannot: the tool, skill and agent-profile vectors have "+
+				"no projection, ENG-2038.) Nothing was changed",
 			existingDim, p.dim, existingDim)
 	}
 
 	return p.runMigrations(ctx)
+}
+
+// descriptorVectorTables are the tables whose embedding column is typed at the
+// store's dimension (0007) and has no ADR-0107 projection.
+var descriptorVectorTables = []string{TableTools, TableSkills, TableAgentProfiles}
+
+// refuseDescriptorDimMismatch refuses a projection boot while a descriptor table's
+// embedding column is at another dimension than the embedder (ENG-2038, option C).
+// Under coexistence their writes would silently drop the vector (getUpsertBuilder)
+// and their dense search would fail with "different vector dimensions", breaking
+// semantic tool and skill retrieval and profile search. Read-only: nothing is
+// changed. A missing table or an untyped column (atttypmod -1) is no mismatch.
+func (p *PgVectorAdapter) refuseDescriptorDimMismatch(ctx context.Context) error {
+	var mismatched []string
+	colDim := 0
+	for _, table := range descriptorVectorTables {
+		var dim int
+		err := p.pool.QueryRow(ctx, `
+			SELECT a.atttypmod
+			FROM pg_attribute a
+			WHERE a.attrelid = to_regclass($1) AND a.attname = 'embedding' AND NOT a.attisdropped
+		`, table).Scan(&dim)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // the table (or its column) does not exist
+		}
+		if err != nil {
+			return fmt.Errorf("probe %s.embedding dimension: %w", table, err)
+		}
+		if dim > 0 && dim != p.dim {
+			mismatched = append(mismatched, fmt.Sprintf("%s (%d)", table, dim))
+			colDim = dim
+		}
+	}
+	if len(mismatched) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"REFUSING to boot: embedder.dimensions is %d but the embedding columns of %s are at another "+
+			"dimension. ADR-0107 projection coexistence covers chunks only; these tables have no projection, "+
+			"so their vectors would be dropped and tool, skill and agent-profile search would fail "+
+			"(ENG-2038). Either set embedder.dimensions back to %d (a model change at the same dimension can "+
+			"run side by side), or point the kernel at a new database and rebuild the store there. "+
+			"Nothing was changed",
+		p.dim, strings.Join(mismatched, ", "), colDim)
 }
 
 // runMigrations creates the schema by applying the migration runner (baseline 0001 +
@@ -773,11 +827,11 @@ func keepStatedTime(table, col string) string {
 // active model (ADR-0107 stage 3a). Runs in the SAME transaction/statement
 // sequence as the chunk upsert, immediately after it, so the row and its
 // projection cannot diverge on a crash and the FK is always satisfied. Chunks
-// only. The descriptor tables (tools, skills, agent_profiles) are NOT projected,
-// and being re-derivable does not save them: their embedding columns are typed at
-// the store's original dimension, so under coexistence their vectors are dropped
-// (getUpsertBuilder) and their dense search fails on the dimension. Open:
-// T-20261118-adr-0107-coexistence-breaks-tool-skill-and (ENG-2038).
+// only. The descriptor tables (tools, skills, agent_profiles) are NOT projected:
+// their embedding columns are typed at the store's dimension, so a dimension
+// change cannot coexist and ensureSchema refuses it (refuseDescriptorDimMismatch,
+// ENG-2038); under a same-dimension model change their column holds the vector of
+// whichever model last wrote the row.
 const projectionUpsertSQL = `
 	INSERT INTO chunk_embeddings (chunk_id, model_id, model_version, dims, embedding)
 	VALUES ($1, $2, '', $3, $4)

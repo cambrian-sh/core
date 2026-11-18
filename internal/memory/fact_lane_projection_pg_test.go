@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/pgvector/pgvector-go"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
@@ -79,36 +80,44 @@ func factLaneScratchDB(t *testing.T) func(dims int) *config.Config {
 // column, so a chunk written since the switch had no vector and scored cosine 0,
 // falling back to the fact-match score.
 //
-// Real path: PgVectorAdapter booted through NewPgVectorAdapter (1024 m1, then 1536
-// m2 with projection write+read), the enforcing vector reader and the enforcing fact
+// Real path: PgVectorAdapter booted through NewPgVectorAdapter (1024 m1, then m2 at
+// 1024 with projection write+read), the enforcing vector reader and the enforcing fact
 // reader over PgFactItemReader, as kernel.NewMemoryStack composes them.
 func TestPg_FactLane_InjectedChunkScoredOnTheActiveModelsVector(t *testing.T) {
 	cfgAt := factLaneScratchDB(t)
 	ctx := context.Background()
 	unit := func(dims, i int) []float32 { v := make([]float32, dims); v[i] = 1; return v }
 
+	// Before the switch: the chunk the fact was read from, written under m1 — so the
+	// legacy column holds m1's vector, orthogonal to the query.
+	const chunkID = "eng2039-fact-source"
 	first, err := postgres.NewPgVectorAdapter(ctx, cfgAt(1024))
 	if err != nil {
 		t.Fatalf("boot at 1024: %v", err)
 	}
+	if err := first.SaveBatch(ctx, []*domain.Document{{ID: chunkID, Text: "the user has a dog",
+		DocumentType: domain.DocTypeMnemonicFact, ActivationStrength: 0.5,
+		Embedding: domain.Embedding{Vector: unit(1024, 3)}}}); err != nil {
+		t.Fatalf("SaveBatch m1: %v", err)
+	}
 	first.Close()
 
-	cfg := cfgAt(1536)
+	// The switch to m2 at the same dimension (a dimension change refuses to boot
+	// since ENG-2038), with the projection on.
+	cfg := cfgAt(1024)
 	cfg.Embedder.Model = "m2"
 	cfg.Execution.Retrieval.EmbeddingProjectionWrite = true
 	cfg.Execution.Retrieval.EmbeddingProjectionRead = true
 	p, err := postgres.NewPgVectorAdapter(ctx, cfg)
 	if err != nil {
-		t.Fatalf("coexistence boot at 1536: %v", err)
+		t.Fatalf("projection boot m2@1024: %v", err)
 	}
 	defer p.Close()
-
-	// The chunk the fact was read from; its vector is the query's direction.
-	const chunkID = "eng2039-fact-source"
-	if err := p.SaveBatch(ctx, []*domain.Document{{ID: chunkID, Text: "the user has a dog",
-		DocumentType: domain.DocTypeMnemonicFact, ActivationStrength: 0.5,
-		Embedding: domain.Embedding{Vector: unit(1536, 5)}}}); err != nil {
-		t.Fatalf("SaveBatch at 1536: %v", err)
+	// m2's vector for the chunk, written the way cmd/embed-backfill writes it: into
+	// the projection only. It is the query's direction.
+	if _, err := p.Pool().Exec(ctx, `INSERT INTO chunk_embeddings (chunk_id, model_id, dims, embedding)
+		VALUES ($1, 'm2', 1024, $2)`, chunkID, pgvector.NewVector(unit(1024, 5))); err != nil {
+		t.Fatalf("m2 projection row: %v", err)
 	}
 	reg, err := domain.NewKindRegistry([]domain.KindSpec{domain.MemoryFactKindSpec()},
 		[]domain.ResolutionAuthority{domain.ValidTimeSupersessionAuthority{}})
@@ -127,19 +136,19 @@ func TestPg_FactLane_InjectedChunkScoredOnTheActiveModelsVector(t *testing.T) {
 	// The fact's own vector is orthogonal to the query, so its fact-match score is
 	// far from 1: an injected chunk scored 1.0 can only have come from the chunk's
 	// active-model vector.
-	factVec := unit(1536, 5)
+	factVec := unit(1024, 5)
 	factVec[6] = 1
 	if err := ks.PutItemEmbeddings(ctx, []domain.ItemEmbedding{{ItemID: item.ID, ModelID: "m2", Vector: factVec}}); err != nil {
 		t.Fatalf("PutItemEmbeddings: %v", err)
 	}
 
-	facts := authz.NewEnforcingFactItemReader(postgres.NewPgFactItemReader(ks, "default", "m2", 1536), nil)
+	facts := authz.NewEnforcingFactItemReader(postgres.NewPgFactItemReader(ks, "default", "m2", 1024), nil)
 	q := NewQueryServiceWithFacts(nil, authz.NewEnforcingVectorStore(p, nil), domain.AllowAllAuthorizer{}, facts)
 	q.SetRankingV2(RankingV2{FactLane: true})
 
 	bypass := &domain.TagPredicate{Bypass: true}
 	sctx := domain.WithScope(ctx, bypass)
-	results, hits := q.injectFactHits(sctx, nil, unit(1536, 5), bypass, domain.DocTypeMnemonicFact)
+	results, hits := q.injectFactHits(sctx, nil, unit(1024, 5), bypass, domain.DocTypeMnemonicFact)
 	if len(hits) == 0 {
 		t.Fatal("the fact lane found no fact")
 	}
@@ -152,8 +161,8 @@ func TestPg_FactLane_InjectedChunkScoredOnTheActiveModelsVector(t *testing.T) {
 	if got == nil {
 		t.Fatalf("source chunk not injected: %+v", results)
 	}
-	if n := len(got.Document.Embedding.Vector); n != 1536 {
-		t.Fatalf("injected chunk embedding = %d dims, want the active model's 1536", n)
+	if v := got.Document.Embedding.Vector; len(v) != 1024 || v[5] != 1 {
+		t.Fatalf("injected chunk embedding = %d dims, want the active model's (m2) vector, not the legacy m1 one", len(v))
 	}
 	if math.Abs(got.RawScore-1) > 1e-6 || math.Abs(got.Score-1) > 1e-6 {
 		t.Fatalf("injected chunk scored raw %.4f / score %.4f, want cosine 1 on the active model's vector (fact match %.4f)",

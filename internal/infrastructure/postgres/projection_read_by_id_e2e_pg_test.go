@@ -6,6 +6,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/pgvector/pgvector-go"
 )
 
 // T-20261118-under-adr-0107-projection-read-by-id-reads end to end, through the
@@ -14,7 +15,8 @@ import (
 // LexicalSearch, GetStaleMemories) hydrates `embedding` from chunk_embeddings for
 // the ACTIVE model, as the dense Search already did. Before the fix they read the
 // legacy chunks.embedding column: a chunk written since the switch came back with
-// no vector, one written before with the previous model's.
+// no vector, one written before with the previous model's. (Model switches here
+// are at one dimension: a dimension change refuses to boot since ENG-2038.)
 func TestPg_ProjectionRead_NonDenseReadsHydrateTheActiveModelsVector(t *testing.T) {
 	cfgAt := dimScratchDB(t)
 	ctx := context.Background()
@@ -126,38 +128,43 @@ func TestPg_ProjectionRead_NonDenseReadsHydrateTheActiveModelsVector(t *testing.
 	expect(legacy, "legacy", map[string][]float32{"eng2039-old": unit(1024, 3), "eng2039-new": unit(1024, 4)})
 	legacy.Close()
 
-	// Coexistence: m2 at 1536. Neither chunk has an m2 vector yet, so neither may
-	// come back with the legacy (m1) one.
-	p, err := NewPgVectorAdapter(ctx, projected(1536, "m2"))
+	// A model switch to m2 at the same dimension (since ENG-2038 a dimension change
+	// refuses to boot). The legacy column still holds m1's vectors with the right
+	// length — exactly the silent foreign-space cosine the ticket names. Neither
+	// chunk has an m2 vector yet, so neither may come back with the legacy (m1) one.
+	p, err := NewPgVectorAdapter(ctx, projected(1024, "m2"))
 	if err != nil {
-		t.Fatalf("coexistence boot at 1536: %v", err)
+		t.Fatalf("projection boot m2@1024: %v", err)
 	}
-	expect(p, "coexistence before re-embed", map[string][]float32{"eng2039-old": nil, "eng2039-new": nil})
-	// A write at 1536 lands only in the projection (the legacy column is skipped);
-	// every read hydrates it.
+	expect(p, "m2 before re-embed", map[string][]float32{"eng2039-old": nil, "eng2039-new": nil})
+	// A write under m2 lands in the projection; every read hydrates it.
 	if err := p.SaveBatch(ctx, []*domain.Document{
-		chunk("eng2039-old", "the user had a cat", unit(1536, 7)),
-		chunk("eng2039-new", "the user has a dog", unit(1536, 5)),
+		chunk("eng2039-old", "the user had a cat", unit(1024, 7)),
+		chunk("eng2039-new", "the user has a dog", unit(1024, 5)),
 	}); err != nil {
-		t.Fatalf("SaveBatch at 1536: %v", err)
+		t.Fatalf("SaveBatch m2@1024: %v", err)
 	}
-	expect(p, "coexistence m2", map[string][]float32{"eng2039-old": unit(1536, 7), "eng2039-new": unit(1536, 5)})
+	expect(p, "m2", map[string][]float32{"eng2039-old": unit(1024, 7), "eng2039-new": unit(1024, 5)})
 	p.Close()
 
-	// A same-dimension model switch (m3 at 1024, the legacy column's dimension):
-	// the legacy column still holds m1's vectors with the right length — exactly
-	// the silent foreign-space cosine the ticket names. Without an m3 row a read
-	// returns no vector, never m1's.
+	// Another switch, m3: without an m3 row a read returns no vector, never the
+	// legacy column's (now m2's).
 	same, err := NewPgVectorAdapter(ctx, projected(1024, "m3"))
 	if err != nil {
-		t.Fatalf("same-dimension projection boot (m3@1024): %v", err)
+		t.Fatalf("projection boot m3@1024: %v", err)
 	}
 	defer same.Close()
-	expect(same, "same-dimension switch", map[string][]float32{"eng2039-old": nil, "eng2039-new": nil})
+	expect(same, "m3 before re-embed", map[string][]float32{"eng2039-old": nil, "eng2039-new": nil})
 	if err := same.Save(ctx, chunk("eng2039-new", "the user has a dog", unit(1024, 9))); err != nil {
 		t.Fatalf("Save m3@1024: %v", err)
 	}
-	expect(same, "same-dimension m3", map[string][]float32{"eng2039-old": nil, "eng2039-new": unit(1024, 9)})
+	// A projection-only write (the shape cmd/embed-backfill leaves: chunk_embeddings,
+	// not the legacy column): the read must take it over the legacy column (m2's).
+	if _, err := same.pool.Exec(ctx, `INSERT INTO chunk_embeddings (chunk_id, model_id, dims, embedding)
+		VALUES ($1, 'm3', 1024, $2)`, "eng2039-old", pgvector.NewVector(unit(1024, 11))); err != nil {
+		t.Fatalf("projection-only m3 row: %v", err)
+	}
+	expect(same, "m3", map[string][]float32{"eng2039-old": unit(1024, 11), "eng2039-new": unit(1024, 9)})
 }
 
 func equalVec(a, b []float32) bool {
