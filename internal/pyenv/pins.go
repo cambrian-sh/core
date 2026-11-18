@@ -13,7 +13,9 @@
 package pyenv
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"runtime"
@@ -38,10 +40,45 @@ type Release struct {
 	Assets   map[string]Asset `json:"assets"`
 }
 
-// PinTable is the embedded pin table (D7.2.1, D7.2.4).
+// ModelAsset is one pinned, platform-independent wheel the base generation
+// installs after the base lock (ADR-0157 D7.2.5, ENG-2072): a file published
+// only outside any package index, such as spaCy's en_core_web_sm model (a
+// GitHub release asset; PyPI's en-core-web-sm project has no files), so it
+// cannot be a hashed base.lock line. It is fetched and verified like the
+// interpreter archives and its digest feeds the generation id.
+type ModelAsset struct {
+	Asset
+	// Project and Version name the distribution the wheel installs.
+	Project string `json:"project"`
+	Version string `json:"version"`
+	// BaseURL is the upstream directory serving Name.
+	BaseURL string `json:"base_url"`
+}
+
+// PinTable is the embedded pin table (D7.2.1, D7.2.4, D7.2.5).
 type PinTable struct {
 	Python    Release `json:"python"`
 	Installer Release `json:"installer"`
+	// ModelAssets are installed into every base generation, in order.
+	ModelAssets []ModelAsset `json:"model_assets,omitempty"`
+}
+
+// ModelAssetsDigest is the SHA-256 over the model-asset table's identity
+// (project, version, file name, file digest — not the URL, which a mirror may
+// change without changing the bytes). "" when the table is empty, so a release
+// without assets names its generations exactly as before.
+func (p PinTable) ModelAssetsDigest() (string, error) {
+	if len(p.ModelAssets) == 0 {
+		return "", nil
+	}
+	h := sha256.New()
+	for _, a := range p.ModelAssets {
+		if a.Project == "" || a.Version == "" || a.Name == "" || len(a.SHA256) != 64 || !strings.HasSuffix(a.Name, ".whl") {
+			return "", fmt.Errorf("pyenv: model asset %q %q: project, version, a .whl name and a 64-hex sha256 are required", a.Project, a.Name)
+		}
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\n", a.Project, a.Version, a.Name, a.SHA256)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Pins returns the pin table embedded in this kernel release.

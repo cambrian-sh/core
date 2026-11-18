@@ -31,12 +31,17 @@ type Sources struct {
 	// the pinned asset names. "" ⇒ the pin table's upstream release URL.
 	PythonMirror    string
 	InstallerMirror string
+	// AssetMirror: a base URL (https:// or file://) serving the pin table's
+	// model-asset wheels under their upstream names (D7.2.5). "" ⇒ each
+	// asset's upstream URL.
+	AssetMirror string
 	// IndexURL is the package index. "" ⇒ DefaultIndexURL.
 	IndexURL string
 	// Wheelhouse: absolute local directories (or file:// URLs) of wheels.
 	Wheelhouse []string
-	// Offline: no network for env work — archives come from <root>/downloads or
-	// a file:// mirror, wheels only from Wheelhouse.
+	// Offline: no network for env work — archives and model assets come from
+	// <root>/downloads, a file:// mirror or (model assets) a Wheelhouse
+	// directory; wheels only from Wheelhouse.
 	Offline bool
 }
 
@@ -175,4 +180,41 @@ func ensureArchive(ctx context.Context, client *http.Client, downloads string, a
 		return "", err
 	}
 	return dest, nil
+}
+
+// ensureModelAssets verifies (fetching when needed) every model asset of the
+// pin table into <root>/downloads and returns their paths in table order
+// (D7.2.5). A stored copy is re-verified. A missing one comes from the first
+// wheelhouse directory that holds the file name (the offline bundle puts the
+// assets there), else from Sources.AssetMirror, else from the asset's upstream
+// URL. The pinned digest applies whatever the source; a mismatch deletes the
+// file and stops the build naming both digests.
+func (b *Builder) ensureModelAssets(ctx context.Context) ([]string, error) {
+	if len(b.Pins.ModelAssets) == 0 {
+		return nil, nil
+	}
+	downloads := filepath.Join(b.Root, dirDownloads)
+	paths := make([]string, 0, len(b.Pins.ModelAssets))
+	for _, a := range b.Pins.ModelAssets {
+		b.step("verifying model asset " + a.Name)
+		base := orDefault(b.Sources.AssetMirror, a.BaseURL)
+		if _, err := os.Stat(filepath.Join(downloads, a.Name)); err != nil {
+			for _, w := range b.Sources.Wheelhouse {
+				dir := w
+				if p, ok := localPath(w); ok {
+					dir = p
+				}
+				if fi, err := os.Stat(filepath.Join(dir, a.Name)); err == nil && fi.Mode().IsRegular() {
+					base = dir
+					break
+				}
+			}
+		}
+		p, err := ensureArchive(ctx, b.client(), downloads, a.Asset, base, b.Sources.Offline)
+		if err != nil {
+			return nil, fmt.Errorf("model asset %s %s (%s): %w", a.Project, a.Version, a.Name, err)
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
 }

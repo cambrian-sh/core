@@ -18,7 +18,8 @@ const pythonEnvUsage = `usage: cambrian-orchestrator python-env <status|build> [
   status   run the boot check of the kernel-managed sandbox Python env (ADR-0157 D7)
   build    build (or repair) it now: pinned + hash-verified Python, the release's
            hashed base lock, wheels only; honours execution.agents.python
-           (python_mirror_url, installer_mirror_url, index_url, wheelhouse, offline)
+           (python_mirror_url, installer_mirror_url, asset_mirror_url, index_url,
+           wheelhouse, offline)
 
 The block is read from DIR/configs/config.json. Python agents and the Python
 system tools launch only on the interpreter status prints.

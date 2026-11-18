@@ -112,8 +112,9 @@ func inspect(ctx context.Context, run runFunc, root, dir string, want Inputs) St
 	got := m.Inputs
 	got.SDKWheelSHA256 = want.SDKWheelSHA256
 	if got != want {
-		st.State, st.Reason = StateStale, fmt.Sprintf("base generation %s was built from other inputs (python %s, lock %s…); this release pins python %s, lock %s…",
-			dir, m.Inputs.Python.Name, short(m.Inputs.LockSHA256), want.Python.Name, short(want.LockSHA256))
+		st.State, st.Reason = StateStale, fmt.Sprintf("base generation %s was built from other inputs (python %s, lock %s…, model assets %s); this release pins python %s, lock %s…, model assets %s",
+			dir, m.Inputs.Python.Name, short(m.Inputs.LockSHA256), assetsLabel(m.Inputs.ModelAssetsSHA256),
+			want.Python.Name, short(want.LockSHA256), assetsLabel(want.ModelAssetsSHA256))
 		return st
 	}
 	st.State = StateHealthy
@@ -125,4 +126,12 @@ func short(s string) string {
 		return s[:12]
 	}
 	return s
+}
+
+// assetsLabel names a model-asset table digest for the stale reason.
+func assetsLabel(d string) string {
+	if d == "" {
+		return "none"
+	}
+	return short(d) + "…"
 }

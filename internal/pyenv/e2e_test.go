@@ -97,6 +97,24 @@ func TestE2E_OfflineBuildBootCheckAndRepair(t *testing.T) {
 		t.Fatalf("interpreter prefix/version %q, want %s / %s", out, gen, pins.Python.Version)
 	}
 
+	// 2b. The pin table's model assets (D7.2.5) are installed into the
+	//     generation; with spaCy in the lock, the model loads offline.
+	for _, a := range pins.ModelAssets {
+		code := "import importlib.metadata as m; print(m.version('" + a.Project + "'))"
+		out, err := exec.Command(st.Interpreter, "-I", "-c", code).CombinedOutput()
+		if err != nil || strings.TrimSpace(string(out)) != a.Version {
+			t.Fatalf("model asset %s %s not installed: %v %s", a.Project, a.Version, err, out)
+		}
+	}
+	if strings.Contains(string(lock), "\nspacy==") && len(pins.ModelAssets) > 0 {
+		out, err := exec.Command(st.Interpreter, "-I", "-c",
+			"import spacy; nlp = spacy.load('en_core_web_sm'); print(len(nlp('Alice founded Acme in Paris.').ents))").CombinedOutput()
+		if err != nil {
+			t.Fatalf("spacy.load('en_core_web_sm') on the generation: %v: %s", err, out)
+		}
+		t.Logf("en_core_web_sm loads offline: %s", strings.TrimSpace(string(out)))
+	}
+
 	// 3. A generation deleted at rest: the boot check names it, and the boot
 	//    build rebuilds it from the local bundle (same inputs → same directory).
 	must(t, os.RemoveAll(gen))

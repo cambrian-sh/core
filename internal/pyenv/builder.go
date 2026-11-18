@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,10 @@ type Inputs struct {
 	InstallerVersion string `json:"installer_version"`
 	Installer        Asset  `json:"installer"`
 	LockSHA256       string `json:"lock_sha256"`
+	// ModelAssetsSHA256 is PinTable.ModelAssetsDigest (D7.2.5): a changed
+	// model-asset table is a new generation, and the boot check marks
+	// generations built from another table stale.
+	ModelAssetsSHA256 string `json:"model_assets_sha256,omitempty"`
 	// SDKWheelSHA256 is set when a dev tree installs its locally built SDK
 	// wheel instead of the lock's published SDK (D7.4.5, owner A1-Q4).
 	SDKWheelSHA256 string `json:"sdk_wheel_sha256,omitempty"`
@@ -168,6 +173,9 @@ func (b *Builder) Inputs() (Inputs, Lock, error) {
 		Platform: b.Platform, PythonVersion: b.Pins.Python.Version, Python: py,
 		InstallerVersion: b.Pins.Installer.Version, Installer: inst, LockSHA256: lock.SHA256,
 	}
+	if in.ModelAssetsSHA256, err = b.Pins.ModelAssetsDigest(); err != nil {
+		return Inputs{}, Lock{}, err
+	}
 	if b.SDKWheel != "" {
 		sum, err := fileSHA256(b.SDKWheel)
 		if err != nil {
@@ -214,6 +222,12 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 	}
 
 	pyArchive, uv, err := b.prepare(ctx, in)
+	if err != nil {
+		return Result{}, err
+	}
+	// Model assets are verified before the generation directory exists, so a
+	// missing or mismatched asset fails the build with nothing to clean up.
+	assets, err := b.ensureModelAssets(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -271,6 +285,18 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 	if out, err := b.runner()(ctx, installerEnv(), uv, args...); err != nil {
 		return Result{}, fmt.Errorf("install base lock: %w: %s", err, lastLines(out, 6))
 	}
+	if len(assets) > 0 {
+		assetFile := tmp + ".assets.txt"
+		if err := os.WriteFile(assetFile, b.modelAssetRequirements(assets), 0o644); err != nil {
+			return Result{}, err
+		}
+		defer os.Remove(assetFile)
+		b.step(fmt.Sprintf("installing %d pinned model asset(s) (hash-checked, no dependencies)", len(assets)))
+		args := append(b.installArgs(tmpInterp), "--require-hashes", "--only-binary", ":all:", "-r", assetFile)
+		if out, err := b.runner()(ctx, installerEnv(), uv, args...); err != nil {
+			return Result{}, fmt.Errorf("install model assets: %w: %s", err, lastLines(out, 6))
+		}
+	}
 	source := "release-lock"
 	if b.SDKWheel != "" {
 		b.step("installing the local SDK wheel " + filepath.Base(b.SDKWheel))
@@ -295,7 +321,7 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 	}
 	m := Marker{
 		Kind: "base", ID: id, Inputs: in, Interpreter: interpreterRel(b.Platform), InterpreterSHA256: interpSum,
-		Source: source, Actor: actor, Packages: len(lock.Requirements), Health: "ok", Granted: granted,
+		Source: source, Actor: actor, Packages: len(lock.Requirements) + len(assets), Health: "ok", Granted: granted,
 		BuiltAt: time.Now().UTC(),
 	}
 	if err := writeJSON(filepath.Join(tmp, fileMarker), m); err != nil {
@@ -312,7 +338,24 @@ func (b *Builder) Build(ctx context.Context) (Result, error) {
 	if err := writeCurrent(b.Root, Current{Base: in.Dir(), Interpreter: interp}); err != nil {
 		return Result{}, err
 	}
-	return Result{Generation: gen, Interpreter: interp, ID: id, Packages: len(lock.Requirements)}, nil
+	return Result{Generation: gen, Interpreter: interp, ID: id, Packages: len(lock.Requirements) + len(assets)}, nil
+}
+
+// modelAssetRequirements is the requirements file for the verified model-asset
+// wheels: a direct file reference with the pinned digest per asset, so the
+// installer re-checks the hash it installs (--require-hashes) on top of the
+// kernel's own verification of the download.
+func (b *Builder) modelAssetRequirements(paths []string) []byte {
+	var sb strings.Builder
+	for i, a := range b.Pins.ModelAssets {
+		p := filepath.ToSlash(paths[i])
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p // C:/x → file:///C:/x
+		}
+		u := (&url.URL{Scheme: "file", Path: p}).String()
+		fmt.Fprintf(&sb, "%s @ %s --hash=sha256:%s\n", a.Project, u, a.SHA256)
+	}
+	return []byte(sb.String())
 }
 
 // prepare verifies (downloading when allowed) the pinned interpreter and

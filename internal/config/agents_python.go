@@ -37,6 +37,10 @@ type AgentPythonConfig struct {
 	PythonMirrorURL string `json:"python_mirror_url,omitempty"`
 	// InstallerMirrorURL does the same for the pinned installer (uv).
 	InstallerMirrorURL string `json:"installer_mirror_url,omitempty"`
+	// AssetMirrorURL does the same for the pin table's model-asset wheels
+	// (ADR-0157 D7.2.5, e.g. spaCy's en_core_web_sm). "" ⇒ each asset's
+	// upstream URL; offline, a wheelhouse directory holding the file also serves.
+	AssetMirrorURL string `json:"asset_mirror_url,omitempty"`
 	// IndexURL is the package index (https:// or file://). "" ⇒ https://pypi.org/simple.
 	IndexURL string `json:"index_url,omitempty"`
 	// Wheelhouse lists local directories (or file:// URLs) of pre-downloaded
@@ -67,6 +71,7 @@ func (c AgentPythonConfig) validate() []string {
 	for _, f := range []struct{ key, v string }{
 		{"python_mirror_url", c.PythonMirrorURL},
 		{"installer_mirror_url", c.InstallerMirrorURL},
+		{"asset_mirror_url", c.AssetMirrorURL},
 		{"index_url", c.IndexURL},
 	} {
 		if f.v == "" {

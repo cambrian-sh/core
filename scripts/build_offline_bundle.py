@@ -9,7 +9,10 @@ This script produces exactly that, per platform, on a machine that has network:
   <out>/downloads/   the pinned python-build-standalone + uv archives, SHA-256 verified
                      against internal/pyenv/pins.json
   <out>/wheelhouse/  one wheel per base-lock requirement that applies to the platform,
-                     downloaded in hash-checking mode (pip --require-hashes)
+                     downloaded in hash-checking mode (pip --require-hashes), plus the
+                     pin table's model-asset wheels (D7.2.5, e.g. spaCy's en_core_web_sm),
+                     SHA-256 verified against pins.json; offline, the kernel takes each
+                     asset from the wheelhouse that holds its file name
 
 The operator copies <out> to the target and sets, in configs/config.json:
 
@@ -146,6 +149,11 @@ def main(argv: list[str] | None = None) -> int:
         p = fetch_archive(rel["base_url"], asset, downloads)
         print(f"ok  {kind:9s} {p.name}")
 
+    # D7.2.5: platform-independent model assets, published outside any index.
+    for asset in pins.get("model_assets", []):
+        p = fetch_archive(asset["base_url"], asset, wheelhouse)
+        print(f"ok  asset     {p.name}")
+
     filtered = filter_lock(args.lock.read_text(encoding="utf-8"), args.platform)
     with tempfile.TemporaryDirectory() as td:
         req = Path(td) / "lock.txt"
@@ -158,7 +166,8 @@ def main(argv: list[str] | None = None) -> int:
             cmd += ["--platform", plat]
         subprocess.run(cmd, check=True)
     n = len(list(wheelhouse.glob("*.whl")))
-    print(f"ok  wheelhouse {n} wheels for {filtered.count(chr(10))} requirements -> {wheelhouse}")
+    print(f"ok  wheelhouse {n} wheels for {filtered.count(chr(10))} requirements"
+          f" + {len(pins.get('model_assets', []))} model asset(s) -> {wheelhouse}")
     return 0
 
 

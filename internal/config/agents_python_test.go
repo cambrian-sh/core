@@ -26,6 +26,7 @@ func TestAgentPythonValidate(t *testing.T) {
 		"http mirror":       {AgentPythonConfig{PythonMirrorURL: "http://mirror/"}, "python_mirror_url"},
 		"bare host mirror":  {AgentPythonConfig{InstallerMirrorURL: "mirror.local/uv"}, "installer_mirror_url"},
 		"ftp index":         {AgentPythonConfig{IndexURL: "ftp://x/simple"}, "index_url"},
+		"http asset mirror": {AgentPythonConfig{AssetMirrorURL: "http://mirror/models/"}, "asset_mirror_url"},
 		"offline no wheels": {AgentPythonConfig{Offline: true}, "requires execution.agents.python.wheelhouse"},
 		"escaping relative": {AgentPythonConfig{Wheelhouse: []string{"../wheels"}}, "leaves the config directory"},
 		"url wheelhouse":    {AgentPythonConfig{Wheelhouse: []string{"https://x/wheels"}}, "file:// URLs"},
@@ -39,7 +40,7 @@ func TestAgentPythonValidate(t *testing.T) {
 	for name, c := range map[string]AgentPythonConfig{
 		"defaults":         {BuildOnBoot: true},
 		"https mirrors":    {PythonMirrorURL: "https://nexus.local/py/", InstallerMirrorURL: "https://nexus.local/uv/", IndexURL: "https://nexus.local/simple"},
-		"file mirror":      {PythonMirrorURL: "file:///srv/bundle/"},
+		"file mirror":      {PythonMirrorURL: "file:///srv/bundle/", AssetMirrorURL: "file:///srv/bundle/"},
 		"offline absolute": {Offline: true, Wheelhouse: []string{abs}},
 		"offline relative": {Offline: true, Wheelhouse: []string{"wheels"}},
 		"offline file url": {Offline: true, Wheelhouse: []string{"file:///srv/wheels"}},

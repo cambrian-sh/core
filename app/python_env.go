@@ -51,6 +51,7 @@ func newPythonEnvBuilder(pc config.AgentPythonConfig, baseDir, configDir string)
 		Sources: pyenv.Sources{
 			PythonMirror:    pc.PythonMirrorURL,
 			InstallerMirror: pc.InstallerMirrorURL,
+			AssetMirror:     pc.AssetMirrorURL,
 			IndexURL:        pc.IndexURL,
 			Wheelhouse:      pc.ResolvedWheelhouse(configDir),
 			Offline:         pc.Offline,
