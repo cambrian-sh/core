@@ -3,10 +3,8 @@ package kernel
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/mapper"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/storage"
@@ -55,26 +53,14 @@ func (d *AgentRepoDecorator) GetAgentByName(_ context.Context, name string) (*do
 	return &agent, nil
 }
 
-// LegacyArtifacts lists the records of the retired bbolt artifact bucket for the
-// ADR-0157 Q6 import into the run ledger (nil when the bucket is gone). It
-// implements LegacyArtifactSource.
-func (d *AgentRepoDecorator) LegacyArtifacts() ([]postgres.LegacyArtifact, error) {
-	recs, err := d.store.ListLegacyArtifactRecords()
-	if err != nil || recs == nil {
-		return nil, err
-	}
-	out := make([]postgres.LegacyArtifact, 0, len(recs))
-	for _, r := range recs {
-		created, _ := time.Parse(time.RFC3339Nano, r.CreatedAt) // zero ⇒ import time
-		out = append(out, postgres.LegacyArtifact{
-			Hash: r.Hash, ContentType: r.ContentType, SizeBytes: r.SizeBytes, SessionID: r.SessionID,
-			StepIndex: r.StepIndex, SemanticSummary: r.SemanticSummary, Tags: r.Tags, CreatedAt: created,
-		})
-	}
-	return out, nil
+// LegacyArtifactHashes lists the vault hashes the retired bbolt artifact bucket
+// names, for its ADR-0157 Q6 retirement (records expire, nothing is imported).
+// It implements LegacyArtifactSource.
+func (d *AgentRepoDecorator) LegacyArtifactHashes() ([]string, bool, error) {
+	return d.store.LegacyArtifactHashes()
 }
 
-// DropLegacyArtifacts deletes the retired bucket after the Q6 import.
+// DropLegacyArtifacts deletes the retired bucket (ADR-0157 Q6).
 func (d *AgentRepoDecorator) DropLegacyArtifacts() error { return d.store.DropLegacyArtifactBucket() }
 
 // HasAgent reports whether agentID is a registered agent. Used by the ADR-0034

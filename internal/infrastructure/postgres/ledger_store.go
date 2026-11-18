@@ -248,18 +248,18 @@ func (s *PgLedgerStore) PurgeExpired(ctx context.Context, now time.Time) (int, e
 
 // deleteReturning runs a DELETE ... RETURNING body_hash and then drops the vault
 // bytes no remaining entry names (the ledger is the vault's only registry since
-// ADR-0157 D5; the retired bbolt artifact records were imported into it).
+// ADR-0157 D5).
 func (s *PgLedgerStore) deleteReturning(ctx context.Context, sql string, arg any) (int, error) {
 	rows, err := s.pool.Query(ctx, sql, arg)
 	if err != nil {
 		return 0, fmt.Errorf("ledger delete: %w", err)
 	}
-	hashes := map[string]bool{}
+	var hashes []string
 	n := 0
 	for rows.Next() {
 		var h string
 		if serr := rows.Scan(&h); serr == nil && h != "" {
-			hashes[h] = true
+			hashes = append(hashes, h)
 		}
 		n++
 	}
@@ -267,75 +267,48 @@ func (s *PgLedgerStore) deleteReturning(ctx context.Context, sql string, arg any
 	if err := rows.Err(); err != nil {
 		return n, fmt.Errorf("ledger delete: %w", err)
 	}
-	for h := range hashes {
+	if _, failed, rerr := s.ReleaseBodies(ctx, hashes); rerr != nil {
+		// Best effort: an undeleted body is unreachable (no entry names it) and the
+		// next purge or erasure naming the same bytes retries it.
+		slog.Warn("ledger: vault bodies not deleted", "failed", failed, "err", rerr)
+	}
+	return n, nil
+}
+
+// ReleaseBodies deletes from the vault each body in hashes that no ledger entry
+// names any more, and keeps the rest (content-addressed: another entry, e.g. a
+// second owner's upload of the same bytes, may share it). It is the ledger's one
+// body-release path: the retention purge, scratch cleanup and the retirement of
+// the pre-ADR-0157 bbolt artifact bucket (kernel.retireLegacyArtifacts) all use
+// it, with the same refcount the ADR-0137 erasure worker applies
+// (VaultBodyStillReferenced). Returns how many bodies were deleted and how many
+// could not be checked or deleted; err joins those failures. Deleting a body
+// that is already gone is not an error, so a retry is safe.
+func (s *PgLedgerStore) ReleaseBodies(ctx context.Context, hashes []string) (deleted, failed int, err error) {
+	seen := make(map[string]bool, len(hashes))
+	var errs []error
+	for _, h := range hashes {
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
 		var still bool
-		if qerr := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ledger_entries WHERE body_hash = $1)`, h).Scan(&still); qerr != nil || still {
+		if qerr := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ledger_entries WHERE body_hash = $1)`, h).Scan(&still); qerr != nil {
+			failed++
+			errs = append(errs, fmt.Errorf("ledger body refcount: %w", qerr))
+			continue
+		}
+		if still {
 			continue
 		}
 		if derr := s.bodies.Delete(h); derr != nil {
-			slog.Warn("ledger: vault body not deleted", "hash", h, "err", derr)
-		}
-	}
-	return n, nil
-}
-
-// LegacyArtifact is one record of the retired bbolt artifact bucket (ADR-0157
-// Q6), as ImportLegacyArtifacts needs it: its bytes are already in the vault.
-type LegacyArtifact struct {
-	Hash            string
-	ContentType     string
-	SizeBytes       int64
-	SessionID       string
-	StepIndex       int
-	SemanticSummary string
-	Tags            []string
-	CreatedAt       time.Time
-}
-
-// LegacyArtifactToolName is the tool name of an imported legacy artifact entry.
-const LegacyArtifactToolName = "legacy_upload_artifact"
-
-// ImportLegacyArtifacts records each retired bbolt artifact record as a
-// kind=artifact ledger entry (ADR-0157 Q6: import with their tags). The entry
-// keeps the record's own tags, session and step and names the vault bytes it
-// already had; its id is deterministic in (session, step, hash), so a re-run is a
-// no-op. Retention starts at import (now + retention): before the switch these
-// records never expired, after it they follow the ledger's policy. Returns the
-// entries written; it stops at the first error so the caller keeps the bucket.
-func (s *PgLedgerStore) ImportLegacyArtifacts(ctx context.Context, recs []LegacyArtifact, now time.Time, retention time.Duration) (int, error) {
-	n := 0
-	for _, r := range recs {
-		if r.Hash == "" {
+			failed++
+			errs = append(errs, derr)
 			continue
 		}
-		p := domain.LedgerProvenance{StepIndex: r.StepIndex, SessionID: r.SessionID}
-		args, _ := json.Marshal(map[string]string{"hash": r.Hash, "session": r.SessionID})
-		created := r.CreatedAt
-		if created.IsZero() {
-			created = now
-		}
-		e := domain.LedgerEntry{
-			ID:          domain.LedgerEntryID(p, domain.LedgerCallKey(domain.LedgerArtifact, LegacyArtifactToolName, args), r.Hash),
-			Kind:        domain.LedgerArtifact,
-			StepIndex:   r.StepIndex,
-			SessionID:   r.SessionID,
-			ToolName:    LegacyArtifactToolName,
-			Args:        args,
-			Tags:        r.Tags,
-			ContentType: r.ContentType,
-			BodyHash:    r.Hash,
-			SizeBytes:   r.SizeBytes,
-			Preview:     r.SemanticSummary,
-			ContentHash: r.Hash,
-			CreatedAt:   created,
-			ExpiresAt:   now.Add(retention),
-		}
-		if err := s.Put(ctx, e); err != nil {
-			return n, fmt.Errorf("import legacy artifact %s: %w", r.Hash, err)
-		}
-		n++
+		deleted++
 	}
-	return n, nil
+	return deleted, failed, errors.Join(errs...)
 }
 
 func isText(b []byte) bool { return utf8.Valid(b) }

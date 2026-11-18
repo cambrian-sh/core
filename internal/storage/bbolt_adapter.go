@@ -55,9 +55,11 @@ var checkpointBucket = []byte("checkpoints")
 var sessionBucket = []byte("sessions")
 var runBucket = []byte("runs")
 
-// artifactBucket is the RETIRED pre-ADR-0157 artifact metadata bucket. It is no
-// longer created; a store that still has it is imported into the run ledger once
-// (ADR-0157 Q6, kernel.importLegacyArtifacts) and the bucket dropped.
+// artifactBucket is the RETIRED pre-ADR-0157 artifact metadata bucket, keyed by
+// vault hash. It is no longer created or read; a store that still has it is
+// retired at boot (ADR-0157 Q6, kernel.retireLegacyArtifacts): its records
+// expire unimported, the vault bodies no ledger entry names are released and the
+// bucket dropped.
 var artifactBucket = []byte("artifacts")
 var watchConfigBucket = []byte("watch_configs")
 
@@ -1185,31 +1187,29 @@ func (b *BBoltAdapter) DeleteAgentRecord(id string) error {
 	})
 }
 
-// ListLegacyArtifactRecords returns every record of the retired artifacts bucket
-// (ADR-0157 Q6), nil when the bucket does not exist. A malformed record fails the
-// listing: the bucket must not be dropped with an unimported record in it.
-func (b *BBoltAdapter) ListLegacyArtifactRecords() ([]ArtifactRecord, error) {
-	var recs []ArtifactRecord
+// LegacyArtifactHashes returns the keys of the retired artifacts bucket — the
+// vault hashes its records named (ADR-0157 Q6), one per record — and whether the
+// bucket exists. The record values are never decoded: the records expire
+// unimported, only their bodies are released.
+func (b *BBoltAdapter) LegacyArtifactHashes() ([]string, bool, error) {
+	var hashes []string
+	present := false
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(artifactBucket)
 		if bucket == nil {
 			return nil
 		}
-		recs = []ArtifactRecord{}
-		return bucket.ForEach(func(k, v []byte) error {
-			var rec ArtifactRecord
-			if err := json.Unmarshal(v, &rec); err != nil {
-				return fmt.Errorf("legacy artifact record %q: %w", k, err)
-			}
-			recs = append(recs, rec)
+		present = true
+		return bucket.ForEach(func(k, _ []byte) error {
+			hashes = append(hashes, string(k))
 			return nil
 		})
 	})
-	return recs, err
+	return hashes, present, err
 }
 
-// DropLegacyArtifactBucket deletes the retired artifacts bucket (ADR-0157 Q6),
-// after its records were imported into the run ledger. Absent is not an error.
+// DropLegacyArtifactBucket deletes the retired artifacts bucket (ADR-0157 Q6).
+// Absent is not an error.
 func (b *BBoltAdapter) DropLegacyArtifactBucket() error {
 	return b.db.Update(func(tx *bbolt.Tx) error {
 		if tx.Bucket(artifactBucket) == nil {

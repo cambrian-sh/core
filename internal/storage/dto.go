@@ -110,20 +110,6 @@ type TagSetRecord struct {
 	ForbiddenTags []string `json:"forbidden_tags,omitempty"`
 }
 
-// ArtifactRecord is the raw JSON shape stored in the bbolt artifacts bucket.
-type ArtifactRecord struct {
-	Hash            string            `json:"hash"`
-	ContentType     string            `json:"content_type"`
-	SizeBytes       int64             `json:"size_bytes"`
-	SessionID       string            `json:"session_id"`
-	StepIndex       int               `json:"step_index"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
-	ParentHash      string            `json:"parent_hash,omitempty"`
-	SemanticSummary string            `json:"semantic_summary,omitempty"`
-	CreatedAt       string            `json:"created_at"`
-	Tags            []string          `json:"tags,omitempty"` // ADR-0034: classification + provenance tags
-}
-
 // PlanEventRecord is the raw JSON shape stored in the bbolt plan_events bucket.
 type PlanEventRecord struct {
 	PlanID                string  `json:"plan_id"`

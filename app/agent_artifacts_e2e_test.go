@@ -1,8 +1,9 @@
 package app
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -32,8 +33,8 @@ import (
 // through the REAL paths with a REAL Python SDK agent:
 //
 //	app.wireLedger → kernel.NewLedgerStack (Postgres ledger_entries + vault, the
-//	  ADR-0157 Q6 import of a retired bbolt artifact bucket, the collector wired
-//	  into the InstanceManager)
+//	  ADR-0157 Q6 retirement of a pre-ADR-0157 bbolt artifact bucket, the
+//	  collector wired into the InstanceManager)
 //	InstanceManager.GetOrBootInstance → startSandboxed (per-instance scratch,
 //	  CAMBRIAN_AGENT_OUT) → the agent's SDK channel (per-instance token, S3)
 //	  → the production agent-credential interceptor (stamps principal AND
@@ -51,8 +52,10 @@ import (
 //     derived from the step's tool results (DerivedFrom, source refs) and
 //     classified at write; a file over max_file_bytes is not collected; the
 //     scratch is gone after exit;
-//   - the retired bbolt artifact record is imported with its tags (Q6) and the
-//     bucket dropped.
+//   - Q6 (owner 2026-11-18, ENG-1990): the pre-ADR-0157 bbolt artifact record
+//     EXPIRES — the old store boots, nothing is imported into the ledger, the
+//     bucket is gone, the vault body no ledger entry names is released, and only
+//     the count is logged (no id, no content).
 //
 // Needs a Python with the agent SDK and a migrated Postgres:
 //
@@ -99,8 +102,8 @@ func TestE2E_ArtifactsLeaveOnlyThroughTheKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbPath := filepath.Join(base, "agents.db")
-	seedLegacyArtifactBucket(t, dbPath, storage.ArtifactRecord{Hash: legacyHash, ContentType: "text/plain",
-		SizeBytes: 19, SessionID: "s4e-legacy-sess", StepIndex: 2, Tags: []string{"team_a"}})
+	seedLegacyArtifactBucket(t, dbPath, legacyHash,
+		`{"hash":"`+legacyHash+`","content_type":"text/plain","size_bytes":19,"session_id":"s4e-legacy-sess","step_index":2,"tags":["team_a"]}`)
 	store, err := storage.NewBBoltAdapterNoScan(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +132,10 @@ func TestE2E_ArtifactsLeaveOnlyThroughTheKernel(t *testing.T) {
 	im.SetAgentContainment(agentmgr.AgentContainment{Sandbox: agentmgr.NewAgentSandbox(agentmgr.AgentSandboxOptions{
 		WorkRoot: workRoot, KernelDir: kernelDir, KernelStatePaths: []string{filepath.Join(kernelDir, "configs")},
 	})})
+	// Since 20e16da a sandboxed agent reaches the kernel only through its unix
+	// socket (ADR-0157 D3/S5): the same server serves the agents' sockets.
+	sockets := newAgentSocketServer()
+	im.SetAgentTransport(agentmgr.AgentTransport{KernelSocket: sockets.Open})
 
 	exec := config.ExecutionConfig{
 		Session: config.SessionConfig{SessionTokenTTLMultiplier: 5},
@@ -138,21 +145,36 @@ func TestE2E_ArtifactsLeaveOnlyThroughTheKernel(t *testing.T) {
 	gw := network.NewLLMGateway(exec, llm.NewSpendMeter(0, nil, nil))
 	az := s4Authorizer{}
 	srvImpl := &network.Server{LLMGateway: gw, Manager: mgr, Authz: az, ExecCfg: exec}
-	if sw := wireLedger(ctx, exec.Ledger, exec.Content, pool, av, legacy, az, false, srvImpl,
-		network.NewTurnDelegations(), nil); sw == nil {
+	var bootLog bytes.Buffer
+	prevLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&bootLog, nil)))
+	sw := wireLedger(ctx, exec.Ledger, exec.Content, pool, av, legacy, az, false, srvImpl,
+		network.NewTurnDelegations(), nil)
+	slog.SetDefault(prevLog)
+	if sw == nil {
 		t.Fatal("the run ledger did not come up (is PG_TEST_DSN migrated through 0053?)")
 	}
 
-	// Q6: the legacy record is a ledger artifact now, with its own tags; the bucket is gone.
-	legacyRows, err := srvImpl.ListStepArtifacts(agentMD("s4_probe"), &pb.ListStepArtifactsRequest{SessionId: "s4e-legacy-sess", StepIndex: 2})
-	if err != nil || len(legacyRows.Artifacts) != 1 || strings.Join(legacyRows.Artifacts[0].Tags, ",") != "team_a" {
-		t.Fatalf("legacy artifact after the Q6 import: %+v %v", legacyRows, err)
+	// Q6: the legacy record expired — nothing was imported, the bucket is gone, its
+	// unreferenced vault body was released, and the boot log has the count only.
+	var imported int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM ledger_entries WHERE session_id = 's4e-legacy-sess' OR body_hash = $1`,
+		legacyHash).Scan(&imported); err != nil || imported != 0 {
+		t.Fatalf("the legacy record reached the ledger: %d entries, %v", imported, err)
 	}
-	if recs, err := store.ListLegacyArtifactRecords(); err != nil || recs != nil {
-		t.Fatalf("the retired bucket survived the import: %v %v", recs, err)
+	if legacyRows, err := srvImpl.ListStepArtifacts(agentMD("s4_probe"), &pb.ListStepArtifactsRequest{SessionId: "s4e-legacy-sess", StepIndex: 2}); err != nil ||
+		len(legacyRows.Artifacts) != 0 {
+		t.Fatalf("the legacy artifact is still listed: %+v %v", legacyRows, err)
 	}
-	if got, err := srvImpl.GetArtifact(agentMD("s4_other"), &pb.GetArtifactRequest{Hash: legacyRows.Artifacts[0].Hash}); err != nil || got.Found {
-		t.Fatalf("an out-of-scope agent read the imported legacy artifact: %+v %v", got, err)
+	if _, present, err := store.LegacyArtifactHashes(); err != nil || present {
+		t.Fatalf("the retired bucket survived the boot: present=%v %v", present, err)
+	}
+	if _, err := av.Load(legacyHash); err == nil {
+		t.Fatal("the legacy vault body no ledger entry names was not released")
+	}
+	if out := bootLog.String(); !strings.Contains(out, "records_dropped=1") || strings.Contains(out, legacyHash) ||
+		strings.Contains(out, "s4e-legacy-sess") || strings.Contains(out, "team_a") {
+		t.Fatalf("boot log for the Q6 retirement (want the count only): %s", out)
 	}
 
 	verifier, err := authz.NewAgentCredentialVerifier(nil, im.Tokens(), kernelSpawnedAgent(reg), false)
@@ -164,10 +186,12 @@ func TestE2E_ArtifactsLeaveOnlyThroughTheKernel(t *testing.T) {
 		grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(nil), authz.StreamAgentAuthInterceptor(verifier, nil)),
 	)
 	pb.RegisterOrchestratorServer(srv, srvImpl)
+	sockets.start(srv)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(func() {
 		_ = im.KillAllAgents(context.Background())
 		srv.Stop()
+		sockets.stop()
 	})
 
 	// The step the probe works on: a lease bound to it, and one tool result already
@@ -281,20 +305,21 @@ func agentMD(id string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-agent-id", id))
 }
 
-func seedLegacyArtifactBucket(t *testing.T, path string, rec storage.ArtifactRecord) {
+// seedLegacyArtifactBucket writes one record in the pre-ADR-0157 bucket shape
+// (keyed by vault hash, a JSON value) into a fresh agents.db.
+func seedLegacyArtifactBucket(t *testing.T, path, hash, value string) {
 	t.Helper()
 	db, err := bbolt.Open(path, 0o600, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	b, _ := json.Marshal(rec)
 	if err := db.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("artifacts"))
 		if err != nil {
 			return err
 		}
-		return bk.Put([]byte(rec.Hash), b)
+		return bk.Put([]byte(hash), []byte(value))
 	}); err != nil {
 		t.Fatal(err)
 	}

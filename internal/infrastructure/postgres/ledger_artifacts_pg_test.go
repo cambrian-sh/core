@@ -42,39 +42,42 @@ func TestPg_LedgerArtifactProvenanceRoundTrip(t *testing.T) {
 	}
 }
 
-// ADR-0157 Q6: retired bbolt artifact records are imported as artifact entries
-// with their own tags, session and step, naming the vault bytes they already
-// had; the import is idempotent; the entries follow ledger retention.
-func TestPg_LedgerImportLegacyArtifacts(t *testing.T) {
+// ADR-0157 Q6 (owner 2026-11-18, ENG-1990): the retired bbolt artifact records
+// expire unimported and their vault bodies are released through the ledger's one
+// body-release path: a body no ledger entry names is deleted, a body an entry
+// still names (the same bytes uploaded since) is kept, a body already gone is
+// not an error, and a re-run is a no-op.
+func TestPg_LedgerReleaseBodies(t *testing.T) {
 	st, v, ctx := newLedgerStore(t)
-	hash, err := v.Store([]byte("legacy upload"))
+	orphan, err := v.Store([]byte("pgled legacy orphan bytes"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	recs := []LegacyArtifact{{Hash: hash, ContentType: "text/plain", SizeBytes: 13, SessionID: "pgled-legacy-sess",
-		StepIndex: 1, SemanticSummary: "old report", Tags: []string{"team_a"}}}
+	shared, err := v.Store([]byte("pgled legacy shared bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
-		_, _ = st.pool.Exec(context.Background(), `DELETE FROM ledger_entries WHERE session_id = 'pgled-legacy-sess'`)
+		_, _ = st.pool.Exec(context.Background(), `DELETE FROM ledger_entries WHERE run_id = 'pgled-release-run'`)
 	})
-	now := time.Now()
-	n, err := st.ImportLegacyArtifacts(ctx, recs, now, time.Hour)
-	if err != nil || n != 1 {
-		t.Fatalf("import: %d %v", n, err)
+	e := pgEntry("led_pgled_release_shared", domain.LedgerArtifact, "pgled-release-run", "pgled-release-turn", 0, "", "", time.Now().Add(time.Hour))
+	e.BodyHash, e.ContentHash = shared, shared
+	if err := st.Put(ctx, e); err != nil {
+		t.Fatal(err)
 	}
-	if n, err = st.ImportLegacyArtifacts(ctx, recs, now, time.Hour); err != nil || n != 1 {
-		t.Fatalf("re-import: %d %v", n, err)
+	gone := strings.Repeat("ab", 32) // a hash whose bytes were never stored
+	deleted, failed, err := st.ReleaseBodies(ctx, []string{orphan, shared, gone, orphan})
+	if err != nil || failed != 0 || deleted != 2 { // orphan + the already-absent one
+		t.Fatalf("release = deleted %d failed %d err %v, want 2/0/nil", deleted, failed, err)
 	}
-	rows, err := st.Find(ctx, domain.LedgerQuery{SessionID: "pgled-legacy-sess", Kind: domain.LedgerArtifact})
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("imported entries = %+v %v (want exactly one, idempotent)", rows, err)
+	if _, err := v.Load(orphan); err == nil {
+		t.Fatal("an unreferenced legacy body survived the release")
 	}
-	got, err := st.Get(ctx, rows[0].ID)
-	if err != nil || got == nil || string(got.Body) != "legacy upload" || strings.Join(got.Tags, ",") != "team_a" ||
-		got.StepIndex != 1 || got.ToolName != LegacyArtifactToolName {
-		t.Fatalf("imported entry = %+v %v", got, err)
+	if b, err := v.Load(shared); err != nil || string(b) != "pgled legacy shared bytes" {
+		t.Fatalf("a body a ledger entry still names was deleted: %q %v", b, err)
 	}
-	if d := got.ExpiresAt.Sub(now); d < 59*time.Minute || d > 61*time.Minute {
-		t.Fatalf("imported entry retention = %v, want the ledger's (1h)", d)
+	if _, failed, err := st.ReleaseBodies(ctx, []string{orphan}); err != nil || failed != 0 {
+		t.Fatalf("re-release: failed %d err %v (want an idempotent no-op)", failed, err)
 	}
 }
 

@@ -3,7 +3,6 @@ package kernel
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -39,20 +38,21 @@ type LedgerStackDeps struct {
 	// the vault's only registry: every artifact (UploadArtifact, out/ collection,
 	// tool-written files) is a kind=artifact entry naming its bytes here.
 	Bodies postgres.LedgerBodyStore
-	// Legacy is the retired bbolt artifact bucket (ADR-0157 Q6): its records are
-	// imported as artifact entries once, then the bucket is dropped. nil ⇒ none.
+	// Legacy is the retired pre-ADR-0157 bbolt artifact bucket (ADR-0157 Q6,
+	// owner 2026-11-18: its records expire, they are not imported). nil ⇒ none.
 	Legacy           LegacyArtifactSource
 	Authorizer       domain.Authorizer
 	PrivateByDefault bool
 }
 
 // LegacyArtifactSource is the retired pre-ADR-0157 artifact metadata store (the
-// bbolt "artifacts" bucket), read once for the Q6 import and then dropped.
+// bbolt "artifacts" bucket). Nothing reads its records any more; the ledger only
+// learns which vault bodies they named, to release them, and then drops it.
 type LegacyArtifactSource interface {
-	// LegacyArtifacts lists every record still in the bucket (nil when it is gone).
-	LegacyArtifacts() ([]postgres.LegacyArtifact, error)
-	// DropLegacyArtifacts deletes the bucket. Called only after every record was
-	// imported into the ledger.
+	// LegacyArtifactHashes lists the vault hashes the bucket's records name, one
+	// per record; present is false when the bucket is already gone.
+	LegacyArtifactHashes() (hashes []string, present bool, err error)
+	// DropLegacyArtifacts deletes the bucket. Absent is not an error.
 	DropLegacyArtifacts() error
 }
 
@@ -73,7 +73,7 @@ func NewLedgerStack(ctx context.Context, cfg config.LedgerConfig, content config
 		slog.Error("ADR-0145: execution.ledger.enabled is set but the ledger_entries table or its 0035/0053 columns are missing (run `orchestrator migrate up`); the ledger is OFF")
 		return nil
 	}
-	importLegacyArtifacts(ctx, raw, deps.Legacy, cfg.Retention())
+	retireLegacyArtifacts(ctx, raw, deps.Legacy)
 	reader := authz.NewEnforcingLedger(raw, nil)
 	st := &LedgerStack{
 		Writer: ledger.NewRecorder(raw, deps.Authorizer, ledger.RecorderConfig{
@@ -91,40 +91,49 @@ func NewLedgerStack(ctx context.Context, cfg config.LedgerConfig, content config
 	return st
 }
 
-// importLegacyArtifacts is the ADR-0157 Q6 one-time move of the retired bbolt
-// artifact records into the ledger (owner-approved answer: import them with their
-// tags rather than let them become unreachable). Each record becomes an artifact
-// entry with its own tags, session and step over the vault bytes it already
-// names; the bucket is dropped only after every record was written, so a failure
-// leaves it for the next boot (the import is idempotent: deterministic ids,
-// ON CONFLICT DO NOTHING).
+// legacyBodyReleaser is the part of the raw ledger store the retirement needs:
+// the ledger's one body-release path (refcount on ledger_entries.body_hash, then
+// vault delete).
+type legacyBodyReleaser interface {
+	ReleaseBodies(ctx context.Context, hashes []string) (deleted, failed int, err error)
+}
+
+// retireLegacyArtifacts retires the pre-ADR-0157 bbolt artifact bucket at boot.
+// Owner decision 2026-11-18 (ADR-0157 Q6, ENG-1990): its records EXPIRE — they
+// are not imported into the ledger (S4's import, ENG-1972, is removed). The
+// records are dropped unread; only their keys, the vault hashes, are used, to
+// release the bodies no ledger entry names: the vault has no retention of its
+// own and every other delete reaches a body only through a ledger entry, so an
+// unreleased body would stay forever, unreadable and unerasable. Bodies a ledger
+// entry still names (the same bytes uploaded since) are kept. The bucket is
+// dropped last, so a failed release leaves it for the next boot (a re-release is
+// a no-op). The log carries counts only — no ids, no content.
 //
-// cambrian:destructive (bbolt, not SQL): DropLegacyArtifacts deletes the bucket
-// after the import; its content lives on in ledger_entries. An operator backup
-// (`orchestrator backup run` copies the data dir) taken before the upgrade keeps
-// the original bucket.
-func importLegacyArtifacts(ctx context.Context, raw *postgres.PgLedgerStore, legacy LegacyArtifactSource, retention time.Duration) {
+// cambrian:destructive (bbolt + vault, not SQL): the bucket and the unreferenced
+// bodies are deleted. An operator backup (`orchestrator backup run` copies the
+// data dir) taken before the upgrade keeps both.
+func retireLegacyArtifacts(ctx context.Context, raw legacyBodyReleaser, legacy LegacyArtifactSource) {
 	if legacy == nil {
 		return
 	}
-	recs, err := legacy.LegacyArtifacts()
+	hashes, present, err := legacy.LegacyArtifactHashes()
 	if err != nil {
-		slog.Error("ADR-0157 Q6: the legacy bbolt artifact records could not be read; kept for the next boot", "err", err)
+		slog.Error("ADR-0157 Q6: the retired bbolt artifact bucket could not be read; kept for the next boot", "err", err)
 		return
 	}
-	if recs == nil {
-		return // bucket already retired
+	if !present {
+		return // already retired
 	}
-	n, err := raw.ImportLegacyArtifacts(ctx, recs, time.Now(), retention)
+	released, failed, err := raw.ReleaseBodies(ctx, hashes)
 	if err != nil {
-		slog.Error("ADR-0157 Q6: legacy artifact import stopped; the bbolt bucket is kept and the import retried next boot",
-			"imported", n, "of", len(recs), "err", err)
+		slog.Error("ADR-0157 Q6: vault bodies of the retired bbolt artifact records not released; the bucket is kept for the next boot",
+			"records", len(hashes), "released", released, "failed", failed)
 		return
 	}
 	if err := legacy.DropLegacyArtifacts(); err != nil {
-		slog.Error("ADR-0157 Q6: legacy artifacts imported but the bbolt bucket could not be dropped", "err", err)
+		slog.Error("ADR-0157 Q6: the retired bbolt artifact bucket could not be dropped", "err", err)
 		return
 	}
-	slog.Warn("ADR-0157 Q6: legacy bbolt artifact records imported into the run ledger and the bucket retired",
-		"records", len(recs), "imported", n)
+	slog.Warn("ADR-0157 Q6: retired bbolt artifact records dropped without import (they expire)",
+		"records_dropped", len(hashes), "vault_bodies_released", released)
 }
