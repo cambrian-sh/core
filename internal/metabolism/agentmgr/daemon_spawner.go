@@ -39,10 +39,19 @@ type daemonState struct {
 type daemonRegistry struct {
 	mu       sync.Mutex
 	byStream map[string]*daemonState // key: streamID
+	// booting holds one channel per stream whose process is being booted right
+	// now; it is closed when that boot has registered (or failed). A boot takes
+	// seconds and runs without mu held, so without this marker a second
+	// SpawnDaemon on the same stream saw "not running" and booted a second
+	// process — two pollers on one Telegram bot token (ENG-353).
+	booting map[string]chan struct{}
 }
 
 func newDaemonRegistry() *daemonRegistry {
-	return &daemonRegistry{byStream: make(map[string]*daemonState)}
+	return &daemonRegistry{
+		byStream: make(map[string]*daemonState),
+		booting:  make(map[string]chan struct{}),
+	}
 }
 
 // SpawnDaemon boots a TraitDaemon agent and starts the crash-watcher goroutine.
@@ -54,17 +63,48 @@ func newDaemonRegistry() *daemonRegistry {
 // started it (its log forwarding runs on the boot ctx), so the caller's values
 // (principal, trace) are kept but its cancellation must not stop the daemon; the boot
 // is bounded by execution.agents.agent_boot_timeout_ms.
+//
+// One stream, one process — also under concurrency (ENG-353): the check and the
+// claim to boot happen under one lock, and a caller that finds a boot in flight
+// waits for it and then takes a reference on the process it produced, instead of
+// booting a second one. If that boot failed, the waiter tries the boot itself.
 func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string, params map[string]any) (string, error) {
-	m.daemons.mu.Lock()
-	state, exists := m.daemons.byStream[streamID]
-	if exists && state.refCount > 0 {
-		// Already running — increment ref and return existing instance ID.
-		state.refCount++
-		instanceID := state.instanceID
+	var booted chan struct{}
+	for booted == nil {
+		m.daemons.mu.Lock()
+		state, exists := m.daemons.byStream[streamID]
+		if exists && state.refCount > 0 {
+			// Already running — increment ref and return existing instance ID.
+			state.refCount++
+			instanceID := state.instanceID
+			m.daemons.mu.Unlock()
+			return instanceID, nil
+		}
+		if inFlight, ok := m.daemons.booting[streamID]; ok {
+			m.daemons.mu.Unlock()
+			select {
+			case <-inFlight:
+				continue // re-check: running now (take a ref) or failed (boot it ourselves)
+			case <-ctx.Done():
+				return "", fmt.Errorf("SpawnDaemon: waiting for the in-flight boot of %q: %w", streamID, ctx.Err())
+			}
+		}
+		booted = make(chan struct{})
+		m.daemons.booting[streamID] = booted
 		m.daemons.mu.Unlock()
-		return instanceID, nil
 	}
-	m.daemons.mu.Unlock()
+	// endBoot releases the waiters. Called with mu held, in the same critical
+	// section that registers the stream, so a waiter never sees "neither running
+	// nor booting" between the two.
+	endBoot := func() {
+		delete(m.daemons.booting, streamID)
+		close(booted)
+	}
+	failBoot := func() {
+		m.daemons.mu.Lock()
+		endBoot()
+		m.daemons.mu.Unlock()
+	}
 
 	// Boot the daemon process (via the test hook when set, else the real boot path).
 	var instanceID string
@@ -73,15 +113,18 @@ func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string
 		var hookErr error
 		instanceID, cmd, hookErr = m.DaemonBootHook(agentID, streamID, params)
 		if hookErr != nil {
+			failBoot()
 			return "", fmt.Errorf("SpawnDaemon: boot hook failed for %q: %w", agentID, hookErr)
 		}
 	} else {
 		def, err := m.Registry.GetAgentByName(ctx, agentID)
 		if err != nil || def == nil {
+			failBoot()
 			return "", fmt.Errorf("SpawnDaemon: agent %q not found: %w", agentID, err)
 		}
 		inst, bootErr := m.InstanceManager.bootDaemonAgent(context.WithoutCancel(ctx), def, streamID, params)
 		if bootErr != nil {
+			failBoot()
 			return "", fmt.Errorf("SpawnDaemon: boot failed for %q: %w", agentID, bootErr)
 		}
 		instanceID = inst.ID
@@ -97,6 +140,7 @@ func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string
 		status:     "running",
 		params:     params,
 	}
+	endBoot()
 	m.daemons.mu.Unlock()
 
 	// Launch crash-watcher goroutine. ADR-0033. It consumes the one Wait the
