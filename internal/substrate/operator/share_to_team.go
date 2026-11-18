@@ -34,9 +34,6 @@ var (
 	ErrShareNotPermitted = errors.New("the target tags are not within what you may write")
 )
 
-// SetMemorySharer wires the publish effect. nil ⇒ ShareToTeam is Unimplemented.
-func (s *Service) SetMemorySharer(m MemorySharer) { s.sharer = m }
-
 // ShareRequestPreview encodes a share's target tags on its approval item, and
 // ShareTargetsOf decodes them (the hub's publish handler reads it back).
 func ShareRequestPreview(target []string) string {

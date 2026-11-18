@@ -23,13 +23,6 @@ type SkillGrantAdmin interface {
 	Revoke(ctx context.Context, in access.RevokeInput) (access.Result, error)
 }
 
-// SetSkillGrants wires the grant surface. The composition root calls it only when
-// the durable grant store is ready, and advertises "skill-grants" iff it did.
-func (s *Service) SetSkillGrants(g SkillGrantAdmin) { s.skillGrants = g }
-
-// HasSkillGrants reports whether the grant surface is wired (the capability gate).
-func (s *Service) HasSkillGrants() bool { return s.skillGrants != nil }
-
 const skillGrantsUnimplemented = "this kernel has no skill grant store (capability skill-grants)"
 
 func grantErr(err error) error {

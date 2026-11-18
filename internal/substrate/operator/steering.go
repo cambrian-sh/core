@@ -11,13 +11,6 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// SetSteeringSources wires the live-execution control hub and the HITL approval
-// hub used by the steering commands (ADR-0047 D11).
-func (s *Service) SetSteeringSources(hub *ExecutionControlHub, hitl domain.ApprovalHub) {
-	s.controls = hub
-	s.hitl = hitl
-}
-
 // ResolveHITL approves or rejects a raised HITL intervention, reusing the
 // kernel approval hub (ADR-0047 D11). Idempotent against the intervention id via
 // command_id; audited.

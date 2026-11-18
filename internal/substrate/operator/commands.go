@@ -22,13 +22,6 @@ type GrantsStore interface {
 	ReplaceGrants(ctx context.Context, agentID string, grants []domain.ToolGrant) error
 }
 
-// SetCommandSources wires the audit store and grants store used by mutating
-// commands (ADR-0047 D15). Without them the command RPCs return Unimplemented.
-func (s *Service) SetCommandSources(audit AuditStore, grants GrantsStore) {
-	s.audit = audit
-	s.grants = grants
-}
-
 // recordAndEmit is the audit decorator shared by every mutating command. It
 // persists the entry (the UNIQUE command_id is the dedup) and, only when the
 // write is new, emits an AuditEvent on the feed — write-then-emit, so a client

@@ -57,9 +57,6 @@ type SourceMetaCaps struct {
 	Kind, Title, Author, Speaker int
 }
 
-// SetSourceMetaCaps wires the configured caps (the agent plane reads the same keys).
-func (s *Service) SetSourceMetaCaps(c SourceMetaCaps) { s.sourceMetaCaps = c }
-
 // opDescriptive is domain.NormalizeDescriptiveField as INVALID_ARGUMENT naming field.
 func opDescriptive(field, v string, max int) (string, error) {
 	out, err := domain.NormalizeDescriptiveField(v, max)
@@ -84,9 +81,6 @@ func (f MemoryIngestorFunc) Ingest(ctx context.Context, req IngestRequest) (stri
 	return f(ctx, req)
 }
 
-// SetMemoryIngestor wires the operator IngestMemory path (A2.4). nil ⇒ Unimplemented.
-func (s *Service) SetMemoryIngestor(ing MemoryIngestor) { s.ingestor = ing }
-
 // UploadMatcher answers ADR-0138 Amendment B1.3: which stored document of the caller an
 // upload of req (its Filename, Tags and Author) would REPLACE. Bound by the composition
 // root to the kernel ingest's own identity resolution, so the console's prompt and the
@@ -101,13 +95,6 @@ type UploadMatcherFunc func(ctx context.Context, req IngestRequest) (domain.Docu
 func (f UploadMatcherFunc) MatchUpload(ctx context.Context, req IngestRequest) (domain.DocumentRecord, error) {
 	return f(ctx, req)
 }
-
-// SetUploadMatcher wires the replace-by-name lookup. nil (the default) leaves the
-// ListDocuments upload_name lookup Unimplemented and withholds "upload-replace".
-func (s *Service) SetUploadMatcher(m UploadMatcher) { s.uploads = m }
-
-// HasUploadMatcher reports whether the lookup is wired (the "upload-replace" gate).
-func (s *Service) HasUploadMatcher() bool { return s.uploads != nil }
 
 // matchUpload serves ListDocuments with upload_name set (contract 0100): at most one
 // row, the caller's own document. The writer is the authenticated operator — the same
@@ -139,12 +126,6 @@ func (s *Service) matchUpload(ctx context.Context, req *pb.ListDocumentsOpReques
 	resp.Documents, resp.TotalMatching = []*pb.DocumentSummaryOp{row}, 1
 	return resp, nil
 }
-
-// SetEventTimeFutureTolerance sets how far past the ingest clock a stated event
-// time may lie before it is clamped (ADR-0134 Q4; config
-// execution.ingestion.event_time_future_tolerance_ms). Unset means
-// domain.DefaultEventTimeFutureTolerance.
-func (s *Service) SetEventTimeFutureTolerance(d time.Duration) { s.eventTimeTolerance = &d }
 
 func (s *Service) eventTimeFutureTolerance() time.Duration {
 	if s.eventTimeTolerance == nil {

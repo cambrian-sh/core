@@ -45,12 +45,6 @@ type ConfigSchemaReporter interface {
 	FileOverrides() (files, values map[string]string)
 }
 
-// SetConfigSchemaReporter wires the runtime-config read surface. nil ⇒
-// GetConfigSchema returns Unimplemented, which the console renders as "this
-// kernel cannot tell me its current values" rather than showing defaults as if
-// they were live.
-func (s *Service) SetConfigSchemaReporter(r ConfigSchemaReporter) { s.configSchema = r }
-
 // GetConfigSchema returns the editable tunables, their live values, and where
 // each value came from. Read RPC (no command_id).
 func (s *Service) GetConfigSchema(_ context.Context, _ *pb.GetConfigSchemaOpRequest) (*pb.ConfigSchemaOp, error) {
@@ -70,7 +64,3 @@ func (s *Service) GetConfigSchema(_ context.Context, _ *pb.GetConfigSchemaOpRequ
 	op.OverridesFile, op.OverridesFileValue = s.configSchema.FileOverrides()
 	return op, nil
 }
-
-// HasConfigSchema reports whether the runtime-config read surface is wired, so
-// the composition root can advertise "config-schema" only when it can be served.
-func (s *Service) HasConfigSchema() bool { return s.configSchema != nil }

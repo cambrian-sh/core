@@ -88,19 +88,6 @@ type SecretWriter interface {
 	ClearGeneratorKey(generatorID string) error
 }
 
-// SetConfigWriter wires the durable config write path. nil ⇒ SetConfig and
-// DeleteConfig return Unimplemented, which a console renders as "this kernel
-// cannot persist settings" rather than offering a Save button that silently
-// does nothing.
-func (s *Service) SetConfigWriter(w ConfigWriter) { s.configWriter = w }
-
-// SetSecretWriter wires the credential write path. nil ⇒ Unimplemented.
-func (s *Service) SetSecretWriter(w SecretWriter) { s.secretWriter = w }
-
-// HasConfigWriter reports whether durable config writes are available, so the
-// composition root advertises the capability only when it can serve it.
-func (s *Service) HasConfigWriter() bool { return s.configWriter != nil }
-
 // SetConfig durably records configuration intent. Mutating: command_id + reason,
 // audited, idempotent on command_id.
 func (s *Service) SetConfig(ctx context.Context, req *pb.SetConfigOpRequest) (*pb.SetConfigOpResponse, error) {

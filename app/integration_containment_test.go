@@ -8,6 +8,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 )
 
 // T-20261106-integrationop-has-no-structured-containment: a stdio server's
@@ -40,8 +41,9 @@ func TestIntegrationContainment_StructuredOnBothOps(t *testing.T) {
 		t.Fatalf("an http server must carry no containment: %+v", http.GetContainment())
 	}
 
-	svc := &operator.Service{}
-	svc.SetWave1Reads(nil, mcpLister{runtime: r.m.runtime, connector: r.m.connector}, nil, nil)
+	svc := operatortest.New(t, nil, func(_ *operator.Deps, o *operator.Options) {
+		o.MCPServers = mcpLister{runtime: r.m.runtime, connector: r.m.connector}
+	})
 	resp, err := svc.ListMCPServers(context.Background(), &pb.ListMCPServersOpRequest{})
 	if err != nil {
 		t.Fatal(err)

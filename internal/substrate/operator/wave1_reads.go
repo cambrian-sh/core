@@ -97,19 +97,6 @@ type ClassifiedInput struct {
 	Options        []string
 }
 
-// SetWave1Reads wires the contract-0072 read sources. Any may be nil.
-func (s *Service) SetWave1Reads(
-	checkpoints CheckpointLister,
-	mcp MCPServerLister,
-	embedding EmbeddingReporter,
-	classifier InputClassifier,
-) {
-	s.checkpoints = checkpoints
-	s.mcpServers = mcp
-	s.embedding = embedding
-	s.classifier = classifier
-}
-
 // ListSessionCheckpoints returns a session's checkpoints, grouped by run.
 func (s *Service) ListSessionCheckpoints(ctx context.Context, req *pb.ListSessionCheckpointsOpRequest) (*pb.ListSessionCheckpointsOpResponse, error) {
 	if s.checkpoints == nil {
@@ -217,35 +204,35 @@ func (s *Service) ClassifyInput(ctx context.Context, req *pb.ClassifyInputOpRequ
 	}, nil
 }
 
-// Wave1Capabilities returns the contract-0072 capability strings this build can
-// actually serve.
+// wave1Capabilities returns the contract-0072 capability strings this build can
+// actually serve, given which seams are wired (Options.Wave1Capabilities).
 //
 // Advertised conditionally, per source, because the console gates surfaces on
 // them (ADR-0082 D2) and will not probe. A capability advertised without a source
 // behind it produces a screen that renders and then fails; a source without a
 // capability produces a working surface nobody shows.
-func (s *Service) Wave1Capabilities() []string {
+func wave1Capabilities(checkpoints, mcpServers, embedding, classifier, generators, controls bool) []string {
 	var caps []string
-	if s.checkpoints != nil {
+	if checkpoints {
 		// session-checkpoints: ListSessionCheckpoints serves run-keyed recovery
 		// points, so the Checkpoints tab can fill.
 		caps = append(caps, "session-checkpoints")
 	}
-	if s.mcpServers != nil {
+	if mcpServers {
 		caps = append(caps, "mcp-registry")
 	}
-	if s.embedding != nil {
+	if embedding {
 		caps = append(caps, "embedding-config")
 	}
-	if s.classifier != nil {
+	if classifier {
 		// input-classification: ClassifyInput answers with the FIVE-value router
 		// vocabulary. A client that only understands three must not claim this.
 		caps = append(caps, "input-classification")
 	}
-	if s.generators != nil {
+	if generators {
 		caps = append(caps, "generator-registry")
 	}
-	if s.controls != nil {
+	if controls {
 		// run-cancel (contract 0102): CancelRun ends a live run terminally.
 		caps = append(caps, "run-cancel")
 	}

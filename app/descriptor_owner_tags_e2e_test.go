@@ -19,6 +19,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/storage"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 )
 
 // End to end for ENG-1046 (owner decision 2026-11-15, ADR-0146 D5: owner tags
@@ -49,16 +50,16 @@ func TestDescriptorOwnerTags_RefusedOnTheOperatorPlane(t *testing.T) {
 	skillStore := &sinkFakeStore{}
 	skillIndexer := &domain.SkillIndexer{Store: skillStore, Embedder: sinkFakeEmb{}}
 
-	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
-	svc.SetCommandSources(operator.NewInMemoryAuditStore(), nil)
-	svc.SetMCPWriter(rig.src)
-	svc.SetIntegrationManager(rig.m)
-	svc.SetCommandEffects(operator.CommandEffectsFuncs{
-		RegisterSkillFn: func(ctx context.Context, name, description, instructions string, toolGrants, scopeTags []string) error {
-			sk := domain.Skill{Name: name, Description: description, Instructions: instructions, ToolGrants: toolGrants, ScopeTags: scopeTags}
-			skillReg.Register(sk)
-			return skillIndexer.Index(ctx, sk)
-		},
+	svc := operatortest.New(t, nil, func(d *operator.Deps, o *operator.Options) {
+		o.MCPWriter = rig.src
+		o.IntegrationManager = rig.m
+		d.Effects = operator.CommandEffectsFuncs{
+			RegisterSkillFn: func(ctx context.Context, name, description, instructions string, toolGrants, scopeTags []string) error {
+				sk := domain.Skill{Name: name, Description: description, Instructions: instructions, ToolGrants: toolGrants, ScopeTags: scopeTags}
+				skillReg.Register(sk)
+				return skillIndexer.Index(ctx, sk)
+			},
+		}
 	})
 
 	lis := bufconn.Listen(1 << 20)

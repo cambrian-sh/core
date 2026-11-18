@@ -55,9 +55,6 @@ type MCPTestResult struct {
 	Error     string
 }
 
-// SetMCPWriter wires the MCP write path. nil ⇒ Unimplemented.
-func (s *Service) SetMCPWriter(w MCPWriter) { s.mcpWriter = w }
-
 func mcpSpecFromOp(g *pb.MCPServerSpecOp) MCPServerSpec {
 	return MCPServerSpec{
 		ID:                 g.GetId(),

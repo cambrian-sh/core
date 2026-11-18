@@ -28,6 +28,7 @@ import (
 	"github.com/cambrian-sh/core/internal/memory/forget"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 )
 
 type recordingErasureObserver struct {
@@ -160,10 +161,11 @@ func TestPg_Forget_EndToEndThroughBothPlanes(t *testing.T) {
 	}
 
 	// ── Operator plane: the compliance erase lifts the owner fence ──
-	opSvc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
 	audit := operator.NewInMemoryAuditStore()
-	opSvc.SetCommandSources(audit, nil)
-	opSvc.SetForgetService(svc)
+	opSvc := operatortest.New(t, nil, func(d *operator.Deps, o *operator.Options) {
+		d.Audit = audit
+		o.Forget = svc
+	})
 	opCtx := domain.WithPrincipal(domain.WithPrincipalRoles(ctx, []string{"operator"}),
 		domain.PrincipalRef{Kind: domain.PrincipalUser, ID: "eng411c-ops"})
 	op, err := opSvc.PreviewForgetMemory(opCtx, &pb.PreviewForgetMemoryOpRequest{Selector: &pb.ErasureSelectorOp{ChunkIds: []string{fenced}}})
@@ -1250,8 +1252,7 @@ func TestPg_Forget_QueryPreview(t *testing.T) {
 		(&pb.PreviewForgetMemoryOpRequest{}).ProtoReflect().Descriptor().Fields().ByName("query") != nil {
 		t.Fatal("operator previews must stay ids/counts only")
 	}
-	opSvc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
-	opSvc.SetForgetService(svc)
+	opSvc := operatortest.New(t, nil, func(_ *operator.Deps, o *operator.Options) { o.Forget = svc })
 	opCtx := domain.WithPrincipal(domain.WithPrincipalRoles(context.Background(), []string{"operator"}),
 		domain.PrincipalRef{Kind: domain.PrincipalUser, ID: "eng411d-ops"})
 	op, err := opSvc.PreviewForgetMemory(opCtx, &pb.PreviewForgetMemoryOpRequest{Selector: &pb.ErasureSelectorOp{DocumentIds: []string{mine}}})

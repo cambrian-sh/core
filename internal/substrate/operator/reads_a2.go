@@ -60,29 +60,6 @@ type grantsEnumerator interface {
 
 const defaultReadPageSize = 50
 
-// SetReadSources wires the operator-plane read RPCs (ADR-0047 A2). Any source may
-// be nil; its RPC then returns an empty page (tools/skills) or Unimplemented
-// (memory) rather than failing.
-func (s *Service) SetReadSources(tools ToolCatalog, skills SkillLister, memory MemoryQuerier) {
-	s.tools = tools
-	s.skills = skills
-	s.memory = memory
-}
-
-// SetDocumentLister wires the document enumeration read. nil (the default) leaves
-// ListDocuments returning Unimplemented and withholds the "document-listing"
-// capability, so a console never renders a browser the kernel cannot serve.
-func (s *Service) SetDocumentLister(l memory.DocumentLister) { s.documents = l }
-
-// HasDocumentLister reports whether enumeration is wired, so app.go can gate the
-// "document-listing" capability on it.
-func (s *Service) HasDocumentLister() bool { return s.documents != nil }
-
-// SetMemoryAnswerer wires the ADR-0081 answer lane. nil (the default) leaves
-// AnswerMemory returning Unimplemented and withholds the "memory-answer"
-// capability.
-func (s *Service) SetMemoryAnswerer(a MemoryAnswerer) { s.answerer = a }
-
 // ListDocuments enumerates ingested documents by row (read RPC; any authenticated
 // role, no command_id).
 //
@@ -125,10 +102,6 @@ func (s *Service) ListDocuments(ctx context.Context, req *pb.ListDocumentsOpRequ
 		TotalMatching: int32(total),
 	}, nil
 }
-
-// HasMemoryAnswerer reports whether the answer lane is wired, so app.go can gate
-// the "memory-answer" capability on it.
-func (s *Service) HasMemoryAnswerer() bool { return s.answerer != nil }
 
 // ListTools returns the whole tool catalog the operator governs, with per-tool
 // grant reverse-index and MCP-vs-builtin source labelling (A2.3). Paged.
@@ -619,11 +592,6 @@ func effectNames(es []domain.ToolEffect) []string {
 	}
 	return out
 }
-
-// SetDocumentGetter wires the keyed document read. nil (the default) leaves
-// GetDocument Unimplemented rather than answering not-found for every id, which
-// would make a missing wiring indistinguishable from a dangling citation.
-func (s *Service) SetDocumentGetter(g memory.DocumentGetter) { s.docGetter = g }
 
 // GetDocument fetches one document by id, body included.
 //

@@ -25,10 +25,6 @@ import (
 // private facts answer as absent. All three are reads by name, so the role gate opens
 // them to Operators and Viewers; Members reach none of them.
 
-// SetFactInspector installs the fact inspection port (kernel.MemoryStack.FactInspector).
-// nil ⇒ the three RPCs answer Unimplemented.
-func (s *Service) SetFactInspector(fi domain.FactInspector) { s.facts = fi }
-
 func (s *Service) factInspector() (domain.FactInspector, error) {
 	if s.facts == nil {
 		return nil, status.Error(codes.Unimplemented, "fact inspection is not available on this kernel (capability facts-inspect)")
@@ -152,10 +148,6 @@ func rfc3339Ptr(t *time.Time) string {
 type FactStatsSource interface {
 	Stats() memory.FactExtractorStats
 }
-
-// SetFactStats installs the fact extractor whose counters the Snapshot reports as
-// fact_extractor (ENG-431; capability "facts-stats"). nil leaves the field absent.
-func (s *Service) SetFactStats(src FactStatsSource) { s.factStats = src }
 
 // factExtractorStatsOp is memory.FactExtractorStats on the wire.
 func factExtractorStatsOp(st memory.FactExtractorStats) *pb.FactExtractorStatsOp {

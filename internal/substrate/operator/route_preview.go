@@ -25,10 +25,6 @@ type RoutePreviewer interface {
 	PreviewRoute(requiredCaps []string, candidates []RouteCandidate) (ranked []domain.MeritResult, arm string)
 }
 
-// SetRoutePreviewer wires the ROUTE-07 gatekeeper-preview scorer. nil ⇒ PreviewRoute
-// returns Unimplemented.
-func (s *Service) SetRoutePreviewer(p RoutePreviewer) { s.routePreview = p }
-
 // PreviewRoute runs the Gatekeeper merit scoring over the request's inline candidates and
 // returns the ranked funnel under the active arm (ADR-0077). Read-only, no side effects —
 // it neither auctions nor executes; it just scores. Any authenticated role.

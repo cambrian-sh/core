@@ -114,9 +114,6 @@ func (f CommandEffectsFuncs) SetRuntimeConfig(ctx context.Context, params map[st
 	return f.SetRuntimeConfigFn(ctx, params)
 }
 
-// SetCommandEffects wires the effect adapter for the remaining mutations.
-func (s *Service) SetCommandEffects(e CommandEffects) { s.effects = e }
-
 // runMutation is the shared command body: validate, audit (idempotent), and
 // apply the effect once. before/after capture the request intent.
 // runMutationBefore is runMutation for a change whose prior value only the

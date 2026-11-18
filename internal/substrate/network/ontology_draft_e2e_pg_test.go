@@ -20,6 +20,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/ontology"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 )
 
 // End to end over real Postgres (PG_TEST_DSN; migrations 0040 + 0041), the
@@ -78,9 +79,10 @@ func TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite(t *testing.T) {
 	s.RunPrincipal = func(_ context.Context, b domain.LeaseBinding) string {
 		return strings.TrimPrefix(b.ConversationID, "conv-of-")
 	}
-	op := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
-	op.SetCommandSources(audit, domain.NewInMemoryGrantsStore())
-	op.SetSteeringSources(operator.NewExecutionControlHub(), hub)
+	op := operatortest.New(t, nil, func(d *operator.Deps, _ *operator.Options) {
+		d.Audit, d.Grants = audit, domain.NewInMemoryGrantsStore()
+		d.Controls, d.Approvals = operator.NewExecutionControlHub(), hub
+	})
 	store := postgres.NewPgKnowledgeStore(pool, onto)
 
 	order := domain.KnowledgeItem{NamespaceID: ns, Kind: "order", EntityID: "order/1", AssertedBy: "user:clerk",

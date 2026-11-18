@@ -55,9 +55,6 @@ type GeneratorSpec struct {
 	APIKeyEnv string
 }
 
-// SetGeneratorWriter wires the generator write path. nil ⇒ Unimplemented.
-func (s *Service) SetGeneratorWriter(w GeneratorWriter) { s.generatorWriter = w }
-
 // SaveGenerator creates or replaces a generator. Mutating: command_id + reason,
 // audited, idempotent on command_id.
 func (s *Service) SaveGenerator(ctx context.Context, req *pb.SaveGeneratorOpRequest) (*pb.SetConfigOpResponse, error) {

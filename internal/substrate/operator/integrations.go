@@ -43,13 +43,6 @@ type IntegrationManager interface {
 	SetTrustTier(ctx context.Context, id, tier string) (ConfigWriteOutcome, *pb.IntegrationOp, string, error)
 }
 
-// SetIntegrationManager wires the integrations surface. nil ⇒ Unimplemented and
-// the "integrations" capability is not advertised.
-func (s *Service) SetIntegrationManager(m IntegrationManager) { s.integrations = m }
-
-// HasIntegrationManager reports whether the surface is wired (capability gate).
-func (s *Service) HasIntegrationManager() bool { return s.integrations != nil }
-
 func (s *Service) needIntegrations() error {
 	if s.integrations == nil {
 		return status.Error(codes.Unimplemented, "this kernel cannot manage integrations")

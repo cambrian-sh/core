@@ -34,7 +34,7 @@ func (s *Service) QueryAudit(ctx context.Context, req *pb.QueryAuditRequest) (*p
 	}
 	// ADR-0142 migration step 2: one person is recorded under several actor
 	// strings (bare id, user:<id>, the pre-ADR-0142 agent:<id> alias), so a
-	// query by any one of them matches all (ENG-666). The registry SetPrincipalNames
+	// query by any one of them matches all (ENG-666). The registry Options.PrincipalNames
 	// wired is the principal registry, which also answers aliases; a reader that
 	// cannot (a test fake, no registry) leaves the exact-match filter.
 	if req.GetActor() != "" {

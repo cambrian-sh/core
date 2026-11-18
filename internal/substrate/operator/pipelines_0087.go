@@ -5,7 +5,6 @@ import (
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/domain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -21,15 +20,6 @@ import (
 // The console needs both — a deployment can run watches and pipelines side by
 // side (D33) — so the answer is two surfaces, not one widened until it fits
 // neither.
-
-// SetPipelineLister wires the premium pipeline read surface. nil (OSS) ⇒
-// ListPipelines returns an EMPTY LIST rather than Unimplemented.
-//
-// Empty rather than an error on purpose, and unlike the watch RPCs: "this build
-// authors no pipelines" is a true answer to the question asked, and a console
-// that has to special-case an error to render an empty panel will eventually
-// render the error instead.
-func (s *Service) SetPipelineLister(l domain.PipelineLister) { s.pipelines = l }
 
 // ListNodeItems returns what reached one node, newest first.
 //
@@ -90,16 +80,6 @@ func (s *Service) ListPipelines(ctx context.Context, req *pb.ListPipelinesOpRequ
 }
 
 // ── Dry run (contract 0088) ─────────────────────────────────────────────────
-
-// SetPipelineDryRunner wires the premium shadow-run surface. nil (OSS) ⇒
-// DryRunPipeline REFUSES by name.
-//
-// Deliberately unlike SetPipelineLister above. An empty list is a true answer to
-// "which pipelines exist"; an empty report is NOT a true answer to "what would
-// this do", because it is indistinguishable from a pipeline that would do
-// nothing. Refusing by name is the only honest response a build without a
-// pipeline runtime can give.
-func (s *Service) SetPipelineDryRunner(r domain.PipelineDryRunner) { s.pipelineDryRun = r }
 
 // DryRunPipeline replays captured deliveries with every effect shadowed.
 func (s *Service) DryRunPipeline(ctx context.Context, req *pb.DryRunPipelineOpRequest) (*pb.DryRunPipelineOpResponse, error) {

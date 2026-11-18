@@ -13,6 +13,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 	"github.com/cambrian-sh/core/internal/substrate/session"
 )
 
@@ -46,9 +47,10 @@ func TestCancelRun_StopsALiveSingleAgentRun(t *testing.T) {
 	s.ExecCfg = config.ExecutionConfig{Lane: config.LaneConfig{Default: config.LaneSingleAgent,
 		SingleAgent: config.SingleAgentLaneConfig{AgentID: "worker", MaxToolRounds: 7, MaxWallSeconds: 60}}}
 
-	ops := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
-	ops.SetCommandSources(operator.NewInMemoryAuditStore(), domain.NewInMemoryGrantsStore())
-	ops.SetSteeringSources(hub, nil)
+	ops := operatortest.New(t, nil, func(d *operator.Deps, _ *operator.Options) {
+		d.Audit, d.Grants = operator.NewInMemoryAuditStore(), domain.NewInMemoryGrantsStore()
+		d.Controls = hub
+	})
 
 	type result struct {
 		resp *pb.Handoff

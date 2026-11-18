@@ -35,12 +35,6 @@ type MemoryNotesAdmin interface {
 	SetBudget(ctx context.Context, c memorynotes.Caller, scope memorynotes.Scope, owner string, budget int, clear bool) error
 }
 
-// SetMemoryNotesAdmin wires the notes surface. nil ⇒ Unimplemented.
-func (s *Service) SetMemoryNotesAdmin(n MemoryNotesAdmin) { s.notes = n }
-
-// HasMemoryNotes reports whether the "memory-notes" capability may be advertised.
-func (s *Service) HasMemoryNotes() bool { return s.notes != nil }
-
 func (s *Service) notesCaller(ctx context.Context) (memorynotes.Caller, error) {
 	if s.notes == nil {
 		return memorynotes.Caller{}, status.Error(codes.Unimplemented, "memory notes are not enabled on this kernel")

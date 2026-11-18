@@ -26,13 +26,6 @@ type SkillLifecycleAdmin interface {
 	Rollback(ctx context.Context, commandID, name, entryID, actor, reason string) (lifecycle.MutationResult, error)
 }
 
-// SetSkillLifecycle wires the D13 lifecycle. The composition root calls it only
-// when the durable store is ready, and advertises "skills-lifecycle" iff it did.
-func (s *Service) SetSkillLifecycle(l SkillLifecycleAdmin) { s.skillLifecycle = l }
-
-// HasSkillLifecycle reports whether the lifecycle is wired (the capability gate).
-func (s *Service) HasSkillLifecycle() bool { return s.skillLifecycle != nil }
-
 func lifecycleErr(err error) error {
 	switch {
 	case err == nil:

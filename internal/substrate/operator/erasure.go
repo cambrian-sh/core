@@ -38,10 +38,6 @@ import (
 //
 // Agent and principal erases (network/forget_rpc.go) keep the owner fence.
 
-// SetForgetService installs the forget service (internal/memory/forget over
-// MemoryStack.Eraser()). nil or disabled ⇒ the erasure RPCs answer Unimplemented.
-func (s *Service) SetForgetService(f *forget.Service) { s.forget = f }
-
 // erasureCaller returns ctx carrying the operator's maintenance predicate (see above).
 // The principal and roles were stamped by the operator interceptor.
 func (s *Service) erasureCaller(ctx context.Context) (context.Context, error) {

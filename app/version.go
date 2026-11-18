@@ -1,7 +1,7 @@
 package app
 
 // KernelVersion is the kernel version reported on every identity surface: the
-// operator-plane handshake (SetHandshake) and the MCP endpoint's ServerVersion.
+// operator-plane handshake (operator.Deps.KernelVersion) and the MCP endpoint's ServerVersion.
 // One constant so the two can never report different kernels — they were two
 // hand-kept literals, and both lagged the documented version (0.6.9-alpha vs
 // v0.6.10, owner ruling 2026-10-31: 0.6.10).

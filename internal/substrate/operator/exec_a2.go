@@ -18,9 +18,6 @@ type ToolRunner interface {
 	Execute(ctx context.Context, req domain.ToolCallRequest) domain.ToolCallResponse
 }
 
-// SetToolExec wires the tool runner for operator ExecuteTool. nil ⇒ Unimplemented.
-func (s *Service) SetToolExec(runner ToolRunner) { s.toolRunner = runner }
-
 // ExecuteTool runs a tool at ScopeSystem on the operator's authority (A2.2).
 // Idempotent on command_id: a retry returns the original result from the audit
 // row without re-running the tool (tool execution is not naturally idempotent).

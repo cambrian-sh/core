@@ -36,14 +36,6 @@ type PlanSubmitter interface {
 	KnownAgent(id string) bool
 }
 
-// SetPlanSubmitter wires operator-authored plan submission. nil ⇒ SubmitPlan
-// returns Unimplemented, which the console renders as "this kernel accepts only
-// planner-authored plans" rather than a Run button that fails.
-func (s *Service) SetPlanSubmitter(p PlanSubmitter) { s.planSubmitter = p }
-
-// HasPlanSubmitter reports whether authored plans can be run.
-func (s *Service) HasPlanSubmitter() bool { return s.planSubmitter != nil }
-
 // SubmitPlan validates and (unless dry_run) runs an operator-authored plan.
 func (s *Service) SubmitPlan(ctx context.Context, req *pb.SubmitPlanOpRequest) (*pb.SubmitPlanOpResponse, error) {
 	if s.planSubmitter == nil {

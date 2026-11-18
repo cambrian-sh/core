@@ -30,7 +30,7 @@ var allowBackground = map[string]string{
 	"app/agentcard_endpoint.go startAgentCards #1":       "graceful HTTP shutdown deadline after the parent ctx ended (ENG-1467 review)",
 	"app/app.go Run #1":                                  "graceful kernel shutdown deadline after the parent ctx ended (ENG-1467 review)",
 	"app/app.go startKernelServices #1":                  "graceful listener shutdown deadline after the parent ctx ended (ENG-1467 review)",
-	"app/app.go startKernelServices #3":                  "graceful server shutdown deadline after the parent ctx ended (ENG-1467 review)",
+	"app/app.go startKernelServices #2":                  "graceful server shutdown deadline after the parent ctx ended (ENG-1467 review)",
 	"internal/sandbox/docker.go containerHandle.kill #1": "container kill/cleanup must run after the caller's ctx is gone, bounded at 15 s (ADR-0157, ENG-2031)",
 
 	// Kernel-owned work: no request exists whose ctx could ride along.
@@ -41,7 +41,7 @@ var allowBackground = map[string]string{
 	"internal/ingress/consent_bridge.go ConsentBridge.post #1":                        "nil-ctx guard on a best-effort delivery path (ENG-1467 review)",
 
 	// Known leaks: the seam has no ctx yet (T-20261118-remaining-context-background-leaks-on-request).
-	"app/app.go startKernelServices #2":                       "known leak, T-20261118-remaining-context-background-leaks-on-request: pin-warning known(id) lookup",
+	"app/operator_wiring.go composeOperator #1":               "known leak, T-20261118-remaining-context-background-leaks-on-request: pin-warning known(id) lookup (moved from startKernelServices by ENG-1305)",
 	"app/config_write_source.go hotApplyFor #1":               "known leak, T-20261118-remaining-context-background-leaks-on-request",
 	"app/integrations.go integrationManager.SetSecret #1":     "known leak, T-20261118-remaining-context-background-leaks-on-request",
 	"app/mcp_runtime.go mcpRuntime.containment #1":            "known leak, T-20261118-remaining-context-background-leaks-on-request",

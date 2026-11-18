@@ -40,12 +40,6 @@ const (
 	tailPollInterval = 300 * time.Millisecond
 )
 
-// SetLogRing installs the retention window these RPCs read.
-//
-// nil ⇒ both answer Unimplemented, which is the honest state for a kernel whose
-// logger was never initialised through the app entrypoint (tests, embedders).
-func (s *Service) SetLogRing(r *util.LogRing) { s.logs = r }
-
 func (s *Service) logRing() (*util.LogRing, error) {
 	if s.logs == nil {
 		return nil, status.Error(codes.Unimplemented, "this kernel retains no logs in process")

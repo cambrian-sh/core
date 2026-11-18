@@ -18,6 +18,7 @@ import (
 	"github.com/cambrian-sh/core/internal/storage"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 )
 
 // externalTracesStep stands in for a plugin tail step over an external service the
@@ -99,8 +100,7 @@ func TestPg_Forget_ExternalStepRecordedNotErasable(t *testing.T) {
 		!reflect.DeepEqual(got.GetNotErasableExternal(), []string{"langfuse_traces"}) {
 		t.Fatalf("agent-plane receipt = %+v, want not_erasable_external [langfuse_traces]", got)
 	}
-	opSvc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
-	opSvc.SetForgetService(g.svc)
+	opSvc := operatortest.New(t, nil, func(_ *operator.Deps, o *operator.Options) { o.Forget = g.svc })
 	opCtx := domain.WithPrincipal(domain.WithPrincipalRoles(context.Background(), []string{"operator"}),
 		domain.PrincipalRef{Kind: domain.PrincipalUser, ID: "eng2018-ops"})
 	got, err := opSvc.GetErasure(opCtx, &pb.GetErasureOpRequest{RequestId: rec.RequestID})

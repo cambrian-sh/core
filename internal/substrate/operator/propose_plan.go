@@ -57,14 +57,6 @@ type ProposedPlan struct {
 	AccessNote      string
 }
 
-// SetPlanProposer wires the propose-only path. nil ⇒ ProposePlan returns
-// Unimplemented, which a console renders as "this kernel plans on submit only"
-// rather than a proposal pane that never fills.
-func (s *Service) SetPlanProposer(p PlanProposer) { s.planProposer = p }
-
-// HasPlanProposer reports whether propose-without-committing is available.
-func (s *Service) HasPlanProposer() bool { return s.planProposer != nil }
-
 // ProposePlan returns questions or a proposal. Creates nothing.
 //
 // No command_id: nothing is mutated, so there is nothing to dedupe and nothing

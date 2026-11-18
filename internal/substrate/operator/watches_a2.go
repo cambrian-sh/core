@@ -20,21 +20,6 @@ import (
 // Options.NewSignalReceiver seam (ADR-0057), never a //go:build premium handler
 // inside this package — excisability is preserved by construction.
 
-// SetWatchHandler wires the premium watch CRUD surface. nil (OSS) ⇒ the four watch
-// RPCs return Unimplemented; the capability handshake omits "watches-*".
-func (s *Service) SetWatchHandler(h domain.WatchConfigHandler) { s.watches = h }
-
-// SetDeadLetterReader wires the reactive dead-letter read surface (REACT-01 /
-// ADR-0061). nil ⇒ ListWatchDeadLetters returns Unimplemented.
-func (s *Service) SetDeadLetterReader(r domain.WatchDeadLetterReader) { s.deadletters = r }
-
-// SetWatchObservability wires the REACT-05 watch-metrics reader + backtester. nil ⇒ the
-// GetWatchMetrics / BacktestWatch RPCs return Unimplemented.
-func (s *Service) SetWatchObservability(m domain.WatchMetricsReader, b domain.WatchBacktester) {
-	s.watchMetrics = m
-	s.watchBacktest = b
-}
-
 // GetWatchMetrics returns per-watch observability counters (REACT-05 / ADR-0071). Read
 // RPC (any authenticated role).
 func (s *Service) GetWatchMetrics(_ context.Context, _ *pb.GetWatchMetricsOpRequest) (*pb.GetWatchMetricsOpResponse, error) {
@@ -381,11 +366,6 @@ type DeadLetterRetrier interface {
 	RetryDeadLetter(ctx context.Context, deadLetterID string) error
 }
 
-// SetDeadLetterRetrier wires the replay surface. nil ⇒ RetryWatchDeadLetter
-// returns Unimplemented, which is what the console renders as "this contract has
-// no retry RPC" rather than offering a button that fails.
-func (s *Service) SetDeadLetterRetrier(r DeadLetterRetrier) { s.deadletterRetry = r }
-
 // RetryWatchDeadLetter replays one dead letter. Mutating: command_id + reason,
 // audited, idempotent.
 //
@@ -407,7 +387,7 @@ func (s *Service) RetryWatchDeadLetter(ctx context.Context, req *pb.RetryWatchDe
 
 // DeleteWatchDeadLetter removes one dead letter an operator has dealt with
 // (ENG-472, owner decision 2026-11-15). Mutating: command_id + reason, audited.
-// The reader SetDeadLetterReader wired (the OSS bbolt journal decorator) also
+// The reader Options.DeadLetters wired (the OSS bbolt journal decorator) also
 // deletes; a reader that cannot answers Unimplemented.
 func (s *Service) DeleteWatchDeadLetter(ctx context.Context, req *pb.DeleteWatchDeadLetterOpRequest) (*pb.CommandAck, error) {
 	deleter, ok := s.deadletters.(domain.WatchDeadLetterDeleter)
@@ -430,15 +410,6 @@ func (s *Service) DeleteWatchDeadLetter(ctx context.Context, req *pb.DeleteWatch
 			}
 			return nil
 		})
-}
-
-// SetWatchLiveness wires the contract-0074 stream registry, fire history and
-// plane-budget readers. Any may be nil, and a nil source leaves its fields at
-// the "cannot tell" value rather than a default that reads as healthy.
-func (s *Service) SetWatchLiveness(streams domain.StreamRegistry, fires domain.WatchFireReader, budget domain.ReactiveBudgetReader) {
-	s.streams = streams
-	s.watchFires = fires
-	s.planeBudget = budget
 }
 
 // GetReactiveBudget reports the plane's running totals against its caps.

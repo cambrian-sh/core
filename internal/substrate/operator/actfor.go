@@ -37,14 +37,6 @@ import (
 // and acting for someone is strictly more power than acting as oneself.
 func CanActFor(r Role) bool { return r == RoleOperator }
 
-// SetPrincipalDirectory installs the directory act-for consults. nil ⇒ act-for
-// is refused.
-func (s *Service) SetPrincipalDirectory(d domain.PrincipalDirectory) { s.principals = d }
-
-// HasPrincipalDirectory reports whether act-for can be served, so the
-// composition root advertises "conversations-act-for" only when it can.
-func (s *Service) HasPrincipalDirectory() bool { return s.principals != nil }
-
 // actingPrincipal resolves the principal a conversation call acts as: the caller
 // itself, or — with on_behalf_of — the named principal after the checks above.
 // The returned ctx carries that principal as the DOMAIN principal and the run

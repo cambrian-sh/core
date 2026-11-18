@@ -8,7 +8,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/domain"
 )
 
 // The operator view of principal-owned recurring tasks
@@ -17,10 +16,6 @@ import (
 // here. Pausing and deleting reuse SetWatchActive / DeleteWatch on the same id —
 // a scheduled task is a premium schedule watch, and a second set of mutation
 // RPCs would be a second pathway to the same rows (AGENTS.md §4.3).
-
-// SetPrincipalSchedules installs the scheduled-task store. nil ⇒
-// ListScheduledTasks answers Unimplemented.
-func (s *Service) SetPrincipalSchedules(p domain.PrincipalSchedules) { s.schedules = p }
 
 // ListScheduledTasks lists every principal's scheduled tasks, or one owner's.
 // Operator-only (authz.go operatorOnlyReads): who scheduled what is other

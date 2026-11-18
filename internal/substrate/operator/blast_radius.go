@@ -79,12 +79,6 @@ type BlastRadiusEstimator interface {
 	EstimateBlastRadius(ctx context.Context, m BlastRadiusMutation) (BlastRadius, error)
 }
 
-// SetBlastRadiusEstimator wires the preview.
-func (s *Service) SetBlastRadiusEstimator(e BlastRadiusEstimator) { s.blastRadius = e }
-
-// HasBlastRadiusEstimator reports whether the preview can be served.
-func (s *Service) HasBlastRadiusEstimator() bool { return s.blastRadius != nil }
-
 func validMutation(kind string) bool {
 	switch kind {
 	case MutationTagMemory, MutationSetScope, MutationSetWriteTags, MutationSetToolGrant:

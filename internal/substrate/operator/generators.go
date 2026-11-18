@@ -86,9 +86,6 @@ type GeneratorTestResult struct {
 	Sample         string
 }
 
-// SetGeneratorRegistry wires the generator read surface. nil ⇒ Unimplemented.
-func (s *Service) SetGeneratorRegistry(g GeneratorRegistry) { s.generators = g }
-
 // ListGenerators reports configured generators with live breaker state.
 func (s *Service) ListGenerators(_ context.Context, _ *pb.ListGeneratorsOpRequest) (*pb.ListGeneratorsOpResponse, error) {
 	if s.generators == nil {

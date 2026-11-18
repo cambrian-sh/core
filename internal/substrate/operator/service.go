@@ -166,6 +166,9 @@ type Service struct {
 	contractVersion string
 	capabilities    []string
 	plugins         []PluginInfo // ADR-0089: plugin identity on the handshake
+
+	// unwired names the optional seams New was given nil (Unwired, ENG-1305).
+	unwired []string
 }
 
 // PluginInfo is one declared plugin as reported on the handshake (ADR-0089).
@@ -192,23 +195,6 @@ type PluginPanel struct {
 	Title      string
 	Capability string
 }
-
-// NewService wires the OperatorConsole over a Spool feed. The projection and
-// session lister are optional (set via SetSnapshotSources) — without them
-// Snapshot still returns a consistent as_of_seq with empty state.
-func NewService(feed *Spool) *Service {
-	return &Service{feed: feed, projection: NewProjection(), logins: newLoginLimiter()}
-}
-
-// SetIdentity wires the Authenticator backing Login, Logout and DescribeAuth
-// (ADR-0142 D1; ADR-0047 D13). Login is served only when it also implements
-// domain.PasswordLogin.
-func (s *Service) SetIdentity(idp domain.Authenticator) { s.idp = idp }
-
-// SetLoginObserver wires the hook failed (and successful) logins are reported
-// to — a receipt or decision-observation plane when the deployment has one
-// (ADR-0130 1f). Observation only: the limiter runs with or without it.
-func (s *Service) SetLoginObserver(o LoginObserver) { s.loginObs = o }
 
 // loginSource is the limiter key: the peer address the kernel observed on the
 // connection, host only (a port changes per connection and would make every
@@ -321,31 +307,6 @@ func (s *Service) observeLogin(a LoginAttempt) {
 		slog.Info("operator login", "user", a.Username, "source", a.Source)
 	}
 }
-
-// SetSnapshotSources wires the live-plan projection and the session lister used
-// by Snapshot. The projection must be the one fed by SubscribeProjection.
-func (s *Service) SetSnapshotSources(projection *Projection, sessions SessionLister) {
-	if projection != nil {
-		s.projection = projection
-	}
-	s.sessions = sessions
-}
-
-// SetHandshake configures the capability + version handshake reported by
-// Snapshot (ADR-0047 D14). The capability set reflects which surfaces this
-// kernel build supports; the UI hides the rest and warns on version skew.
-func (s *Service) SetHandshake(kernelVersion, contractVersion string, capabilities []string) {
-	s.kernelVersion = kernelVersion
-	s.contractVersion = contractVersion
-	s.capabilities = capabilities
-}
-
-// SetPlugins records which plugins this build declared, for the handshake
-// (ADR-0089). Every DECLARED plugin is reported, including one that failed
-// entitlement or has unmet dependencies: a console that cannot tell "this
-// deployment has no reactive engine" from "the reactive engine declined to
-// register" cannot explain a missing surface to the operator who paid for it.
-func (s *Service) SetPlugins(plugins []PluginInfo) { s.plugins = plugins }
 
 // Snapshot returns bounded live operational state stamped with a lower-bound
 // as_of_seq captured BEFORE any source read (ADR-0047 D6) — so an event landing

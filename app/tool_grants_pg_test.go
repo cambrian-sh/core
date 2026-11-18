@@ -11,6 +11,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/substrate/operator/operatortest"
 )
 
 func TestBuildToolGrants_NoPoolIsInMemory(t *testing.T) {
@@ -63,8 +64,9 @@ func bootGrantsKernel(t *testing.T, dsn string) *grantsKernel {
 	if err != nil {
 		t.Fatal(err)
 	}
-	op := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
-	op.SetCommandSources(audit, grants)
+	op := operatortest.New(t, nil, func(d *operator.Deps, _ *operator.Options) {
+		d.Audit, d.Grants = audit, grants
+	})
 	return &grantsKernel{pool: pool, grants: grants, exec: exec, op: op}
 }
 

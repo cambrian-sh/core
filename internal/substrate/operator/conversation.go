@@ -44,13 +44,6 @@ type ConversationOps interface {
 // principal does not own the target conversation. The service maps it to PermissionDenied.
 var ErrConversationForbidden = errors.New("conversation owned by another principal")
 
-// SetConversationOps wires the OSS chat lane adapter.
-func (s *Service) SetConversationOps(ops ConversationOps) { s.convOps = ops }
-
-// HasConversations reports whether the chat lane is wired, so app.go can advertise the
-// "chat" capability only when a turn can actually be served.
-func (s *Service) HasConversations() bool { return s.convOps != nil }
-
 func (s *Service) requireConvOps() error {
 	if s.convOps == nil {
 		return status.Error(codes.Unimplemented, "chat lane not configured (execution.chat_pool_size = 0)")

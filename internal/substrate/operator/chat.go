@@ -55,9 +55,6 @@ func (f SessionOpsFuncs) SetStatus(ctx context.Context, sessionID string, st dom
 	return f.SetStatusFn(ctx, sessionID, st, reason)
 }
 
-// SetSessionOps wires the chat-and-steer adapter.
-func (s *Service) SetSessionOps(ops SessionOps) { s.sessionOps = ops }
-
 // CreateSession creates a new session and returns its id. Audited; idempotent on
 // command_id (a retry returns deduped without creating a second session).
 func (s *Service) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.CreateSessionResponse, error) {

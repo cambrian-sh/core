@@ -20,15 +20,6 @@ import (
 // holding an RPC that could publish is one bug away from publishing, and the
 // cheapest way to guarantee it cannot is to not give it the power.
 
-// SetPipelineAuthor wires the premium authoring read surface. nil (OSS) ⇒ both
-// RPCs REFUSE by name.
-//
-// Refusing rather than answering empty, for the same reason as the dry run: an
-// empty graph is a true-looking answer to "show me this pipeline" on a build
-// that simply cannot, and a canvas would draw the empty graph rather than
-// explain itself.
-func (s *Service) SetPipelineAuthor(a domain.PipelineAuthor) { s.pipelineAuthor = a }
-
 // GetPipeline returns one authored revision, plus what the compiler says about
 // it right now.
 func (s *Service) GetPipeline(ctx context.Context, req *pb.GetPipelineOpRequest) (*pb.GetPipelineOpResponse, error) {
@@ -120,15 +111,6 @@ func refusalsToProto(in []domain.PipelineRefusal) []*pb.RefusalOp {
 
 // ── Editing (contract 0090) ─────────────────────────────────────────────────
 
-// SetPipelineWriter wires the premium draft-save surface. nil (OSS) ⇒
-// SavePipeline REFUSES by name.
-//
-// A separate setter from SetPipelineAuthor, matching the separate port. The read
-// surface's guarantee is that it cannot write, and a deployment can legitimately
-// have one without the other — a console that reads pipelines on a build with no
-// authoring is useful, and one that offers Save when nothing can store is not.
-func (s *Service) SetPipelineWriter(w domain.PipelineWriter) { s.pipelineWriter = w }
-
 // SavePipeline stores an edited graph as a new draft revision.
 func (s *Service) SavePipeline(ctx context.Context, req *pb.SavePipelineOpRequest) (*pb.SavePipelineOpResponse, error) {
 	if s.pipelineWriter == nil {
@@ -152,10 +134,6 @@ func (s *Service) SavePipeline(ctx context.Context, req *pb.SavePipelineOpReques
 }
 
 // ── Lifecycle (contract 0093) ───────────────────────────────────────────────
-
-// SetPipelineLifecycle wires the premium transition surface. nil (OSS) ⇒
-// TransitionPipeline REFUSES by name.
-func (s *Service) SetPipelineLifecycle(l domain.PipelineLifecycle) { s.pipelineLifecycle = l }
 
 // TransitionPipeline moves one revision along its lifecycle.
 func (s *Service) TransitionPipeline(ctx context.Context, req *pb.TransitionPipelineOpRequest) (*pb.TransitionPipelineOpResponse, error) {

@@ -115,16 +115,6 @@ type LinkRecord struct {
 	SupportingEvidenceIDs []string
 }
 
-// SetLinkWriter wires the identity-plane review path. nil ⇒ Unimplemented.
-func (s *Service) SetLinkWriter(w LinkWriter) { s.linkWriter = w }
-
-// HasLinkWriter reports whether this kernel can serve the review lane, so the
-// composition root advertises the `links` capability only when the RPCs behind
-// it lead somewhere. A console gates the whole review screen on that string —
-// without it, an operator would be shown a queue with buttons that answer
-// Unimplemented.
-func (s *Service) HasLinkWriter() bool { return s.linkWriter != nil }
-
 // linkOpTime renders an optional instant. 0 means UNBOUNDED (or "not retracted"),
 // which is a different claim from "the epoch" — the obsRow convention on the
 // query plane, for the same reason.

@@ -10,11 +10,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// SetPolicyAdmin wires the access-policy administration surface (ADR-0085). It is
-// nil in OSS — the RPCs then answer Unimplemented rather than pretending an
-// unscoped deployment has a policy to explain.
-func (s *Service) SetPolicyAdmin(a domain.PolicyAdmin) { s.policy = a }
-
 // ExplainAccess answers "why can / can't this principal reach this resource?"
 // without performing the access — the gpresult analogue (ADR-0085 D8).
 //

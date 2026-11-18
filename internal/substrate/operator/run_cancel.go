@@ -84,10 +84,6 @@ type PrincipalNames interface {
 	GetPrincipal(ctx context.Context, id string) (domain.Principal, error)
 }
 
-// SetPrincipalNames wires the registry WhoAmI reads display names from. Optional:
-// without it WhoAmI answers with an empty display_name.
-func (s *Service) SetPrincipalNames(r PrincipalNames) { s.principalNames = r }
-
 // WhoAmI answers who the caller's bearer resolved to (contract 0102; ADR-0142 D1,
 // T-20261106-operator-plane-has-no-whoami-an-oidc-signed-in). An OIDC-signed-in
 // console never calls Login, so before this it showed the person from ID-token

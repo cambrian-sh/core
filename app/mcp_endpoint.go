@@ -71,7 +71,7 @@ func startMCPEndpoint(cfg *config.Config, surface domain.PublishedToolSurface,
 		Principals: principals,
 		// D12: the server-instructions text every client receives at initialize.
 		Instructions: mcpserve.CoreInstructions,
-		// The same constant as the operator handshake (see SetHandshake), so the
+		// The same constant as the operator handshake (see Deps.KernelVersion in composeOperator), so the
 		// two identity surfaces cannot report different kernels.
 		ServerVersion: KernelVersion,
 	})
