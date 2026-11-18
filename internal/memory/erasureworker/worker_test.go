@@ -20,6 +20,7 @@ type fakeOutbox struct {
 	shared    map[string]bool
 	done      map[int64]bool
 	failed    map[int64]string
+	outcome   map[int64]string
 	completed int
 	prunedAt  time.Time
 	erased    map[string]domain.ErasedRecords
@@ -67,6 +68,19 @@ func (f *fakeOutbox) MarkStepFailed(_ context.Context, id int64, class string) e
 		}
 	}
 	return nil
+}
+func (f *fakeOutbox) MarkStepNotErasable(_ context.Context, id int64, outcome string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.done[id] {
+		return false, nil
+	}
+	f.done[id] = true
+	if f.outcome == nil {
+		f.outcome = map[int64]string{}
+	}
+	f.outcome[id] = outcome
+	return true, nil
 }
 func (f *fakeOutbox) CompleteRequests(context.Context) (int, error) {
 	f.mu.Lock()

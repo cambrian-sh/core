@@ -113,6 +113,19 @@ type ErasureTailStep interface {
 	RunErasureStep(ctx context.Context, erased ErasedRecords) (removed int, err error)
 }
 
+// ErrErasureNotErasableExternal is returned (possibly wrapped) by an ErasureTailStep
+// whose records live in an external service the kernel cannot delete from — no
+// delete API configured, or the service has none (ADR-0137 D7: Langfuse traces). It is
+// a terminal outcome, not a failure: the worker marks the step processed with
+// ErasureOutcomeNotErasableExternal instead of retrying it, and the receipt lists the
+// step in NotErasableExternal so the operator knows what was left behind.
+var ErrErasureNotErasableExternal = errors.New("erasure: records held by an external service cannot be erased from here")
+
+// ErasureOutcomeNotErasableExternal is the content-free class an outbox row carries
+// (memory_erasure_outbox.last_error, processed) when its step ended with
+// ErrErasureNotErasableExternal.
+const ErasureOutcomeNotErasableExternal = "not_erasable_external"
+
 // ErasureObserver receives every executed erasure's content-free receipt after its
 // transaction committed — the seam of the premium signed ADR-0103 erasure receipt
 // (ADR-0137 D8, Q7). Not called for a replayed request (nothing was erased by it).

@@ -110,6 +110,10 @@ type ErasureOutbox interface {
 	MarkStepDone(ctx context.Context, id int64) (bool, error)
 	// MarkStepFailed records one failed attempt with an error CLASS (never content).
 	MarkStepFailed(ctx context.Context, id int64, errClass string) error
+	// MarkStepNotErasable marks a row processed with a terminal content-free outcome
+	// class (ErasureOutcomeNotErasableExternal): nothing more can be done for it, so it
+	// is not retried, and the receipt reports it (false when already processed).
+	MarkStepNotErasable(ctx context.Context, id int64, outcome string) (bool, error)
 	// CompleteRequests marks every pending_async request whose steps are all processed
 	// complete, returning how many changed.
 	CompleteRequests(ctx context.Context) (int, error)

@@ -3,6 +3,7 @@ package erasureworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -51,5 +52,26 @@ func TestRunOnce_PluginTailSteps(t *testing.T) {
 	}
 	if _, claimed := w.tails[domain.ErasureStepCASDelete]; claimed {
 		t.Fatal("a plugin claimed a core step name")
+	}
+}
+
+// ENG-1968 (ADR-0137 D7): a tail step whose records live in an external service the
+// kernel cannot delete from (ErrErasureNotErasableExternal, wrapped or not) is marked
+// processed with the not_erasable_external outcome — once, never retried, never a
+// failure.
+func TestRunOnce_NotErasableExternalIsTerminal(t *testing.T) {
+	ob := newOutbox(domain.ErasureOutboxRow{ID: 1, RequestID: "erase:a", Step: "langfuse_traces", Ref: "erase:a"})
+	ext := &recordingTail{name: "langfuse_traces", err: fmt.Errorf("langfuse: no delete API: %w", domain.ErrErasureNotErasableExternal)}
+	w := New(ob, &fakeCAS{}, Config{Poll: time.Hour, MaxAttempts: 3, TailSteps: []domain.ErasureTailStep{ext}}, nil)
+	st := w.RunOnce(context.Background())
+	w.RunOnce(context.Background())
+	if st.NotErasable != 1 || st.Failed != 0 || st.Done != 0 {
+		t.Fatalf("stats = %+v, want one not-erasable step, no failure", st)
+	}
+	if !ob.done[1] || ob.outcome[1] != domain.ErasureOutcomeNotErasableExternal || ob.failed[1] != "" {
+		t.Fatalf("row: done=%v outcome=%q failed=%q", ob.done[1], ob.outcome[1], ob.failed[1])
+	}
+	if len(ext.got) != 1 {
+		t.Fatalf("step ran %d times, want once (terminal, not retried)", len(ext.got))
 	}
 }

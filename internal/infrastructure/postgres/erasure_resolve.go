@@ -294,6 +294,18 @@ func (s *PgErasureStore) MarkStepFailed(ctx context.Context, id int64, errClass 
 	return nil
 }
 
+// MarkStepNotErasable implements domain.ErasureOutbox (exactly once): the row is
+// processed — nothing more can be done — and keeps the outcome class for the receipt.
+func (s *PgErasureStore) MarkStepNotErasable(ctx context.Context, id int64, outcome string) (bool, error) {
+	tag, err := s.l.k.pool.Exec(ctx, `UPDATE memory_erasure_outbox
+		SET processed_at = now(), attempts = attempts + 1, last_error = $2
+		WHERE id = $1 AND processed_at IS NULL`, id, outcome)
+	if err != nil {
+		return false, mapError("MarkStepNotErasable", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // CompleteRequests implements domain.ErasureOutbox.
 func (s *PgErasureStore) CompleteRequests(ctx context.Context) (int, error) {
 	tag, err := s.l.k.pool.Exec(ctx, `UPDATE memory_erasures e SET status = $1, completed_at = now()

@@ -827,6 +827,17 @@ func receiptFrom(ctx context.Context, q pgxQuerier, requestID string) (domain.Er
 	if err := json.Unmarshal(counts, &rec.Counts); err != nil {
 		return domain.ErasureReceipt{}, false, fmt.Errorf("receipt %s: counts: %w", requestID, err)
 	}
+	// Steps that ended because their records live in an external service the kernel
+	// cannot delete from (ADR-0137 D7): processed, with the terminal outcome class.
+	notErasable, err := collectIDs(ctx, q, `SELECT DISTINCT step FROM memory_erasure_outbox
+		WHERE request_id = $1 AND processed_at IS NOT NULL AND last_error = $2
+		ORDER BY step`, requestID, domain.ErasureOutcomeNotErasableExternal)
+	if err != nil {
+		return domain.ErasureReceipt{}, false, mapError("Receipt", err)
+	}
+	if len(notErasable) > 0 {
+		rec.NotErasableExternal = notErasable
+	}
 	return rec, true, nil
 }
 

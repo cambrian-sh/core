@@ -285,6 +285,11 @@ type ErasureReceipt struct {
 	Targets int
 	// PendingSteps is the number of outbox steps written for the async tail.
 	PendingSteps int
+	// NotErasableExternal names the async steps (sorted) that ended without erasing
+	// because their records live in an external service the kernel cannot delete from
+	// (ErrErasureNotErasableExternal, ADR-0137 D7). Read from the outbox; empty until
+	// such a step ran.
+	NotErasableExternal []string
 	// Replayed is true when this receipt was returned for a retry of a request that had
 	// already been executed: nothing was deleted by this call.
 	Replayed bool

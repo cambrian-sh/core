@@ -10,6 +10,7 @@ package erasureworker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -92,6 +93,9 @@ func New(outbox domain.ErasureOutbox, cas domain.ContentEraser, cfg Config, logg
 // Stats is what one pass did.
 type Stats struct {
 	Done, Shared, Failed, Completed, Pruned int
+	// NotErasable counts steps that ended with ErrErasureNotErasableExternal: marked
+	// processed with that outcome, never retried (ADR-0137 D7).
+	NotErasable int
 }
 
 // RunOnce drains one batch, completes requests whose steps are all done and prunes
@@ -112,7 +116,18 @@ func (w *Worker) RunOnce(ctx context.Context) Stats {
 		// The step's effect has happened (or definitively failed); record it even when
 		// Stop cancels the pass meanwhile, keeping ctx's values (§2.7).
 		mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		if errClass != "" {
+		if errClass == domain.ErasureOutcomeNotErasableExternal {
+			// Terminal, not a failure: the records live in an external service the
+			// kernel cannot delete from. Retrying cannot change that; the receipt
+			// reports the step instead.
+			if _, err := w.outbox.MarkStepNotErasable(mctx, r.ID, errClass); err != nil {
+				w.logger.WarnContext(ctx, "erasure worker: recording a not-erasable step failed", "id", r.ID, "err", err)
+			} else {
+				st.NotErasable++
+			}
+			w.logger.WarnContext(ctx, "erasure worker: step left records in an external service",
+				"request_id", r.RequestID, "step", r.Step, "outcome", errClass)
+		} else if errClass != "" {
 			st.Failed++
 			if err := w.outbox.MarkStepFailed(mctx, r.ID, errClass); err != nil {
 				w.logger.WarnContext(ctx, "erasure worker: recording a failed step failed", "id", r.ID, "err", err)
@@ -143,16 +158,17 @@ func (w *Worker) RunOnce(ctx context.Context) Stats {
 			st.Pruned = n
 		}
 	}
-	if st.Done+st.Shared+st.Failed+st.Completed+st.Pruned > 0 {
+	if st.Done+st.Shared+st.Failed+st.NotErasable+st.Completed+st.Pruned > 0 {
 		w.logger.InfoContext(ctx, "erasure worker: pass",
-			"done", st.Done, "kept_shared", st.Shared, "failed", st.Failed,
+			"done", st.Done, "kept_shared", st.Shared, "failed", st.Failed, "not_erasable", st.NotErasable,
 			"requests_completed", st.Completed, "tombstones_pruned", st.Pruned)
 	}
 	return st
 }
 
 // run executes one step. shared reports a blob kept because a surviving row still
-// references it; errClass is "" on success, else a content-free error class.
+// references it; errClass is "" on success, ErasureOutcomeNotErasableExternal for a
+// terminal external outcome, else a content-free error class.
 func (w *Worker) run(ctx context.Context, r domain.ErasureOutboxRow) (shared bool, errClass string) {
 	switch r.Step {
 	case domain.ErasureStepVaultDelete:
@@ -202,6 +218,9 @@ func (w *Worker) run(ctx context.Context, r domain.ErasureOutboxRow) (shared boo
 			return false, "erased_records_failed"
 		}
 		n, err := t.RunErasureStep(ctx, erased)
+		if errors.Is(err, domain.ErrErasureNotErasableExternal) {
+			return false, domain.ErasureOutcomeNotErasableExternal
+		}
 		if err != nil {
 			return false, "tail_step_failed"
 		}
