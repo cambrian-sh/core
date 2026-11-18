@@ -64,8 +64,43 @@ func TestSpendMeter_AnthropicUsageCountsCachedInput(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	got := meter.Session("ses-a")
-	if got.InputTokens != 960 || got.OutputTokens != 20 || got.CacheReadTokens != 900 {
-		t.Fatalf("anthropic spend = %+v, want input 960 (50+900+10), output 20, cache 900", got)
+	if got.InputTokens != 960 || got.OutputTokens != 20 || got.CacheReadTokens != 900 || got.CacheWriteTokens != 10 {
+		t.Fatalf("anthropic spend = %+v, want input 960 (50+900+10), output 20, cache read 900, cache write 10", got)
+	}
+}
+
+// ENG-126: cache writes are booked beside cache reads on every ledger view —
+// the session total, a per-request tally, the delta between two snapshots and a
+// settled tab — so a cached prefix shows its write turn and its read turns.
+func TestSpendMeter_CacheWritesAreBookedEverywhere(t *testing.T) {
+	t.Parallel()
+	meter := NewSpendMeter(0, nil, nil)
+	_, tally := domain.WithLLMUsageTally(context.Background())
+	write := TokenUsage{PromptTokens: 1040, CompletionTokens: 5, TotalTokens: 1045, CacheWriteTokens: 1000}
+	read := TokenUsage{PromptTokens: 1040, CompletionTokens: 5, TotalTokens: 1045, CacheReadTokens: 1000}
+	meter.RecordSessionTally("ses-w", tally, "agent_step", "claude", write)
+	base := meter.Session("ses-w")
+	meter.RecordSessionTally("ses-w", tally, "agent_step", "claude", read)
+
+	got := meter.Session("ses-w")
+	if got.CacheWriteTokens != 1000 || got.CacheReadTokens != 1000 || got.InputTokens != 2080 {
+		t.Fatalf("session = %+v, want 1000 written, 1000 read, input 2080", got)
+	}
+	if d := got.Sub(base); d.CacheWriteTokens != 0 || d.CacheReadTokens != 1000 || d.Calls != 1 {
+		t.Fatalf("delta = %+v, want the read turn only", d)
+	}
+	if tot := tally.Total(); tot.CacheWriteTokens != 1000 || tot.CacheReadTokens != 1000 || tot.Calls != 2 {
+		t.Fatalf("tally = %+v", tot)
+	}
+	if sum := write.Add(read); sum.CacheWriteTokens != 1000 || sum.CacheReadTokens != 1000 {
+		t.Fatalf("TokenUsage.Add = %+v", sum)
+	}
+
+	tabCtx, tab := WithSpendTab(context.Background())
+	meter.Record(tabCtx, "router", "claude", write)
+	meter.SettleTab(tab, "ses-w")
+	if got := meter.Session("ses-w"); got.CacheWriteTokens != 2000 {
+		t.Fatalf("settled tab lost its cache write: %+v", got)
 	}
 }
 

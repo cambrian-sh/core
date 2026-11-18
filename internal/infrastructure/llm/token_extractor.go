@@ -15,6 +15,12 @@ type TokenUsage struct {
 	// CacheReadTokens is the part of PromptTokens the provider served from its
 	// prompt cache. Already included in PromptTokens (ADR-0131 D2).
 	CacheReadTokens int
+	// CacheWriteTokens is the part of PromptTokens the provider wrote to its
+	// prompt cache on this call (Anthropic cache_creation_input_tokens; billed
+	// above the plain input price). Already included in PromptTokens. Zero when
+	// the provider does not report writes (OpenAI-compatible endpoints), so a
+	// zero is "none reported", not "none written" (ENG-126).
+	CacheWriteTokens int
 	// Estimated is true when the counts come from the len/4 fallback because the
 	// provider returned no usage (ADR-0131 D2: real usage first, estimate only as
 	// a flagged fallback). A sum is Estimated when any of its parts is.
@@ -38,6 +44,7 @@ func (u TokenUsage) Add(v TokenUsage) TokenUsage {
 		CompletionTokens: u.CompletionTokens + v.CompletionTokens,
 		TotalTokens:      u.TotalTokens + v.TotalTokens,
 		CacheReadTokens:  u.CacheReadTokens + v.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens + v.CacheWriteTokens,
 		Estimated:        u.Estimated || v.Estimated,
 		BudgetOverrun:    u.BudgetOverrun || v.BudgetOverrun,
 	}

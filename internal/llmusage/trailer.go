@@ -27,7 +27,7 @@ import (
 // Format, the same "key=value,..." grammar as the ingest-timing trailer, counts
 // suffixed '#':
 //
-//	calls#=3,input#=1200,output#=310,cache_read#=0,estimated#=0,cost_usd=0.000412,
+//	calls#=3,input#=1200,output#=310,cache_read#=0,cache_write#=0,estimated#=0,cost_usd=0.000412,
 //	facts.calls#=2,facts.input#=...,agent_step:retrieval_agent.calls#=1,...,
 //	generator:haiku-local.calls#=3
 //
@@ -84,7 +84,8 @@ func writeLLMUsage(b *strings.Builder, prefix string, u domain.LLMUsage) {
 		v int
 	}{
 		{"calls", u.Calls}, {"input", u.InputTokens}, {"output", u.OutputTokens},
-		{"cache_read", u.CacheReadTokens}, {"estimated", u.EstimatedCalls},
+		{"cache_read", u.CacheReadTokens}, {"cache_write", u.CacheWriteTokens},
+		{"estimated", u.EstimatedCalls},
 	} {
 		if b.Len() > 0 {
 			b.WriteByte(',')

@@ -570,6 +570,7 @@ func tokenUsageOf(u domain.GenerateUsage) TokenUsage {
 		CompletionTokens: u.Output,
 		TotalTokens:      u.Input + u.Output,
 		CacheReadTokens:  u.CacheRead,
+		CacheWriteTokens: u.CacheWrite,
 		Estimated:        u.Estimated,
 	}
 }

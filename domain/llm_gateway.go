@@ -61,8 +61,11 @@ type BudgetLeaseState struct {
 	// len/4 fallback.
 	PromptTokensUsed    int
 	CacheReadTokensUsed int
-	UsageEstimated      bool
-	ExpiresAt           time.Time // keepalive TTL — refreshed on each chunk
+	// CacheWriteTokensUsed is the part of PromptTokensUsed written to the
+	// provider's prompt cache (ENG-126; zero when the provider reports none).
+	CacheWriteTokensUsed int
+	UsageEstimated       bool
+	ExpiresAt            time.Time // keepalive TTL — refreshed on each chunk
 	// LastActivityAt is when a model call (or tracked tool/recall call) under the
 	// lease last started, streamed a chunk or returned.
 	LastActivityAt time.Time

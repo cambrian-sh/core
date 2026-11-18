@@ -33,8 +33,12 @@ const (
 	MetaLLMInputTokens     = "_llm_input_tokens"
 	MetaLLMOutputTokens    = "_llm_output_tokens"
 	MetaLLMCacheReadTokens = "_llm_cache_read_tokens"
-	MetaLLMCostUSD         = "_llm_cost_usd"
-	MetaLLMEstimatedCalls  = "_llm_estimated_calls"
+	// MetaLLMCacheWriteTokens is the input written to the provider's prompt
+	// cache (ENG-126). With _llm_cache_read_tokens it shows whether the cached
+	// system prefix paid off: writes on the first call, reads after.
+	MetaLLMCacheWriteTokens = "_llm_cache_write_tokens"
+	MetaLLMCostUSD          = "_llm_cost_usd"
+	MetaLLMEstimatedCalls   = "_llm_estimated_calls"
 	// MetaLLMModels names the generators that ANSWERED this Execute's calls and
 	// how many each answered, "id=n,id=n" sorted by id (ENG-453, owner decision
 	// 2026-11-14: every result records the answering model). The id is the one the
@@ -68,6 +72,7 @@ func (s *Server) stampSpend(meta map[string]string, sessionID domain.SessionID, 
 	meta[MetaLLMInputTokens] = strconv.Itoa(d.InputTokens)
 	meta[MetaLLMOutputTokens] = strconv.Itoa(d.OutputTokens)
 	meta[MetaLLMCacheReadTokens] = strconv.Itoa(d.CacheReadTokens)
+	meta[MetaLLMCacheWriteTokens] = strconv.Itoa(d.CacheWriteTokens)
 	meta[MetaLLMCostUSD] = strconv.FormatFloat(d.CostUSD, 'f', 6, 64)
 	meta[MetaLLMEstimatedCalls] = strconv.Itoa(d.EstimatedCalls)
 	if len(d.Models) > 0 {

@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -197,7 +198,12 @@ func (r *InMemoryToolRegistry) SchemasFor(grants []ToolGrant) []SystemTool {
 	return out
 }
 
-// All returns every registered tool (unordered).
+// All returns every registered tool, sorted by name. The order is part of the
+// contract, as for InMemorySkillRegistry.All: an unrestricted agent's full menu
+// (ToolExecutor.AvailableTools with tools_unrestricted) becomes its native tool
+// definitions, which lead the provider's cached prompt prefix. Map-iteration
+// order changed them on every ListTools call, so each turn of a conversation
+// missed the prompt cache (ENG-126).
 func (r *InMemoryToolRegistry) All() []SystemTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -205,6 +211,7 @@ func (r *InMemoryToolRegistry) All() []SystemTool {
 	for _, t := range r.tools {
 		out = append(out, t)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

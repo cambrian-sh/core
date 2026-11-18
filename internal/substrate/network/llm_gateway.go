@@ -341,6 +341,7 @@ func leaseUsage(ss *domain.BudgetLeaseState) llm.TokenUsage {
 		CompletionTokens: ss.ActualTokensUsed - ss.PromptTokensUsed,
 		TotalTokens:      ss.ActualTokensUsed,
 		CacheReadTokens:  ss.CacheReadTokensUsed,
+		CacheWriteTokens: ss.CacheWriteTokensUsed,
 		Estimated:        ss.UsageEstimated,
 		BudgetOverrun:    ss.BudgetOverrun,
 	}
@@ -353,6 +354,7 @@ func addLeaseUsageLocked(ss *domain.BudgetLeaseState, u llm.TokenUsage) {
 	ss.ActualTokensUsed += u.TotalTokens
 	ss.PromptTokensUsed += u.PromptTokens
 	ss.CacheReadTokensUsed += u.CacheReadTokens
+	ss.CacheWriteTokensUsed += u.CacheWriteTokens
 	if u.Estimated {
 		ss.UsageEstimated = true
 	}

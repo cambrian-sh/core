@@ -43,19 +43,23 @@ type LLMUsage struct {
 	InputTokens     int
 	OutputTokens    int
 	CacheReadTokens int
-	EstimatedCalls  int
-	CostUSD         float64
+	// CacheWriteTokens is the input written to the provider's prompt cache
+	// (part of InputTokens; zero when the provider reports no writes).
+	CacheWriteTokens int
+	EstimatedCalls   int
+	CostUSD          float64
 }
 
 // Add returns u + o, field-wise.
 func (u LLMUsage) Add(o LLMUsage) LLMUsage {
 	return LLMUsage{
-		Calls:           u.Calls + o.Calls,
-		InputTokens:     u.InputTokens + o.InputTokens,
-		OutputTokens:    u.OutputTokens + o.OutputTokens,
-		CacheReadTokens: u.CacheReadTokens + o.CacheReadTokens,
-		EstimatedCalls:  u.EstimatedCalls + o.EstimatedCalls,
-		CostUSD:         u.CostUSD + o.CostUSD,
+		Calls:            u.Calls + o.Calls,
+		InputTokens:      u.InputTokens + o.InputTokens,
+		OutputTokens:     u.OutputTokens + o.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens + o.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens + o.CacheWriteTokens,
+		EstimatedCalls:   u.EstimatedCalls + o.EstimatedCalls,
+		CostUSD:          u.CostUSD + o.CostUSD,
 	}
 }
 

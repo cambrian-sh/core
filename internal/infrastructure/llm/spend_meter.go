@@ -86,7 +86,10 @@ type SessionSpend struct {
 	InputTokens     int
 	OutputTokens    int
 	CacheReadTokens int
-	CostUSD         float64
+	// CacheWriteTokens is the input the provider wrote to its prompt cache
+	// (part of InputTokens; only providers that report writes fill it, ENG-126).
+	CacheWriteTokens int
+	CostUSD          float64
 	// EstimatedCalls counts the calls whose usage came from the len/4 fallback
 	// (the provider reported none). Non-zero means the totals are partly an
 	// estimate (ADR-0131 D2).
@@ -121,14 +124,15 @@ func (s SessionSpend) TotalTokens() int { return s.InputTokens + s.OutputTokens 
 // Exhausted is s's own flag.
 func (s SessionSpend) Sub(base SessionSpend) SessionSpend {
 	return SessionSpend{
-		Calls:           s.Calls - base.Calls,
-		InputTokens:     s.InputTokens - base.InputTokens,
-		OutputTokens:    s.OutputTokens - base.OutputTokens,
-		CacheReadTokens: s.CacheReadTokens - base.CacheReadTokens,
-		CostUSD:         s.CostUSD - base.CostUSD,
-		EstimatedCalls:  s.EstimatedCalls - base.EstimatedCalls,
-		Exhausted:       s.Exhausted,
-		Models:          subModels(s.Models, base.Models),
+		Calls:            s.Calls - base.Calls,
+		InputTokens:      s.InputTokens - base.InputTokens,
+		OutputTokens:     s.OutputTokens - base.OutputTokens,
+		CacheReadTokens:  s.CacheReadTokens - base.CacheReadTokens,
+		CacheWriteTokens: s.CacheWriteTokens - base.CacheWriteTokens,
+		CostUSD:          s.CostUSD - base.CostUSD,
+		EstimatedCalls:   s.EstimatedCalls - base.EstimatedCalls,
+		Exhausted:        s.Exhausted,
+		Models:           subModels(s.Models, base.Models),
 	}
 }
 
@@ -316,7 +320,7 @@ func (m *SpendMeter) RecordSessionTally(sid domain.SessionID, tally *domain.LLMU
 	}
 	m.log.Debug("llm spend recorded", "session", bucket, "purpose", purpose, "generator", generatorID,
 		"input", u.PromptTokens, "output", u.CompletionTokens, "cache_read", u.CacheReadTokens,
-		"cost_usd", cost, "estimated", u.Estimated)
+		"cache_write", u.CacheWriteTokens, "cost_usd", cost, "estimated", u.Estimated)
 }
 
 // addToTally books one call on a per-request tally (nil-safe).
@@ -325,7 +329,7 @@ func addToTally(t *domain.LLMUsageTally, purpose, generatorID string, u TokenUsa
 		return
 	}
 	one := domain.LLMUsage{Calls: 1, InputTokens: u.PromptTokens, OutputTokens: u.CompletionTokens,
-		CacheReadTokens: u.CacheReadTokens, CostUSD: cost}
+		CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens, CostUSD: cost}
 	if u.Estimated {
 		one.EstimatedCalls = 1
 	}
@@ -374,7 +378,7 @@ func (m *SpendMeter) ReportNoSession() SessionSpend {
 	}
 	m.log.Info("llm spend outside any session", "bucket", NoSessionBucket,
 		"calls", d.Calls, "input", d.InputTokens, "output", d.OutputTokens,
-		"cache_read", d.CacheReadTokens, "cost_usd", d.CostUSD,
+		"cache_read", d.CacheReadTokens, "cache_write", d.CacheWriteTokens, "cost_usd", d.CostUSD,
 		"estimated_calls", d.EstimatedCalls, "adr", "ADR-0131")
 	return d
 }
@@ -418,6 +422,7 @@ func (s *SessionSpend) add(generatorID string, u TokenUsage, cost float64) {
 	s.InputTokens += u.PromptTokens
 	s.OutputTokens += u.CompletionTokens
 	s.CacheReadTokens += u.CacheReadTokens
+	s.CacheWriteTokens += u.CacheWriteTokens
 	s.CostUSD += cost
 	if u.Estimated {
 		s.EstimatedCalls++
@@ -429,6 +434,7 @@ func (s *SessionSpend) merge(o SessionSpend) {
 	s.InputTokens += o.InputTokens
 	s.OutputTokens += o.OutputTokens
 	s.CacheReadTokens += o.CacheReadTokens
+	s.CacheWriteTokens += o.CacheWriteTokens
 	s.CostUSD += o.CostUSD
 	s.EstimatedCalls += o.EstimatedCalls
 	s.Exhausted = s.Exhausted || o.Exhausted
