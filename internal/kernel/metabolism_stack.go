@@ -14,6 +14,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/metabolism/registration"
 	"github.com/cambrian-sh/core/internal/metabolism/yield"
+	"github.com/cambrian-sh/core/internal/sandbox"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	supgk "github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	"github.com/cambrian-sh/core/internal/supervision/verify"
@@ -55,6 +56,9 @@ type MetabolismStack struct {
 	ProfileSeeder      *registration.ProfileSeeder
 	VerificationWorker *verify.VerificationWorker
 	VerifierPool       *verify.VerifierPool
+	// agentSandbox owns the agent work root while the kernel runs (ENG-2088);
+	// nil when the agent sandbox is off. Shutdown gives the root up.
+	agentSandbox *agentmgr.AgentSandbox
 }
 
 // NewMetabolismStack wires the full agent lifecycle.
@@ -105,10 +109,11 @@ func NewMetabolismStack(
 	// First-party unchanged; a third-party agent is refused while its controls are
 	// missing on the agent launch path, unless on_unavailable is degrade.
 	agentSandbox := cfg.Execution.Agents.Sandbox.ThirdParty
+	sandboxed := agentSandboxFromConfig(cfg)
 	manager.SetAgentContainment(agentmgr.AgentContainment{
 		ThirdPartyDegrade:  !agentSandbox.Refuses(),
 		ThirdPartyMemoryMB: agentSandbox.Memory(),
-		Sandbox:            agentSandboxFromConfig(cfg),
+		Sandbox:            sandboxed,
 	})
 	slog.Info("ADR-0139 D8: agent containment by trust tier",
 		"third_party_on_unavailable", map[bool]string{true: "refuse", false: "degrade"}[agentSandbox.Refuses()],
@@ -211,6 +216,7 @@ func NewMetabolismStack(
 		ProfileSeeder:      seeder,
 		VerificationWorker: vWorker,
 		VerifierPool:       vPool,
+		agentSandbox:       sandboxed,
 	}
 }
 
@@ -236,6 +242,9 @@ func (s *MetabolismStack) Shutdown(ctx context.Context) {
 	if err := s.Manager.KillAllAgents(ctx); err != nil {
 		slog.Warn("MetabolismStack: agent cleanup failed", "err", err)
 	}
+	// ENG-2088: give the agent work root up; an instance whose cleanup has not
+	// run yet keeps its claim, and the next boot sweeps it.
+	s.agentSandbox.ReleaseWorkRoot()
 	slog.Info("🔥 MetabolismStack: shutdown complete")
 }
 
@@ -300,5 +309,35 @@ func agentSandboxFromConfig(cfg *config.Config) *agentmgr.AgentSandbox {
 		"network", sb.NetworkOrDefault(), "kernel_only_tiers", s.KernelOnlyTiers(),
 		// ADR-0157 S7: writable for first-party and system agents, read-only for third-party.
 		"model_cache", cfg.Execution.Agents.ModelCache)
+	ownAgentWorkRoot(s, cfg)
 	return s
+}
+
+// ownAgentWorkRoot makes this kernel an owner of the agent work root and
+// sweeps the instance directories no live kernel owns (ENG-2088): the scratch
+// and socket directories of instances that died with a killed or crashed
+// kernel, uncollected out/ files included (ADR-0157 D5.1: lost, never
+// leaked). It runs at boot, before the instance manager can spawn anything.
+// The MCP sandbox's work root is never swept. A failure is logged and the
+// kernel boots on: launches then claim nothing, so another kernel's sweep of a
+// shared root could take this kernel's directories — the log says so.
+func ownAgentWorkRoot(s *agentmgr.AgentSandbox, cfg *config.Config) {
+	mcpRoot := cfg.MCP.Sandbox.WorkRoot
+	if mcpRoot == "" {
+		mcpRoot = sandbox.DefaultPolicy().WorkRoot
+	}
+	rep, err := s.OwnWorkRoot(mcpRoot)
+	if err != nil {
+		slog.Error("ENG-2088: agent work root not owned; leftover instance directories were not swept, and this kernel's are not protected from another kernel's sweep of a shared work root",
+			"work_root", s.Policy().WorkRoot, "err", err)
+		return
+	}
+	if len(rep.Removed) > 0 || len(rep.Failed) > 0 {
+		slog.Warn("ENG-2088: swept agent instance directories no live kernel owns (a killed or crashed kernel's; their out/ files were never collected and are discarded)",
+			"work_root", s.Policy().WorkRoot, "removed", len(rep.Removed), "out_files_discarded", rep.OutFiles,
+			"dead_owners", rep.DeadOwners, "live_owners", rep.LiveOwners, "failed", rep.Failed, "skipped", rep.Skipped)
+		return
+	}
+	slog.Info("ENG-2088: agent work root owned; no orphaned instance directories",
+		"work_root", s.Policy().WorkRoot, "dead_owners", rep.DeadOwners, "live_owners", rep.LiveOwners, "skipped", rep.Skipped)
 }

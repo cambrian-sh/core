@@ -52,6 +52,12 @@ func TestMain(m *testing.M) {
 		runProbeAgent()
 		return
 	}
+	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "wrkernel" {
+		// ENG-2088 e2e: a "kernel" that owns a work root and runs one
+		// sandboxed agent (agent_workroot_test.go).
+		runWorkRootKernel()
+		return
+	}
 	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "token" {
 		// ADR-0157 S3: an agent that reports how its credential arrived
 		// (instance_token_test.go).

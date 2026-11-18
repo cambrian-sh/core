@@ -49,6 +49,9 @@ type probeReport struct {
 	Cwd     string            `json:"cwd"`
 	// Dial: host:port → "ok" | "denied: …" for AGENTMGR_PROBE_DIAL (probeDials).
 	Dial map[string]string `json:"dial,omitempty"`
+	// Pid is the probe's process id (the ENG-2088 e2e reaps an agent whose
+	// kernel it killed).
+	Pid int `json:"pid,omitempty"`
 }
 
 // runProbeAgent is the probe agent (TestMain, AGENTMGR_CHAOS_HELPER=probe).
@@ -59,7 +62,7 @@ func runProbeAgent() {
 			sock = os.Args[i+1]
 		}
 	}
-	rep := probeReport{Read: map[string]string{}, Write: map[string]string{}}
+	rep := probeReport{Read: map[string]string{}, Write: map[string]string{}, Pid: os.Getpid()}
 	for _, p := range filepath.SplitList(os.Getenv("AGENTMGR_PROBE_READ")) {
 		if _, err := os.ReadFile(p); err == nil {
 			rep.Read[p] = "ok"

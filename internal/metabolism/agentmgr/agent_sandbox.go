@@ -12,6 +12,7 @@ import (
 	goruntime "runtime"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/procenv"
@@ -49,6 +50,11 @@ type AgentSandbox struct {
 	kernelState  []string
 	runtimeRead  []string
 	modelCache   string
+
+	// owner is this kernel's claim on the work root (agent_workroot.go,
+	// ENG-2088): set by OwnWorkRoot at boot; nil ⇒ launches claim nothing.
+	ownerMu sync.Mutex
+	owner   *workRootOwner
 }
 
 // AgentSandboxOptions is what NewAgentSandbox needs from config.
@@ -507,7 +513,20 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 		return nil, nil, nil, nil, err
 	}
 	sockDir := spec.Agent.SocketDir
+	// ENG-2088: claim the instance's scratch and socket directory BEFORE they
+	// exist, so a second kernel's boot sweep of a shared work root never takes
+	// them; the claim goes once they are removed (removeDirs).
+	owner := im.containment.Sandbox.workRootOwner()
+	scratch := sandbox.WorkdirFor(spec.Policy, spec)
+	if err := owner.claim(scratch, sockDir); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("agent %s: work root: %w", def.ID, err)
+	}
+	removeSockDir := func() {
+		_ = os.RemoveAll(sockDir)
+		owner.release(sockDir)
+	}
 	if err := mkdirPrivate(spec.Policy.WorkRoot, sockDir); err != nil {
+		owner.release(scratch, sockDir)
 		return nil, nil, nil, nil, fmt.Errorf("agent %s: socket directory: %w", def.ID, err)
 	}
 	// ADR-0157 S2: a kernel-only instance has no network; the kernel serves its
@@ -517,12 +536,14 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	var kernelSock io.Closer
 	if sb := im.containment.Sandbox; useKernelSock {
 		if im.kernelSocket == nil {
-			_ = os.RemoveAll(sockDir)
+			removeSockDir()
+			owner.release(scratch)
 			return nil, nil, nil, nil, fmt.Errorf("agent %s (%s) reaches the kernel only through its unix socket (a kernel-only network, ADR-0157 D3, or an AppContainer without loopback, S5) but the kernel has no agent socket to give it; not started",
 				def.ID, agentTrustTier(def))
 		}
 		if kernelSock, err = im.kernelSocket(sb.kernelSocketPath(inst.ID)); err != nil {
-			_ = os.RemoveAll(sockDir)
+			removeSockDir()
+			owner.release(scratch)
 			return nil, nil, nil, nil, fmt.Errorf("agent %s: kernel socket: %w", def.ID, err)
 		}
 	}
@@ -545,7 +566,10 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 	im.reportContainment(ctx, def, rep, err)
 	if err != nil {
 		closeKernelSock()
-		_ = os.RemoveAll(sockDir)
+		removeSockDir()
+		// StartCmd removes an ephemeral scratch it made when the start fails;
+		// a scratch it could not remove is swept at the next boot.
+		owner.release(scratch)
 		var refused *sandbox.RefusedError
 		if errors.As(err, &refused) {
 			// A launch uid 65534 could not boot is refused on a degrade tier
@@ -580,8 +604,11 @@ func (im *InstanceManager) startSandboxed(ctx context.Context, def *domain.Agent
 		}
 		im.collectOutputs(collectCtx, agentID, instanceID, l.Workdir())
 		l.Release()
+		// A scratch Release kept (a failed docker reclaim) stays on disk
+		// unclaimed: the next boot sweep removes it.
+		owner.release(scratch)
 		closeKernelSock()
-		_ = os.RemoveAll(sockDir)
+		removeSockDir()
 		im.mu.Lock()
 		delete(im.capCleanups, inst.ID)
 		im.mu.Unlock()
