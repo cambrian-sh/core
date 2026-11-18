@@ -348,6 +348,175 @@ func funcName(fn *ast.FuncDecl) string {
 	return fn.Name.Name
 }
 
+// ── Rule 5: clock-derived identifiers (AGENTS.md §2.6) ──────────────────────
+
+// A persisted record id derives from content or a natural key, never from a
+// clock: a clock-derived id turns a retry into a duplicate row (§2.6). The rule
+// reports an expression that calls time.Now() — bare, or through .Unix*(),
+// .Format, fmt.Sprintf, strconv or concatenation — flowing into an id-named
+// target: an assignment, := or var to an identifier or field named id/ID or
+// ending in ID/Id, a composite-literal key of that name, or a return inside a
+// function whose name ends in ID/Id (newRunID). Whether the id is persisted is
+// not visible to a parser, so every hit is reviewed: a persisted one is a
+// defect tracked by a ticket, an in-memory correlation id is allowlisted with
+// the reason it never reaches a store.
+
+// idName reports an identifier that names an id: id/ID, or ending in ID/Id
+// (runID, docId). IDs (a plural slice) and words like "valid" do not match.
+func idName(n string) bool {
+	if strings.EqualFold(n, "id") {
+		return true
+	}
+	return len(n) > 2 && (strings.HasSuffix(n, "ID") || strings.HasSuffix(n, "Id"))
+}
+
+// targetName is the name an assignment writes: x, a.b.x, or "" for anything else.
+func targetName(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	}
+	return ""
+}
+
+// callsTimeNow reports a time.Now() call anywhere in e, or a use of a local
+// clock variable (clockVars: names assigned from time.Now() in the same
+// function, as in now := time.Now()). Function literals are excluded: a closure
+// is not the value being assigned.
+func callsTimeNow(f srcFile, e ast.Node, clockVars map[string]bool) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok && clockVars[id.Name] {
+			found = true
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Now" {
+			if id, ok := sel.X.(*ast.Ident); ok && f.imports[id.Name] == "time" {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// isCompositeLit reports T{…} or &T{…}.
+func isCompositeLit(e ast.Expr) bool {
+	if u, ok := e.(*ast.UnaryExpr); ok {
+		e = u.X
+	}
+	_, ok := e.(*ast.CompositeLit)
+	return ok
+}
+
+func ruleClockDerivedIDs(files []srcFile) []finding {
+	var out []finding
+	for _, f := range files {
+		if !under(f.dir, "app") && !under(f.dir, "domain") && !under(f.dir, "internal") {
+			continue
+		}
+		timeImported := false
+		for _, ip := range f.imports {
+			if ip == "time" {
+				timeImported = true
+			}
+		}
+		if !timeImported {
+			continue
+		}
+		seen := map[string]int{}
+		for _, decl := range f.ast.Decls {
+			owner := "(package scope)"
+			var body ast.Node = decl
+			idFunc := false
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				if fn.Body == nil {
+					continue
+				}
+				owner, body, idFunc = funcName(fn), fn.Body, idName(fn.Name.Name)
+			}
+			// Local clock variables first: a name assigned a value read directly
+			// from time.Now() (now := time.Now(), ts := time.Now().Unix()). Not
+			// transitive and not a struct literal: a record built with a CreatedAt
+			// clock field is not itself a clock value, and its content-derived ID
+			// must not be reported.
+			clockVars := map[string]bool{}
+			ast.Inspect(body, func(n ast.Node) bool {
+				if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == len(as.Rhs) {
+					for i, l := range as.Lhs {
+						if id, ok := l.(*ast.Ident); ok && id.Name != "_" && !idName(id.Name) && !isCompositeLit(as.Rhs[i]) && callsTimeNow(f, as.Rhs[i], nil) {
+							clockVars[id.Name] = true
+						}
+					}
+				}
+				return true
+			})
+			report := func(at ast.Node, target string, val ast.Expr) {
+				if val == nil || !callsTimeNow(f, val, clockVars) {
+					return
+				}
+				k := owner + " " + target
+				seen[k]++
+				out = append(out, finding{rule: "clock-id", key: f.rel + " " + k + " #" + strconv.Itoa(seen[k]), pos: f.at(at),
+					msg: target + " is derived from time.Now(): a persisted record id derives from content or a natural key, never a clock, or a retry becomes a duplicate row (AGENTS.md §2.6)"})
+			}
+			// A function literal is walked on its own: a return inside a closure
+			// is not the id function's own return.
+			var walk func(n ast.Node, inClosure bool)
+			walk = func(n ast.Node, inClosure bool) {
+				ast.Inspect(n, func(n ast.Node) bool {
+					switch x := n.(type) {
+					case *ast.FuncLit:
+						walk(x.Body, true)
+						return false
+					case *ast.AssignStmt:
+						if len(x.Lhs) == len(x.Rhs) {
+							for i, l := range x.Lhs {
+								if t := targetName(l); idName(t) {
+									report(x, t, x.Rhs[i])
+								}
+							}
+						}
+					case *ast.ValueSpec:
+						if len(x.Names) == len(x.Values) {
+							for i, nm := range x.Names {
+								if idName(nm.Name) {
+									report(x, nm.Name, x.Values[i])
+								}
+							}
+						}
+					case *ast.KeyValueExpr:
+						if k, ok := x.Key.(*ast.Ident); ok && idName(k.Name) {
+							report(x, k.Name, x.Value)
+						}
+					case *ast.ReturnStmt:
+						if idFunc && !inClosure {
+							for _, r := range x.Results {
+								report(x, "return", r)
+							}
+						}
+					}
+					return true
+				})
+			}
+			walk(body, false)
+		}
+	}
+	return out
+}
+
 // ── Allowlist application ───────────────────────────────────────────────────
 
 // reasonRef is what every allowlist reason must cite, so an entry points at the

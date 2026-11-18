@@ -7,8 +7,9 @@ import (
 	"testing"
 )
 
-// The architecture rules of AGENTS.md §1.3 / §2.1 / §2.2 / §2.7 that used to be
-// review-only, enforced on the real module (ENG-1484). Each rule extends the
+// The architecture rules of AGENTS.md §1.3 / §2.1 / §2.2 / §2.6 / §2.7 that used
+// to be review-only, enforced on the real module (ENG-1484; rule 5, clock-derived
+// ids, ENG-2056). Each rule extends the
 // go/parser pattern of the existing guards (TestKernelArtifactStoreCallSites,
 // internal/infrastructure/postgres/layering_test.go, internal/objects/arch_test.go)
 // instead of adding a second mechanism; `make archlint` runs this package and
@@ -56,4 +57,9 @@ func TestArch_DomainPortsTakeContext(t *testing.T) {
 func TestArch_NoBackgroundContextOnRequestPaths(t *testing.T) {
 	root, _ := moduleRoot(t)
 	check(t, "background", ruleBackgroundContext(loadTree(t, root)), allowBackground)
+}
+
+func TestArch_NoClockDerivedIDs(t *testing.T) {
+	root, _ := moduleRoot(t)
+	check(t, "clock-id", ruleClockDerivedIDs(loadTree(t, root)), allowClockIDs)
 }

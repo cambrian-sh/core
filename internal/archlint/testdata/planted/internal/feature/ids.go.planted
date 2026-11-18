@@ -1,0 +1,60 @@
+package feature
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"strconv"
+	"time"
+)
+
+type Record struct {
+	ID        string
+	RunID     string
+	Valid     bool
+	CreatedAt time.Time
+	IDs       []string
+}
+
+// Planted violations (rule 5, AGENTS.md §2.6): each must be reported.
+
+func Mint(r *Record) Record {
+	r.ID = fmt.Sprintf("rec-%d", time.Now().UnixNano()) // field assignment
+	id := strconv.FormatInt(time.Now().UnixMilli(), 10) // := to an id-named local
+	now := time.Now()
+	return Record{
+		RunID: "run-" + now.Format(time.RFC3339Nano), // composite key, through a clock variable
+		ID:    id,                                    // not reported: id itself carries no clock read
+	}
+}
+
+func newJobID() string {
+	return fmt.Sprintf("job-%d", time.Now().Unix()) // return of an id-named function
+}
+
+var bootID = fmt.Sprint(time.Now().UnixNano()) // package-scope var
+
+// Accepted look-alikes: none of these may be reported.
+
+func Accepted(content []byte) Record {
+	sum := sha256.Sum256(content)
+	r := Record{
+		ID:        fmt.Sprintf("doc:%x", sum[:8]), // content-derived
+		CreatedAt: time.Now(),                     // a clock into a time field
+		Valid:     time.Now().After(time.Time{}),  // "valid" is not an id name
+		IDs:       []string{fmt.Sprint(time.Now().Unix())},
+	}
+	r.RunID = "run:" + string(content) // natural key
+	return r
+}
+
+func newSessionID() string {
+	tick := func() int64 { return time.Now().UnixNano() } // a closure's return is not the id function's
+	_ = tick
+	return "session:fixed"
+}
+
+func AcceptedStruct(key string) Record {
+	r := Record{CreatedAt: time.Now()} // r is a record, not a clock value
+	r.ID = "rec:" + key + r.RunID
+	return r
+}

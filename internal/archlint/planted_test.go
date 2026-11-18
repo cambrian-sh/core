@@ -61,6 +61,17 @@ func TestPlanted_BackgroundContext(t *testing.T) {
 	wantKeys(t, "background", ruleBackgroundContext(files), "internal/feature/feature.go Serve #1")
 }
 
+func TestPlanted_ClockDerivedIDs(t *testing.T) {
+	files := loadTree(t, "testdata/planted")
+	wantKeys(t, "clock-id", ruleClockDerivedIDs(files),
+		"internal/feature/ids.go Mint ID #1",                // r.ID = fmt.Sprintf(..., time.Now().UnixNano())
+		"internal/feature/ids.go Mint id #1",                // id := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		"internal/feature/ids.go Mint RunID #1",             // RunID: "run-" + now.Format(...), now := time.Now()
+		"internal/feature/ids.go newJobID return #1",        // return of an id-named function
+		"internal/feature/ids.go (package scope) bootID #1", // package-scope var
+	)
+}
+
 // The allowlist checker itself fails on an unknown finding, a stale entry and
 // an uncited reason.
 func TestPlanted_AllowlistIsStrict(t *testing.T) {

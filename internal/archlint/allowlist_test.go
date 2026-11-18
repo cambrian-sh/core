@@ -50,3 +50,11 @@ var allowBackground = map[string]string{
 	"internal/telemetry/bridge.go Bridge.OnConwipWait #1":     "known leak, T-20261118-remaining-context-background-leaks-on-request: TelemetryObserver has no ctx",
 	"internal/telemetry/bridge.go Bridge.OnSchemaMismatch #1": "known leak, T-20261118-remaining-context-background-leaks-on-request: TelemetryObserver has no ctx",
 }
+
+// allowClockIDs: rule 5, clock-derived identifiers (AGENTS.md §2.6). Keys are
+// "<file> <func> <target> #<k-th hit for that target in that func>".
+var allowClockIDs = map[string]string{
+	// Known defects, each tracked by its ticket, which deletes the entry.
+	"internal/memory/query.go QueryService.emitDecision queryID #1":         "known defect, T-20261118-retrieval-decision-queryid-is-minted-from-time: minted receipt QueryID persisted by premium receipts",
+	"internal/memory/spreading_engine.go SpreadingEngine.Spread EntryID #1": "known defect, T-20261118-traversal-log-entryid-is-clock-derived-time-now: persisted ADR-0021 traversal log entry id",
+}
