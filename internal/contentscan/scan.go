@@ -1,8 +1,20 @@
-// Package contentscan is the kernel's deterministic scanner for text that will be
-// shown to a model as INSTRUCTIONS: agent-proposed skills (ADR-0139 D13) and
-// principal memory notes (ADR-0139 D14, app/memory_notes.go). It is shared on
-// purpose (AGENTS.md §4.3): one rule set, one verdict vocabulary, so the two
-// write paths cannot drift into two different ideas of "dangerous".
+// Package contentscan is the kernel's ONE deterministic scanner for injection
+// patterns in text a model will read: agent-proposed skills (ADR-0139 D13) and
+// principal memory notes (ADR-0139 D14, app/memory_notes.go), shown to a model as
+// INSTRUCTIONS, and MCP tool responses (ADR-0043 D4, ENG-117), shown as untrusted
+// DATA. It is shared on purpose (AGENTS.md §4.3): one rule set, one verdict
+// vocabulary, so the write paths and the tool-output path cannot drift into
+// different ideas of "dangerous". Ingest (ENG-94) is meant to call it too.
+//
+// Text is normalised before the rules run (normalize: NFKC, invisible characters
+// removed, common Cyrillic/Greek homoglyphs folded to Latin), so full-width
+// letters, a zero-width space inside a word and a Cyrillic o in "ignore" all
+// read as "ignore". The obfuscation rules (OB-*) look at the text as written,
+// because the obfuscation itself is the signal.
+//
+// The package default (Scan) is the built-in rule set. A deployment may narrow or
+// extend it per consumer (New with Config: disabled_rules, extra_rules); the MCP
+// output scan reads that from execution.tools.output_scan.
 //
 // It is a pattern scanner, not a judge. There is no LLM here, by design (ADR-0139
 // D13: "a dangerous verdict cannot be overridden" is only a meaningful promise if
@@ -23,8 +35,6 @@ package contentscan
 import (
 	"fmt"
 	"regexp"
-	"sort"
-	"strings"
 )
 
 // Verdict is the scan outcome. The strings are the operator-plane vocabulary
@@ -95,7 +105,7 @@ type rule struct {
 	re    *regexp.Regexp
 }
 
-// rules is the fixed rule set. Patterns are case-insensitive and deliberately
+// rules is the built-in phrase rule set (matched against normalised text). Patterns are case-insensitive and deliberately
 // phrase-shaped (verb + object) so that a skill which merely TALKS about secrets
 // ("never print an API key") does not trip the exfiltration rules.
 var rules = []rule{
@@ -124,79 +134,6 @@ var rules = []rule{
 	{"TP-04", ClassToolPolicy, sevCaution, regexp.MustCompile(`(?i)\b(rm\s+-rf\s+(/|~|\$HOME)|mkfs\.|dd\s+if=.{0,40}of=/dev/)`)},
 }
 
-// invisible flags zero-width and bidi-control characters: text an operator reviewing
-// the proposal cannot see, but a model reads. Dangerous — there is no legitimate
-// reason for a skill to carry them.
-var invisible = regexp.MustCompile(`[\x{200b}\x{200c}\x{200d}\x{2060}\x{feff}\x{202a}-\x{202e}\x{2066}-\x{2069}]`)
-
-// longBase64 flags a long opaque blob, a common carrier for an encoded payload.
-var longBase64 = regexp.MustCompile(`[A-Za-z0-9+/]{200,}={0,2}`)
-
-// quoted reports whether the match at loc sits inside a quoted span on its own
-// line: an odd number of double quotes (straight or a curly opener) between the
-// line start and the match, and a closing quote after it on the same line.
-func quoted(text string, loc []int) bool {
-	start := strings.LastIndexByte(text[:loc[0]], '\n') + 1
-	end := len(text)
-	if i := strings.IndexByte(text[loc[1]:], '\n'); i >= 0 {
-		end = loc[1] + i
-	}
-	before, after := text[start:loc[0]], text[loc[1]:end]
-	opens := strings.Count(before, `"`) + strings.Count(before, "“") - strings.Count(before, "”")
-	return opens%2 == 1 && (strings.Contains(after, `"`) || strings.Contains(after, "”"))
-}
-
-// Scan runs every rule over text and returns the verdict and findings. Pure and
-// deterministic: the same text always yields the same Result.
-func Scan(text string) Result {
-	var findings []Finding
-	lineOf := func(idx int) int { return strings.Count(text[:idx], "\n") + 1 }
-	add := func(id string, class Class, sev severity, loc []int) {
-		ex := strings.TrimSpace(text[loc[0]:loc[1]])
-		if len([]rune(ex)) > 80 {
-			ex = string([]rune(ex)[:80])
-		}
-		s := "caution"
-		if sev == sevDanger {
-			s = "danger"
-		}
-		findings = append(findings, Finding{Rule: id, Class: class, Severity: s, Line: lineOf(loc[0]), Excerpt: ex})
-	}
-	for _, r := range rules {
-		if loc := r.re.FindStringIndex(text); loc != nil {
-			sev := r.sev
-			// A phrase QUOTED in the text is a mention, not an instruction: the
-			// shipped web-research skill warns agents about pages that say
-			// "ignore your previous instructions". It is still reported (an
-			// attacker can quote too), but as caution, so an operator decides.
-			if sev == sevDanger && quoted(text, loc) {
-				sev = sevCaution
-			}
-			add(r.id, r.class, sev, loc)
-		}
-	}
-	if loc := invisible.FindStringIndex(text); loc != nil {
-		add("OB-01", ClassObfuscation, sevDanger, loc)
-		// The excerpt of an invisible character is invisible; say what it was.
-		findings[len(findings)-1].Excerpt = fmt.Sprintf("U+%04X", []rune(text[loc[0]:loc[1]])[0])
-	}
-	if loc := longBase64.FindStringIndex(text); loc != nil {
-		add("OB-02", ClassObfuscation, sevCaution, loc)
-	}
-	sort.SliceStable(findings, func(i, j int) bool {
-		if findings[i].Line != findings[j].Line {
-			return findings[i].Line < findings[j].Line
-		}
-		return findings[i].Rule < findings[j].Rule
-	})
-
-	v := VerdictClean
-	for _, f := range findings {
-		if f.Severity == "danger" {
-			v = VerdictDangerous
-			break
-		}
-		v = VerdictSuspicious
-	}
-	return Result{Verdict: v, Findings: findings}
-}
+// Scan runs the built-in rule set over text. Pure and deterministic: the same
+// text always yields the same Result.
+func Scan(text string) Result { return defaultScanner.Scan(text) }

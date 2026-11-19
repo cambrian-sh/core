@@ -195,7 +195,7 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		ResultCid:  resp.ResultCID,
 		Denied:     resp.Denied,
 		DenyReason: resp.DenyReason,
-		Error:      resp.Error,
+		Error:      wireError(resp),
 		ArgHash:    resp.ArgHash,
 		ResultHash: resp.ResultHash,
 		// ADR-0139 D11 hook context, beside the result (contract 0104).
@@ -548,9 +548,18 @@ func appendKernelTools(tools, kernel []domain.SystemTool, named []string) []doma
 // T-20261112-worker-resolve-cid-inline-has-no-size-cap-a). No proto change: an SDK
 // that predates the summary reads both fields as "an inline result plus its
 // reference", which still shows the preview and the read call.
+//
+// An untrusted (MCP) response is fenced as data here — the agent-facing
+// boundary — by domain.AgentToolResult (ADR-0043 D4, ENG-117); wireError is its
+// error half.
 func wireResultJSON(resp domain.ToolCallResponse) string {
-	if len(resp.ResultJSON) == 0 && resp.Offloaded != nil {
-		return string(resp.Offloaded.JSON())
-	}
-	return string(resp.ResultJSON)
+	result, _ := domain.AgentToolResult(resp)
+	return result
+}
+
+// wireError is the error the agent receives: a tool-reported error of an
+// untrusted response fenced as data, any other error as it is.
+func wireError(resp domain.ToolCallResponse) string {
+	_, errText := domain.AgentToolResult(resp)
+	return errText
 }

@@ -219,6 +219,17 @@ use `secret_env` plus the console), and an `args` element `"${NAME}"` is filled 
 - **stdio servers are contained by trust tier** (ADR-0139 D8, `internal/sandbox`, 2026-11-06).
   See "Sandboxing by trust tier" below. Containment is not a reason to relax tool policy:
   effect classes and approvals apply on every runner.
+- **Responses are untrusted data** (ADR-0043 D4, ENG-117). Every MCP response, on every
+  transport, reaches the agent inside the nonce payload fence (`domain/payload_fence.go`):
+  `{"tool", "fenced_result", "result_framing", "injection_scan": {verdict, findings}}`. A
+  tool-reported error is fenced the same way. The shared content scanner
+  (`internal/contentscan`) scans it first, after normalising Unicode tricks (full-width
+  letters, zero-width splits, homoglyphs). `execution.tools.output_scan` (default on) sets
+  `hit_at` (`dangerous` by default, or `suspicious`), `on_hit` (`flag` by default: deliver
+  fenced, verdict beside it, a kernel annotation and a WARN log; or `withhold`: the output
+  never reaches the agent or memory), `disabled_rules` and `extra_rules`
+  (`{id, class, severity, pattern}`). With the scan off, responses are still fenced and
+  marked `not_scanned`. The ledger and memory keep the raw result.
 
 ## Sandboxing by trust tier
 

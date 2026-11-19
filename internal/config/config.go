@@ -1631,6 +1631,12 @@ type ToolsConfig struct {
 	// decision 2026-11-15, T-20261108-outbound-tool-writes-have-no-deterministic).
 	// Default ON.
 	OutboundIdentifierGuard OutboundIdentifierGuardConfig `json:"outbound_identifier_guard"`
+	// OutputScan scans every MCP tool response for injection patterns with the
+	// shared content scanner (internal/contentscan) before it reaches an agent,
+	// and says what a hit does (ADR-0043 D4; owner decision 2026-11-19, ENG-117).
+	// Every MCP response is fenced as untrusted data whether or not it is
+	// scanned. Default ON, hit at dangerous, on_hit flag.
+	OutputScan ToolOutputScanConfig `json:"output_scan"`
 	// IdempotentWrites gives every side-effecting tool call made by a plan step an
 	// idempotency key, hash(run, step, tool, canonical arguments) (ADR-0145 D9): a
 	// retry of the same call returns the stored result instead of running again.
@@ -1683,6 +1689,83 @@ type OutboundIdentifierGuardConfig struct {
 	// Kinds narrows which identifier categories count as a hit: national_id,
 	// phone, email, iban, card. Empty ⇒ all of them (the safe direction).
 	Kinds []string `json:"kinds,omitempty"`
+}
+
+// ToolOutputScanConfig is execution.tools.output_scan (ADR-0043 D4, ENG-117).
+type ToolOutputScanConfig struct {
+	// Enabled scans MCP responses (default true). No omitempty: an explicit
+	// false must survive a merge over the true default. Off, responses are still
+	// fenced as untrusted data, marked not_scanned.
+	Enabled bool `json:"enabled"`
+	// HitAt is the lowest verdict that counts as a hit: "suspicious" or
+	// "dangerous" (default "dangerous"; "" ⇒ dangerous). A verdict below it is
+	// still reported beside the fenced result.
+	HitAt string `json:"hit_at,omitempty"`
+	// OnHit is what a hit does: "flag" (default; the output is delivered fenced,
+	// the verdict and rules beside it, a kernel annotation and a WARN log) or
+	// "withhold" (the output never reaches the agent or memory; the agent is
+	// told it was withheld). "" ⇒ flag. Routing the session's next write or
+	// egress call to approval is the Rule-of-Two gate's job (ENG-531), not a
+	// hit action here.
+	OnHit string `json:"on_hit,omitempty"`
+	// DisabledRules are built-in scanner rule ids to skip (PI-01, OB-04, ...).
+	DisabledRules []string `json:"disabled_rules,omitempty"`
+	// ExtraRules are deployment-defined rules added to the built-in set.
+	ExtraRules []ScanRuleConfig `json:"extra_rules,omitempty"`
+}
+
+// ScanRuleConfig is one execution.tools.output_scan.extra_rules entry: an id
+// that does not shadow a built-in rule, a class (prompt_injection,
+// credential_request, exfiltration, tool_policy_override, obfuscation), a
+// severity (caution | danger) and an RE2 pattern matched against the
+// normalised text (add (?i) for case-insensitive). A pattern that does not
+// compile fails the boot.
+type ScanRuleConfig struct {
+	ID       string `json:"id"`
+	Class    string `json:"class"`
+	Severity string `json:"severity"`
+	Pattern  string `json:"pattern"`
+}
+
+// HitAtOrDefault is HitAt with its default.
+func (c ToolOutputScanConfig) HitAtOrDefault() string {
+	if strings.TrimSpace(c.HitAt) == "" {
+		return "dangerous"
+	}
+	return strings.TrimSpace(c.HitAt)
+}
+
+// OnHitOrDefault is OnHit with its default.
+func (c ToolOutputScanConfig) OnHitOrDefault() string {
+	if strings.TrimSpace(c.OnHit) == "" {
+		return "flag"
+	}
+	return strings.TrimSpace(c.OnHit)
+}
+
+func (c ToolOutputScanConfig) validate() []string {
+	var errs []string
+	switch c.HitAtOrDefault() {
+	case "suspicious", "dangerous":
+	default:
+		errs = append(errs, fmt.Sprintf("tools.output_scan.hit_at must be suspicious or dangerous, got %q", c.HitAt))
+	}
+	switch c.OnHitOrDefault() {
+	case "flag", "withhold":
+	default:
+		errs = append(errs, fmt.Sprintf("tools.output_scan.on_hit must be flag or withhold, got %q", c.OnHit))
+	}
+	for i, r := range c.ExtraRules {
+		if strings.TrimSpace(r.ID) == "" || strings.TrimSpace(r.Pattern) == "" {
+			errs = append(errs, fmt.Sprintf("tools.output_scan.extra_rules[%d] needs an id and a pattern", i))
+		}
+		switch strings.TrimSpace(r.Severity) {
+		case "caution", "danger":
+		default:
+			errs = append(errs, fmt.Sprintf("tools.output_scan.extra_rules[%d].severity must be caution or danger, got %q", i, r.Severity))
+		}
+	}
+	return errs
 }
 
 // IdentifierKinds returns Kinds as domain kinds (empty ⇒ nil, meaning all).
@@ -3684,6 +3767,9 @@ func DefaultConfig() *Config {
 				// ENG-917 outbound identifier guard, on by default (owner
 				// decision 2026-11-15).
 				OutboundIdentifierGuard: OutboundIdentifierGuardConfig{Enabled: true},
+				// ENG-117 MCP response injection scan, on by default (owner
+				// decision 2026-11-19): hit at dangerous, flag.
+				OutputScan: ToolOutputScanConfig{Enabled: true},
 				// ADR-0145 D4 calculation tools, on by default (owner decision
 				// 2026-11-15, ENG-897; no prior A/B/A).
 				CalcTools: true,
@@ -4435,6 +4521,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Tools.MaxUnroutableApprovalsPerRun < 0 {
 		errs = append(errs, "max_unroutable_approvals_per_run must be >= 0 (0 disables the bound)")
 	}
+	errs = append(errs, c.Tools.OutputScan.validate()...)
 	if c.Tools.DuplicateNoticeWindowMinutes < 0 {
 		errs = append(errs, "duplicate_notice_window_minutes must be >= 0 (0 disables the duplicate notice)")
 	}

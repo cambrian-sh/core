@@ -102,10 +102,15 @@ func (h *Handler) Execute(ctx context.Context, call domain.ToolCall) ([]byte, er
 	// records it as failed (action ledger, write record, run ledger) and the model
 	// still sees the tool's own message. It used to come back as an ordinary
 	// result, which reported a failed write as done (ADR-0145 D14: refusals and
-	// failures are never reported as success).
+	// failures are never reported as success). The typed error tells the
+	// ToolExecutor the message is the server's own text, so it is scanned and
+	// fenced like a result (ADR-0043 D4, ENG-117).
 	if res.IsError {
-		return nil, fmt.Errorf("mcp tool %q reported an error: %s", toolName, errorText(res))
+		return nil, &domain.ToolReportedError{Tool: toolName, Message: errorText(res)}
 	}
+	// The result is returned raw: the ToolExecutor scans every MCP response and
+	// the agent-facing boundary fences it (domain.AgentToolResult), because kernel
+	// consumers parse this JSON after dispatch (ADR-0043 D4, ENG-117).
 	return marshalResult(res)
 }
 

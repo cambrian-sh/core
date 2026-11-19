@@ -189,6 +189,11 @@ type ToolCallResponse struct {
 	// records and replayed results stay byte-identical (owner decision 2026-11-15,
 	// T-20261105-pre-tool-and-post-tool-hook-annotations-are).
 	Annotations []string
+	// Untrusted marks a response whose result (and tool-reported error) is
+	// untrusted data — every MCP response (ADR-0043 D4, ENG-117) — with its
+	// injection-scan verdict. The agent-facing boundary fences it
+	// (AgentToolResult); ResultJSON stays raw for kernel consumers.
+	Untrusted *UntrustedOutput
 }
 
 // ToolExecutor is the single reference monitor for tool execution (ADR-0039 D4).
@@ -381,6 +386,10 @@ type ToolExecutor struct {
 	// a call that can send outside whose text arguments carry a personal
 	// identifier goes to approval, the identifiers named in the request. nil ⇒ off.
 	outboundIdentifiers *OutboundIdentifierGuard
+	// untrustedOutput scans every MCP response for injection patterns and says
+	// what a hit does (ADR-0043 D4, ENG-117; execution.tools.output_scan). nil ⇒
+	// MCP responses are still marked untrusted and fenced, but not scanned.
+	untrustedOutput *UntrustedOutputGuard
 }
 
 // observeFailure counts a failed call (a tool error, or a final refusal) against
@@ -1075,7 +1084,27 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 				e.subtasks.AddEvidence(req.SessionTokenID, id)
 			}
 		}
-		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver}
+		failed := ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver}
+		// ADR-0043 D4: a tool-reported error's message is written by the tool
+		// server — untrusted like a result. Scanned here, fenced at the agent
+		// boundary; Error itself stays raw so the repeated-failure detector
+		// compares stable text.
+		var reported *ToolReportedError
+		if isMCP && !req.System && errors.As(err, &reported) {
+			u := e.untrustedOutput.Inspect(req.ToolName, []byte(reported.Message))
+			logUntrustedHit(u)
+			if e.untrustedOutput.Withholds(u) {
+				failed.Error = withheldReason(u)
+				failed.ResultHash = hashString(failed.Error)
+				return failed
+			}
+			u.ErrorFromSource = true
+			failed.Untrusted = &u
+			if note := untrustedNote(u); note != "" {
+				failed.Annotations = append(failed.Annotations, note)
+			}
+		}
+		return failed
 	}
 	if priced {
 		// Reconcile to actual. Usage-field extraction is a follow-up; absent it,
@@ -1116,6 +1145,27 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		}
 	}
 
+	// ADR-0043 D4 (ENG-117): every MCP response is untrusted data. It is scanned
+	// here — after binary blocks became references and post_tool hooks ran, so
+	// the scan reads what the agent would — and fenced at the agent boundary
+	// (AgentToolResult). A withheld hit is replaced by a kernel notice BEFORE
+	// memory and the ledger see it; the call still succeeded (it ran, and a
+	// write it made must not be retried), only its output is kept from the
+	// agent. An operator System call is not a model's input and is left alone.
+	var untrusted *UntrustedOutput
+	if isMCP && !req.System {
+		u := e.untrustedOutput.Inspect(req.ToolName, result)
+		logUntrustedHit(u)
+		if e.untrustedOutput.Withholds(u) {
+			result, _ = json.Marshal(map[string]string{"output_withheld": withheldReason(u)})
+		} else {
+			untrusted = &u
+			if note := untrustedNote(u); note != "" {
+				hookNotes = append(hookNotes, note)
+			}
+		}
+	}
+
 	// Report the output to memory, routed by the tool's declared nature (ADR-0049 D1):
 	// a MUTATION is an EVENT and becomes an action record regardless of size (a write
 	// that happened is durable history). Best-effort — never fails the call. A denied
@@ -1132,7 +1182,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		})
 	}
 
-	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver, Annotations: hookNotes}
+	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver, Annotations: hookNotes, Untrusted: untrusted}
 	// ADR-0145 D1: with the ledger on, every result is recorded, and a large one
 	// travels as its ledger id instead of a plan-scoped content-store cid (one
 	// pathway: the content store holds no tool results then). A result the ledger

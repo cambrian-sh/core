@@ -47,6 +47,11 @@ type ToolExecutorControls struct {
 	// that can send outside (egress_send) whose text arguments carry a personal
 	// identifier goes to approval with the identifiers named. nil ⇒ off.
 	OutboundIdentifiers *OutboundIdentifierGuard
+	// UntrustedOutput is the MCP response injection scan
+	// (execution.tools.output_scan, default on; ADR-0043 D4, ENG-117): every MCP
+	// response is scanned with the shared content scanner and a hit is flagged or
+	// withheld. nil ⇒ not scanned (MCP responses are fenced either way).
+	UntrustedOutput *UntrustedOutputGuard
 }
 
 // ErrToolExecutorControl reports a missing or doubly supplied security control.
@@ -68,7 +73,8 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	if features.Registry != nil || features.Grants != nil || features.authz != nil || features.approval != nil ||
 		features.ceiling != nil || features.unrestricted || features.argValidator != nil ||
 		features.idempotency != nil || features.guards != nil || features.writeTargets != nil ||
-		features.leaseCeiling != nil || features.subtasks != nil || features.outboundIdentifiers != nil {
+		features.leaseCeiling != nil || features.subtasks != nil || features.outboundIdentifiers != nil ||
+		features.untrustedOutput != nil {
 		return nil, fmt.Errorf("%w: set on features; pass it in ToolExecutorControls", ErrToolExecutorControl)
 	}
 	te := features
@@ -85,6 +91,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	te.leaseCeiling = controls.LeaseCeiling
 	te.subtasks = controls.Subtasks
 	te.outboundIdentifiers = controls.OutboundIdentifiers
+	te.untrustedOutput = controls.UntrustedOutput
 	return &te, nil
 }
 

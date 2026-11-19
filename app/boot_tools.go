@@ -343,6 +343,12 @@ func (b *kernelBuild) buildToolExecutor() error {
 	if err != nil {
 		return fmt.Errorf("tool executor: %w", err)
 	}
+	// ENG-117 (ADR-0043 D4): the MCP response injection scan, read from
+	// execution.tools.output_scan (default on); a constructor control too.
+	outputGuard, err := untrustedOutputGuard(cfg.Execution.Tools.OutputScan)
+	if err != nil {
+		return fmt.Errorf("tool executor: %w", err)
+	}
 	toolControls := execLeases.controls(evidenceToolControls(cfg.Execution, actionRecords, domain.ToolExecutorControls{
 		Registry: toolReg,
 		Grants:   toolGrants,
@@ -354,6 +360,8 @@ func (b *kernelBuild) buildToolExecutor() error {
 		Unrestricted: cfg.Execution.Tools.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
 		// ENG-917: egress_send calls carrying personal identifiers go to approval.
 		OutboundIdentifiers: outboundGuard,
+		// ENG-117: every MCP response is scanned; a hit is flagged or withheld.
+		UntrustedOutput: outputGuard,
 	}))
 	toolExecutor, err := domain.NewToolExecutor(toolControls, domain.ToolExecutor{
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)

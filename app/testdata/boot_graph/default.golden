@@ -225,6 +225,7 @@ Stager: *stagedinputs.Stager
 StepFailures: *domain.StepFailures
 subtasks: *domain.Subtasks
 outboundIdentifiers: *domain.OutboundIdentifierGuard
+untrustedOutput: *domain.UntrustedOutputGuard
 
 ## Lifecycles (registration order)
 retention start=true stop=true

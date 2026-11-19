@@ -14,6 +14,9 @@ to a landed change is a wiring regression, not a golden to regenerate.
 
 History of golden updates:
 
+- ENG-117: `+ untrustedOutput: *domain.UntrustedOutputGuard` (ToolExecutor, both
+  goldens), the MCP response injection scan built from execution.tools.output_scan
+  (default on) and passed as ToolExecutorControls.UntrustedOutput.
 - ENG-2169: `+ PipelineDrainerSliceTasks: int=64` and `+ PipelineDrainerWorkers: int=4`
   (KernelServices, both goldens), mirroring execution.pipelines.drainer_slice_tasks /
   drainer_workers for the premium drainers (round-robin per pipeline, bounded workers).
