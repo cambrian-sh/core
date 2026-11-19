@@ -254,16 +254,43 @@ type TurnMessage struct {
 	EvidenceID string
 }
 
-// TurnRouter shapes what happens around an admitted turn.
+// TurnRouter is a conversational pipeline head: where an admitted turn enters
+// its pipeline (ADR-0155 D9, decisions/ingress-is-a-pipeline-head.md).
 //
 // It is reached ONLY after admission: the ingress daemon authenticated the sender
 // at the external surface, and the kernel has already checked the namespace, the
 // identity binding, blocked senders and the stranger policy. None of that is
-// visible here, and deliberately so (ADR-0090 D2) — a router is operator-authored
-// and must not be able to reorder or skip a security check.
+// visible here, and deliberately so (ADR-0090 D2) — a graph head is
+// operator-authored and must not be able to reorder or skip a security check.
 //
-// `handled=false` means "not mine": the caller runs the turn directly, which is
-// what keeps a deployment with no router behaving exactly as it does today.
+// `handled=false` means "not mine": the caller enters the turn through the
+// kernel's built-in head, FixedTurnHead, instead. A plugin's graph head (premium's
+// pipeline.TurnRouter) answers false for an ingress with no armed chat pipeline.
 type TurnRouter interface {
 	RouteTurn(ctx context.Context, ingressAgentID, conversationID string, msg TurnMessage, run TurnFunc) (handled bool, err error)
+}
+
+// FixedTurnHead is the OSS kernel's built-in chat pipeline head (ADR-0155 D9,
+// owner decision 2026-11-14, option a): the one fixed pipeline `ingress →
+// run_turn`, with no graph authoring. It always handles the turn, and handling it
+// is exactly one call: run(ctx, conversationID, msg.Text).
+//
+// When premium is installed its graph runtime replaces this head for every
+// ingress with an armed chat pipeline, and premium's parity test
+// (pipeline/chathead_parity_test.go) holds the default graph to this exact call —
+// so a chat surface answers the same turn whichever head it enters through.
+// Changing what this head does is changing that contract: the parity test must
+// move with it.
+//
+// Exported from domain, not internal/ingress, so that test can cite the very
+// head the kernel runs instead of a copy of it (core never imports premium; the
+// reverse edge is the allowed one).
+type FixedTurnHead struct{}
+
+// RouteTurn satisfies TurnRouter: always handled, one turn, the message text.
+func (FixedTurnHead) RouteTurn(ctx context.Context, _, conversationID string, msg TurnMessage, run TurnFunc) (bool, error) {
+	if run == nil {
+		return true, errors.New("fixed chat head: no turn function")
+	}
+	return true, run(ctx, conversationID, msg.Text)
 }

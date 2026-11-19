@@ -41,7 +41,7 @@ func TestExecuteFinish_RunsLastRegisteredFirstWithTheResult(t *testing.T) {
 	(&executeFinish{}).run(nil) // nothing registered: a no-op
 }
 
-// The planner lane's routing step answers CHAT (no sync processor), WATCH,
+// The planner lane's routing step answers CHAT, WATCH,
 // clarifications and router errors itself (done), and lets PLAN continue into
 // the planner lane (not done).
 func TestRoutePlannerRequest_AnswersOrContinuesByDecision(t *testing.T) {
@@ -54,7 +54,7 @@ func TestRoutePlannerRequest_AnswersOrContinuesByDecision(t *testing.T) {
 		wantErr  bool
 	}{
 		{"plan continues", routerReturning(domain.DecisionPlan), false, "", false},
-		{"chat without a sync processor", routerReturning(domain.DecisionChat), true, "not_implemented", false},
+		{"chat", routerReturning(domain.DecisionChat), true, "not_implemented", false},
 		{"watch", routerReturning(domain.DecisionWatch), true, "not_implemented", false},
 		{"clarification", routerReturningClarification(), true, "", false},
 		{"router error", &stubRouter{err: errors.New("router down")}, true, "", true},

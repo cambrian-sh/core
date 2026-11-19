@@ -16,61 +16,38 @@ func (r *stubChatRouter) Resolve(_ context.Context, _ domain.RouterInput) (*doma
 	return &domain.RouterDecision{Type: domain.DecisionChat}, nil
 }
 
-// stubSyncProcessor implements SyncProcessor for CHAT routing tests.
-type stubSyncProcessor struct {
-	calledWith domain.Signal
-	response   *domain.Handoff
-	err        error
+// A CHAT decision is never handed to a signal receiver: conversations are
+// answered by the chat lane (ADR-0155 D9 / ENG-1500 retired the ProcessSync door).
+// Even a receiver that still exposes a ProcessSync method is not called.
+type legacySyncReceiver struct{ calls int }
+
+func (p *legacySyncReceiver) OnSignal(_ context.Context, _ domain.Signal) error { return nil }
+
+func (p *legacySyncReceiver) ProcessSync(_ context.Context, _ domain.Signal) (*domain.Handoff, error) {
+	p.calls++
+	return &domain.Handoff{Payload: &domain.Payload{Type: "text", Data: []byte("Hello!")}}, nil
 }
 
-func (p *stubSyncProcessor) OnSignal(_ context.Context, _ domain.Signal) error { return nil }
-
-func (p *stubSyncProcessor) ProcessSync(_ context.Context, sig domain.Signal) (*domain.Handoff, error) {
-	p.calledWith = sig
-	return p.response, p.err
-}
-
-// Cycle 1 — Execute CHAT decision with SyncProcessor-capable SignalReceiver calls ProcessSync.
-func TestServer_Execute_ChatDecision_CallsProcessSync(t *testing.T) {
+func TestServer_Execute_ChatDecision_NeverReachesASyncDoor(t *testing.T) {
 	t.Parallel()
-	wantHandoff := &domain.Handoff{
-		FromAgent: "conversation-daemon",
-		Payload:   &domain.Payload{Type: "text", Data: []byte("Hello!")},
-	}
-	proc := &stubSyncProcessor{response: wantHandoff}
-
-	s := &Server{
-		Router:         &stubChatRouter{},
-		SignalReceiver: proc,
-	}
-
-	req := &pb.Handoff{
-		Payload: &pb.Object{Data: []byte("hi there")},
-		Metadata: map[string]string{
-			"_conversation_id": "conv-abc",
-		},
-	}
-
-	resp, err := s.Execute(context.Background(), req)
+	proc := &legacySyncReceiver{}
+	s := &Server{Router: &stubChatRouter{}, SignalReceiver: proc}
+	resp, err := s.Execute(context.Background(), &pb.Handoff{
+		Payload:  &pb.Object{Data: []byte("hi there")},
+		Metadata: map[string]string{"_conversation_id": "conv-abc"},
+	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-
-	// The response should come from ProcessSync, not the not_implemented stub.
-	if resp.Payload == nil || string(resp.Payload.Data) != "Hello!" {
-		t.Errorf("Execute CHAT: want daemon response 'Hello!', got payload=%v", resp.Payload)
-	}
-
-	// ProcessSync must have been called with the correct stream ID.
-	if proc.calledWith.StreamID != "conv-abc" {
-		t.Errorf("ProcessSync StreamID: want %q, got %q", "conv-abc", proc.calledWith.StreamID)
+	if proc.calls != 0 || resp.GetPayload().GetType() != "not_implemented" {
+		t.Fatalf("CHAT reached a sync door (calls=%d) or answered %q, want not_implemented",
+			proc.calls, resp.GetPayload().GetType())
 	}
 }
 
-// Cycle 2 — Execute CHAT decision with no SyncProcessor still returns not_implemented (graceful).
-func TestServer_Execute_ChatDecision_NoSyncProcessor_ReturnsNotImplemented(t *testing.T) {
+// Execute CHAT with the OSS receiver returns not_implemented (graceful).
+func TestServer_Execute_ChatDecision_OSSReceiver_ReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
-	// SignalReceiver does not implement SyncProcessor (NoOpSignalReceiver only has OnSignal).
 	noopReceiver := &reactive.NoOpSignalReceiver{}
 
 	s := &Server{
@@ -88,7 +65,7 @@ func TestServer_Execute_ChatDecision_NoSyncProcessor_ReturnsNotImplemented(t *te
 		t.Fatalf("Execute: %v", err)
 	}
 	if resp.Payload == nil || resp.Payload.Type != "not_implemented" {
-		t.Errorf("want not_implemented when no SyncProcessor, got type=%q", resp.Payload.GetType())
+		t.Errorf("want not_implemented, got type=%q", resp.Payload.GetType())
 	}
 }
 

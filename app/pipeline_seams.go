@@ -447,7 +447,8 @@ func (d deferredTurnRouter) RouteTurn(
 ) (bool, error) {
 	p := d.holder.Load()
 	if p == nil || *p == nil {
-		// No router in this build: the turn runs directly, exactly as before.
+		// No graph head in this build: "not mine", so the turn enters the
+		// kernel's built-in head, domain.FixedTurnHead (ADR-0155 D9).
 		return false, nil
 	}
 	return (*p).RouteTurn(ctx, ingressAgentID, conversationID, msg, run)

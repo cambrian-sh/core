@@ -51,8 +51,9 @@ type InboundService struct {
 	// lifecycle: a bound person the registry holds suspended is refused like a
 	// blocked sender. nil ⇒ no lifecycle check (pre-registry behaviour).
 	principals domain.PrincipalRegistry
-	// router shapes what happens AROUND an admitted turn. nil ⇒ the turn runs
-	// directly, which is every deployment's behaviour today.
+	// router is a plugin's graph pipeline head for admitted turns (ADR-0155
+	// D9). nil, or "not mine" from it ⇒ the turn enters the kernel's built-in
+	// head, domain.FixedTurnHead.
 	router domain.TurnRouter
 	// capture preserves an admitted message as evidence with identity
 	// (FIVE-PLANES-BUILD seam S7). nil ⇒ chat writes nothing to the archive,
@@ -84,10 +85,10 @@ func NewInboundService(convs ConversationBinder, ingresses domain.IngressResolve
 	}
 }
 
-// SetRouter wires the seam that shapes what happens around an admitted turn.
+// SetRouter wires a plugin's graph pipeline head (ADR-0155 D9).
 //
-// nil is the default and means "run the turn directly" — the behaviour every
-// deployment has today.
+// nil is the default and means every admitted turn enters the kernel's built-in
+// head, domain.FixedTurnHead (ingress → run_turn).
 func (s *InboundService) SetRouter(r domain.TurnRouter) { s.router = r }
 
 // SetConsentGate wires the ADR-0127 CL-2 conversation consent bridge into the
@@ -296,45 +297,53 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 		parties:        chatParties(binding, bound),
 	})
 
-	// The message id doubles as the turn's idempotency key, so a redelivered
-	// inbound message does not run the turn twice.
-	// A router may shape what happens around the turn — save the message first,
-	// branch on it, notify after. It is reached only HERE, after admission, so no
-	// authored graph can reach a security check (ADR-0090 D2).
+	// The admitted turn enters its pipeline HERE (ADR-0155 D9: a conversational
+	// ingress is a pipeline head on the one graph runtime). Admission is all
+	// above this line and no head can reach it, so no authored graph can reorder
+	// or skip a security check (ADR-0090 D2).
 	//
-	// The turn itself stays this tier's: the router is handed a function that
-	// runs it, rather than a way to run one of its own.
+	// The turn itself stays this tier's: a head is handed a function that runs
+	// it, rather than a way to run one of its own.
+	run := func(ctx context.Context, conversationID, text string) error {
+		return s.turns.RunTurn(ctx, conversationID, text, "")
+	}
+	// The head gets the sender facts the ingress TRANSPORTED, not just the text
+	// (ADR-0117): they were on the wire and in this struct the whole time, and
+	// dropping them was why a graph could not route on who wrote a message.
+	msg := domain.TurnMessage{
+		Text:             text,
+		SenderExternalID: externalID,
+		SpeakerID:        m.SpeakerID,
+		Username:         m.Username,
+		DisplayName:      m.DisplayName,
+		// The archive row this turn is about (C1). A node that writes
+		// something derived from this message can cite where it came from
+		// instead of asserting it.
+		EvidenceID: string(evidenceID),
+	}
+	return s.enterPipeline(ctx, addr.IngressAgentID, conv.ID, msg, run)
+}
+
+// enterPipeline runs an admitted turn through its pipeline head.
+//
+// The plugin's graph head (premium's pipeline.TurnRouter, registered through
+// KernelServices.RegisterTurnRouter) goes first; when there is none, or it
+// answers "not mine" (no armed chat pipeline for this ingress), the kernel's
+// built-in head runs the one fixed pipeline ingress → run_turn
+// (domain.FixedTurnHead, ADR-0155 D9 option a). Either way the turn enters
+// through a head — there is no third, head-less path to the turn.
+func (s *InboundService) enterPipeline(ctx context.Context, ingressAgentID, conversationID string, msg domain.TurnMessage, run domain.TurnFunc) error {
 	if s.router != nil {
-		run := func(ctx context.Context, conversationID, text string) error {
-			return s.turns.RunTurn(ctx, conversationID, text, "")
-		}
-		// The router gets the sender facts the ingress TRANSPORTED, not just
-		// the text (ADR-0117): they were on the wire and in this struct the
-		// whole time, and dropping them here was why a graph could not route
-		// on who wrote a message.
-		msg := domain.TurnMessage{
-			Text:             text,
-			SenderExternalID: externalID,
-			SpeakerID:        m.SpeakerID,
-			Username:         m.Username,
-			DisplayName:      m.DisplayName,
-			// The archive row this turn is about (C1). A node that writes
-			// something derived from this message can now cite where it came
-			// from instead of asserting it — which is the difference between a
-			// pipeline output and a claim with provenance.
-			EvidenceID: string(evidenceID),
-		}
-		handled, rerr := s.router.RouteTurn(ctx, addr.IngressAgentID, conv.ID, msg, run)
-		if rerr != nil {
-			return rerr
+		handled, err := s.router.RouteTurn(ctx, ingressAgentID, conversationID, msg, run)
+		if err != nil {
+			return err
 		}
 		if handled {
 			return nil
 		}
-		// Not routed: fall through, so a deployment with no pipeline for this
-		// ingress behaves exactly as it did before there were pipelines.
 	}
-	return s.turns.RunTurn(ctx, conv.ID, text, "")
+	_, err := domain.FixedTurnHead{}.RouteTurn(ctx, ingressAgentID, conversationID, msg, run)
+	return err
 }
 
 // resolveConversation finds this sender's conversation, opening one on first

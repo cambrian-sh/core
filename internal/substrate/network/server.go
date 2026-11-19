@@ -382,14 +382,6 @@ type HeartbeatSink interface {
 // liveness.HEARTBEAT_SIGNAL_TYPE).
 const HeartbeatSignalType = "_heartbeat"
 
-// SyncProcessor extends domain.SignalReceiver with synchronous request/response
-// semantics used by the CHAT routing path. The premium ReactiveEngine implements
-// this interface; the OSS NoOpSignalReceiver does not. ADR-0032.
-type SyncProcessor interface {
-	domain.SignalReceiver
-	ProcessSync(ctx context.Context, signal domain.Signal) (*domain.Handoff, error)
-}
-
 // WatchConfigHandler moved to domain (domain.WatchConfigHandler) — ADR-0057, so the
 // premium reactive hook can name it across the module boundary.
 
@@ -778,34 +770,13 @@ func (s *Server) routePlannerRequest(ctx, routeCtx context.Context, in *pb.Hando
 	}
 	switch decision.Type {
 	case domain.DecisionChat:
-		// ADR-0032: CHAT is handled by the ReactiveEngine (premium) via ProcessSync.
-		// Falls back to not_implemented when no SyncProcessor is wired (OSS build).
-		if sp, ok := s.SignalReceiver.(SyncProcessor); ok {
-			convID := in.GetMetadata()["_conversation_id"]
-			if convID == "" {
-				// The sync (chat) pipelines are keyed to a conversation stream, so a
-				// turn with no conversation has nothing to answer it: ProcessSync
-				// with an empty stream can only fail ("no sync WatchConfig found for
-				// stream \"\""), which surfaced as UNKNOWN for any agent-plane Execute
-				// the router read as chat. Run it as work instead — the PLAN path
-				// below, which opens a fresh session exactly as a turn with no
-				// session header does. The caller's session header is not consulted
-				// here; an unadoptable raw x-session-id stays unadopted (ADR-0139 D8).
-				// T-20261104-agent-plane-execute-with-an-unrecognised-raw-x.
-				slog.Info("router: chat turn with no conversation, running it as a plan")
-				return nil, false, nil
-			}
-			sig := domain.Signal{
-				StreamID: convID,
-				RawText:  rawInput,
-				Payload:  metadataToPayload(in.GetMetadata()),
-			}
-			resp, err := sp.ProcessSync(ctx, sig)
-			if err != nil {
-				return nil, true, fmt.Errorf("chat ProcessSync: %w", err)
-			}
-			return handoffToProto(resp), true, nil
-		}
+		// Conversations are answered by the chat lane, never by Execute: a
+		// conversational ingress enters through its pipeline head after admission
+		// (internal/ingress, ADR-0155 D9) and a console turn through the chat
+		// TurnService. The planner lane's CHAT outcome used to be handed to
+		// premium's ReactiveEngine.ProcessSync — the watch view's last caller,
+		// retired with ADR-0155 stage 5 (ENG-1500), which only ever answered a
+		// sync pipeline keyed to a conversation stream, a shape nothing creates.
 		return &pb.Handoff{Payload: &pb.Object{
 			Type: "not_implemented",
 			Data: []byte("chat"),

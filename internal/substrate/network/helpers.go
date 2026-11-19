@@ -14,8 +14,8 @@ func newPlanID() string {
 }
 
 // metadataToPayload converts gRPC metadata (map[string]string) to a
-// domain.Signal payload (map[string]any). Used when routing CHAT decisions
-// through ProcessSync. ADR-0032.
+// domain.Signal payload (map[string]any), for the signal a SignalStream handoff
+// becomes before it reaches the SignalReceiver. ADR-0032.
 func metadataToPayload(md map[string]string) map[string]any {
 	if len(md) == 0 {
 		return nil
