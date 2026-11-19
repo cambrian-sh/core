@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 //	--ulimit cpu=N --read-only --tmpfs /tmp --cap-drop ALL
 //	--security-opt no-new-privileges --user 65534:65534
 //	-v <workdir>:/work -w /work
+//	--tmpfs /work/<dir>:rw,exec,… for each workdir env directory (ENG-2217)
 //
 // The host filesystem is not visible at all (only the workdir, at /work), the
 // network is off unless the server declares egress, and the identity is
@@ -126,6 +128,7 @@ func dockerCapability(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, 
 		ControlFSConfine: "docker", ControlNetwork: "docker", ControlLowPrivilege: "docker",
 	}
 	capab.notes = append(capab.notes, "fs: host filesystem invisible; only the workdir is mounted, at /work")
+	capab.notes = append(capab.notes, "fs: home, temp, package caches and tool dirs ("+strings.Join(dockerScratchDirs(p), ", ")+" under /work) are per-launch exec tmpfs mounts owned by the server's uid, not kept across launches")
 	if spec.Server.Root != "" {
 		capab.notes = append(capab.notes, "fs: declared root "+spec.Server.Root+" is not mounted by the docker runner")
 	}
@@ -284,6 +287,7 @@ func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Com
 	if tp.LowPrivilege {
 		args = append(args, "--user", "65534:65534")
 	}
+	args = append(args, dockerScratchMounts(p, tp)...)
 	if tp.MemoryMB > 0 {
 		m := strconv.Itoa(tp.MemoryMB) + "m"
 		args = append(args, "--memory", m, "--memory-swap", m)
@@ -324,6 +328,54 @@ func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Com
 		return err
 	}
 	return nil
+}
+
+// dockerScratchDirs are the top-level workdir directories the workdir env
+// points into (tmp, home, cache, uv-tools with the default policy), sorted.
+func dockerScratchDirs(p *Policy) []string {
+	seen := map[string]bool{}
+	for _, m := range []map[string]string{p.WorkdirEnv, p.ConfinedEnv} {
+		for _, rel := range m {
+			top := strings.SplitN(strings.Trim(filepath.ToSlash(rel), "/"), "/", 2)[0]
+			if top != "" && top != "." && top != ".." {
+				seen[top] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for d := range seen {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dockerScratchMounts mounts an exec tmpfs over each workdir env directory
+// (ENG-2217). The bind-mounted workdir is not writable by the container's
+// uid in general — on Docker Desktop for Windows every write into it as uid
+// 65534 fails with EIO, and on a Linux host the kernel's 0700 workdir belongs
+// to the kernel user — so uvx and npx died before initialize: they could not
+// write their package caches. The plain /tmp tmpfs is no fallback: Docker
+// mounts it noexec and the tool venv uvx builds must execute. Each mount is
+// owned by the server's uid, private (0700), nosuid/nodev, and bounded by the
+// tier's memory limit (tmpfs pages count against it), else 1 GiB. Rejected: a
+// named volume per server, which would keep caches across launches but is
+// created root-owned and needs a chown container first, and outlives the
+// server as state the runner would have to garbage-collect.
+func dockerScratchMounts(p *Policy, tp TierPolicy) []string {
+	size := tp.MemoryMB
+	if size <= 0 {
+		size = 1024
+	}
+	opts := "rw,exec,nosuid,nodev,mode=0700,size=" + strconv.Itoa(size) + "m"
+	if tp.LowPrivilege {
+		opts += ",uid=65534,gid=65534"
+	}
+	var args []string
+	for _, d := range dockerScratchDirs(p) {
+		args = append(args, "--tmpfs", containerWork+"/"+d+":"+opts)
+	}
+	return args
 }
 
 // stripExt drops a Windows launcher extension: "npx.cmd" runs as "npx" in the image.
