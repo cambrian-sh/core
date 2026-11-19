@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/prompts"
 )
 
 // llmTripletExtractor is the original LLM-backed extractor (the Tier-3 residue
@@ -80,9 +79,16 @@ func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, 
 	return out, nil
 }
 
-// tripletDataTags are the data regions of kg_triplets_input; a closing tag of either
-// inside a chunk's text is neutralised so the chunk cannot end its region early.
-var tripletDataTags = []string{"chunk", "chunks"}
+// fenceChunk is one chunk's text as it reaches the triplet extractor, in either
+// format: the text of an ingested document (an upload, a webhook, a poller body)
+// inside the ADR-0063 payload fence marked provenance="ingested_document" (ENG-94).
+// The fence replaces closing-tag neutralisation: the text is one JSON-encoded,
+// HTML-escaped line between nonce lines, so neither a fake </chunk> nor a forged
+// fence line can end its region, and the fence itself tells the model the text is
+// data.
+func fenceChunk(text string) string {
+	return domain.FenceUntrusted(domain.DataProvenance{Class: domain.ProvenanceIngestedDocument}, text)
+}
 
 // buildTripletRequest renders the structured extraction call. Chunk i (0-based) is
 // sent as <chunk id="i+1">, and the reply names each chunk by that id.
@@ -94,9 +100,9 @@ func buildTripletRequest(texts []string) domain.GenerateRequest {
 		}
 		sb.WriteString(`<chunk id="`)
 		sb.WriteString(strconv.Itoa(i + 1))
-		sb.WriteString(`">`)
-		sb.WriteString(prompts.NeutraliseClosingTags(t, tripletDataTags...))
-		sb.WriteString("</chunk>")
+		sb.WriteString("\">\n")
+		sb.WriteString(fenceChunk(t))
+		sb.WriteString("\n</chunk>")
 	}
 	return kgTripletsPrompts.mustRequest(map[string]string{"chunks": sb.String()})
 }

@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -19,6 +20,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chat_agent as ca  # noqa: E402
 from chat_agent_test import _Stub, _agent, _answer, _delegate, _task, _DelegatingSubstrate, _all_content  # noqa: E402
 from cambrian_agent_sdk.execute_result import ExecuteResult  # noqa: E402
+
+_FENCE_BLOCK = re.compile(r'<untrusted_data [^\n]*>\n(PAYLOAD_FENCE_[0-9a-f]+)\n("(?:[^"\\\n]|\\.)*")\n\1\n</untrusted_data>')
+
+
+def _unfenced(text: str) -> str:
+    """The text with every payload-fence block (ENG-94: tool output reaches the model
+    fenced) replaced by its decoded payload, so the assertions read the tool result."""
+    return _FENCE_BLOCK.sub(lambda m: json.loads(m.group(2)), text)
+
 
 LED_AGING = "led_0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 LED_STEP = "led_aa11bb22cc33dd44ee55ff6600778899"
@@ -74,7 +84,7 @@ def test_grounded_reply_writes_over_the_evidence_with_ledger_ids_and_item_tags()
     system = stub.stream_reqs[0].system[0].text
     assert "cite the evidence it comes from by its id in square brackets" in system
     # The SDK writes the tool result into the trajectory XML-escaped.
-    after = html.unescape(_all_content(stub.stream_reqs[1]))
+    after = _unfenced(html.unescape(_all_content(stub.stream_reqs[1])))
     assert "<evidence>" in after
     assert f"over_60_total = 66483.75 [{LED_AGING}]" in after
     assert "- [R2] answer not_found: Name the approver. (asked as \"who approved\") - no record names an approver" in after
@@ -176,7 +186,7 @@ def test_input_required_ends_the_turn_with_the_questions_and_runs_no_second_plan
     out = a.run(_task("Raporu hazırla.", language="tr", ask_back="true"))
     assert out.data.decode() == "Raporu hangi ay için hazırlayayım?"
     assert len(sub.executed) == 1, "no plan runs after an ask-back in the same turn"
-    after = html.unescape(_all_content(stub.stream_reqs[1]))
+    after = _unfenced(html.unescape(_all_content(stub.stream_reqs[1])))
     assert "<questions>\n- Which month should the report cover?\n</questions>" in after
     assert "in your own words and in Turkish" in after
     assert "ask the user exactly those questions" in stub.stream_reqs[0].system[0].text

@@ -747,13 +747,16 @@ func (b *ChunkTripletsBatcher) failBatch(batch []tripletItem, err error) {
 // in-context demos are grounded; the actual input uses "Chunk N:" to keep
 // the chunk/triplet labels distinct from the in-prompt example text, which
 // avoids the parser confusing example bodies with real output.
+//
+// Each chunk's text is inside the payload fence (fenceChunk, ENG-94): the chunk is an
+// ingested document's text, data and never instructions.
 func buildBatchTripletPrompt(texts []string) string {
 	var sb strings.Builder
 	for i, t := range texts {
 		sb.WriteString("Chunk ")
 		sb.WriteString(itoa(i + 1))
-		sb.WriteString(": ")
-		sb.WriteString(t)
+		sb.WriteString(":\n")
+		sb.WriteString(fenceChunk(t))
 		sb.WriteString("\nTriplets ")
 		sb.WriteString(itoa(i + 1))
 		sb.WriteString(": ")

@@ -2,10 +2,12 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,7 +42,24 @@ func (g *scriptedGen) Generate(ctx context.Context, prompt string) (string, erro
 			return "", ctx.Err()
 		}
 	}
-	return g.answer(prompt)
+	// The model reads a fenced payload (ENG-94) as its decoded text; so does the fake,
+	// which keeps the scripted answers written against the passages themselves.
+	return g.answer(unfencePrompt(prompt))
+}
+
+// fencedBlockRE matches one domain.FenceUntrusted block.
+var fencedBlockRE = regexp.MustCompile(`<untrusted_data [^\n]*>\n(PAYLOAD_FENCE_[0-9a-f]+)\n("(?:[^"\\\n]|\\.)*")\n(PAYLOAD_FENCE_[0-9a-f]+)\n</untrusted_data>`)
+
+// unfencePrompt replaces every payload fence in p by its decoded payload.
+func unfencePrompt(p string) string {
+	return fencedBlockRE.ReplaceAllStringFunc(p, func(block string) string {
+		m := fencedBlockRE.FindStringSubmatch(block)
+		var s string
+		if m[1] != m[3] || json.Unmarshal([]byte(m[2]), &s) != nil {
+			return block
+		}
+		return s
+	})
 }
 
 func isAssessmentPrompt(p string) bool { return strings.Contains(p, "give exactly one verdict") }

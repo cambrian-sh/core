@@ -41,6 +41,17 @@ from cambrian_agent_sdk._logging import configure_logging
 
 _log = logging.getLogger("cambrian.chat_agent")
 
+# ENG-94: a recalled memory reaches the turn inside the kernel's payload fence with its
+# provenance (the SDK's one renderer, held to domain/untrusted_fence.go by a parity
+# fixture). An SDK older than 0.1.9 has no fence: the turn then keeps the closing-tag
+# neutralisation it always had, and says so once, loudly — never a silent downgrade.
+try:
+    from cambrian_agent_sdk.working_memory import render_recalled_memory
+except ImportError:  # cambrian-agent-sdk < 0.1.9
+    render_recalled_memory = None
+    _log.warning("chat_agent: cambrian-agent-sdk has no payload fence (needs >= 0.1.9); "
+                 "recalled memory is rendered unfenced (closing tags neutralised only) — ENG-94")
+
 
 # ── Prompts (ADR-0139 C4/D2) ────────────────────────────────────────────────
 # The texts live in the kernel prompt library (cambrian-core/prompts/chat_agent and
@@ -944,7 +955,14 @@ class ChatAgent(CognitiveAgent):
         for r in results or []:
             text = r.get("text", "") if isinstance(r, dict) else getattr(r, "text", "")
             text = str(text or "").strip()
-            if text:
+            if not text:
+                continue
+            if render_recalled_memory is not None:
+                # The text inside the nonce fence, provenance recalled_memory, the writer
+                # as origin: an ingested document saying "ignore previous instructions"
+                # is one data line, and a fake closing tag in it cannot end the region.
+                items.append(render_recalled_memory({**r, "text": text} if isinstance(r, dict) else r))
+            else:
                 items.append(f"<memory {memory_provenance_attrs(r)}>{_neutralise(text)}</memory>")
         return "\n".join(items)
 

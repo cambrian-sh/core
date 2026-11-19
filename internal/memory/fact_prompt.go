@@ -124,6 +124,17 @@ func factSourceRegion(in factExtractionInput) string {
 // window packer (packFactWindows) already sized them to the budget. The rules are the
 // cached system block; the window is the user message, in tagged data regions
 // (ADR-0139 D2); the reply shape is the response schema (C1).
+//
+// The passages are the ingested document's text (an upload, a webhook, a poller body):
+// the whole numbered list goes inside ONE ADR-0063 payload fence marked
+// provenance="ingested_document" (ENG-94), so the fence tells the model it is data, and
+// neither a forged fence line nor a fake </passages> can end the region (the list is
+// one JSON-encoded, HTML-escaped line between nonce lines). One fence per window, not
+// per passage: a conversation's short turns would otherwise pay the fence header each
+// and need more windows (more calls) for the same source. A quote the model copies
+// from the encoded line decodes back to the original text when its JSON reply is
+// parsed, so the verbatim quote check still holds. The prompt files are unchanged, so
+// the extractor version is too: a stored corpus is not re-extracted for this.
 func buildFactRequest(in factExtractionInput) domain.GenerateRequest {
 	var passages strings.Builder
 	for i, p := range in.Passages {
@@ -132,31 +143,34 @@ func buildFactRequest(in factExtractionInput) domain.GenerateRequest {
 	return factExtractPrompts.mustRequest(map[string]string{
 		"source":               factSourceRegion(in),
 		"preferred_attributes": strings.Join(in.CanonicalPredicates, ", "),
-		"passages":             strings.TrimRight(passages.String(), "\n"),
+		"passages": domain.FenceUntrusted(domain.DataProvenance{Class: domain.ProvenanceIngestedDocument},
+			strings.TrimRight(passages.String(), "\n")),
 	})
 }
 
-// factEntryChars is what one passage entry adds to a rendered request.
-func factEntryChars(i int, p, speaker string) int { return len(factPassageEntry(i, p, speaker)) }
+// factEntryChars is what one passage entry adds to a rendered request: its length once
+// JSON-encoded inside the window's fence (the encoding is per character, so entry
+// sizes add up).
+func factEntryChars(i int, p, speaker string) int {
+	return domain.PayloadFenceEncodedLen(factPassageEntry(i, p, speaker))
+}
 
 // factWindowOverhead is the size of a window's request with no passage: the system
-// block, the schema, the message frame and the source block, plus room for the section
-// line, whose numbers are known only after packing.
+// block, the schema, the message frame, the source block and the (empty) passages
+// fence, plus room for the section line, whose numbers are known only after packing.
 func factWindowOverhead(src domain.SourceMeta, canonical []string) int {
 	return requestChars(buildFactRequest(factExtractionInput{Source: src, CanonicalPredicates: canonical})) + factSectionReserve
 }
 
 // factPassageEntry renders one numbered passage. A known speaker at its start (A3.4)
 // is rendered as a marker BEFORE the text — data, folded onto one line and clipped like
-// a Source value, so a label cannot add a line of its own. A closing tag of a data
-// region inside the text is neutralised so the passage cannot end <passages> early.
+// a Source value, so a label cannot add a line of its own. The entry is fenced with the
+// rest of the window (buildFactRequest).
 func factPassageEntry(i int, p, speaker string) string {
 	if len(p) > maxFactPassageChars {
 		p = p[:maxFactPassageChars]
 	}
-	p = prompts.NeutraliseClosingTags(p, factDataTags...)
 	if speaker = clipField(strings.Join(strings.Fields(speaker), " "), maxFactFieldChars); speaker != "" {
-		speaker = prompts.NeutraliseClosingTags(speaker, factDataTags...)
 		return fmt.Sprintf("[%d] (speaker at start: %s) %s\n", i+1, speaker, p)
 	}
 	return fmt.Sprintf("[%d] %s\n", i+1, p)

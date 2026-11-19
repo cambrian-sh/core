@@ -81,7 +81,7 @@ func TestPersistChunks_SpeakerMetadataWithoutChangingChunks(t *testing.T) {
 	if at, sp := chunkSpeakerMeta(back); at != "assistant" || !reflect.DeepEqual(sp, []string{"assistant", "user"}) {
 		t.Fatalf("round-tripped speakers = %q %v", at, sp)
 	}
-	prompt := buildFactPrompt(factExtractionInput{Passages: []string{ps[0].Text, ps[1].Text}, Speakers: []string{ps[0].Speaker, ps[1].Speaker}})
+	prompt := unfencePrompt(buildFactPrompt(factExtractionInput{Passages: []string{ps[0].Text, ps[1].Text}, Speakers: []string{ps[0].Speaker, ps[1].Speaker}}))
 	if !strings.Contains(prompt, "[2] (speaker at start: assistant) "+ps[1].Text+"\n") ||
 		!strings.Contains(prompt, "[1] (speaker at start: user) ") {
 		t.Fatalf("prompt passages:\n%s", prompt[strings.Index(prompt, "<passages>"):])
