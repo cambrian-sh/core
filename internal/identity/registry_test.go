@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,8 +143,18 @@ func TestRegistry_Contract(t *testing.T) {
 			if err := reg.SetRoles(ctx, "prtest-bob", []string{"operator"}); err != nil {
 				t.Fatal(err)
 			}
-			if ps, _ := reg.ListPrincipals(ctx, domain.PrincipalFilter{Status: domain.PrincipalSuspended}); len(ps) != 1 || ps[0].ID != "prtest-alice" {
-				t.Fatalf("list by status: %+v", ps)
+			// Only this test's principals: the Postgres registry shares the
+			// migrated principals table with every other Pg package under make
+			// test-pg (T-20261118-make-test-pg-fails-app-approval-recovery-pg).
+			ps, _ := reg.ListPrincipals(ctx, domain.PrincipalFilter{Status: domain.PrincipalSuspended})
+			var mine []domain.Principal
+			for _, p := range ps {
+				if strings.HasPrefix(p.ID, "prtest-") {
+					mine = append(mine, p)
+				}
+			}
+			if len(mine) != 1 || mine[0].ID != "prtest-alice" {
+				t.Fatalf("list by status: %+v", mine)
 			}
 		})
 	}

@@ -188,13 +188,23 @@ func TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite(t *testing.T) {
 	}
 }
 
+// mustList lists only the approvals this test raises — ontology_change items
+// from its agent — never the whole table: make test-pg runs every Pg package on
+// one shared database, and approvals other packages leave there are not this
+// test's (T-20261118-make-test-pg-fails-app-approval-recovery-pg).
 func mustList(t *testing.T, hub *domain.AddressedHub) []domain.ApprovalItem {
 	t.Helper()
 	items, err := hub.List(context.Background(), domain.ApprovalQuery{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return items
+	var mine []domain.ApprovalItem
+	for _, it := range items {
+		if it.Kind == domain.ApprovalKindOntologyChange && it.AgentID == "planner" {
+			mine = append(mine, it)
+		}
+	}
+	return mine
 }
 
 // tokenAuth is a fixed bearer-token → identity table (domain.Authenticator).

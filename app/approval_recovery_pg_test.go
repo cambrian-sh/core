@@ -123,6 +123,34 @@ func bootRecoveryKernel(t *testing.T, dsn, person, lease, conv string, schedules
 	return &recoveryKernel{hub: hub, server: srv, tool: tool, evs: evs}
 }
 
+// cleanupRecoveryRows removes what one recovery test leaves in the shared,
+// migrated database: its approvals (found by the person, unique per test),
+// their ADR-0154 action records and the person's principal row. make test-pg
+// runs every Pg package on one database; rows left here broke a later
+// package's approval count (T-20261118-make-test-pg-fails-app-approval-recovery-pg).
+// Registered first, so it runs after every kernel of the test has stopped.
+func cleanupRecoveryRows(t *testing.T, dsn, person string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		pool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			t.Errorf("cleanup: %v", err)
+			return
+		}
+		defer pool.Close()
+		for _, q := range []string{
+			`DELETE FROM action_records WHERE key IN (SELECT 'approval-recovery:' || id FROM approvals WHERE beneficiary_id = $1)`,
+			`DELETE FROM approvals WHERE beneficiary_id = $1`,
+			`DELETE FROM principals WHERE id = $1`,
+		} {
+			if _, err := pool.Exec(ctx, q, person); err != nil {
+				t.Errorf("cleanup %q: %v", q, err)
+			}
+		}
+	})
+}
+
 func agentCtx(ctx context.Context) context.Context {
 	return metadata.NewIncomingContext(ctx, metadata.Pairs("x-agent-id", recoveryAgent))
 }
@@ -146,6 +174,7 @@ func TestE2E_ApprovalApprovedAfterRestartRunsOnce_Pg(t *testing.T) {
 	dsn, _ := pgscratch.Migrated(t)
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	person, lease, conv := "eng2118-lena-"+suffix, "lease-eng2118-"+suffix, "conv-eng2118-"+suffix
+	cleanupRecoveryRows(t, dsn, person)
 	schedules := &sharedSchedules{tasks: map[string]domain.ScheduledTask{}}
 
 	// ── kernel run 1: both approvals raised; the process "dies" while they wait.
@@ -260,6 +289,7 @@ func TestE2E_WithdrawnApprovalApprovedAfterRestartIsRefused_Pg(t *testing.T) {
 	dsn, _ := pgscratch.Migrated(t)
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	person, lease, conv := "eng2118-mira-"+suffix, "lease-eng2118w-"+suffix, "conv-eng2118w-"+suffix
+	cleanupRecoveryRows(t, dsn, person)
 	schedules := &sharedSchedules{tasks: map[string]domain.ScheduledTask{}}
 
 	k1 := bootRecoveryKernel(t, dsn, person, lease, conv, schedules)
@@ -295,6 +325,7 @@ func TestE2E_ApprovalForDeprovisionedPersonRefusedAfterRestart_Pg(t *testing.T) 
 	dsn, _ := pgscratch.Migrated(t)
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	person, lease, conv := "eng2118-omar-"+suffix, "lease-eng2118d-"+suffix, "conv-eng2118d-"+suffix
+	cleanupRecoveryRows(t, dsn, person)
 	schedules := &sharedSchedules{tasks: map[string]domain.ScheduledTask{}}
 
 	k1 := bootRecoveryKernel(t, dsn, person, lease, conv, schedules)
