@@ -82,11 +82,6 @@ func NewMetabolismStack(
 	profileStore memstore.ProfileStore,
 	memoryAgent domain.MemoryAgent,
 	cfg *config.Config,
-	// Unused since 2026-11-14: its only consumer was the dispatcher's
-	// cambrian_auction_no_winner_total counter, deleted by owner decision
-	// (ENG-1335). The parameter stays until app/app.go (another owner's file)
-	// drops the argument (T-20261114-drop-the-unused-telemetry-observer-argument-of).
-	_ domain.TelemetryObserver,
 	leases verify.LeaseGateway,
 ) *MetabolismStack {
 	manager := agentmgr.NewAgentManager(reg, "localhost:"+cfg.Server.Port, memoryAgent)

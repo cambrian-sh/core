@@ -30,7 +30,7 @@ func TestE2E_UnparsableManifestAgentNeverBoots(t *testing.T) {
 	}
 	defer store.Close()
 	reg := kernel.NewAgentRepoDecorator(store)
-	meta := kernel.NewMetabolismStack(reg, nil, nil, nil, nil, config.DefaultConfig(), nil, nil)
+	meta := kernel.NewMetabolismStack(reg, nil, nil, nil, nil, config.DefaultConfig(), nil)
 
 	const id = "typo_agent"
 	write := func(manifest string) {

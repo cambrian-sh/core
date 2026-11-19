@@ -15,7 +15,7 @@ func TestMetabolismStack_SelectorResolvesYields(t *testing.T) {
 	// The agent sandbox is on by default and its boot owns and sweeps the work
 	// root (ENG-2088): never the developer's real one.
 	cfg.Execution.Agents.Sandbox.WorkRoot = t.TempDir()
-	meta := NewMetabolismStack(&AgentRepoDecorator{}, nil, nil, nil, nil, cfg, nil, nil)
+	meta := NewMetabolismStack(&AgentRepoDecorator{}, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(meta.agentSandbox.ReleaseWorkRoot)
 	if _, ok := meta.Selector.(*yield.Resolver); !ok {
 		t.Fatalf("MetabolismStack.Selector = %T, want *yield.Resolver wrapping the Dispatcher", meta.Selector)

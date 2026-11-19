@@ -48,7 +48,7 @@ func (b *kernelBuild) buildMetabolism() error {
 	// meter to the Provider and the server.
 	spendMeter := llm.NewSpendMeter(cfg.Execution.Session.MaxSessionTokens, llmProvider.Ledger(), slog.Default())
 	llmGateway := subnetwork.NewLLMGateway(cfg.Execution, spendMeter)
-	meta := kernel.NewMetabolismStack(reg, embedder, mem.Reader(), mem.ProfileStore, mem.Agent, cfg, observer, llmGateway)
+	meta := kernel.NewMetabolismStack(reg, embedder, mem.Reader(), mem.ProfileStore, mem.Agent, cfg, llmGateway)
 	// ADR-0157 D7.11: the managed Python env's boot check (+ build_on_boot
 	// background build) before any agent boots; Python spawns wait on its gate.
 	pyEnv := startPythonEnv(ctx, cfg, config.ResolveBaseDir())
