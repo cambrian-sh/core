@@ -843,9 +843,9 @@ type RetrievalConfig struct {
 
 	// Hebbian co-activation (ADR-0049 D10): when recall co-retrieves strongly-activated
 	// memories, reinforce the `co_activated` edge between them so the graph self-organizes
-	// from usage. Default OFF (opt-in) — the constants below are HITL-tuned against real
+	// from usage. Default ON (DefaultConfig) — the constants below are HITL-tuned against real
 	// traces, not unit-asserted to a single "correct" value.
-	HebbianEnabled           bool    `json:"hebbian_enabled"`            // default false
+	HebbianEnabled           bool    `json:"hebbian_enabled"`            // default true (DefaultConfig)
 	HebbianLearningRate      float64 `json:"hebbian_learning_rate"`      // weight added per co-activation (default 0.05)
 	HebbianMaxWeight         float64 `json:"hebbian_max_weight"`         // Matthew-effect cap (default 0.9)
 	HebbianCoActivationFloor float64 `json:"hebbian_coactivation_floor"` // both results must exceed to "co-fire" (default 0.5)
