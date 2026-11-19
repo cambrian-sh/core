@@ -21,7 +21,8 @@ import (
 // for guards tied to the REQUEST instead, enforced by the ToolExecutor at call time:
 //
 //  1. the person's "don't" constraints from the requirement checklist, by ADR-0086
-//     tool class (forbids: send ⇒ every egress-class tool is refused);
+//     tool class (forbids: send ⇒ every tool that may send, class egress_send,
+//     is refused; ENG-1426);
 //  2. a per-target write record for the request (the ordering conversation turn, or
 //     the root run when there is no turn): a target written once cannot be written
 //     again in that request, whatever the wording; a repair turn never re-runs a
@@ -106,31 +107,23 @@ func ResolveConstraints(c *RequirementChecklist, terms map[string][]ToolEffect) 
 }
 
 // ForbiddenBy returns the constraint that rules out a call of t and the class it
-// matched. A tool's declared (or fail-closed default) classes are what count. A
-// class in carries (the classes the step's own write items need, StepGuard.Carries)
-// is never ruled out: a constraint stops other actions of that kind, not the
-// request's own write (ADR-0145 D14.6).
+// matched. A call is ruled out when it exercises a constraint class (Exercises:
+// the tool's CeilingEffects covered by the class — the same classification the
+// Rule of Two and the outbound identifier guard use, ENG-1426), so `forbids: send`
+// (class egress_send) refuses a tool declaring egress_send or plain egress and
+// never one declaring egress_read alone. An effect a class in carries covers (the
+// classes the step's own write items need, StepGuard.Carries) is never ruled out:
+// a constraint stops other actions of that kind, not the request's own write
+// (ADR-0145 D14.6).
 func ForbiddenBy(t SystemTool, cons []ConstraintGuard, carries ...ToolEffect) (ConstraintGuard, ToolEffect, bool) {
 	for _, c := range cons {
 		for _, cl := range c.Classes {
-			if containsEffect(carries, cl) {
-				continue
-			}
-			if t.HasEffect(cl) {
+			if ExercisesUncarried(t, cl, carries) {
 				return c, cl, true
 			}
 		}
 	}
 	return ConstraintGuard{}, "", false
-}
-
-func containsEffect(xs []ToolEffect, x ToolEffect) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 // CarriedClasses are the tool classes the given write items need (StepGuard.Carries):

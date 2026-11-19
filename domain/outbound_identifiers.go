@@ -113,16 +113,10 @@ func NewOutboundIdentifierGuard(d IdentifierDetector, kinds []IdentifierKind) (*
 // egress expands to it; egress that was only inferred counts as send). A tool
 // with no effects bypassed registration and is treated as sending (fail closed).
 func SendsOutside(t SystemTool) bool {
-	effects := CeilingEffects(t)
-	if len(effects) == 0 {
+	if len(CeilingEffects(t)) == 0 {
 		return true
 	}
-	for _, e := range effects {
-		if e == EffectEgressSend {
-			return true
-		}
-	}
-	return false
+	return Exercises(t, EffectEgressSend)
 }
 
 // Check returns the identifiers in the text arguments of a call of tool, or

@@ -594,9 +594,15 @@ func (c CapabilityConfig) StepEffectVocabulary() (*domain.StepEffectVocabulary, 
 }
 
 // DefaultEffectVocabulary is the shipped vocabulary. The class terms are the five
-// ADR-0086 classes one to one (egress keeps its name; send is its refinement); the
+// ADR-0086 classes one to one (egress covers egress_read and egress_send); the
 // refined terms are the distinctions a plan step needs that the classes cannot
 // express. Tool globs match the tool's base name (after the last '/').
+//
+// `send` is the ADR-0150 D9 class egress_send, and the declared class wins
+// (ENG-1426, owner decision 2026-11-19): a tool declaring egress_send is "send"
+// whatever its name, one declaring egress_read never is, and the globs are only a
+// fallback for a tool that declares plain egress with no read/send split. The D14
+// constraint term `send` (DefaultConstraintClasses) is the same class.
 func DefaultEffectVocabulary() []EffectTermConfig {
 	return []EffectTermConfig{
 		{Name: "read", Classes: []string{"read"},
@@ -611,7 +617,7 @@ func DefaultEffectVocabulary() []EffectTermConfig {
 			Description: "run a command, a script or code"},
 		{Name: "egress", Classes: []string{"egress"},
 			Description: "reach outside this deployment: fetch a web page, search the web, call an external service"},
-		{Name: "send", Refines: "egress", Tools: []string{"*send*", "*reply*", "*forward*", "*post_message*", "*publish*"},
+		{Name: "send", Classes: []string{"egress_send"}, Refines: "egress", Tools: []string{"*send*", "*reply*", "*forward*", "*post_message*", "*publish*"},
 			Description: "send or publish something to someone: an email, a chat message, a post"},
 		{Name: "spend", Classes: []string{"spend"},
 			Description: "incur cost or move money"},
@@ -1610,7 +1616,9 @@ type ToolsConfig struct {
 	// (T-20261112-coverage-settles-a-write-item-on-any-done). nil: DefaultWriteTargets.
 	WriteTargets *WriteTargetsConfig `json:"write_targets,omitempty"`
 	// ConstraintClasses maps each term a checklist constraint may forbid to the
-	// ADR-0086 tool classes it rules out (D14: forbids: send ⇒ every egress tool).
+	// ADR-0086 tool classes it rules out (D14: forbids: send ⇒ every tool that may
+	// send, class egress_send; a call is ruled out when its CeilingEffects are
+	// covered by the class — domain.Exercises, ENG-1426).
 	// The checklist deriver offers exactly these terms. nil: DefaultConstraintClasses.
 	ConstraintClasses map[string][]string `json:"constraint_classes,omitempty"`
 	// ValidateArgs validates every tool call's arguments against the tool's JSON
@@ -1926,7 +1934,12 @@ func (c *WriteTargetsConfig) Domain() *domain.WriteTargets {
 func DefaultConstraintClasses() map[string][]string {
 	return map[string][]string{
 		"read": {"read"}, "write": {"write"}, "egress": {"egress"}, "spend": {"spend"}, "admin": {"admin"},
-		"send": {"egress"}, "publish": {"egress"}, "post": {"egress"},
+		// ENG-1426: "send" is the ADR-0150 D9 class egress_send — the one
+		// definition of sending shared with the effect vocabulary, the Rule of Two
+		// and the outbound guards. It refuses a tool declaring egress_send or plain
+		// egress (it may send), never one declaring egress_read alone (web search
+		// stays allowed under "don't send anything").
+		"send": {"egress_send"}, "publish": {"egress_send"}, "post": {"egress_send"},
 		"change": {"write"}, "delete": {"write"},
 		// ADR-0145 D14.6: "exactly as drafted" constrains editing, not the write
 		// it qualifies (the guard never refuses a class the step's own write item
@@ -1952,7 +1965,7 @@ func (c ToolsConfig) ConstraintTerms() (map[string][]domain.ToolEffect, error) {
 		for _, cl := range classes {
 			e := domain.ToolEffect(strings.ToLower(strings.TrimSpace(cl)))
 			if !domain.ValidToolEffect(e) {
-				return nil, fmt.Errorf("execution.tools.constraint_classes[%q]: %q is not a tool class (read, write, egress, spend, admin)", term, cl)
+				return nil, fmt.Errorf("execution.tools.constraint_classes[%q]: %q is not a tool class (read, egress_read, write, egress, egress_send, spend, admin)", term, cl)
 			}
 			out[n] = append(out[n], e)
 		}

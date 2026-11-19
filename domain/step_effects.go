@@ -21,16 +21,28 @@ import (
 //
 // The vocabulary is a small, fixed, config-driven set (execution.capability.
 // effect_vocabulary). Every term maps onto the ADR-0086 tool effect classes
-// (read, write, egress, spend, admin) — those are what tool policies declare — in
-// one of two ways:
+// (read, write, egress, spend, admin, and the ADR-0150 D9 split egress_read /
+// egress_send) — those are what tool policies declare — in one or both of two ways:
 //
-//   - a CLASS term holds for a tool that declares any of its classes
-//     (`write` ← write);
+//   - a CLASS term holds for a tool that declares a class the term's classes
+//     cover (EffectCovers: `write` ← write; `egress` ← egress, egress_read or
+//     egress_send; `egress_send` ← egress_send only);
 //   - a REFINED term names one class it refines and tool-name globs, and holds for
 //     a tool that declares that class AND whose name matches a glob (`move` ←
 //     write + `*move*`/`*rename*`). The ADR-0086 classes cannot tell a move from a
 //     write — move_file and write_file both declare `write` — and that is exactly
 //     the distinction the p05 receipts journey lost.
+//
+// A term may set both. Then the declared class wins and the globs are only a
+// FALLBACK for a tool that declares the refined class itself (plain egress, no
+// read/send split): `send` is classes [egress_send] + refines egress with `*send*`, … (ENG-1426,
+// owner decision 2026-11-19), so a tool declaring egress_send is "send" whatever
+// its name, a tool declaring egress_read is never "send" whatever its name, and a
+// tool declaring plain egress is "send" only when its name matches a glob. This is
+// one definition of sending with ADR-0150 D9: the guards (Rule of Two, outbound
+// identifier guard, D14 constraints) classify through Exercises, which reads plain
+// egress as possibly sending (fail closed); the vocabulary answers what an agent
+// CAN do and so needs positive evidence for a plain-egress tool — the glob.
 //
 // Fail-closed rules: a tool with no operator policy (inferred effects, or the
 // fail-closed default an unlisted MCP tool is stamped with) contributes nothing;
@@ -44,10 +56,12 @@ type StepEffectTerm struct {
 	Name string
 	// Description is shown to the planner next to the name.
 	Description string
-	// Classes: a tool that declares any of these classes has this effect.
+	// Classes: a tool that declares a class one of these covers has this effect.
 	Classes []ToolEffect
 	// Refines + Tools: a tool that declares Refines AND whose base name (the part
-	// after the last '/') matches one of Tools has this effect.
+	// after the last '/') matches one of Tools has this effect. HasEffect is
+	// literal: a tool declaring only egress_read does not declare egress, so no
+	// name makes it "send" (a declared split always wins over a name).
 	Refines ToolEffect
 	Tools   []string
 }
@@ -59,7 +73,7 @@ type StepEffectVocabulary struct {
 }
 
 // NewStepEffectVocabulary validates terms and builds the vocabulary. A term needs a
-// unique lowercase name and either Classes, or Refines plus at least one Tools glob;
+// unique lowercase name and Classes, Refines plus at least one Tools glob, or both;
 // every class must be an ADR-0086 class. An empty term list is valid: every
 // required effect is then unmatched, which refuses every effect-declaring step
 // (fail closed).
@@ -80,8 +94,6 @@ func NewStepEffectVocabulary(terms []StepEffectTerm) (*StepEffectVocabulary, err
 		}
 		refined := t.Refines != "" || len(t.Tools) > 0
 		switch {
-		case refined && len(t.Classes) > 0:
-			return nil, fmt.Errorf("effect vocabulary term %q: set either classes or refines+tools, not both", name)
 		case refined && !ValidToolEffect(t.Refines):
 			return nil, fmt.Errorf("effect vocabulary term %q: refines %q is not an effect class (the classes are [%s])", name, t.Refines, effectNames())
 		case refined && len(t.Tools) == 0:
@@ -141,15 +153,25 @@ func (v *StepEffectVocabulary) ReadOnly(name string) bool {
 		return false
 	}
 	t := v.terms[i]
-	if t.Refines != "" {
-		return t.Refines == EffectRead
+	if t.Refines != "" && t.Refines != EffectRead {
+		return false
 	}
 	for _, c := range t.Classes {
 		if c != EffectRead {
 			return false
 		}
 	}
-	return len(t.Classes) > 0
+	return len(t.Classes) > 0 || t.Refines == EffectRead
+}
+
+// declaresCovered reports whether t declares an effect class covers.
+func declaresCovered(t SystemTool, class ToolEffect) bool {
+	for _, e := range t.Effects {
+		if EffectCovers(class, e) {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeStepEffect is the only normalisation an emitted effect gets.
@@ -181,26 +203,32 @@ func (v *StepEffectVocabulary) EffectsOfTool(t SystemTool) []string {
 	var out []string
 	base := toolBaseName(t.Name)
 	for _, term := range v.terms {
-		if term.Refines != "" {
-			if !t.HasEffect(term.Refines) {
-				continue
-			}
-			for _, g := range term.Tools {
-				if MatchToolGlob(g, base) {
-					out = append(out, term.Name)
-					break
-				}
-			}
-			continue
-		}
-		for _, c := range term.Classes {
-			if t.HasEffect(c) {
-				out = append(out, term.Name)
-				break
-			}
+		if v.termHolds(term, t, base) {
+			out = append(out, term.Name)
 		}
 	}
 	return out
+}
+
+// termHolds decides one term for one policy-backed tool: a declared class the
+// term's classes cover wins; the refinement globs apply only to a tool that
+// declares the refined class itself (plain egress for send), never to one that
+// declares only a narrower class of it (egress_read) (ENG-1426).
+func (v *StepEffectVocabulary) termHolds(term StepEffectTerm, t SystemTool, base string) bool {
+	for _, c := range term.Classes {
+		if declaresCovered(t, c) {
+			return true
+		}
+	}
+	if term.Refines == "" || !t.HasEffect(term.Refines) {
+		return false
+	}
+	for _, g := range term.Tools {
+		if MatchToolGlob(g, base) {
+			return true
+		}
+	}
+	return false
 }
 
 // DeriveEffects returns the effect set the given tools produce, sorted.

@@ -36,7 +36,8 @@ func TestStepGuard_FromTheChecklistAndCoverage(t *testing.T) {
 		!reflect.DeepEqual(g.Documents, []string{"R2"}) || len(g.Carries) != 0 {
 		t.Fatalf("guard = %+v", g)
 	}
-	if len(g.Constraints) != 1 || !reflect.DeepEqual(g.Constraints[0].Classes, []domain.ToolEffect{domain.EffectEgress}) {
+	// ENG-1426: "send" is the ADR-0150 D9 class egress_send.
+	if len(g.Constraints) != 1 || !reflect.DeepEqual(g.Constraints[0].Classes, []domain.ToolEffect{domain.EffectEgressSend}) {
 		t.Fatalf("constraints = %+v", g.Constraints)
 	}
 	if g := s.stepGuard(domain.WithRepairTurn(context.Background()), domain.Step{}, nil, "run-1"); g.Request != "run:run-1" || !g.Repair || g.Checklist {
@@ -50,7 +51,7 @@ func TestStepGuard_FromTheChecklistAndCoverage(t *testing.T) {
 
 func TestConstraintTermsDefaults(t *testing.T) {
 	terms, err := config.ToolsConfig{}.ConstraintTerms()
-	if err != nil || !reflect.DeepEqual(terms["send"], []domain.ToolEffect{domain.EffectEgress}) {
+	if err != nil || !reflect.DeepEqual(terms["send"], []domain.ToolEffect{domain.EffectEgressSend}) {
 		t.Fatalf("terms = %v err %v", terms, err)
 	}
 	if _, err := (config.ToolsConfig{ConstraintClasses: map[string][]string{"send": {"teleport"}}}).ConstraintTerms(); err == nil {
@@ -70,7 +71,7 @@ func TestPlanRunIDStripsStagesAndGenerations(t *testing.T) {
 // T-20261109-d14-constraint-forbids-change-refuses-the-send (o3x replay, runs
 // 2a8623eec5f262dc / f3104e8631ba3491): "Send them now, exactly as drafted" derived
 // R1 write "Send the drafts" + R2 constraint forbids [change]. The step answering
-// R1 carries the write class (and egress, from does: [send]), so the constraint
+// R1 carries the write class (and egress_send, from does: [send]), so the constraint
 // does not refuse the send it asks for; a step not answering R1 is still held to it.
 func TestStepGuard_ConstraintDoesNotBlockTheRequestsOwnWrite(t *testing.T) {
 	s := &Server{ToolExecutor: newTestToolExecutor(t, domain.ToolExecutorControls{Guards: &domain.RequestGuards{}}, domain.ToolExecutor{})}
@@ -83,7 +84,7 @@ func TestStepGuard_ConstraintDoesNotBlockTheRequestsOwnWrite(t *testing.T) {
 	send := domain.SystemTool{Name: "mail_send_draft", Effects: []domain.ToolEffect{domain.EffectWrite, domain.EffectEgress}}
 
 	g := s.stepGuard(context.Background(), domain.Step{Answers: []string{"R1"}}, reqs, "run-1")
-	if !reflect.DeepEqual(g.Carries, []domain.ToolEffect{domain.EffectEgress, domain.EffectWrite}) {
+	if !reflect.DeepEqual(g.Carries, []domain.ToolEffect{domain.EffectEgressSend, domain.EffectWrite}) {
 		t.Fatalf("carries = %v", g.Carries)
 	}
 	if c, cl, hit := domain.ForbiddenBy(send, g.Constraints, g.Carries...); hit {
@@ -94,7 +95,7 @@ func TestStepGuard_ConstraintDoesNotBlockTheRequestsOwnWrite(t *testing.T) {
 		t.Fatal("a step not carrying out R1 must still be held to 'exactly as drafted'")
 	}
 	// Without does, a write item still carries the write class: the 'change'
-	// constraint (write) does not refuse it, but a 'send' constraint (egress) would.
+	// constraint (write) does not refuse it, but a 'send' constraint (egress_send) would.
 	cl.Items[0].Does = nil
 	g = s.stepGuard(context.Background(), domain.Step{Answers: []string{"R1"}}, reqs, "run-1")
 	if _, _, hit := domain.ForbiddenBy(send, g.Constraints, g.Carries...); hit {
@@ -106,7 +107,7 @@ func TestStepGuard_ConstraintDoesNotBlockTheRequestsOwnWrite(t *testing.T) {
 	}}
 	reqs = &requestRequirements{checklist: &draftOnly, coverage: requirements.NewCoverage(draftOnly)}
 	g = s.stepGuard(context.Background(), domain.Step{Answers: []string{"R1"}}, reqs, "run-1")
-	if _, cls, hit := domain.ForbiddenBy(send, g.Constraints, g.Carries...); !hit || cls != domain.EffectEgress {
+	if _, cls, hit := domain.ForbiddenBy(send, g.Constraints, g.Carries...); !hit || cls != domain.EffectEgressSend {
 		t.Fatal("'save as a draft, don't send it': the drafting write must not license a send")
 	}
 }

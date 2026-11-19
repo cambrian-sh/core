@@ -3,8 +3,11 @@ package config
 import (
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Effect-checked dispatch (T-20261106-kernel-does-not-check-that-a-declared): the
@@ -43,5 +46,38 @@ func TestLoadConfig_EffectVocabularyFromFile(t *testing.T) {
 	_, err = LoadConfig(filepath.Join(dir, "config.json"))
 	if err == nil || !strings.Contains(err.Error(), "effect_vocabulary") {
 		t.Fatalf("an invalid vocabulary must be refused at load, got %v", err)
+	}
+}
+
+// ENG-1426 (owner decision 2026-11-19): the shipped "send" term is the declared
+// class egress_send, with the tool-name globs only as the fallback for a tool
+// that declares plain egress; the D14 constraint term "send" is the same class.
+func TestDefaultEffectVocabulary_SendIsTheDeclaredClass(t *testing.T) {
+	v, err := DefaultConfig().Execution.Capability.StepEffectVocabulary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var send *domain.StepEffectTerm
+	for _, term := range v.Terms() {
+		if term.Name == "send" {
+			send = &term
+			break
+		}
+	}
+	if send == nil || !reflect.DeepEqual(send.Classes, []domain.ToolEffect{domain.EffectEgressSend}) ||
+		send.Refines != domain.EffectEgress || len(send.Tools) == 0 {
+		t.Fatalf("send term = %+v", send)
+	}
+	if got := v.EffectsOfTool(domain.SystemTool{Name: "mcp:mail/send_preview", Effects: []domain.ToolEffect{domain.EffectEgressRead}}); slices.Contains(got, "send") {
+		t.Errorf("an egress_read tool named send_* is not send: %v", got)
+	}
+	terms, err := ToolsConfig{}.ConstraintTerms()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"send", "publish", "post"} {
+		if !reflect.DeepEqual(terms[w], []domain.ToolEffect{domain.EffectEgressSend}) {
+			t.Errorf("constraint term %q = %v, want [egress_send]", w, terms[w])
+		}
 	}
 }

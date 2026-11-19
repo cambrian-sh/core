@@ -220,6 +220,43 @@ func CeilingEffects(t SystemTool) []ToolEffect {
 	return ExpandEffects(in)
 }
 
+// Exercises reports whether a call of t exercises an effect that class covers:
+// some CeilingEffects(t) entry e with EffectCovers(class, e). This is the guard
+// side of the one definition of "sending" (ENG-1426, owner decision 2026-11-19:
+// the declared class wins): Exercises(t, EffectEgressSend) holds for a tool that
+// declares egress_send, a tool that declares plain egress (it may send — fail
+// closed), and a tool whose egress was only inferred; never for a tool that
+// declares egress_read alone, whatever its name. The Rule of Two gate
+// (gatedEffects), the outbound identifier guard (SendsOutside) and the D14
+// constraint guard (ExercisesUncarried) all classify through CeilingEffects +
+// EffectCovers, so they agree on every tool. A tool with no effects exercises
+// nothing here; callers that must fail closed on it check that themselves.
+func Exercises(t SystemTool, class ToolEffect) bool {
+	return ExercisesUncarried(t, class, nil)
+}
+
+// ExercisesUncarried is Exercises restricted to the effects no class in carries
+// covers: a call that exercises class only through effects the step's own write
+// items need (StepGuard.Carries) does not count (ADR-0145 D14.6).
+func ExercisesUncarried(t SystemTool, class ToolEffect, carries []ToolEffect) bool {
+	for _, e := range CeilingEffects(t) {
+		if !EffectCovers(class, e) {
+			continue
+		}
+		carried := false
+		for _, c := range carries {
+			if EffectCovers(c, e) {
+				carried = true
+				break
+			}
+		}
+		if !carried {
+			return true
+		}
+	}
+	return false
+}
+
 // EffectsBeyond returns the effects of t (CeilingEffects) that no class in
 // allowed covers; empty when the tool is inside the ceiling. A tool with no
 // effects at all is outside every ceiling (it bypassed registration).

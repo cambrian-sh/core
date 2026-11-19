@@ -202,8 +202,9 @@ func coverageText(r *requestRequirements) string {
 }
 
 // effectsOfTool maps a tool to the constraint terms it falls under: every term of
-// execution.tools.constraint_classes whose classes include one of the tool's
-// ADR-0086 classes (D14: constraints hold by tool class).
+// execution.tools.constraint_classes one of whose classes the call exercises
+// (domain.ExercisesUncarried — the classification the executor's constraint
+// guard, the Rule of Two and the outbound guards share, ENG-1426).
 func (s *Server) effectsOfTool() func(domain.PlanAction) []string {
 	terms, err := s.ExecCfg.Tools.ConstraintTerms()
 	if err != nil || s.ToolExecutor == nil || s.ToolExecutor.Registry == nil {
@@ -217,9 +218,9 @@ func (s *Server) effectsOfTool() func(domain.PlanAction) []string {
 		var out []string
 		for term, classes := range terms {
 			for _, c := range classes {
-				// ADR-0145 D14.6: a class the call's step needed for the request's
-				// own write item is not a constraint violation.
-				if t.HasEffect(c) && !containsToolEffect(a.Carries, c) {
+				// ADR-0145 D14.6: an effect the call's step needed for the
+				// request's own write item is not a constraint violation.
+				if domain.ExercisesUncarried(t, c, a.Carries) {
 					out = append(out, term)
 					break
 				}
@@ -228,15 +229,6 @@ func (s *Server) effectsOfTool() func(domain.PlanAction) []string {
 		sort.Strings(out)
 		return out
 	}
-}
-
-func containsToolEffect(xs []domain.ToolEffect, x domain.ToolEffect) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 // planRunID is the root run of the Execute a planner call belongs to (its ledger

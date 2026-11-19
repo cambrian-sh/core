@@ -18,7 +18,7 @@ func testVocabulary(t *testing.T) *StepEffectVocabulary {
 		{Name: "move", Refines: EffectWrite, Tools: []string{"*move*", "*rename*"}},
 		{Name: "delete", Refines: EffectWrite, Tools: []string{"*delete*"}},
 		{Name: "egress", Classes: []ToolEffect{EffectEgress}},
-		{Name: "send", Refines: EffectEgress, Tools: []string{"*send*"}},
+		{Name: "send", Classes: []ToolEffect{EffectEgressSend}, Refines: EffectEgress, Tools: []string{"*send*"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,12 +99,17 @@ func TestStepEffectVocabulary_Validation(t *testing.T) {
 		"no derivation":   {{Name: "x"}},
 		"refine no tools": {{Name: "x", Refines: EffectWrite}},
 		"refine bad":      {{Name: "x", Refines: "teleport", Tools: []string{"*"}}},
-		"both":            {{Name: "x", Classes: []ToolEffect{EffectRead}, Refines: EffectWrite, Tools: []string{"*"}}},
+		"tools no refine": {{Name: "x", Classes: []ToolEffect{EffectRead}, Tools: []string{"*"}}},
 	}
 	for name, terms := range bad {
 		if _, err := NewStepEffectVocabulary(terms); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// Classes and refines+tools together are valid since ENG-1426 (declared class
+	// first, globs as the fallback).
+	if _, err := NewStepEffectVocabulary([]StepEffectTerm{{Name: "send", Classes: []ToolEffect{EffectEgressSend}, Refines: EffectEgress, Tools: []string{"*send*"}}}); err != nil {
+		t.Errorf("classes + refines: %v", err)
 	}
 	if v, err := NewStepEffectVocabulary(nil); err != nil || len(v.Names()) != 0 {
 		t.Errorf("an empty vocabulary is valid (fail closed): %v", err)
@@ -128,5 +133,44 @@ func TestNoEffectMatchError_IsADispatchRefusal(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q lacks %q", msg, want)
 		}
+	}
+}
+
+// ENG-1426 (owner decision 2026-11-19): the declared class wins. "send" is the
+// ADR-0150 D9 class egress_send; the tool-name globs are only a fallback for a tool
+// that declares plain egress with no read/send split.
+func TestStepEffects_SendIsTheDeclaredClassGlobsAreTheFallback(t *testing.T) {
+	v := testVocabulary(t)
+	cases := []struct {
+		name string
+		tool SystemTool
+		want []string
+	}{
+		{"egress_read named *send* is not send",
+			SystemTool{Name: "mcp:mail/send_preview", Effects: []ToolEffect{EffectRead, EffectEgressRead}},
+			[]string{"read", "egress"}},
+		{"egress_send without a matching name is send",
+			SystemTool{Name: "mcp:hooks/notify_webhook", Effects: []ToolEffect{EffectEgressSend}},
+			[]string{"egress", "send"}},
+		{"plain egress matching a glob is send (fallback)",
+			SystemTool{Name: "mcp:gmail/send_email", Effects: []ToolEffect{EffectEgress}},
+			[]string{"egress", "send"}},
+		{"plain egress without a matching name is not send",
+			SystemTool{Name: "mcp:web/fetch_page", Effects: []ToolEffect{EffectEgress}},
+			[]string{"egress"}},
+		{"egress_send named like a read is still send",
+			SystemTool{Name: "mcp:crm/fetch_and_update", Effects: []ToolEffect{EffectRead, EffectEgressSend}},
+			[]string{"read", "egress", "send"}},
+	}
+	for _, c := range cases {
+		if got := v.EffectsOfTool(c.tool); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: effects = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if v.ReadOnly("send") || v.ReadOnly("egress") {
+		t.Error("send and egress are not read-only")
+	}
+	if !v.ReadOnly("read") {
+		t.Error("read is read-only")
 	}
 }
