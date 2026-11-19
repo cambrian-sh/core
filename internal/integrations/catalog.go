@@ -330,6 +330,11 @@ func Validate(e Entry) []string {
 				add("tool %q: effect %q is outside the closed set", p.Name, eff)
 			}
 		}
+		// ENG-2232: a tool that takes free SQL (or another free query language)
+		// is never a safe call, whoever may make it.
+		if p.FreeQuery && !p.Dangerous {
+			add("tool %q: free_query requires dangerous: true", p.Name)
+		}
 	}
 
 	// Fields.

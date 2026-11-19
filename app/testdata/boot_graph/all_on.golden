@@ -207,6 +207,7 @@ PageBytes: int=16000
 Budget: *domain.BudgetLedger
 Pricing: domain.MapPricingSource
 unrestricted: false
+freeQueryOpen: false
 RestrictedTools: nil
 ceiling: *domain.ProfileToolCeiling
 Overlay: *domain.RunGrantOverlay

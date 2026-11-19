@@ -28,6 +28,7 @@ func mcpServerFromConfig(s config.MCPServerConfig, sb *sandbox.Policy) mcp.Serve
 		p := mcpToolPolicyFromConfig(*s.DefaultToolPolicy)
 		def = &p
 	}
+	applyCatalogFreeQuery(toolPolicy, def, s.CatalogID, sb)
 	out := mcp.ServerConfig{
 		ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
 		AuthType: s.Auth.Type, AuthHeader: s.Auth.Header, AuthTokenEnv: s.Auth.TokenEnv,
@@ -50,6 +51,36 @@ func mcpServerFromConfig(s config.MCPServerConfig, sb *sandbox.Policy) mcp.Serve
 	return out
 }
 
+// applyCatalogFreeQuery stamps the free_query flag of the server's catalog
+// entry onto its tool policies (ENG-2232). The server's own tool list is what an
+// install copied from the catalog at the time, so a server installed before the
+// catalog flagged a tool — or whose list an operator edited — would otherwise
+// keep offering free SQL to agents. A flagged tool the server's list omits
+// gets the policy it would have had (the default, else the fail-closed
+// unlisted policy) plus the flag; a free-query tool is always dangerous.
+// A flag only ever turns on here: the catalog cannot clear an operator's own.
+func applyCatalogFreeQuery(tools map[string]mcp.ToolPolicy, def *mcp.ToolPolicy, catalogID string, sb *sandbox.Policy) {
+	if catalogID == "" || sb == nil {
+		return
+	}
+	entry, ok := sb.Catalog[catalogID]
+	if !ok {
+		return
+	}
+	for _, name := range entry.FreeQueryTools {
+		p, listed := tools[name]
+		if !listed {
+			if def != nil {
+				p = *def
+			} else {
+				p = mcp.UnlistedToolPolicy()
+			}
+		}
+		p.FreeQuery, p.Dangerous = true, true
+		tools[name] = p
+	}
+}
+
 // mcpToolPolicyFromConfig maps one configured tool policy (per-tool or the
 // server default) to the connector's shape.
 func mcpToolPolicyFromConfig(tc config.MCPToolConfig) mcp.ToolPolicy {
@@ -59,6 +90,7 @@ func mcpToolPolicyFromConfig(tc config.MCPToolConfig) mcp.ToolPolicy {
 		ClassificationTags: tc.ClassificationTags,
 		Effects:            tc.Effects,
 		StagedInputs:       tc.StagedInputs,
+		FreeQuery:          tc.FreeQuery,
 	}
 }
 

@@ -67,6 +67,36 @@ func (a ToolAllowlist) Expand(tools []SystemTool) []string {
 	return out
 }
 
+// ExpandGrants is Expand for deriving grants. With freeQueryLiteral (the
+// free-query guard, ENG-2232) a SystemTool.FreeQuery tool is derived only from
+// a pattern that IS its name: a glob such as `mcp:postgres/*` is not an
+// explicit grant of free SQL. The ceiling (Allows) is unchanged — it bounds,
+// it never grants.
+func (a ToolAllowlist) ExpandGrants(tools []SystemTool, freeQueryLiteral bool) []string {
+	var out []string
+	for _, t := range tools {
+		if !a.Allows(t.Name) {
+			continue
+		}
+		if freeQueryLiteral && t.FreeQuery && !a.names(t.Name) {
+			continue
+		}
+		out = append(out, t.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// names reports whether some pattern is exactly tool (no wildcard needed).
+func (a ToolAllowlist) names(tool string) bool {
+	for _, p := range a {
+		if p == tool {
+			return true
+		}
+	}
+	return false
+}
+
 // Unmatched returns the patterns that match none of the given tools, in
 // allowlist order (a boot warning: the profile names a tool no server lists).
 func (a ToolAllowlist) Unmatched(tools []SystemTool) []string {

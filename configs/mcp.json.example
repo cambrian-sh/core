@@ -428,6 +428,7 @@
           {
             "name": "execute_sql",
             "dangerous": true,
+            "free_query": true,
             "effects": [
               "read",
               "write"

@@ -381,6 +381,9 @@ func (b *kernelBuild) buildToolExecutor() error {
 		UntrustedOutput: outputGuard,
 		// ENG-531: tainted ∧ sensitive ∧ write/egress calls go to approval.
 		RuleOfTwo: ruleOfTwo,
+		// ENG-2232: free-query (raw SQL) tools need a grant naming them exactly,
+		// unless the operator lifted the guard.
+		FreeQueryOpen: !cfg.Execution.Tools.FreeQuery.RequireExplicitGrant,
 	}))
 	toolExecutor, err := domain.NewToolExecutor(toolControls, domain.ToolExecutor{
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)
@@ -512,7 +515,8 @@ func (b *kernelBuild) buildToolExecutor() error {
 	// Agent stack v2: profile agents' grants are their allowlists' expansion over the
 	// registry (native + MCP tools connected above); the MCP tool sink re-syncs them
 	// when a server's tools change (below).
-	profileGrants := newProfileGrantSync(toolGrants.Profile(), toolReg.All, profiles)
+	profileGrants := newProfileGrantSync(toolGrants.Profile(), toolReg.All, profiles,
+		cfg.Execution.Tools.FreeQuery.RequireExplicitGrant) // ENG-2232: globs never grant free SQL
 	profileGrants.Sync(ctx, true)
 	if cfg.Execution.Tools.ToolsUnrestricted {
 		slog.Warn("ADR-0039: tools_unrestricted=true — ALL agents may call ALL tools (grant system bypassed). Trusted deployments only.")

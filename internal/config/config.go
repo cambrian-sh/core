@@ -1650,6 +1650,11 @@ type ToolsConfig struct {
 	// session that has consumed untrusted content AND holds sensitive access goes
 	// to approval, what tainted the session named for the approver. Default ON.
 	RuleOfTwo RuleOfTwoConfig `json:"rule_of_two"`
+	// FreeQuery governs tools flagged free_query in their MCP tool policy: a
+	// tool that takes a free query language such as raw SQL (owner ruling
+	// 2026-11-19 on ENG-1400, ENG-2232: the LLM never writes SQL, ADR-0149 D6).
+	// Default: an agent may call one only with a grant naming it exactly.
+	FreeQuery FreeQueryConfig `json:"free_query"`
 	// IdempotentWrites gives every side-effecting tool call made by a plan step an
 	// idempotency key, hash(run, step, tool, canonical arguments) (ADR-0145 D9): a
 	// retry of the same call returns the stored result instead of running again.
@@ -1779,6 +1784,20 @@ func (c ToolOutputScanConfig) validate() []string {
 		}
 	}
 	return errs
+}
+
+// FreeQueryConfig is execution.tools.free_query (ENG-2232). Additive block: a
+// file that does not mention it loads the default, so it needs no schema
+// migration (the same rule as rule_of_two).
+type FreeQueryConfig struct {
+	// RequireExplicitGrant (default true) keeps every free_query tool away from
+	// agents unless an operator granted that tool by its exact name: the
+	// tools_unrestricted bypass, a loaded skill's run-scoped grants and a
+	// profile allowlist glob never reach it. An operator's own (ScopeSystem)
+	// execution is not affected. false lets free_query tools be granted like
+	// any other tool. No omitempty: an explicit false must survive a merge over
+	// the true default.
+	RequireExplicitGrant bool `json:"require_explicit_grant"`
 }
 
 // RuleOfTwoConfig is execution.tools.rule_of_two (domain/rule_of_two.go).
@@ -3493,7 +3512,13 @@ type MCPToolConfig struct {
 	// mounts read-only for that call only (execution.tools.staged_inputs;
 	// decisions/code-sandbox-files-per-run-mount.md).
 	StagedInputs bool `json:"staged_inputs,omitempty"`
-	Pricing      struct {
+	// FreeQuery marks a tool that takes a free query language (raw SQL and the
+	// like) from its caller (ENG-2232; the LLM never writes SQL, ADR-0149 D6).
+	// Agents reach it only as execution.tools.free_query allows. A catalog
+	// entry's flag also applies to a server installed from that entry whose
+	// own tool list lacks it.
+	FreeQuery bool `json:"free_query,omitempty"`
+	Pricing   struct {
 		Kind            string  `json:"kind"`                         // "flat" | "per_unit" | "token"
 		UnitCost        float64 `json:"unit_cost"`                    // $ per unit / per call
 		MaxUnitsPerCall int     `json:"max_units_per_call,omitempty"` // reservation cap
@@ -3834,6 +3859,9 @@ func DefaultConfig() *Config {
 				// ENG-531 Rule-of-Two gate, on by default (owner decision
 				// 2026-11-19). Sensitive tags empty ⇒ every session counts as
 				// holding sensitive access until the deployment names its tags.
+				// ENG-2232 (owner ruling 2026-11-19): free-query tools need an
+				// explicit grant by default.
+				FreeQuery: FreeQueryConfig{RequireExplicitGrant: true},
 				RuleOfTwo: RuleOfTwoConfig{
 					Enabled:          true,
 					UntrustedSources: []string{"web", "tool", "other-agent", "ingested"},

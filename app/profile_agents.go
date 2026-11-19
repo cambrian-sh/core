@@ -140,6 +140,10 @@ func isProfileRuntime(a domain.AgentDefinition) bool {
 type profileGrantSync struct {
 	grants *domain.InMemoryGrantsStore
 	tools  func() []domain.SystemTool
+	// freeQueryLiteral is the free-query guard (ENG-2232,
+	// execution.tools.free_query.require_explicit_grant): a free-query tool is
+	// granted only by an allowlist entry naming it, never by a glob.
+	freeQueryLiteral bool
 
 	mu     sync.Mutex
 	agents []profileAgent
@@ -148,8 +152,8 @@ type profileGrantSync struct {
 	derived map[string]map[string]bool
 }
 
-func newProfileGrantSync(grants *domain.InMemoryGrantsStore, tools func() []domain.SystemTool, agents []profileAgent) *profileGrantSync {
-	return &profileGrantSync{grants: grants, tools: tools, agents: agents, derived: map[string]map[string]bool{}}
+func newProfileGrantSync(grants *domain.InMemoryGrantsStore, tools func() []domain.SystemTool, agents []profileAgent, freeQueryLiteral bool) *profileGrantSync {
+	return &profileGrantSync{grants: grants, tools: tools, agents: agents, freeQueryLiteral: freeQueryLiteral, derived: map[string]map[string]bool{}}
 }
 
 // Sync re-expands every profile agent's allowlist. boot=true also warns about each
@@ -163,7 +167,7 @@ func (s *profileGrantSync) Sync(ctx context.Context, boot bool) {
 	defer s.mu.Unlock()
 	tools := s.tools()
 	for _, pa := range s.agents {
-		names := pa.Allow.Expand(tools)
+		names := pa.Allow.ExpandGrants(tools, s.freeQueryLiteral)
 		want := make(map[string]bool, len(names))
 		for _, n := range names {
 			want[n] = true

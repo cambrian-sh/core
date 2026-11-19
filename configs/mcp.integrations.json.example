@@ -115,8 +115,8 @@
         "auth": {"type": "none"},
         "env": ["POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DATABASE", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_QUERY_PARAMS"],
         "tools": [
-          {"name": "execute_sql",                    "dangerous": true,  "effects": ["read", "write"]},
-          {"name": "get_query_plan",                 "dangerous": true,  "effects": ["read", "write"]},
+          {"name": "execute_sql",                    "dangerous": true,  "free_query": true, "effects": ["read", "write"]},
+          {"name": "get_query_plan",                 "dangerous": true,  "free_query": true, "effects": ["read", "write"]},
           {"name": "list_tables",                    "dangerous": false, "effects": ["read"]},
           {"name": "list_views",                     "dangerous": false, "effects": ["read"]},
           {"name": "list_schemas",                   "dangerous": false, "effects": ["read"]},

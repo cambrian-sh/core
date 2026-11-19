@@ -120,6 +120,9 @@ type ToolPolicy struct {
 	// StagedInputs marks an execution tool whose `inputs` argument the kernel
 	// stages into a per-run read-only folder (domain.SystemTool.StagedInputs).
 	StagedInputs bool
+	// FreeQuery marks a tool that takes a free query language such as raw SQL
+	// (domain.SystemTool.FreeQuery, ENG-2232).
+	FreeQuery bool
 }
 
 // UnlistedToolPolicy is the policy for a discovered tool the operator has said
@@ -163,6 +166,7 @@ func applyPolicy(st *domain.SystemTool, p ToolPolicy, defaultTags []string) {
 	st.Dangerous = p.Dangerous
 	st.DataWriteKinds = p.DataWriteKinds
 	st.StagedInputs = p.StagedInputs
+	st.FreeQuery = p.FreeQuery
 	st.ClassificationTags = defaultTags
 	if len(p.ClassificationTags) > 0 {
 		// A per-tool list REPLACES the server default rather than adding to it, so

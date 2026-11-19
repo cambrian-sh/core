@@ -63,6 +63,13 @@ type SystemTool struct {
 	// into a per-run read-only folder for that one call (operator policy
 	// staged_inputs; domain/staged_inputs.go). False for every other tool.
 	StagedInputs bool
+
+	// FreeQuery marks a tool whose caller supplies a free query language — raw
+	// SQL and the like — rather than typed arguments (operator policy
+	// free_query, ENG-2232). The LLM never writes SQL (ADR-0149 D6): unless the
+	// executor was built with FreeQueryOpen, an agent reaches such a tool only
+	// through a grant naming it exactly (ToolExecutor.grantFor).
+	FreeQuery bool
 }
 
 // ToolGrant authorizes one agent to call one tool, bounded by a resource policy

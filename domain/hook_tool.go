@@ -25,6 +25,9 @@ func (e *ToolExecutor) authorize(ctx context.Context, req *ToolCallRequest, tool
 	} else {
 		g, granted := e.grantFor(ctx, req.AgentID, req.ToolName, string(req.SessionTokenID))
 		if !granted {
+			if e.freeQueryGuarded(tool) {
+				return ToolGrant{}, FreeQueryDenyReason, false
+			}
 			return ToolGrant{}, "tool not granted to agent", false
 		}
 		grant = g

@@ -57,6 +57,12 @@ type ToolExecutorControls struct {
 	// on; ENG-531): a write/egress call from a session that consumed untrusted
 	// content and holds sensitive access goes to approval. nil ⇒ off.
 	RuleOfTwo *RuleOfTwoGate
+	// FreeQueryOpen lifts the free-query guard (ENG-2232; execution.tools.
+	// free_query.require_explicit_grant=false). Its zero value is the guard: an
+	// agent reaches a SystemTool.FreeQuery tool only through a grant naming it
+	// exactly — never the Unrestricted bypass, a skill's run-scoped overlay or
+	// a fleet wildcard (the LLM never writes SQL, ADR-0149 D6).
+	FreeQueryOpen bool
 }
 
 // ErrToolExecutorControl reports a missing or doubly supplied security control.
@@ -80,7 +86,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 		features.idempotency != nil || features.guards != nil || features.writeTargets != nil ||
 		features.leaseCeiling != nil || features.subtasks != nil || features.outboundIdentifiers != nil ||
 		features.untrustedOutput != nil ||
-		features.ruleOfTwo != nil {
+		features.ruleOfTwo != nil || features.freeQueryOpen {
 		return nil, fmt.Errorf("%w: set on features; pass it in ToolExecutorControls", ErrToolExecutorControl)
 	}
 	te := features
@@ -99,6 +105,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	te.outboundIdentifiers = controls.OutboundIdentifiers
 	te.untrustedOutput = controls.UntrustedOutput
 	te.ruleOfTwo = controls.RuleOfTwo
+	te.freeQueryOpen = controls.FreeQueryOpen
 	return &te, nil
 }
 

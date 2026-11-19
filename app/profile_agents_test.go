@@ -29,7 +29,7 @@ func TestProfileGrantSync_FollowsTheRegistry(t *testing.T) {
 	grants := domain.NewInMemoryGrantsStore()
 	sync := newProfileGrantSync(grants, reg.All, []profileAgent{
 		{ID: "assistant", Allow: domain.ToolAllowlist{"mcp:fs/read_*", "mcp:fetch/*"}},
-	})
+	}, true)
 	sync.Sync(ctx, true)
 	got, _ := grants.GrantsFor(ctx, "assistant")
 	if names := grantNames(got); !slices.Equal(names, []string{"mcp:fs/read_file"}) {
@@ -62,7 +62,7 @@ func TestProfileAgent_AllowlistEnforcedKernelSide(t *testing.T) {
 		reg.Register(domain.SystemTool{Name: "mcp:shell/run"})
 		grants := domain.NewInMemoryGrantsStore()
 		profiles := []profileAgent{{ID: "assistant", Allow: domain.ToolAllowlist{"mcp:fs/read_*"}}}
-		newProfileGrantSync(grants, reg.All, profiles).Sync(ctx, true)
+		newProfileGrantSync(grants, reg.All, profiles, true).Sync(ctx, true)
 		e := newTestToolExecutor(t, domain.ToolExecutorControls{Registry: reg, Grants: grants, Unrestricted: unrestricted,
 			Ceiling: profileToolCeiling(profiles)}, domain.ToolExecutor{MCPHandler: okHandler{}, InlineThreshold: 1 << 20})
 		if r := e.Execute(ctx, domain.ToolCallRequest{AgentID: "assistant", ToolName: "mcp:shell/run", ArgsJSON: []byte(`{}`)}); !r.Denied {
@@ -197,7 +197,7 @@ func TestShippedAssistant_GrantsEqualItsAllowlistAndCanMoveFiles(t *testing.T) {
 	}
 	reg.Register(domain.SystemTool{Name: "mcp:shell/shell_execute"})
 	grants := domain.NewInMemoryGrantsStore()
-	newProfileGrantSync(grants, reg.All, []profileAgent{*assistant}).Sync(ctx, true)
+	newProfileGrantSync(grants, reg.All, []profileAgent{*assistant}, true).Sync(ctx, true)
 	gs, _ := grants.GrantsFor(ctx, "assistant")
 	names := grantNames(gs)
 	want := assistant.Allow.Expand(reg.All())

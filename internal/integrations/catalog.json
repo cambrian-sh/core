@@ -1401,6 +1401,7 @@
           {
             "name": "execute_sql",
             "dangerous": true,
+            "free_query": true,
             "effects": [
               "read",
               "write"
@@ -1409,6 +1410,7 @@
           {
             "name": "get_query_plan",
             "dangerous": true,
+            "free_query": true,
             "effects": [
               "read",
               "write"
@@ -1705,6 +1707,7 @@
           {
             "name": "execute_sql",
             "dangerous": true,
+            "free_query": true,
             "effects": [
               "read",
               "write"

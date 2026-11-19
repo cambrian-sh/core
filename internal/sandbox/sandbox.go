@@ -200,6 +200,12 @@ type ServerSpec struct {
 type CatalogEntry struct {
 	TrustTier string // the catalog's own vocabulary (official | community)
 	Server    ServerSpec
+	// FreeQueryTools names the entry's tools its policy flags free_query
+	// (ENG-2232). Not containment: it rides here because Policy is the one
+	// boot-resolved view of the catalog that every server mapping receives
+	// (app.mcpServerFromConfig), so a server installed before the catalog
+	// flagged a tool still gets the flag.
+	FreeQueryTools []string
 }
 
 // Policy is the whole sandbox configuration, resolved once at the composition

@@ -94,7 +94,13 @@ func sandboxPolicyFromConfig(c config.MCPSandboxConfig, cat *integrations.Catalo
 	}
 	p.Catalog = map[string]sandbox.CatalogEntry{}
 	for _, e := range cat.Entries() {
-		p.Catalog[e.ID] = sandbox.CatalogEntry{TrustTier: e.TrustTier, Server: serverSandboxSpec(e.Server.Sandbox)}
+		ce := sandbox.CatalogEntry{TrustTier: e.TrustTier, Server: serverSandboxSpec(e.Server.Sandbox)}
+		for _, t := range e.Server.Tools {
+			if t.FreeQuery {
+				ce.FreeQueryTools = append(ce.FreeQueryTools, t.Name)
+			}
+		}
+		p.Catalog[e.ID] = ce
 	}
 	if p.Disabled {
 		slog.Warn("ADR-0139 D8: mcp.sandbox.enabled=false — stdio MCP servers get the env allowlist only, no process containment")

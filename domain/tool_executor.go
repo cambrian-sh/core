@@ -276,6 +276,10 @@ type ToolExecutor struct {
 	// policy. Approval for dangerous tools STILL applies; an anonymous principal is
 	// still denied. Trusted/dev deployments only.
 	unrestricted bool
+	// freeQueryOpen lifts the free-query guard (ToolExecutorControls.FreeQueryOpen,
+	// ENG-2232). false — the zero value and the default — means a FreeQuery tool
+	// needs a grant naming it exactly (freeQueryGuarded, grantFor).
+	freeQueryOpen bool
 	// RestrictedTools (ADR-0051 D6) caps which tools a principal may use, as a HARD
 	// CEILING that overrides Unrestricted: principal id → the set of tool names it may
 	// touch. A principal absent from the map is unrestricted (normal resolution). A
@@ -1393,7 +1397,16 @@ func (e *ToolExecutor) AvailableTools(ctx context.Context, agentID string) []Sys
 	}
 	var menu []SystemTool
 	if e.unrestricted {
-		menu = e.Registry.All()
+		// ENG-2232: the bypass does not reach a guarded free-query tool, so the
+		// menu offers one only when the agent holds an exact grant for it.
+		for _, t := range e.Registry.All() {
+			if e.freeQueryGuarded(t) {
+				if _, ok := e.explicitGrant(ctx, agentID, t.Name); !ok {
+					continue
+				}
+			}
+			menu = append(menu, t)
+		}
 	} else {
 		grants, err := e.Grants.GrantsFor(ctx, agentID)
 		if err != nil {
@@ -1560,6 +1573,15 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 	if !e.WithinLeaseCeiling(sessionToken, tool) {
 		return ToolGrant{}, false
 	}
+	// ENG-2232: a guarded free-query tool (raw SQL and the like; the LLM never
+	// writes SQL, ADR-0149 D6) is granted only by a grant naming it exactly.
+	// Neither the Unrestricted bypass, nor a fleet wildcard, nor a skill's
+	// run-scoped overlay below reaches it; a store error denies (fail closed).
+	if e.Registry != nil {
+		if t, ok := e.Registry.Get(tool); ok && e.freeQueryGuarded(t) {
+			return e.explicitGrant(ctx, agentID, tool)
+		}
+	}
 	// Unrestricted: any named agent gets an allow-all grant for any registered
 	// tool (operator-chosen bypass). Approval for dangerous tools still applies.
 	if e.unrestricted {
@@ -1586,6 +1608,32 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 	}
 	return ToolGrant{}, false
 }
+
+// freeQueryGuarded reports whether tool is a free-query tool the guard holds
+// back from agents (ENG-2232).
+func (e *ToolExecutor) freeQueryGuarded(tool SystemTool) bool {
+	return tool.FreeQuery && !e.freeQueryOpen
+}
+
+// explicitGrant returns the agent's grant that names tool exactly. A profile
+// grant counts: the profile grant sync derives one for a free-query tool only
+// from an allowlist entry naming it literally (app/profile_agents.go).
+func (e *ToolExecutor) explicitGrant(ctx context.Context, agentID, tool string) (ToolGrant, bool) {
+	grants, err := e.Grants.GrantsFor(ctx, agentID)
+	if err != nil {
+		return ToolGrant{}, false
+	}
+	for _, g := range grants {
+		if g.Tool == tool {
+			return g, true
+		}
+	}
+	return ToolGrant{}, false
+}
+
+// FreeQueryDenyReason is the reason a guarded free-query call without an exact
+// grant is refused with, for the agent and the operator.
+const FreeQueryDenyReason = "free-query tool: it takes raw SQL or another free query language, and agents use typed tools instead (ADR-0149 D6); an operator can grant this tool by its exact name (execution.tools.free_query)"
 
 // contributedTools resolves the task beneficiary's live fleet into menu
 // entries (ADR-0127 D4). The resolution is STRUCTURAL: it starts from the

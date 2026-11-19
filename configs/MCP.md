@@ -350,6 +350,15 @@ likely cannot open (give it `trust_tier: vetted` by operator decision, or run it
   block it in a profile.
 - **SQL servers:** `execute_sql` takes raw SQL. Connect with a read-only database role or a
   copy of the file. The dangerous flag is a prompt, not a database permission.
+  The LLM never writes SQL (ADR-0149 D6, ENG-2232): the catalog marks every tool that takes
+  free SQL `free_query: true` (postgres `execute_sql` and `get_query_plan`, sqlite
+  `execute_sql`; a free-query tool must also be dangerous). With
+  `execution.tools.free_query.require_explicit_grant` (default true) an agent can call one
+  only through a grant naming that tool exactly: `tools_unrestricted`, a skill's run-scoped
+  grants and a profile allowlist glob (`mcp:postgres/*`) never reach it, and the menu hides
+  it. The catalog's flag also applies to a server installed from that entry before the flag
+  existed (its `catalog_id` decides). The typed tools of the same server (`list_tables`, …)
+  are unaffected, and an operator's own console execution is not an agent call.
 - **Prompt injection across integrations:** Google warns against connecting Gmail, Drive and
   Chat to one agent at the same time. A mail or page the agent reads can instruct it to send
   data elsewhere. Keep write and send tools dangerous, and give read-only integrations to

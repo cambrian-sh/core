@@ -57,7 +57,7 @@ func bootGrantsKernel(t *testing.T, dsn string) *grantsKernel {
 		reg.Register(domain.SystemTool{Name: n})
 	}
 	profiles := []profileAgent{{ID: e2eProfileAgent, Allow: domain.ToolAllowlist{"mcp:fs/read_*", "propose_*"}}}
-	newProfileGrantSync(grants.Profile(), reg.All, profiles).Sync(ctx, true)
+	newProfileGrantSync(grants.Profile(), reg.All, profiles, true).Sync(ctx, true)
 	exec := newTestToolExecutor(t, domain.ToolExecutorControls{Registry: reg, Grants: grants, Ceiling: profileToolCeiling(profiles)},
 		domain.ToolExecutor{MCPHandler: okHandler{}, InlineThreshold: 1 << 20})
 	audit, err := postgres.NewPgAuditStore(ctx, pool)
