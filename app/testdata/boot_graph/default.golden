@@ -52,6 +52,7 @@ Authorizer: *authz.ProfileNarrowingAuthorizer
 PolicyAdmin: nil
 ToolGrants: *domain.LayeredGrantsStore
 MCPConnector: *mcp.Connector
+EgressProxy: *egressproxy.Broker
 MCPSink: *app.mcpToolSink
 MCPServers: []mcp.ServerConfig len=0
 MCPRuntime: *app.mcpRuntime

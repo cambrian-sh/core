@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 )
 
 // Unix native containment:
@@ -83,6 +85,18 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		c.missing[ControlFSConfine] = bwWhy
 		c.missing[ControlNetwork] = bwWhy
 		c.missing[ControlHideState] = bwWhy
+	}
+	// ENG-688: declared egress hosts are enforced under bubblewrap — a fresh
+	// network namespace and the forwarder (egress_forwarder_unix.go).
+	if ok, why := egressPlan(p, spec, tp); !ok {
+		c.egressWhy = why
+	} else if bw == "" {
+		c.egressWhy = bwWhy
+	} else if _, ok := egressOverBwrap(p, spec, tp); !ok {
+		c.egressWhy = "the kernel executable (the in-sandbox forwarder) cannot be located"
+	} else {
+		c.egress = "bwrap"
+		c.notes = append(c.notes, "network: own network namespace (loopback only); the kernel's executable, re-run inside as the forwarder, relays the server's proxy port to the kernel's proxy")
 	}
 	if spec.Agent != nil && tp.DenyNetwork && bw != "" {
 		c.notes = append(c.notes, "network: kernel-only (no network namespace; the kernel is reached through the unix socket in the socket directory)")
@@ -204,8 +218,25 @@ func rootNote(spec Spec) string {
 }
 
 // wantsBwrap: bubblewrap is used only when a control it provides is wanted.
+// An enforced egress allowlist wants the network namespace (ENG-688); the
+// tiers that want one also confine the filesystem, so it adds no new case
+// for the shipped tiers, but a tier with confine_fs off still gets it.
 func wantsBwrap(spec Spec, tp TierPolicy) bool {
-	return tp.ConfineFS || (tp.DenyNetwork && spec.Server.Network != NetworkEgress)
+	return tp.ConfineFS || (tp.DenyNetwork && spec.Server.Network != NetworkEgress) ||
+		(tp.DenyNetwork && spec.Server.Network == NetworkEgress && spec.Agent == nil)
+}
+
+// egressOverBwrap reports whether this bubblewrap launch enforces its egress
+// allowlist, and the forwarder executable to bind into the sandbox.
+func egressOverBwrap(p *Policy, spec Spec, tp TierPolicy) (string, bool) {
+	if ok, _ := egressPlan(p, spec, tp); !ok {
+		return "", false
+	}
+	exe, err := egressForwarderExe()
+	if err != nil {
+		return "", false
+	}
+	return exe, true
 }
 
 func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string, start starter) error {
@@ -257,7 +288,32 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 		lim = append(lim, "ulimit -u "+strconv.Itoa(n))
 	}
 	script := strings.Join(append(lim, `exec "$@"`), "; ")
-	argv := append([]string{"/bin/sh", "-c", script, "sh", path}, c.Args...)
+	// ENG-688: an enforced egress allowlist. The server runs as the
+	// forwarder's child, inside the sandbox's own network namespace; the
+	// forwarder speaks the multiplex on fd 3 to this launch's proxy session.
+	var egressSess *egressproxy.Session
+	var egressChild *os.File
+	serverArgv := append([]string{path}, c.Args...)
+	if _, ok := egressOverBwrap(p, spec, tp); ok && useBwrap {
+		sess, serr := p.Egress.Open(spec.ServerID, spec.Server.Hosts)
+		if serr != nil {
+			return fmt.Errorf("sandbox: egress proxy session: %w", serr)
+		}
+		kc, child, perr := egressPair()
+		if perr != nil {
+			sess.Close()
+			return fmt.Errorf("sandbox: egress multiplex: %w", perr)
+		}
+		if serr := sess.Serve(kc); serr != nil {
+			_ = child.Close()
+			sess.Close()
+			return serr
+		}
+		egressSess, egressChild = sess, child
+		serverArgv = forwarderArgv(path, c.Args)
+		env = append(env, egressproxy.ProxyEnv()...)
+	}
+	argv := append([]string{"/bin/sh", "-c", script, "sh"}, serverArgv...)
 	if useBwrap {
 		argv = append(bwrapArgs(bw, p, spec, tp, workdir, c.Dir, unprivNS), argv...)
 	}
@@ -269,6 +325,9 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // operator-configured command
 	cmd.Env = env
 	cmd.Dir = workdir
+	if egressChild != nil {
+		cmd.ExtraFiles = []*os.File{egressChild} // fd 3 (egressMuxFD)
+	}
 	if c.Dir != "" && !useBwrap {
 		cmd.Dir = c.Dir // inside bubblewrap the directory is set by --chdir
 	}
@@ -279,6 +338,10 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 	}
 	cg, cgErr := newCgroup(p.CgroupParent, spec.ServerID, tp)
 	if cgErr != nil {
+		if egressSess != nil {
+			_ = egressChild.Close()
+			egressSess.Close()
+		}
 		return fmt.Errorf("sandbox: cgroup: %w", cgErr)
 	}
 	if cg != nil {
@@ -289,9 +352,15 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 		if cg != nil {
 			cg.closeFD()
 		}
-		return &groupHandle{pid: cmd.Process.Pid, cg: cg}, nil
+		return &groupHandle{pid: cmd.Process.Pid, cg: cg, egress: egressSess}, nil
 	}
 	err = start(cmd, post)
+	if egressChild != nil {
+		_ = egressChild.Close() // the child holds its own copy once started
+	}
+	if err != nil && egressSess != nil {
+		egressSess.Close()
+	}
 	if err != nil && cg != nil {
 		cg.closeFD()
 		cg.remove()
@@ -332,6 +401,11 @@ func bwrapArgs(bw string, p *Policy, spec Spec, tp TierPolicy, workdir, dir stri
 	}
 	a = appendBinds(a, after)
 	a = append(a, "--bind", workdir, bwrapWork)
+	egressExe, egress := egressOverBwrap(p, spec, tp)
+	if egress {
+		// ENG-688: the forwarder, inside the private /tmp.
+		a = append(a, "--ro-bind", egressExe, egressForwarderPath)
+	}
 	if spec.Agent != nil && spec.Agent.SocketDir != "" {
 		// D2.6: the socket directory at its own path, so the --socket the kernel
 		// passed and dials names the same file inside and outside.
@@ -358,7 +432,7 @@ func bwrapArgs(bw string, p *Policy, spec Spec, tp TierPolicy, workdir, dir stri
 	if userNS {
 		a = append(a, "--unshare-user")
 	}
-	if tp.DenyNetwork && spec.Server.Network != NetworkEgress {
+	if (tp.DenyNetwork && spec.Server.Network != NetworkEgress) || egress {
 		a = append(a, "--unshare-net")
 	}
 	return append(a, "--")
@@ -381,6 +455,8 @@ type groupHandle struct {
 	pid  int
 	cg   *cgroup
 	once sync.Once
+	// egress is the launch's proxy session (ENG-688), closed with the tree.
+	egress *egressproxy.Session
 }
 
 func (h *groupHandle) kill() error {
@@ -396,6 +472,9 @@ func (h *groupHandle) kill() error {
 
 func (h *groupHandle) release() {
 	h.once.Do(func() {
+		if h.egress != nil {
+			h.egress.Close()
+		}
 		if h.cg != nil {
 			// The cgroup can be removed only once empty; the processes were
 			// just killed, so give the kernel a moment to reap them.

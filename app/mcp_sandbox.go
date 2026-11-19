@@ -9,6 +9,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/integrations"
 	"github.com/cambrian-sh/core/internal/sandbox"
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 )
 
 // Trust-tier containment wiring (ADR-0139 D8,
@@ -46,9 +47,12 @@ func anchorSandboxPaths(cfg *config.Config, configPath string) {
 }
 
 // sandboxPolicyFromConfig overlays mcp.sandbox on the built-in defaults and
-// attaches the catalog's per-entry tier and sandbox declaration.
-func sandboxPolicyFromConfig(c config.MCPSandboxConfig, cat *integrations.Catalog) *sandbox.Policy {
+// attaches the catalog's per-entry tier and sandbox declaration. egress is the
+// kernel's started egress allowlist proxy (ENG-688); nil leaves declared hosts
+// recorded, not filtered (the reports say so).
+func sandboxPolicyFromConfig(c config.MCPSandboxConfig, cat *integrations.Catalog, egress *egressproxy.Broker) *sandbox.Policy {
 	p := sandbox.DefaultPolicy()
+	p.Egress = egress
 	p.Disabled = !c.SandboxEnabled()
 	if t, ok := sandbox.ParseTier(c.DefaultTier); ok {
 		p.DefaultTier = t

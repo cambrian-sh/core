@@ -61,6 +61,15 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		// Windows does not have yet; the tier's on_unavailable decides.
 		c.missing[ControlNetwork] = "no native network control on Windows for agents: the kernel-only agent network needs the AppContainer runner (ADR-0157 S5)"
 	}
+	// ENG-688: the docker and bubblewrap runners enforce declared egress
+	// hosts; this runner has no network control for MCP servers yet, so they
+	// are recorded and the report says why
+	// (T-20261119-windows-native-runner-does-not-enforce-declared).
+	if ok, why := egressPlan(p, spec, tp); ok {
+		c.egressWhy = "the Windows native runner cannot hold an MCP server to its hosts yet (AppContainer behind the egress proxy: T-20261119-windows-native-runner-does-not-enforce-declared); runner docker enforces them"
+	} else {
+		c.egressWhy = why
+	}
 	if wantsAppContainer(spec, tp) {
 		ac, pl := appContainerFor(p, spec, tp, true)
 		ac.close()

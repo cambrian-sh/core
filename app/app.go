@@ -25,6 +25,7 @@ import (
 	"github.com/cambrian-sh/core/internal/ledger"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/vault"
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 	skillaccess "github.com/cambrian-sh/core/internal/skill/access"
 	skilllifecycle "github.com/cambrian-sh/core/internal/skill/lifecycle"
 	"github.com/cambrian-sh/core/internal/storage"
@@ -213,6 +214,10 @@ type Kernel struct {
 	// hot-attach its first one from the console, and the connector is a map and
 	// a client — the cost of always having it is nothing.
 	MCPConnector *mcp.Connector
+	// EgressProxy is the egress allowlist proxy every contained MCP server
+	// with enforced declared hosts reaches the network through (ENG-688).
+	// Started at boot, stopped after the connector closed its servers.
+	EgressProxy *egressproxy.Broker
 	// ADR-0043 D8 / ADR-0044: health/reconnect inputs for the background Watch loop.
 	MCPSink    mcp.ToolSink
 	MCPServers []mcp.ServerConfig
@@ -399,6 +404,9 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	// 3b. Stop ADR-0012 Synaptic Bridge components
 	if k.MCPConnector != nil {
 		k.MCPConnector.Close() // ADR-0043: close live MCP sessions
+	}
+	if k.EgressProxy != nil {
+		k.EgressProxy.Stop() // ENG-688: after the servers it serves are gone
 	}
 	if k.CircadianRhythm != nil {
 		k.CircadianRhythm.Stop()

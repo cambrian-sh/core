@@ -16,6 +16,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/integrations"
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 	"github.com/cambrian-sh/core/internal/stagedinputs"
 )
 
@@ -63,7 +64,14 @@ func TestLive_CatalogStdioServersUnderContainment(t *testing.T) {
 			sb.Tiers[tier] = config.MCPSandboxTierConfig{Runner: runner}
 		}
 	}
-	r.m.runtime.sandbox = sandboxPolicyFromConfig(sb, cat)
+	// ENG-688: the kernel's egress proxy, as the composition root builds it,
+	// so a community server's declared hosts are enforced where the runner can.
+	egress := egressproxy.New(egressproxy.Options{})
+	if err := egress.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer egress.Stop()
+	r.m.runtime.sandbox = sandboxPolicyFromConfig(sb, cat, egress)
 
 	ctx := context.Background()
 	for _, id := range ids {
@@ -118,7 +126,7 @@ func TestLive_StagedInputsReachTheCodeSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.m.runtime.sandbox = sandboxPolicyFromConfig(config.MCPSandboxConfig{}, cat)
+	r.m.runtime.sandbox = sandboxPolicyFromConfig(config.MCPSandboxConfig{}, cat, nil)
 	ctx := context.Background()
 	for _, in := range []*pb.InstallIntegrationOpRequest{
 		{CatalogId: "filesystem", Enabled: true, Settings: map[string]string{"FILESYSTEM_ROOT": filepath.ToSlash(files)}},

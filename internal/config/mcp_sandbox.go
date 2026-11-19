@@ -69,8 +69,11 @@ type MCPServerSandboxConfig struct {
 	// Network: "none" (default) or "egress". A third-party server that
 	// declares nothing gets no network where the platform can deny it.
 	Network string `json:"network,omitempty"`
-	// Hosts the server needs (egress only). Recorded and reported; NOT
-	// filtered — there is no egress proxy yet.
+	// Hosts the server needs (egress only): host, host:port (no port ⇒ 443),
+	// *.domain, or an IP address. Where the tier denies the network and the
+	// runner can (docker, bubblewrap), the server reaches ONLY these hosts,
+	// through the kernel's CONNECT proxy (ENG-688); "*" or free text leaves
+	// the network unfiltered, and the containment report says so.
 	Hosts []string `json:"hosts,omitempty"`
 	// Root is an extra writable directory for a confined server (absolute).
 	Root string `json:"root,omitempty"`

@@ -1,15 +1,19 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/integrations"
 	"github.com/cambrian-sh/core/internal/sandbox"
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 )
 
 // TestSandboxPolicyFromConfig: mcp.sandbox overlays the built-in defaults and
@@ -27,7 +31,7 @@ func TestSandboxPolicyFromConfig(t *testing.T) {
 		Tiers: map[string]config.MCPSandboxTierConfig{
 			"third-party": {OnUnavailable: "degrade", Runner: "docker", DenyNetwork: &off, MemoryMB: &mem, CPUTimeSec: &zero},
 		},
-	}, cat)
+	}, cat, nil)
 	if p.DefaultTier != sandbox.TierVetted || p.CatalogTiers["community"] != sandbox.TierVetted ||
 		p.CatalogTiers["official"] != sandbox.TierVetted {
 		t.Fatalf("tier mapping not applied: %+v %+v", p.DefaultTier, p.CatalogTiers)
@@ -43,7 +47,7 @@ func TestSandboxPolicyFromConfig(t *testing.T) {
 		t.Fatal("catalog tiers not attached")
 	}
 
-	defaults := sandboxPolicyFromConfig(config.MCPSandboxConfig{}, cat)
+	defaults := sandboxPolicyFromConfig(config.MCPSandboxConfig{}, cat, nil)
 	cases := []struct {
 		name string
 		s    config.MCPServerConfig
@@ -109,7 +113,7 @@ func TestMCPExampleServersResolveThroughTheCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := sandboxPolicyFromConfig(config.MCPSandboxConfig{}, cat)
+	p := sandboxPolicyFromConfig(config.MCPSandboxConfig{}, cat, nil)
 	if len(doc.MCP.Servers) == 0 {
 		t.Fatal("no servers parsed from the example")
 	}
@@ -122,5 +126,41 @@ func TestMCPExampleServersResolveThroughTheCatalog(t *testing.T) {
 	fetch := p.Resolve("fetch", "", "fetch", false, sandbox.ServerSpec{})
 	if fetch.Server.Network != "egress" || fetch.Tier == sandbox.TierThirdParty {
 		t.Errorf("fetch resolves to %s with network %q", fetch.Tier, fetch.Server.Network)
+	}
+}
+
+// TestSandboxPolicyCarriesTheEgressProxy (ENG-688): the composition root's
+// broker reaches the policy every server is resolved from, so a community
+// catalog server with a plain host list (slack) is planned with its hosts
+// enforced on the docker runner, and one with "*" (terminal) is not.
+func TestSandboxPolicyCarriesTheEgressProxy(t *testing.T) {
+	cat, err := integrations.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := egressproxy.New(egressproxy.Options{})
+	if err := broker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Stop()
+	p := sandboxPolicyFromConfig(config.MCPSandboxConfig{WorkRoot: t.TempDir()}, cat, broker)
+	if p.Egress != broker {
+		t.Fatal("the egress proxy did not reach the sandbox policy")
+	}
+	if _, why := exec.LookPath("docker"); why != nil {
+		t.Skip("docker CLI not on PATH: the docker plan cannot be probed")
+	}
+	slack := p.Resolve("slack", "", "slack", false, sandbox.ServerSpec{Runner: sandbox.RunnerDocker, Image: "node:22-bookworm-slim"})
+	rep := sandbox.Plan(context.Background(), slack, sandbox.Command{Path: "npx"})
+	if rep.Refused && strings.Contains(strings.Join(rep.Missing, ";"), "docker unavailable") {
+		t.Skip("docker engine unreachable: " + strings.Join(rep.Missing, ";"))
+	}
+	if !slices.Contains(rep.Mechanisms, sandbox.MechanismEgressProxy) || !strings.Contains(strings.Join(rep.Notes, ";"), "(enforced") {
+		t.Fatalf("slack (community, plain hosts) on docker: %s", rep.Summary())
+	}
+	term := p.Resolve("terminal", "", "terminal", false, sandbox.ServerSpec{Runner: sandbox.RunnerDocker, Image: "node:22-bookworm-slim"})
+	rep = sandbox.Plan(context.Background(), term, sandbox.Command{Path: "npx"})
+	if slices.Contains(rep.Mechanisms, sandbox.MechanismEgressProxy) || !strings.Contains(strings.Join(rep.Notes, ";"), `"*" declares any host`) {
+		t.Fatalf("terminal (hosts include *) on docker: %s", rep.Summary())
 	}
 }

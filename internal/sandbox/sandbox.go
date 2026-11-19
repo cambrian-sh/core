@@ -25,7 +25,8 @@
 // widens it. The Report it returns is what the operator console shows as the
 // server's effective containment.
 //
-// Imports: the standard library and golang.org/x/sys only, so any launcher can
+// Imports: the standard library, golang.org/x/sys and this package's own
+// egressproxy only, so any launcher can
 // use it (the MCP connector today; kernel-spawned agents are the planned second
 // caller, T-20261106-kernel-spawned-agents-are-not-contained-by).
 package sandbox
@@ -37,6 +38,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 )
 
 // Tier is a containment tier. "system" (the kernel itself) is never a tier a
@@ -121,8 +124,13 @@ const (
 // Network declarations.
 const (
 	NetworkNone   = "none"   // no egress (the default for a server that declares nothing)
-	NetworkEgress = "egress" // the server needs the network (hosts are recorded)
+	NetworkEgress = "egress" // the server needs the network (to its declared hosts)
 )
+
+// MechanismEgressProxy names the kernel's egress allowlist proxy in a Report
+// (ENG-688): the server's namespace has loopback only, and its one way out is
+// the proxy, which admits the declared hosts.
+const MechanismEgressProxy = "egress_proxy"
 
 // TierPolicy is the containment one tier wants (config mcp.sandbox.tiers.<tier>).
 type TierPolicy struct {
@@ -170,7 +178,11 @@ func (tp TierPolicy) taskCeiling() int {
 // server `sandbox`, or its catalog entry's).
 type ServerSpec struct {
 	// Network is "none" (default) or "egress". Hosts are the hosts an egress
-	// server needs; recorded and reported, NOT filtered (no egress proxy yet).
+	// server needs (egressproxy.ParseAllowlist's syntax). Where the tier denies
+	// the network and the runner can, they are ENFORCED (ENG-688): the server
+	// reaches only these hosts, through the kernel's CONNECT proxy. "*", free
+	// text, an empty list, or a tier that keeps the network leave the network
+	// unfiltered, and the Report says which (egressPlan).
 	Network string
 	Hosts   []string
 	// Root is an extra writable directory for a confined server (absolute).
@@ -227,6 +239,11 @@ type Policy struct {
 	// LimitPoll is how often an agent launch's limit watch samples its scratch
 	// size (and, on Linux, its process tree) — limits_watch.go. 0 ⇒ 1 s.
 	LimitPoll time.Duration
+	// Egress is the kernel's egress allowlist proxy (ENG-688), built and
+	// started at the composition root and injected here with the rest of the
+	// policy. nil (an unresolved spec's DefaultPolicy, a unit test) ⇒ declared
+	// hosts are recorded, not filtered, and the Report says so.
+	Egress *egressproxy.Broker
 }
 
 // DefaultPolicy is the built-in policy: the documented config defaults. It is
@@ -439,8 +456,9 @@ type Report struct {
 	// Missing are wanted controls this platform could not enforce,
 	// "control: reason".
 	Missing []string
-	// Notes are honest caveats that are not missing controls (egress hosts are
-	// recorded but not filtered; reads are not confined on Windows).
+	// Notes are honest caveats that are not missing controls (whether declared
+	// egress hosts are enforced or only recorded; reads are not confined on
+	// Windows).
 	Notes    []string
 	Refused  bool
 	Disabled bool
@@ -501,6 +519,11 @@ type capability struct {
 	// on_unavailable says: degrading would not make it boot (ENG-2026).
 	unbootable string
 	mechanisms []string
+	// egress is the mechanism that enforces a declared egress allowlist on this
+	// runner (the runner name; plan adds MechanismEgressProxy), "" when it is
+	// not enforced; egressWhy then says why (the Report note).
+	egress    string
+	egressWhy string
 }
 
 // plan resolves the controls a spec wants against a runner's capability.
@@ -510,9 +533,20 @@ func plan(spec Spec, tp TierPolicy, c capability) Report {
 	for _, w := range tp.wanted() {
 		if w == ControlNetwork && spec.Server.Network == NetworkEgress {
 			// Declared egress is a grant, not a missing control: the operator or
-			// the catalog said this server needs the network. Checked first so a
+			// the catalog said this server needs the network. Where the runner
+			// enforces the declared hosts (ENG-688) the network control IS
+			// enforced — loopback only, plus the proxy; otherwise the hosts are
+			// a note saying why they are not filtered. Checked first so a
 			// runner that COULD deny the network is not reported as denying it.
-			r.Notes = append(r.Notes, egressNote(spec.Server.Hosts))
+			if c.egress != "" {
+				r.Enforced = append(r.Enforced, w)
+				mech[c.egress] = true
+				mech[MechanismEgressProxy] = true
+				r.Notes = append(r.Notes, "network: egress declared for "+strings.Join(spec.Server.Hosts, ",")+
+					" (enforced: the server has loopback only and reaches just these hosts, through the kernel's CONNECT proxy; every other host is refused)")
+				continue
+			}
+			r.Notes = append(r.Notes, egressNote(spec.Server.Hosts, c.egressWhy))
 			continue
 		}
 		if m, ok := c.enforced[w]; ok {
@@ -542,9 +576,50 @@ func plan(spec Spec, tp TierPolicy, c capability) Report {
 	return r
 }
 
-func egressNote(hosts []string) string {
+func egressNote(hosts []string, why string) string {
 	if len(hosts) == 0 {
-		return "network: egress declared (no host list)"
+		return "network: egress declared (no host list; not filtered)"
 	}
-	return "network: egress declared for " + strings.Join(hosts, ",") + " (hosts recorded, not filtered)"
+	n := "network: egress declared for " + strings.Join(hosts, ",") + " (hosts recorded, not filtered"
+	if why != "" {
+		n += ": " + why
+	}
+	return n + ")"
+}
+
+// egressPlan decides whether a launch's declared egress hosts are to be
+// enforced by the kernel's proxy (ENG-688), runner aside: true, or false and
+// why not. A server keeps the network it had before ENG-688 whenever its
+// declaration gives nothing to enforce (owner decision 2026-11-19, the
+// decision line on the ticket):
+//
+//   - the tier does not deny the network (first-party, vetted by default):
+//     the tier trusts the server with the network, declared hosts or not;
+//   - no host list, or "*" (fetch, playwright: any host by design);
+//   - a placeholder entry ("the configured database host"), which names a
+//     setting, not a host;
+//   - no proxy in this kernel (Policy.Egress nil: an unresolved spec);
+//   - an agent launch (agents declare no hosts; ADR-0157 D3 is theirs).
+func egressPlan(p *Policy, spec Spec, tp TierPolicy) (bool, string) {
+	if spec.Server.Network != NetworkEgress {
+		return false, ""
+	}
+	if spec.Agent != nil {
+		return false, "agent launches have no egress allowlist"
+	}
+	if !tp.DenyNetwork {
+		return false, "tier " + string(spec.Tier) + " keeps the network (deny_network off)"
+	}
+	ok, any, placeholder := egressproxy.Classify(spec.Server.Hosts)
+	switch {
+	case any:
+		return false, `"*" declares any host`
+	case placeholder != "":
+		return false, "\"" + placeholder + "\" is not a host name"
+	case !ok:
+		return false, ""
+	case p.Egress == nil:
+		return false, "no egress proxy in this kernel"
+	}
+	return true, ""
 }

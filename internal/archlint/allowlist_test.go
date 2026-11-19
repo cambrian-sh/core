@@ -32,6 +32,7 @@ var allowBackground = map[string]string{
 	"app/start_services.go serveGRPC #1":                 "graceful listener shutdown deadline after the parent ctx ended (ENG-1467 review)",
 	"app/start_services.go startIngestionHTTP #1":        "graceful server shutdown deadline after the parent ctx ended (ENG-1467 review)",
 	"internal/sandbox/docker.go containerHandle.kill #1": "container kill/cleanup must run after the caller's ctx is gone, bounded at 15 s (ADR-0157, ENG-2031)",
+	"internal/sandbox/docker.go egressSidecar.stop #1":   "the egress forwarder sidecar is removed with its server, after the caller's ctx is gone, bounded at 15 s (ENG-688)",
 
 	// Kernel-owned work: no request exists whose ctx could ride along.
 	"app/boot_tools.go kernelBuild.buildMCPConnector #1":                              "MCP server health transitions come from the connector's own loops (ENG-1466)",

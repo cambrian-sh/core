@@ -24,6 +24,7 @@ import (
 	"github.com/cambrian-sh/core/internal/ontology"
 	"github.com/cambrian-sh/core/internal/pypackages"
 	"github.com/cambrian-sh/core/internal/sandbox"
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 	skillaccess "github.com/cambrian-sh/core/internal/skill/access"
 	skilllifecycle "github.com/cambrian-sh/core/internal/skill/lifecycle"
 	"github.com/cambrian-sh/core/internal/storage"
@@ -150,6 +151,7 @@ type kernelBuild struct {
 	mcpConnector    *mcp.Connector
 	mcpRT           *mcpRuntime
 	sbPolicy        *sandbox.Policy
+	egressProxy     *egressproxy.Broker
 	mcpServers      []mcp.ServerConfig
 	mcpHandler      domain.ToolHandler
 	mcpPricing      domain.ToolPricingSource
@@ -257,6 +259,7 @@ func (b *kernelBuild) kernel(lis net.Listener) *Kernel {
 	skillLifecycle, skillCurator, ledgerSweeper, skillAccess := b.skillLifecycle, b.skillCurator, b.ledgerSweeper, b.skillAccess
 	artifactVault, eventBus, authorizer, toolGrants := b.artifactVault, b.eventBus, b.authorizer, b.toolGrants
 	mcpConnector, mcpSink, mcpServers, mcpRT, credSeams := b.mcpConnector, b.mcpSink, b.mcpServers, b.mcpRT, b.credSeams
+	egressProxy := b.egressProxy
 	mcpEndpoint, mcpTaskLane, mcpCoreBackends, llmGateway := b.mcpEndpoint, b.mcpTaskLane, b.mcpCoreBackends, b.llmGateway
 	return &Kernel{
 		agentSockets:    agentSockets,
@@ -319,6 +322,7 @@ func (b *kernelBuild) kernel(lis net.Listener) *Kernel {
 		PolicyAdmin:         opts.PolicyAdmin,
 		ToolGrants:          toolGrants,
 		MCPConnector:        mcpConnector,
+		EgressProxy:         egressProxy,
 		MCPSink:             mcpSink,
 		MCPServers:          mcpServers,
 		MCPRuntime:          mcpRT,

@@ -15,6 +15,7 @@ import (
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/forget"
 	"github.com/cambrian-sh/core/internal/sandbox"
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
 	skilllifecycle "github.com/cambrian-sh/core/internal/skill/lifecycle"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
@@ -213,7 +214,16 @@ func (b *kernelBuild) buildMCPConnector() error {
 	mcpPricingMap := domain.MapPricingSource{}
 	// ADR-0139 D8: one trust-tier containment policy (mcp.sandbox + the
 	// integration catalog's tiers), resolved onto every server built below.
-	sbPolicy := sandboxPolicyFromConfig(cfg.MCP.Sandbox, sbCatalog)
+	//
+	// ENG-688: the egress allowlist proxy is built and started here and
+	// injected into that policy; every launch that enforces declared hosts
+	// opens its session on it. It lives as long as the kernel (WithoutCancel:
+	// the boot ctx is not its lifetime), and Kernel.Shutdown stops it.
+	egressProxy := egressproxy.New(egressproxy.Options{})
+	if err := egressProxy.Start(context.WithoutCancel(ctx)); err != nil {
+		return fmt.Errorf("ENG-688: egress proxy: %w", err)
+	}
+	sbPolicy := sandboxPolicyFromConfig(cfg.MCP.Sandbox, sbCatalog, egressProxy)
 	servers := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers)+len(composed.mcpServers))
 	// ADR-0075: plugin-contributed MCP servers connect alongside the config ones.
 	for _, s := range composed.mcpServers {
@@ -282,6 +292,7 @@ func (b *kernelBuild) buildMCPConnector() error {
 	mcpAuditor := domain.EgressAuditor(mcp.SlogEgressAuditor{})
 
 	b.mcpConnector, b.mcpRT, b.sbPolicy, b.mcpServers = mcpConnector, mcpRT, sbPolicy, mcpServers
+	b.egressProxy = egressProxy
 	b.mcpHandler, b.mcpPricing, b.mcpBudget, b.mcpAuditor = mcpHandler, mcpPricing, mcpBudget, mcpAuditor
 	return nil
 }

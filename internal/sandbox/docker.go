@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/internal/procenv"
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 )
 
 // The Docker runner (any OS with a reachable Docker engine serving Linux
@@ -34,6 +36,14 @@ import (
 // Caveat recorded in every report: an npx/uvx server fetches its package at
 // launch, so with network none it can only run from an image that already
 // contains it.
+//
+// Declared egress hosts (ENG-688): when the tier denies the network and the
+// server declares a host list, a forwarder sidecar (the python3 image running
+// egressproxy.PythonForwarder, itself --network none) starts first; the
+// server runs with --network container:<sidecar>, so its namespace has
+// loopback only and its one way out is the sidecar's proxy port, relayed over
+// the sidecar's stdio to the kernel's proxy session. Otherwise declared
+// egress gets --network bridge, as before.
 
 const containerWork = "/work"
 
@@ -122,7 +132,112 @@ func dockerCapability(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, 
 	if spec.Server.Network != NetworkEgress {
 		capab.notes = append(capab.notes, "network none: a package fetched at launch (npx/uvx) must already be in the image")
 	}
+	if ok, why := egressPlan(p, spec, tp); ok {
+		if forwarderImage(p) == "" {
+			capab.egressWhy = "no egress forwarder image (mcp.sandbox.docker_images.python3)"
+		} else {
+			capab.egress = RunnerDocker
+			capab.notes = append(capab.notes, "network: a forwarder sidecar ("+forwarderImage(p)+", --network none) owns the server's namespace; the server joins it and reaches the kernel's proxy through the sidecar's stdio")
+		}
+	} else {
+		capab.egressWhy = why
+	}
 	return capab
+}
+
+// forwarderImage is the egress forwarder sidecar's image: the configured
+// python3 image (mcp.sandbox.docker_images.python3), which runs forwarder.py.
+func forwarderImage(p *Policy) string { return p.DockerImages["python3"] }
+
+// egressSidecar is a docker launch's egress forwarder (ENG-688): a container
+// with no network that owns the server's network namespace (the server joins
+// it with --network container:<name>) and relays the server's connections to
+// the kernel's proxy session over its stdio.
+type egressSidecar struct {
+	bin, name string
+	cmd       *exec.Cmd
+	session   *egressproxy.Session
+	once      sync.Once
+}
+
+// sidecarReadyTimeout bounds the sidecar's start, an image pull included.
+const sidecarReadyTimeout = 3 * time.Minute
+
+// startEgressSidecar starts the forwarder and waits until it listens, so the
+// server never starts into a namespace with nothing on the proxy port.
+func startEgressSidecar(ctx context.Context, bin string, p *Policy, spec Spec, base string) (*egressSidecar, error) {
+	sess, err := p.Egress.Open(spec.ServerID, spec.Server.Hosts)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: egress proxy session: %w", err)
+	}
+	name := base + "-egress"
+	args := []string{"run", "--rm", "-i", "--init", "--name", name,
+		"--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--user", "65534:65534", "--memory", "64m", "--memory-swap", "64m", "--pids-limit", "32",
+		"--label", "cambrian.sandbox=mcp-egress", "--label", "cambrian.server=" + spec.ServerID,
+		forwarderImage(p), "python3", "-I", "-c", egressproxy.PythonForwarder, strconv.Itoa(egressproxy.ListenPort)}
+	cmd := exec.Command(bin, args...) //nolint:gosec // configured docker CLI, kernel-built argv
+	cmd.Env = procenv.Allowlisted([]string{"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"})
+	tail := &tailBuffer{max: 2048}
+	cmd.Stderr = tail
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		sess.Close()
+		return nil, err
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		sess.Close()
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		sess.Close()
+		return nil, fmt.Errorf("sandbox: egress forwarder: %w", err)
+	}
+	sc := &egressSidecar{bin: bin, name: name, cmd: cmd, session: sess}
+	if err := sess.Serve(pipeRWC{out, in}); err != nil {
+		sc.stop()
+		return nil, err
+	}
+	wctx, cancel := context.WithTimeout(ctx, sidecarReadyTimeout)
+	defer cancel()
+	select {
+	case <-sess.Ready():
+		return sc, nil
+	case <-wctx.Done():
+	}
+	sc.stop()
+	return nil, fmt.Errorf("sandbox: egress forwarder %s did not start: %s", name, strings.TrimSpace(tail.String()))
+}
+
+// stop removes the sidecar, reaps its CLI and closes the proxy session.
+// Idempotent.
+func (s *egressSidecar) stop() {
+	if s == nil {
+		return
+	}
+	s.once.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(ctx, s.bin, "rm", "-f", s.name).Run() //nolint:gosec // configured docker CLI
+		if s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+		}
+		_ = s.cmd.Wait()
+		s.session.Close()
+	})
+}
+
+// pipeRWC joins a command's stdout (read) and stdin (write) into the
+// multiplex's byte stream.
+type pipeRWC struct {
+	io.ReadCloser
+	io.WriteCloser
+}
+
+func (p pipeRWC) Close() error {
+	_ = p.WriteCloser.Close()
+	return p.ReadCloser.Close()
 }
 
 func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Command, workdir string, start starter) error {
@@ -146,6 +261,18 @@ func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Com
 	network := "none"
 	if spec.Server.Network == NetworkEgress || !tp.DenyNetwork {
 		network = "bridge"
+	}
+	// ENG-688: an enforced egress allowlist. The forwarder sidecar starts
+	// first and owns a network namespace with loopback only; the server joins
+	// it, so its one way out is the proxy port the sidecar listens on.
+	var sidecar *egressSidecar
+	if ok, _ := egressPlan(p, spec, tp); ok && forwarderImage(p) != "" {
+		sidecar, err = startEgressSidecar(ctx, bin, p, spec, name)
+		if err != nil {
+			return err
+		}
+		network = "container:" + sidecar.name
+		inner = append(inner, egressproxy.ProxyEnv()...)
 	}
 	args := []string{"run", "--rm", "-i", "--init", "--name", name,
 		"--network", network,
@@ -189,8 +316,14 @@ func startDocker(ctx context.Context, p *Policy, spec Spec, tp TierPolicy, c Com
 
 	cmd := exec.Command(bin, args...) //nolint:gosec // configured docker CLI and operator-configured command
 	cmd.Env = cliEnv
-	post := func() (osHandle, error) { return &containerHandle{bin: bin, name: name, cmd: cmd}, nil }
-	return start(cmd, post)
+	post := func() (osHandle, error) {
+		return &containerHandle{bin: bin, name: name, cmd: cmd, egress: sidecar}, nil
+	}
+	if err := start(cmd, post); err != nil {
+		sidecar.stop()
+		return err
+	}
+	return nil
 }
 
 // stripExt drops a Windows launcher extension: "npx.cmd" runs as "npx" in the image.
@@ -213,6 +346,9 @@ type containerHandle struct {
 	// reclaim is set for an agent container: its scratch is handed back to
 	// the kernel after the exit (reclaimScratch, ENG-2031). nil for MCP.
 	reclaim *dockerReclaim
+	// egress is the MCP server's egress forwarder sidecar (ENG-688); nil when
+	// its egress allowlist is not enforced.
+	egress *egressSidecar
 }
 
 func (h *containerHandle) kill() error {
@@ -226,6 +362,7 @@ func (h *containerHandle) kill() error {
 		if h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
 		}
+		h.egress.stop()
 	})
 	return h.err
 }

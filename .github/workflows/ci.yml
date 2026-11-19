@@ -358,6 +358,33 @@ jobs:
           test "$left" -eq 0
           echo "PASS: the docker agent runner e2e ran and passed as a non-root kernel"
 
+      # ENG-688: declared MCP egress hosts are enforced by the kernel's CONNECT
+      # proxy on both Linux runners. A third-party probe declaring
+      # hosts=[example.com] reaches example.com through the proxy, gets 403 for
+      # an undeclared host and for an IP literal, and has no direct route; the
+      # docker runner's forwarder sidecar is gone after the server. Needs the
+      # internet (example.com). A SKIP is a failure.
+      - name: Gate — ENG-688 egress allowlist e2e (bubblewrap and docker)
+        shell: bash
+        env:
+          SANDBOX_EGRESS_E2E: "1"
+        run: |
+          test "$(id -u)" -ne 0
+          docker pull -q python:3.13-slim
+          tests='TestLiveBwrapEgressAllowlistEnforced|TestLiveDockerEgressAllowlistEnforced'
+          go test -race -p 1 -count=1 -v -run "^(${tests})\$" ./internal/sandbox/ 2>&1 | tee "$RUNNER_TEMP/go-test-egress.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          fail=0
+          for t in ${tests//|/ }; do
+            if ! grep -qE "^\s*--- PASS: ${t} " "$RUNNER_TEMP/go-test-egress.log"; then
+              echo "FAIL: ${t} did not pass (skipped or not run)"
+              fail=1
+            fi
+          done
+          test "$fail" -eq 0
+          test "$(docker ps -aq --filter label=cambrian.sandbox=mcp-egress | wc -l)" -eq 0
+          echo "PASS: the egress allowlist is enforced on bubblewrap and docker"
+
       # The same agent sandbox e2es as a ROOT kernel (ENG-1989, owner decision
       # on ENG-2024): agents then drop to uid 65534, and the root-only tests
       # run instead of skipping. Run from a copy under /srv: uid 65534 must
