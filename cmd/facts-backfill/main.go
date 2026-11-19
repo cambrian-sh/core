@@ -38,6 +38,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -175,9 +176,10 @@ func run() error {
 		ProgressEvery:    *progressEvery,
 		Logger:           logger,
 	})
-	fmt.Printf("facts-backfill: extractor_version=%s candidates=%d already_done=%d pending=%d chunks=%d groups=%d ordered=%t concurrency=%d group_concurrency=%d max_llm_calls_per_document=%d estimated_llm_calls=%d\n",
-		mem.FactExtractor.ExtractorVersion(), rep.Candidates, rep.AlreadyDone, rep.Pending, rep.Chunks, rep.Groups,
-		*ordered, *concurrency, groupConcurrency, rep.MaxLLMCallsPerDocument, rep.EstimatedLLMCalls)
+	if !printSummary(os.Stdout, rep, err, summaryArgs{version: mem.FactExtractor.ExtractorVersion(),
+		ordered: *ordered, concurrency: *concurrency, groupConcurrency: groupConcurrency}) {
+		return err
+	}
 	if !*dryRun {
 		fmt.Printf("facts-backfill: extracted=%d partial=%d skipped=%d failed=%d failed_parse=%d failed_timeout=%d parse_retries=%d parse_repaired=%d missing=%d cancelled=%d llm_calls=%d assessment_calls=%d assessments_replayed=%d facts_inserted=%d two_phase=%t journal_windows_replayed=%d assessment_calls_discarded=%d speculation_waves=%d elapsed=%s\n",
 			rep.Extracted, rep.Partial, rep.Skipped, rep.Failed, rep.FailedParse, rep.FailedTimeout, rep.ParseRetries, rep.ParseRepaired, rep.Missing, rep.Cancelled, rep.LLMCalls, rep.AssessmentCalls,
@@ -185,4 +187,28 @@ func run() error {
 			rep.SpeculationWaves, rep.Elapsed)
 	}
 	return err
+}
+
+// summaryArgs are the run settings the summary line reports beside the report.
+type summaryArgs struct {
+	version                       string
+	ordered                       bool
+	concurrency, groupConcurrency int
+}
+
+// printSummary writes the run's first summary line and reports whether the
+// rest of the summary should follow. A run that failed before it listed any
+// candidate (the lister's error, rep still the zero report) prints
+// "facts-backfill: lister failed: <err>" instead (ENG-1647): the summary used to
+// read "candidates=0 ..." — a clean empty run to factops.py and to anyone reading
+// stdout — while the process exited 1 with the real error on stderr.
+func printSummary(w io.Writer, rep memory.FactBackfillReport, err error, a summaryArgs) bool {
+	if err != nil && rep == (memory.FactBackfillReport{}) {
+		fmt.Fprintf(w, "facts-backfill: lister failed: %v\n", err)
+		return false
+	}
+	fmt.Fprintf(w, "facts-backfill: extractor_version=%s candidates=%d already_done=%d pending=%d chunks=%d groups=%d ordered=%t concurrency=%d group_concurrency=%d max_llm_calls_per_document=%d estimated_llm_calls=%d\n",
+		a.version, rep.Candidates, rep.AlreadyDone, rep.Pending, rep.Chunks, rep.Groups,
+		a.ordered, a.concurrency, a.groupConcurrency, rep.MaxLLMCallsPerDocument, rep.EstimatedLLMCalls)
+	return true
 }
