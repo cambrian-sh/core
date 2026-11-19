@@ -43,13 +43,13 @@ _log = logging.getLogger("cambrian.chat_agent")
 
 # ENG-94: a recalled memory reaches the turn inside the kernel's payload fence with its
 # provenance (the SDK's one renderer, held to domain/untrusted_fence.go by a parity
-# fixture). An SDK older than 0.1.9 has no fence: the turn then keeps the closing-tag
+# fixture). An SDK older than 0.1.8 has no fence: the turn then keeps the closing-tag
 # neutralisation it always had, and says so once, loudly — never a silent downgrade.
 try:
     from cambrian_agent_sdk.working_memory import render_recalled_memory
-except ImportError:  # cambrian-agent-sdk < 0.1.9
+except ImportError:  # cambrian-agent-sdk < 0.1.8
     render_recalled_memory = None
-    _log.warning("chat_agent: cambrian-agent-sdk has no payload fence (needs >= 0.1.9); "
+    _log.warning("chat_agent: cambrian-agent-sdk has no payload fence (needs >= 0.1.8); "
                  "recalled memory is rendered unfenced (closing tags neutralised only) — ENG-94")
 
 
