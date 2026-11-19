@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -32,6 +34,9 @@ type Recorder struct {
 	previewChars     int
 	privateByDefault bool
 	now              func() time.Time
+	// unrecorded counts the entries the decision point refused to classify
+	// (ENG-2173: a refusal is counted and logged at WARN, never a silent drop).
+	unrecorded atomic.Uint64
 }
 
 var _ domain.LedgerWriter = (*Recorder)(nil)
@@ -95,11 +100,11 @@ func (r *Recorder) Record(ctx context.Context, rec domain.LedgerRecord) (domain.
 		// lease resolution sets; the provenance's owner is the same kernel-held fact.
 		ctx = domain.WithPrivateWrites(ctx, p.Owner)
 	}
-	tags, err := r.classify(ctx, rec)
+	src := r.sources(ctx, rec)
+	tags, err := r.classify(ctx, rec, src)
 	if err != nil {
 		return domain.LedgerEntry{}, err
 	}
-	src := r.sources(ctx, rec)
 	sum := sha256.Sum256(rec.Body)
 	contentHash := hex.EncodeToString(sum[:])
 	args := domain.CanonicalJSON(rec.ArgsJSON)
@@ -152,31 +157,81 @@ func (r *Recorder) Record(ctx context.Context, rec domain.LedgerRecord) (domain.
 	return e, nil
 }
 
+// Unrecorded is how many entries the decision point refused to classify since
+// the recorder was built (ENG-2173). Each refusal is also logged at WARN with the
+// running total.
+func (r *Recorder) Unrecorded() uint64 { return r.unrecorded.Load() }
+
 // classify is the kernel write classification (ADR-0035), the vault's own
-// (authz.ClassifyArtifactWrite): the writer's principal decides, the hint (a
-// tool's domain tags — what the result came from) may only narrow, and the
-// ADR-0142 D12 owner stamp is added after. A hint the decision point rejects —
-// or, since ENG-2115, one it cannot carry in full (a tool tag outside the writer's
-// write ceiling) — is dropped and the principal's own classification used: a tool's
-// domain tags are not a writer's request, and the fallback is the writer's whole
-// ceiling, never a silently narrowed subset of it. A writer's OWN requested tags
-// (UploadArtifact) never reach this fallback: the RPC refuses an unhonourable
-// request first. A principal the decision point refuses outright gets no entry
+// (authz.ClassifyArtifactWrite): the writer's principal decides, a hint may only
+// narrow, and the ADR-0142 D12 owner stamp is added after. Every candidate goes
+// through that one enforcing path; nothing here judges a tag itself.
+//
+// The candidates, in order (ENG-2173, owner decision 2026-11-19 "inherit from
+// sources"):
+//
+//  1. a TOOL RESULT built from classified records — a memory recall's chunks
+//     (rec.SourceClassifications), a staged call's input entries (DerivedFrom) —
+//     is classified with their classification: the union of the source tag sets'
+//     requested classification (authz.RequestedClassification: provenance stamps
+//     and owner tags are kernel-stamped, never requested). Union, because the
+//     entry holds every source at once. The sources still gate reads through
+//     SourceTags (domain.LedgerEntryReadable), so the entry is readable by exactly
+//     the people who could read every source.
+//  2. the tool's domain tags (rec.ClassificationHint) — what the result came from
+//     when the ledger knows no sources. A writer's OWN requested tags
+//     (UploadArtifact) also arrive here; the RPC refuses an unhonourable request
+//     before the recorder sees it.
+//  3. no hint: the decision point's default for the writer (its write ceiling).
+//     Since ENG-2161 the decision point refuses this when the ceiling holds a
+//     closed tag (ClassificationRequiredError); an open-only ceiling keeps it.
+//
+// A candidate the decision point refuses (or cannot carry in full, ENG-2115) is
+// passed over for the next. When none is honoured the entry is NOT written — a row
+// the kernel cannot classify cannot be read-gated — and the refusal is loud:
+// counted (Unrecorded) and logged at WARN with each refusal's reason
 // (ErrUnclassifiable).
-func (r *Recorder) classify(ctx context.Context, rec domain.LedgerRecord) ([]string, error) {
-	tags, err := authz.ClassifyArtifactWrite(ctx, r.authorizer, rec.Writer, rec.ClassificationHint)
-	if err == nil {
-		return tags, nil
+func (r *Recorder) classify(ctx context.Context, rec domain.LedgerRecord, src inheritance) ([]string, error) {
+	type candidate struct {
+		from string
+		hint []string
 	}
-	if len(rec.ClassificationHint) > 0 && errors.Is(err, authz.ErrWriteDenied) {
-		slog.Warn("ledger: classification hint refused; using the writer's own classification",
-			"writer", rec.Writer.String(), "tool", rec.ToolName, "hint", rec.ClassificationHint)
-		if tags, err = authz.ClassifyArtifactWrite(ctx, r.authorizer, rec.Writer, nil); err == nil {
-			return tags, nil
+	var cands []candidate
+	if rec.Kind == domain.LedgerToolResult && len(src.tags) > 0 {
+		var union []string
+		for _, set := range src.tags {
+			for _, t := range authz.RequestedClassification(domain.ClassificationHint(set)) {
+				if !slices.Contains(union, t) {
+					union = append(union, t)
+				}
+			}
+		}
+		sort.Strings(union)
+		if len(union) > 0 {
+			cands = append(cands, candidate{"sources", union})
 		}
 	}
-	slog.Warn("ledger: entry not recorded (unclassifiable)", "writer", rec.Writer.String(),
-		"tool", rec.ToolName, "kind", string(rec.Kind), "err", err)
+	if len(rec.ClassificationHint) > 0 {
+		cands = append(cands, candidate{"tool", rec.ClassificationHint})
+	}
+	cands = append(cands, candidate{"writer", nil})
+
+	refusals := make([]string, 0, len(cands))
+	for _, c := range cands {
+		tags, err := authz.ClassifyArtifactWrite(ctx, r.authorizer, rec.Writer, c.hint)
+		if err == nil {
+			if len(refusals) > 0 {
+				slog.Debug("ledger: entry classified after a refused candidate", "writer", rec.Writer.String(),
+					"tool", rec.ToolName, "from", c.from, "refused", refusals)
+			}
+			return tags, nil
+		}
+		refusals = append(refusals, c.from+": "+err.Error())
+	}
+	n := r.unrecorded.Add(1)
+	slog.Warn("ledger: entry not recorded (unclassifiable)", "event", "ledger_entry_unclassifiable",
+		"writer", rec.Writer.String(), "tool", rec.ToolName, "kind", string(rec.Kind),
+		"refusals", refusals, "unrecorded_total", n)
 	return nil, ErrUnclassifiable
 }
 
