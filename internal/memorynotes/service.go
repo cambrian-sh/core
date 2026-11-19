@@ -204,11 +204,20 @@ func (s *Service) decide(ctx context.Context, who domain.PrincipalRef, surface d
 	return s.authz.Authorize(ctx, req).Allowed
 }
 
+// runSurface is the surface a run's note read or write is decided on: the turn's
+// surface the agent plane stamped from the lease (a chat:telegram conversation's
+// recorded surface, ADR-0085 D7), else the agent plane. It was always the agent
+// surface, so a policy linked to chat:* never saw a note write from a chat turn
+// (ENG-1615).
+func runSurface(ctx context.Context) domain.SurfaceRef {
+	return domain.SurfaceFromContextOr(ctx, domain.SurfaceRef{Kind: domain.SurfaceAgent})
+}
+
 // runReadable lists the keys a run principal may read: its own personal document
 // and the configured org's, each also passing the decision point.
 func (s *Service) runReadable(ctx context.Context, p Principal) []Key {
 	var keys []Key
-	surface := domain.SurfaceRef{Kind: domain.SurfaceAgent}
+	surface := runSurface(ctx)
 	if p.ID != "" {
 		k := Key{Scope: ScopePersonal, OwnerID: p.ID}
 		if s.allowed(ctx, p.ref(), surface, p.Session, k, false) {
@@ -244,7 +253,7 @@ func (s *Service) runWritable(ctx context.Context, p Principal, scope Scope) (Ke
 	default:
 		return Key{}, "unknown scope"
 	}
-	if !s.allowed(ctx, p.ref(), domain.SurfaceRef{Kind: domain.SurfaceAgent}, p.Session, k, true) {
+	if !s.allowed(ctx, p.ref(), runSurface(ctx), p.Session, k, true) {
 		return Key{}, "the access policy denies this write"
 	}
 	return k, ""

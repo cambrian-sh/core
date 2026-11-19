@@ -381,7 +381,20 @@ func (s *Server) withCallerSession(ctx context.Context) context.Context {
 // Only the surface is added to the returned ctx: the session id is used for the
 // lookup, never seeded here (that is withCallerSession's decision).
 func (s *Server) withTurnSurface(ctx context.Context, sessionID domain.SessionID) context.Context {
-	convID := s.callerConversation(ctx)
+	return s.withSurfaceOf(ctx, sessionID, s.callerConversation(ctx))
+}
+
+// withBindingSurface is withTurnSurface for a lease the caller presented in a
+// request field and the handler already resolved (memory notes, ENG-1615): the
+// binding's session and conversation decide the surface, exactly as for a lease
+// on x-lease-id.
+func (s *Server) withBindingSurface(ctx context.Context, b domain.LeaseBinding) context.Context {
+	return s.withSurfaceOf(ctx, b.SessionID, b.ConversationID)
+}
+
+// withSurfaceOf stamps the RECORDED surface of the session (first) or the
+// conversation; neither recorded keeps the transport surface already on ctx.
+func (s *Server) withSurfaceOf(ctx context.Context, sessionID domain.SessionID, convID string) context.Context {
 	if sessionID == "" && convID == "" {
 		return ctx
 	}

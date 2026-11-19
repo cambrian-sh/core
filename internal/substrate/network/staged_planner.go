@@ -154,7 +154,7 @@ func (s *Server) plannerReadScope(ctx context.Context, r *stagedRun) *domain.Tag
 	if callerAgentID(ctx) == "" {
 		return runLedgerScope(r.prov.Owner)
 	}
-	eff, _ := s.authorizer().ReadFilter(ctx, artifactPrincipal(ctx), artifactSurface)
+	eff, _ := s.authorizer().ReadFilter(ctx, artifactPrincipal(ctx), artifactSurface(ctx))
 	if eff == nil {
 		return nil // the decision point refused the caller: no grant rescues it
 	}

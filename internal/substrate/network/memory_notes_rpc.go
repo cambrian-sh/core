@@ -35,19 +35,22 @@ func notesLease(ctx context.Context, field string) domain.LeaseID {
 }
 
 // notesCaller resolves the presented lease to the notes principal and the run key
-// the frozen snapshot is held under.
-func (s *Server) notesCaller(ctx context.Context, leaseField string) (memorynotes.Principal, string, error) {
+// the frozen snapshot is held under, and returns ctx carrying the turn's surface
+// (ADR-0085 D7, ENG-1615): the decision point sees a chat:telegram conversation's
+// note reads and writes on that surface, not as a plain agent call.
+func (s *Server) notesCaller(ctx context.Context, leaseField string) (context.Context, memorynotes.Principal, string, error) {
 	if s.MemoryNotes == nil {
-		return memorynotes.Principal{}, "", status.Error(codes.Unimplemented, "memory notes are not enabled on this kernel")
+		return ctx, memorynotes.Principal{}, "", status.Error(codes.Unimplemented, "memory notes are not enabled on this kernel")
 	}
 	lease := notesLease(ctx, leaseField)
 	if lease == "" {
-		return memorynotes.Principal{}, "", status.Error(codes.PermissionDenied, "a lease is required")
+		return ctx, memorynotes.Principal{}, "", status.Error(codes.PermissionDenied, "a lease is required")
 	}
 	b, ok := s.resolveLeaseFor(ctx, lease)
 	if !ok {
-		return memorynotes.Principal{}, "", status.Error(codes.PermissionDenied, "lease is missing, foreign or expired")
+		return ctx, memorynotes.Principal{}, "", status.Error(codes.PermissionDenied, "lease is missing, foreign or expired")
 	}
+	ctx = s.withBindingSurface(ctx, b)
 	p := memorynotes.Principal{
 		AgentID: b.AgentID,
 		Session: b.SessionID,
@@ -66,12 +69,12 @@ func (s *Server) notesCaller(ctx context.Context, leaseField string) (memorynote
 	if b.RunID != "" {
 		runKey = "run:" + string(b.RunID)
 	}
-	return p, runKey, nil
+	return ctx, p, runKey, nil
 }
 
 // GetMemoryNotes returns the run's FROZEN run-start snapshot (ADR-0139 D14 / D3).
 func (s *Server) GetMemoryNotes(ctx context.Context, req *pb.GetMemoryNotesRequest) (*pb.GetMemoryNotesResponse, error) {
-	p, runKey, err := s.notesCaller(ctx, req.GetLeaseId())
+	ctx, p, runKey, err := s.notesCaller(ctx, req.GetLeaseId())
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +103,7 @@ func (s *Server) GetMemoryNotes(ctx context.Context, req *pb.GetMemoryNotesReque
 // response with accepted=false and a rejection — the model sees it as a tool
 // result — never a silent trim or eviction.
 func (s *Server) ProposeMemoryNote(ctx context.Context, req *pb.ProposeMemoryNoteRequest) (*pb.ProposeMemoryNoteResponse, error) {
-	p, _, err := s.notesCaller(ctx, req.GetLeaseId())
+	ctx, p, _, err := s.notesCaller(ctx, req.GetLeaseId())
 	if err != nil {
 		return nil, err
 	}

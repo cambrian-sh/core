@@ -41,8 +41,14 @@ func artifactPrincipal(ctx context.Context) domain.PrincipalRef {
 }
 
 // artifactSurface is the surface the artifact plane presents to the decision
-// point: the agent-facing gRPC plane.
-var artifactSurface = domain.SurfaceRef{Kind: domain.SurfaceAgent}
+// point: the turn's surface when the caller's lease resolved one (ADR-0085 D7 —
+// withCallerSession re-stamps a conversation's RECORDED surface, so a chat:telegram
+// turn's artifact reads meet a policy linked to chat:*), else the agent-facing gRPC
+// plane. It was a fixed agent surface, so a surface-linked policy never saw an
+// artifact read from a chat turn (ENG-1615).
+func artifactSurface(ctx context.Context) domain.SurfaceRef {
+	return domain.SurfaceFromContextOr(ctx, domain.SurfaceRef{Kind: domain.SurfaceAgent})
+}
 
 // authorizer returns the server's decision point, defaulting to the OSS allow-all.
 // The kernel always asks; only the answer differs.
@@ -138,7 +144,7 @@ func (s *Server) UploadArtifact(ctx context.Context, req *pb.UploadArtifactReque
 func (s *Server) artifactReadCtx(ctx context.Context) (context.Context, error) {
 	ctx = s.withCallerSession(ctx)
 	principal := artifactPrincipal(ctx)
-	eff, dec := s.authorizer().ReadFilter(ctx, principal, artifactSurface)
+	eff, dec := s.authorizer().ReadFilter(ctx, principal, artifactSurface(ctx))
 	if eff == nil {
 		return nil, status.Error(codes.PermissionDenied, dec.Explain())
 	}

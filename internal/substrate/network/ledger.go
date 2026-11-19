@@ -122,7 +122,7 @@ func (s *Server) runProvenance(ctx context.Context, meta map[string]string, run 
 // the SDK's assemble_context, which applies its own token budget to what it fetches.
 func (s *Server) readLedgerNode(ctx context.Context, id string) *pb.ContextNodeResponse {
 	principal := artifactPrincipal(ctx)
-	eff, _ := s.authorizer().ReadFilter(ctx, principal, artifactSurface)
+	eff, _ := s.authorizer().ReadFilter(ctx, principal, artifactSurface(ctx))
 	if eff == nil {
 		return &pb.ContextNodeResponse{Cid: id}
 	}

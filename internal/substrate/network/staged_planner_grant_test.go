@@ -82,7 +82,7 @@ func readable(t *testing.T, s *Server, ctx context.Context, eff *domain.TagPredi
 // fence hides every private_by_default entry of the planner's own run.
 func TestPlannerReadScope_CallerPredicateAloneHidesOwnRun(t *testing.T) {
 	s, ctx, ids := grantFixture(t)
-	eff, _ := s.authorizer().ReadFilter(ctx, artifactPrincipal(ctx), artifactSurface)
+	eff, _ := s.authorizer().ReadFilter(ctx, artifactPrincipal(ctx), artifactSurface(ctx))
 	if eff == nil || len(eff.Owners) != 0 {
 		t.Fatalf("caller predicate = %+v, want one with no owners", eff)
 	}
