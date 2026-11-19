@@ -49,6 +49,7 @@ var Canaries = map[string]string{
 	"github.com/cambrian-sh/core/internal/objects":                 "TestPg_E2E_HistoryWritesMaintainTheObjectRow",
 	"github.com/cambrian-sh/core/internal/ontology":                "TestPg_LoadSeedsOnceAndReloadsAppliedChanges",
 	"github.com/cambrian-sh/core/internal/substrate/network":       "TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite",
+	"github.com/cambrian-sh/core/internal/substrate/operator":      "TestOperatorPlane_PostgresDown_IsUnavailableThenRecovers",
 	"github.com/cambrian-sh/core/internal/testing/pgscratch":       "TestEnsureMigrated_EmptyDatabaseAtTheSharedDimension",
 }
 

@@ -80,7 +80,7 @@ PG_PACKAGES := ./app/ ./app/migratetest/ ./internal/backup/ ./internal/evidence/
 	./internal/identity/ ./internal/infrastructure/postgres/ ./internal/kernel/ \
 	./internal/knowledgecommit/ ./internal/memory/ ./internal/memory/store/ \
 	./internal/memorynotes/ ./internal/migrate/ ./internal/objects/ ./internal/ontology/ \
-	./internal/substrate/network/ ./internal/testing/pgscratch/
+	./internal/substrate/network/ ./internal/substrate/operator/ ./internal/testing/pgscratch/
 
 # No pipefail needed: a failing or unbuildable package reaches the gate as a fail /
 # build-fail event, and a go test that ran nothing leaves every canary unpassed.
