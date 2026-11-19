@@ -36,6 +36,31 @@ func (d *AgentRepoDecorator) AppendSignal(sig domain.Signal, ttl time.Duration) 
 	})
 }
 
+// AppendSignals durably records a page of signals in one transaction and returns
+// their seqs in input order (ENG-1292): the batched AppendSignal a history fill
+// journals each page with. All or nothing. The premium engine discovers it as an
+// optional capability of the journal, so a kernel without it still works (one
+// append per signal).
+func (d *AgentRepoDecorator) AppendSignals(sigs []domain.Signal, ttl time.Duration) ([]uint64, error) {
+	if len(sigs) == 0 {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	var ttlExpires time.Time
+	if ttl > 0 {
+		ttlExpires = now.Add(ttl)
+	}
+	recs := make([]storage.ReactiveJournalRecord, len(sigs))
+	for i, sig := range sigs {
+		data, err := json.Marshal(sig)
+		if err != nil {
+			return nil, err
+		}
+		recs[i] = storage.ReactiveJournalRecord{StreamID: sig.StreamID, SignalJSON: data, ReceivedAt: now, TTLExpires: ttlExpires}
+	}
+	return d.store.AppendReactiveSignals(recs)
+}
+
 // ReplayStreams returns the journaled signals with seq > afterSeq on the streams
 // match selects, in seq order (ADR-0061 A2.1). The signal is decoded once — the
 // record header and the stream are not JSON (A2.3).

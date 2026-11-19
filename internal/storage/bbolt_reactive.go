@@ -219,6 +219,47 @@ func (b *BBoltAdapter) AppendReactiveSignal(rec ReactiveJournalRecord) (uint64, 
 	return seq, err
 }
 
+// AppendReactiveSignals appends a page of signals in ONE transaction and one
+// fsync, returning their seqs in input order (ENG-1292). It is the batched form
+// of AppendReactiveSignal for a producer that holds a whole page at once — a
+// history fill journaling hundreds of records — where one durable append per
+// record would make the fill fsync-bound. Each record gets the next journal-wide
+// seq, exactly as if appended one by one, so replay and cursors cannot tell the
+// difference. All or nothing: a failure commits none of the page, and the caller
+// re-sends it (its cursor has not moved). An empty page is a no-op.
+func (b *BBoltAdapter) AppendReactiveSignals(recs []ReactiveJournalRecord) ([]uint64, error) {
+	if len(recs) == 0 {
+		return nil, nil
+	}
+	seqs := make([]uint64, len(recs))
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		parent := tx.Bucket(reactiveJournalBucket)
+		if parent == nil {
+			return fmt.Errorf("reactive_journal_v2 bucket not found")
+		}
+		for i, rec := range recs {
+			n, err := parent.NextSequence()
+			if err != nil {
+				return err
+			}
+			sb, err := parent.CreateBucketIfNotExists(streamBucketName(rec.StreamID))
+			if err != nil {
+				return fmt.Errorf("reactive_journal_v2 stream bucket %q: %w", rec.StreamID, err)
+			}
+			sb.FillPercent = 1.0 // ascending keys only, as in AppendReactiveSignal
+			if err := sb.Put(itob(n), encodeJournalValue(rec)); err != nil {
+				return err
+			}
+			seqs[i] = n
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return seqs, nil
+}
+
 // ReplayReactiveStreams returns the journal records with seq > afterSeq on every
 // stream for which match returns true, merged into seq order (ADR-0061 A2.1).
 // Streams that do not match are never read, so an idle stream — or a large one no
