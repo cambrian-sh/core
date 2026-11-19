@@ -24,6 +24,14 @@ import (
 // naming the tags. A writer that requests NO tags is unaffected: it gets the decision
 // point's default (the writer's ceiling, or unclassified without one).
 //
+// ENG-2161 (owner decision 2026-11-19) adds the untagged half: a writer that requests
+// NO tags while its write ceiling holds CLOSED tags is refused too — the decision
+// point answers ReasonClassificationRequired — because taking the whole ceiling would
+// stamp every closed tag on the row and hide it from everyone but a reader granted
+// all of them. The refusal is a *ClassificationRequiredError naming the closed tags
+// and the ceiling to choose from. A writer whose ceiling holds only open tags (or
+// that has none) still gets the default.
+//
 // Narrowing still works: a hint that names a subset of the ceiling is honoured in
 // full — every requested tag is in the answer — and the answer carries exactly it.
 //
@@ -67,6 +75,34 @@ func (e *UnhonouredClassificationError) Error() string {
 // Unwrap makes errors.Is(err, ErrWriteDenied) hold.
 func (e *UnhonouredClassificationError) Unwrap() error { return ErrWriteDenied }
 
+// ClassificationRequiredError is the refusal of an UNTAGGED write whose writer's
+// write ceiling holds closed tags (ENG-2161, ADR-0035 C2 as amended). It unwraps to
+// ErrWriteDenied, so every boundary that maps ErrWriteDenied (InvalidArgument at the
+// RPC planes) maps it unchanged.
+//
+// Unlike UnhonouredClassificationError it names the writer's ceiling: the owner
+// decided the refusal must say which tags to choose from, and the ceiling is the
+// writer's own — the operator set it for this writer — so naming it to that writer
+// discloses nothing about anyone else's reach.
+type ClassificationRequiredError struct {
+	// Principal is the writer, rendered for the message.
+	Principal string
+	// Closed are the closed tags in the writer's ceiling.
+	Closed []string
+	// Ceiling is the writer's write ceiling: what a classification may name.
+	Ceiling []string
+}
+
+func (e *ClassificationRequiredError) Error() string {
+	return fmt.Sprintf("authz: write refused: %s sent no classification, and its write ceiling holds the closed tags [%s] — "+
+		"an unclassified write would carry every one of them and be readable only by a reader granted all of them; "+
+		"nothing was stored (send the tags this write should carry, chosen from [%s])",
+		e.Principal, strings.Join(e.Closed, ", "), strings.Join(e.Ceiling, ", "))
+}
+
+// Unwrap makes errors.Is(err, ErrWriteDenied) hold.
+func (e *ClassificationRequiredError) Unwrap() error { return ErrWriteDenied }
+
 // RequestedClassification is the part of a hint that is a classification REQUEST:
 // the hint less the kernel-stamped identity namespaces — provenance stamps (never
 // the writer's to set; the decision point strips and re-stamps them, ADR-0035
@@ -88,8 +124,9 @@ func RequestedClassification(hint []string) []string {
 // when the answer does not carry every requested classification tag (see the file
 // comment). It returns the decision point's classification and decision unchanged
 // when the write may proceed; on refusal the error is an
-// *UnhonouredClassificationError, or ErrWriteDenied for an untagged write the
-// decision point denied (no principal). The decision is returned either way, so a
+// *UnhonouredClassificationError, a *ClassificationRequiredError for an untagged
+// write the decision point refused for want of a classification (ENG-2161), or
+// ErrWriteDenied for an untagged write it denied otherwise (no principal). The decision is returned either way, so a
 // caller can log its reason.
 //
 // A nil authorizer is the OSS allow-all default.
@@ -101,6 +138,13 @@ func ClassifyWriteStrict(ctx context.Context, a domain.Authorizer, principal dom
 	requested := RequestedClassification(hint)
 	if !dec.Allowed {
 		if len(requested) == 0 {
+			if dec.Reason == domain.ReasonClassificationRequired {
+				var closed, ceiling []string
+				if c := dec.ClassificationChoice; c != nil {
+					closed, ceiling = dedup(c.Closed), dedup(c.Ceiling)
+				}
+				return nil, dec, &ClassificationRequiredError{Principal: principal.String(), Closed: closed, Ceiling: ceiling}
+			}
 			return nil, dec, ErrWriteDenied
 		}
 		reason := string(dec.Reason)

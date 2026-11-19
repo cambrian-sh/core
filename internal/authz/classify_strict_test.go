@@ -23,6 +23,7 @@ type ceilingAuthorizer struct {
 	domain.AllowAllAuthorizer
 	ceilings map[string][]string // writer id → write ceiling
 	vocab    []string            // empty ⇒ no vocabulary check
+	closed   []string            // closed tags (ADR-0091); an untagged write under a ceiling holding one is refused (ENG-2161)
 }
 
 func (c ceilingAuthorizer) ClassifyWrite(_ context.Context, p domain.PrincipalRef, hint []string) ([]string, domain.AccessDecision) {
@@ -39,6 +40,18 @@ func (c ceilingAuthorizer) ClassifyWrite(_ context.Context, p domain.PrincipalRe
 			return nil, domain.AccessDecision{Allowed: false, Reason: domain.ReasonForbiddenTag, Detail: "coinage; vocabulary is " + strings.Join(c.vocab, ",")}
 		}
 		req = append(req, t)
+	}
+	if len(req) == 0 {
+		var closed []string
+		for _, t := range ceiling {
+			if slices.Contains(c.closed, t) {
+				closed = append(closed, t)
+			}
+		}
+		if len(closed) > 0 {
+			return nil, domain.AccessDecision{Allowed: false, Reason: domain.ReasonClassificationRequired,
+				ClassificationChoice: &domain.WriteClassificationChoice{Ceiling: ceiling, Closed: closed}}
+		}
 	}
 	out := []string{}
 	for _, t := range ceiling {
@@ -245,3 +258,56 @@ func (knowledgePutRecorder) PutItem(_ context.Context, it domain.KnowledgeItem) 
 }
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// ENG-2161 (owner decision 2026-11-19): an UNTAGGED write whose writer's ceiling holds
+// closed tags is refused with a *ClassificationRequiredError naming the closed tags
+// and the ceiling to choose from; it still wraps ErrWriteDenied (InvalidArgument at
+// the RPC planes).
+func TestClassifyWriteStrict_UntaggedUnderClosedCeilingIsRefusedNamingTheChoice(t *testing.T) {
+	a := strictAuthorizer()
+	a.ceilings["operator"] = []string{"company_wide", "finance", "people"}
+	a.vocab = append(a.vocab, "company_wide")
+	a.closed = []string{"finance", "people"}
+
+	for _, hint := range [][]string{nil, {"provenance:source=forged"}, {domain.OwnerTag("emp-1")}} {
+		_, dec, err := authz.ClassifyWriteStrict(writerCtx("operator"), a, domain.AgentPrincipal("operator"), hint)
+		if !errors.Is(err, authz.ErrWriteDenied) {
+			t.Fatalf("hint %v: want a refusal wrapping ErrWriteDenied, got %v", hint, err)
+		}
+		var cre *authz.ClassificationRequiredError
+		if !errors.As(err, &cre) {
+			t.Fatalf("hint %v: want *ClassificationRequiredError, got %T: %v", hint, err, err)
+		}
+		if !slices.Equal(cre.Closed, []string{"finance", "people"}) || !slices.Equal(cre.Ceiling, []string{"company_wide", "finance", "people"}) {
+			t.Errorf("hint %v: closed=%v ceiling=%v", hint, cre.Closed, cre.Ceiling)
+		}
+		for _, w := range []string{"finance", "people", "company_wide", "nothing was stored"} {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("hint %v: message must name %q: %q", hint, w, err.Error())
+			}
+		}
+		if dec.Reason != domain.ReasonClassificationRequired {
+			t.Errorf("hint %v: decision reason %q", hint, dec.Reason)
+		}
+	}
+
+	// Choosing from the ceiling — an open tag alone included — is honoured.
+	final, _, err := authz.ClassifyWriteStrict(writerCtx("operator"), a, domain.AgentPrincipal("operator"), []string{"company_wide"})
+	if err != nil || !slices.Contains(final, "company_wide") || slices.Contains(final, "finance") {
+		t.Fatalf("a chosen open tag: final=%v err=%v", final, err)
+	}
+}
+
+// ENG-2161: a writer whose ceiling holds only OPEN tags keeps the ADR-0035 C2 default
+// — an untagged write takes the whole ceiling.
+func TestClassifyWriteStrict_UntaggedUnderOpenCeilingTakesTheCeiling(t *testing.T) {
+	a := strictAuthorizer()
+	a.closed = []string{"people"} // closed in the deployment, but not in this writer's ceiling
+	final, _, err := authz.ClassifyWriteStrict(writerCtx("finance_agent"), a, domain.AgentPrincipal("finance_agent"), nil)
+	if err != nil {
+		t.Fatalf("untagged write under an open-only ceiling must proceed: %v", err)
+	}
+	if !slices.Contains(final, "confidential") || !slices.Contains(final, "finance") {
+		t.Fatalf("final %v, want the whole ceiling", final)
+	}
+}

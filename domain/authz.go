@@ -253,6 +253,12 @@ const (
 	ReasonUnsatisfiablePolicy DecisionReason = "unsatisfiable_policy"
 	// ReasonNoPrincipal — fail-closed default: identity could not be established.
 	ReasonNoPrincipal DecisionReason = "no_principal"
+	// ReasonClassificationRequired — a WRITE refused because it requested no
+	// classification while the writer's write ceiling holds CLOSED tags (ENG-2161,
+	// ADR-0035 C2 as amended). Taking the whole ceiling would stamp every closed tag
+	// on the row, so only a reader granted all of them could read it; the writer is
+	// asked to choose instead. AccessDecision.ClassificationChoice names the tags.
+	ReasonClassificationRequired DecisionReason = "classification_required"
 	// ReasonSkillGrantClipped — NOT a denial. A skill's tool grant was narrowed to
 	// the principal's existing privilege (ADR-0085 D4).
 	ReasonSkillGrantClipped DecisionReason = "skill_grant_clipped"
@@ -412,6 +418,12 @@ type AccessDecision struct {
 	// unexplainable: the operator wrote no policy forbidding the tag, so the answer
 	// has to name the closure and the missing grant instead of "forbidden tag".
 	GrantedTags []string
+	// ClassificationChoice is set on a ReasonClassificationRequired write refusal
+	// (ENG-2161): the writer's own write ceiling, which the classification must be
+	// chosen from, and the closed tags in it that made an untagged write refusable.
+	// It names only the WRITER's ceiling, so the refusal says what to send without
+	// disclosing anyone else's.
+	ClassificationChoice *WriteClassificationChoice
 	// PolicyVersion identifies the policy snapshot this decision was computed
 	// against, so a decision is reproducible after the policy changes.
 	PolicyVersion string
@@ -420,6 +432,16 @@ type AccessDecision struct {
 	// have done (ADR-0087 D9).
 	ReportOnly      bool
 	WouldHaveDenied bool
+}
+
+// WriteClassificationChoice is what a writer may classify a write as when the
+// decision point refused an untagged write (ReasonClassificationRequired, ENG-2161).
+type WriteClassificationChoice struct {
+	// Ceiling is the writer's write ceiling: every tag a classification may name.
+	Ceiling []string
+	// Closed are the CLOSED tags in Ceiling (ADR-0091) — the reason an untagged
+	// write, which would take the whole ceiling, was refused.
+	Closed []string
 }
 
 // Explain renders the decision as a single administrator-readable sentence. It is

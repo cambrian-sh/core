@@ -175,7 +175,7 @@ func TestAccessDecisionToOp_CarriesEveryReason(t *testing.T) {
 		domain.ReasonAllowed, domain.ReasonBypass, domain.ReasonForbiddenTag,
 		domain.ReasonMissingRequiredTag, domain.ReasonAnyOfUnsatisfied,
 		domain.ReasonEffectNotPermitted, domain.ReasonUnsatisfiablePolicy,
-		domain.ReasonNoPrincipal, domain.ReasonSkillGrantClipped, domain.ReasonNotAuthorized,
+		domain.ReasonNoPrincipal, domain.ReasonClassificationRequired, domain.ReasonSkillGrantClipped, domain.ReasonNotAuthorized,
 	}
 	for _, r := range reasons {
 		op := AccessDecisionToOp(domain.AccessDecision{Reason: r, Detail: "d"})
