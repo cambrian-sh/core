@@ -97,6 +97,10 @@ type Kernel struct {
 	// serving is closed right before GRPC.Serve (ENG-2135), releasing the
 	// plugins' boot-time daemon spawns (KernelServices.Serving).
 	serving *servingSignal
+	// runTrace is the ADR-0145 D10 run-trace file (execution.trace; nil when off).
+	// Shutdown closes it after everything that writes spans has stopped, so an
+	// in-process kernel releases the file (ENG-2102).
+	runTrace io.Closer
 	// Health is the grpc.health.v1 checker (PLAT-03 / ADR-0065): SERVING once the DB is
 	// reachable, NOT_SERVING while draining. Registered on the main listener.
 	Health *health.Checker
@@ -419,6 +423,15 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	}
 	if k.ArtifactVault != nil {
 		_ = k.ArtifactVault.Close()
+	}
+
+	// 3c. ENG-2102: the run-trace file, after every span writer above has stopped.
+	// Its spans are flushed as written, so this only releases the handle; a span
+	// arriving after Close is dropped by the writer.
+	if k.runTrace != nil {
+		if err := k.runTrace.Close(); err != nil {
+			slog.Warn("run trace: close failed", "err", err)
+		}
 	}
 
 	// 4. Drain storage

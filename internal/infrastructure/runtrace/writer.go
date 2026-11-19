@@ -37,7 +37,8 @@ type Writer struct {
 	maxChars int
 	service  string
 	seen     map[string]bool // dedupedAttrs content hashes already written in full
-	broken   bool            // a write failed: stop trying, log once
+	broken   bool            // a write failed, or the writer is closed: stop trying
+	closed   bool            // Close ran
 }
 
 var _ domain.RunTracer = (*Writer)(nil)
@@ -191,13 +192,19 @@ func (w *Writer) Span(ctx context.Context, s domain.TraceSpan) {
 	}
 }
 
-// Close flushes and closes the file.
+// Close flushes and closes the file. A span after Close is dropped silently (the
+// kernel closes the writer at shutdown, ENG-2102; a late span is not a write
+// failure), and a second Close is a no-op.
 func (w *Writer) Close() error {
 	if w == nil {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed, w.broken = true, true
 	_ = w.buf.Flush() // best-effort: Close reports the file error below
 	return w.f.Close()
 }

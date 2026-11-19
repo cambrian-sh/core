@@ -14,6 +14,8 @@ to a landed change is a wiring regression, not a golden to regenerate.
 
 History of golden updates:
 
+- ENG-2102: `+ runTrace: nil` (Kernel, default) and `+ runTrace: *runtrace.Writer`
+  (Kernel, all_on): the kernel holds the run-trace file so Shutdown can close it.
 - ENG-2241: `- ArtifactOutputDir: string(set)` (ToolExecutor, both goldens): the
   "_artifacts" promotion to the run ledger and data/outputs went with the native
   tool.py handler, its only producer (finishing ENG-1421).

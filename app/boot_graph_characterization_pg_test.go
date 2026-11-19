@@ -71,8 +71,9 @@ func TestPg_BootGraphCharacterization(t *testing.T) {
 			e.Ledger.Enabled = true
 			e.Skills.Curator.Enabled = true
 			e.Tools.ToolsAutoApprove = true
-			// Not t.TempDir: Kernel.Shutdown does not close the run-trace file, so on
-			// Windows the directory cannot be removed while the test process lives.
+			// Not t.TempDir: bootGraph never calls Kernel.Shutdown (which closes the
+			// run-trace file since ENG-2102), so on Windows the open file keeps the
+			// directory from being removed while the test process lives.
 			traceDir, err := os.MkdirTemp("", "boot-graph-trace-")
 			if err != nil {
 				t.Fatal(err)

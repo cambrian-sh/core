@@ -263,6 +263,7 @@ func (b *kernelBuild) kernel(lis net.Listener) *Kernel {
 	return &Kernel{
 		agentSockets:    agentSockets,
 		serving:         b.serving,
+		runTrace:        runTraceCloser(b.runTracer),
 		Links:           linkStore,
 		linkReviewLane:  substrate.LinkReview(),
 		OperatorEffects: operatorEffects,

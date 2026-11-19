@@ -16,6 +16,7 @@ Listener: *net.TCPListener
 GRPC: nil
 agentSockets: *app.agentSocketServer
 serving: *app.servingSignal
+runTrace: nil
 Health: *health.Checker
 OperatorEffects: operator.CommandEffectsFuncs
 MemorySharer: *app.memorySharer
