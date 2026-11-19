@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/kernel"
@@ -67,11 +68,11 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 	stamp := strings.ReplaceAll(time.Now().UTC().Format("150405.000000"), ".", "")
 	ingest := operatorMemoryIngestor(mem.IngestionManager)
 	opCtx := domain.WithPrincipal(ctx, domain.UserPrincipal("eng2108-op-"+stamp))
-	put := func(filename, text string, importance float64) string {
+	put := func(filename, text string, importance float64, tags ...string) string {
 		t.Helper()
 		id, err := ingest.Ingest(opCtx, operator.IngestRequest{
 			Text: text, Filename: filename, Importance: importance,
-			SessionID: "eng2108-" + stamp, Tags: []string{"scope-docs"},
+			SessionID: "eng2108-" + stamp, Tags: append([]string{"scope-docs"}, tags...),
 			EventTime: domain.IngestEventTime{EventTime: time.Now().UTC(), Source: domain.TimeSourceIngestDefault},
 		})
 		if err != nil {
@@ -79,8 +80,15 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 		}
 		return id
 	}
+	// The revisions carry the identity tags the document importer writes
+	// (cambrian-premium cmd/cambrian-apply docTags): the document id, rev<N>, and
+	// in-force for the current revision, superseded for every older one (ENG-2158).
 	for rev := 1; rev <= 4; rev++ {
-		put(fmt.Sprintf("sop-001-rev%d-%s.md", rev, stamp), sop001(rev), 0.6)
+		lifecycle := "superseded"
+		if rev == 4 {
+			lifecycle = "in-force"
+		}
+		put(fmt.Sprintf("sop-001-rev%d-%s.md", rev, stamp), sop001(rev), 0.6, "sop-001", fmt.Sprintf("rev%d", rev), lifecycle)
 	}
 	put("sop-002-"+stamp+".md", sop002, 0.6)
 	put("sop-007-"+stamp+".md", sop007, 0.6)
@@ -117,7 +125,7 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 			if i == 8 {
 				break
 			}
-			fmt.Fprintf(&b, "  %d. score=%.3f cos=%.3f %q\n", i+1, r.Score, r.RawScore, firstLine(r.Document.Text))
+			fmt.Fprintf(&b, "  %d. score=%.3f cos=%.3f %-4s %q\n", i+1, r.Score, r.RawScore, revTag(r), firstLine(r.Document.Text))
 		}
 		return b.String()
 	}
@@ -133,6 +141,51 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 		}
 	}
 
+	// ENG-2158: superseded revisions rank below their successor. With the demotion
+	// switched off the defect reproduces — the same SOP-001 chunk once per revision
+	// fills the window — and with the shipped default the in-force copy leads, the
+	// older copies leave the top 8, and an old revision asked for by name still
+	// comes back.
+	antalya := "Who manages the Antalya warehouse?"
+	top8 := func() []domain.SearchResult {
+		t.Helper()
+		res, err := mem.QueryService.SearchSystem(ctx, antalya)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res) > 8 {
+			res = res[:8]
+		}
+		return res
+	}
+	mem.QueryService.EnableSupersededDemotion(nil, 0)
+	before := top8()
+	t.Logf("demotion OFF %q\n%s", antalya, dump(before))
+	if n := supersededCopies(before); n < 3 {
+		t.Fatalf("demotion off: %d superseded copies of an in-force chunk in the top 8; the corpus no longer reproduces ENG-2158", n)
+	}
+	mem.QueryService.EnableSupersededDemotion(cfg.Execution.Retrieval.SupersededTags, cfg.Execution.Retrieval.SupersededRankFactor)
+	after := top8()
+	t.Logf("demotion ON (shipped default) %q\n%s", antalya, dump(after))
+	if n, was := supersededCopies(after), supersededCopies(before); n > 1 || n >= was {
+		t.Errorf("%q: %d superseded copies of an in-force chunk in the top 8 (%d with the demotion off); want at most one: the old revisions must not fill the window", antalya, n, was)
+	}
+	if bad := supersededAboveSuccessor(after); bad != "" {
+		t.Errorf("%q: %s", antalya, bad)
+	}
+	if r := firstSOP001(after); r == nil || revTag(*r) != "rev4" {
+		t.Errorf("%q: the first SOP-001 chunk is %v; want the newest revision (rev4)", antalya, revOf(r))
+	}
+	if rank, _ := rankOf(antalya, "Selin Kaya"); rank == 0 || rank > 3 {
+		t.Errorf("%q: the note that answers it ranks %d; want top 3", antalya, rank)
+	}
+	rev1q := "What changed in SOP-001 revision 1?"
+	rev1Rank, rev1Res := rankOf(rev1q, "Revision 1 of the receiving steps")
+	t.Logf("%q -> rev1 at rank %d\n%s", rev1q, rev1Rank, dump(rev1Res))
+	if rev1Rank == 0 || rev1Rank > 8 {
+		t.Errorf("%q: revision 1's own chunk ranks %d (0 = absent); an old revision asked for by name must stay findable (top 8)", rev1q, rev1Rank)
+	}
+
 	// Section scoping still works when the query names a section: the named heading's
 	// chunks lead, and only from the document that has that heading.
 	q := "What does the Recall Readiness section say?"
@@ -141,6 +194,11 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("%q\n%s", q, dump(res))
+	// The ranked window only: rows past it are document-completion rows (ENG-430),
+	// appended in document order, never ranked.
+	if bad := supersededAboveSuccessor(res[:min(8, len(res))]); bad != "" {
+		t.Errorf("%q: %s", q, bad)
+	}
 	if len(res) == 0 || !strings.Contains(res[0].Document.Text, "mock recall") || res[0].Score < 1 {
 		t.Errorf("%q: top hit %q (score %.3f); want SOP-007's Recall Readiness chunk promoted (score >= 1)", q, firstLine(textOf(res, 0)), scoreOf(res, 0))
 	}
@@ -167,6 +225,74 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 			t.Errorf("ChunksInMatchingSections(readiness) returned %q from outside the Recall Readiness section", firstLine(d.Text))
 		}
 	}
+}
+
+// revTag is the rev<N> identity tag of a row, "" for a row without one.
+func revTag(r domain.SearchResult) string {
+	for _, tg := range authz.DocTags(&r.Document) {
+		if strings.HasPrefix(tg, "rev") {
+			return tg
+		}
+	}
+	return ""
+}
+
+func revOf(r *domain.SearchResult) string {
+	if r == nil {
+		return "none"
+	}
+	return revTag(*r)
+}
+
+func hasTag(r domain.SearchResult, tag string) bool {
+	for _, tg := range authz.DocTags(&r.Document) {
+		if tg == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func firstSOP001(res []domain.SearchResult) *domain.SearchResult {
+	for i := range res {
+		if hasTag(res[i], "sop-001") {
+			return &res[i]
+		}
+	}
+	return nil
+}
+
+// supersededCopies counts the rows of a superseded revision whose text is also the
+// text of another row in the window: a duplicate that takes a slot from an answer.
+func supersededCopies(res []domain.SearchResult) int {
+	seen := map[string]int{}
+	for _, r := range res {
+		seen[r.Document.Text]++
+	}
+	n := 0
+	for _, r := range res {
+		if hasTag(r, "superseded") && seen[r.Document.Text] > 1 {
+			n++
+		}
+	}
+	return n
+}
+
+// supersededAboveSuccessor names the first superseded row ranked above a row of the
+// same text that is not superseded (its successor's copy), "" when there is none.
+func supersededAboveSuccessor(res []domain.SearchResult) string {
+	for i, r := range res {
+		if !hasTag(r, "superseded") {
+			continue
+		}
+		for j := i + 1; j < len(res); j++ {
+			if !hasTag(res[j], "superseded") && res[j].Document.Text == r.Document.Text {
+				return fmt.Sprintf("superseded %s copy at rank %d is above its successor's copy at rank %d (%q)",
+					revTag(r), i+1, j+1, firstLine(r.Document.Text))
+			}
+		}
+	}
+	return ""
 }
 
 func firstLine(s string) string {

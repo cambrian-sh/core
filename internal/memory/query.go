@@ -54,6 +54,7 @@ type QueryService struct {
 	anchorConstraint bool                      // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
 	sectionStore     SectionScopedStore        // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
 	sectionCues      map[string]bool           // ENG-2108: words that let a query scope by heading title (execution.retrieval.section_scope_cues)
+	superseded       supersededDemotion        // ENG-2158: rank rows tagged superseded below their successors (superseded_rank.go); zero = off
 	neighborWindow   bool                      // ADR-0060: expand each returned chunk with its document neighbors
 	docCompletion    docCompletion             // ENG-430: return the rest of the top documents (document_completion.go); zero = off
 	chronoContext    bool                      // ADR-0134 D5a: order + date the final synthesis context by event time (chronological_context.go)
@@ -2113,6 +2114,11 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		results = q.applySectionConstraint(ctx, results, query, vec)
 	}
 	pt.mark("section")
+
+	// ENG-2158: a revision its writer marked superseded ranks below the same or a
+	// similar chunk of its successor. After every promotion (so a promoted old
+	// revision is demoted too) and before the assembly that cuts the window.
+	results = q.superseded.demote(results)
 
 	sid, _ := domain.SessionIDFromContext(ctx)
 

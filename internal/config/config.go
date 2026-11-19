@@ -912,6 +912,20 @@ type RetrievalConfig struct {
 	// languages here. Empty ⇒ only hierarchical numbers scope by section.
 	SectionScopeCues []string `json:"section_scope_cues,omitempty"`
 
+	// SupersededTags are the tags a writer puts on a document revision that is no
+	// longer in force (cambrian-apply marks every revision `in-force` or
+	// `superseded`). A chunk carrying one ranks below the same or a similar chunk of
+	// its successor: its score is multiplied by SupersededRankFactor before the
+	// final top-k cut, so the copies of one text across a document's revisions stop
+	// filling the window (ENG-2158). Old revisions are demoted, never removed — a
+	// query only the old revision matches, or a read filter selecting superseded
+	// rows, still returns them. Matched case-insensitively. Empty ⇒ off.
+	SupersededTags []string `json:"superseded_tags,omitempty"`
+	// SupersededRankFactor is the score multiplier for a chunk carrying a
+	// SupersededTags tag, in (0, 1]. Multiplicative because scores are on different
+	// scales by then (RRF, Stage-A blend, section promotion); 1 ⇒ off.
+	SupersededRankFactor float64 `json:"superseded_rank_factor,omitempty"`
+
 	// AgenticRetrievalEnabled turns on the agentic retrieval loop
 	// (AGENTIC_RETRIEVAL_SPEC): an LLM query-planner rewrites the query before
 	// the single pass (Phase 2a, hops=1), growing into the full plan/iterate/
@@ -3453,6 +3467,13 @@ func DefaultConfig() *Config {
 				// The unambiguous structural nouns only — "part", "unit" and "book" are
 				// everyday words in operations questions ("which part", "unit price").
 				SectionScopeCues: []string{"chapter", "section", "subsection", "appendix", "article", "lecture", "module"},
+				// ENG-2158 (owner decision 2026-11-19): superseded revisions rank below their
+				// successors. "superseded" is the marker the document importer writes; the
+				// factor halves a superseded copy's score, enough to put the in-force copy of
+				// the same text first and let other answers back into the window, while an
+				// old revision that alone matches the query still ranks.
+				SupersededTags:       []string{"superseded"},
+				SupersededRankFactor: 0.5,
 
 				// ── The tuned retrieval stack, promoted to shipped defaults ──
 				// Owner decision 2026-08-11: the operating config's measured-best
@@ -4471,6 +4492,11 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Retrieval.TemporalFitWeight < 0 {
 		errs = append(errs, "retrieval.temporal_fit_weight must be >= 0")
+	}
+	// ENG-2158: a factor the consumer would ignore (<= 0, > 1) is refused while
+	// superseded_tags asks for the demotion; 1 is the explicit "off".
+	if len(c.Retrieval.SupersededTags) > 0 && (c.Retrieval.SupersededRankFactor <= 0 || c.Retrieval.SupersededRankFactor > 1) {
+		errs = append(errs, fmt.Sprintf("retrieval.superseded_rank_factor must be in (0, 1] when superseded_tags is set (got %g)", c.Retrieval.SupersededRankFactor))
 	}
 	// ADR-0136 D4/D5: the fact layer's tunables. Each is checked only when the switch
 	// that reads it is on, as the consumer would otherwise silently replace it.

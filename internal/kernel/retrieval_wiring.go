@@ -186,6 +186,13 @@ func composeRetrieval(qs *memory.QueryService, execCfg config.ExecutionConfig, b
 		qs.EnableSectionScopedRetrieval(backend.Sections, rc.SectionScopeCues)
 		slog.Info("ADR-0060: section-scoped retrieval ENABLED", "title_cues", rc.SectionScopeCues)
 	}
+
+	// ENG-2158: superseded revisions rank below their successors.
+	if len(rc.SupersededTags) > 0 && rc.SupersededRankFactor > 0 && rc.SupersededRankFactor < 1 {
+		qs.EnableSupersededDemotion(rc.SupersededTags, rc.SupersededRankFactor)
+		slog.Info("ENG-2158: superseded-revision demotion ENABLED",
+			"tags", rc.SupersededTags, "factor", rc.SupersededRankFactor)
+	}
 }
 
 // rankingV2From maps execution.retrieval and execution.facts onto the ADR-0136 ranking

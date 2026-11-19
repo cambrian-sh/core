@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -129,6 +130,14 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 			fmt.Fprintf(&b, "facts_lane_scoped_documents=%d\nfacts_lane_scoped_top_k=%d\n",
 				c.Facts.LaneScopedDocuments, c.Facts.LaneScopedTopK)
 		}
+	}
+
+	// ENG-2158: the superseded-revision demotion changes the ranking function. Written
+	// only when it acts, the same pattern as the switches above.
+	if len(c.Retrieval.SupersededTags) > 0 && c.Retrieval.SupersededRankFactor > 0 && c.Retrieval.SupersededRankFactor < 1 {
+		tags := append([]string(nil), c.Retrieval.SupersededTags...)
+		sort.Strings(tags)
+		fmt.Fprintf(&b, "superseded_tags=%s\nsuperseded_rank_factor=%g\n", strings.Join(tags, ","), c.Retrieval.SupersededRankFactor)
 	}
 
 	// Stage-B cross-encoder. The model id lives in the reranker agent's environment,

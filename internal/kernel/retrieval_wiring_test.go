@@ -147,6 +147,9 @@ func legacyWiredQueryService(backend MemoryBackend, execCfg config.ExecutionConf
 	if cfg.Execution.Retrieval.StructureGraphEnabled {
 		qs.EnableSectionScopedRetrieval(backend.Vector.(memory.SectionScopedStore), cfg.Execution.Retrieval.SectionScopeCues)
 	}
+	if r := cfg.Execution.Retrieval; len(r.SupersededTags) > 0 && r.SupersededRankFactor > 0 && r.SupersededRankFactor < 1 {
+		qs.EnableSupersededDemotion(r.SupersededTags, r.SupersededRankFactor)
+	}
 	if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
 		qs.EnableAgenticRetrieval(pl, cfg.Execution.Retrieval.AgenticMaxHops)
 		qs.SetDecomposeEnabled(cfg.Execution.Retrieval.AgenticDecomposeEnabled)
@@ -206,6 +209,7 @@ func allLanesOn() config.ExecutionConfig {
 	r.RerankerEnabled, r.RerankerTopK, r.RerankerWeight = true, 17, 0.4
 	r.AgenticRetrievalEnabled, r.AgenticMaxHops, r.AgenticDecomposeEnabled = true, 3, true
 	r.AgenticSubQuestionConcurrency, r.AgenticAdaptiveRoutesEnabled = 4, true
+	r.SupersededTags, r.SupersededRankFactor = []string{"superseded", "retired"}, 0.4
 	f := &e.Facts
 	f.LaneEnabled, f.LaneTopK, f.LaneScopedDocuments, f.LaneScopedTopK = true, 9, 2, 6
 	f.FactMatchWeight, f.SupersessionEnabled, f.CurrentFactWeight, f.LaneChunkCosineMax = 0.3, true, 0.25, true
@@ -218,6 +222,7 @@ func allLanesOff() config.ExecutionConfig {
 	r.RecallSpreadingEnabled, r.HebbianEnabled, r.KG2RAGEnabled, r.BlendEnabled = false, false, false, false
 	r.HybridSearchEnabled, r.NeighborWindowEnabled, r.ChronologicalContextEnabled = false, false, false
 	r.StructureGraphEnabled, r.DocumentCompletionEnabled, r.RerankerEnabled, r.AgenticRetrievalEnabled = false, false, false, false
+	r.SupersededTags = nil
 	e.Facts.LaneEnabled = false
 	return e
 }
@@ -268,7 +273,7 @@ func TestComposedRetrieval_AllOnDiffersFromAllOffOnEveryLane(t *testing.T) {
 		"queryEntitySeed", "anchorConstraint", "sectionStore", "neighborWindow", "docCompletion", "chronoContext",
 		"blender", "recencyCurve", "rankingV2", "rankSignals", "lexical", "rrfK", "lexicalWeight", "decompEnabled",
 		"subqConcurrency", "adaptiveRoutes", "reranker", "rerankTopK", "rerankWeight", "agenticEnabled", "planner",
-		"agenticMaxHops"} {
+		"agenticMaxHops", "superseded"} {
 		if _, ok := on[lane]; !ok {
 			t.Errorf("QueryService has no field %q any more; update this list", lane)
 			continue
