@@ -50,6 +50,7 @@ func NewClient(g config.GeneratorConfig) (Client, error) {
 			DisableThinking: g.DisableThinking,
 			NativeTools:     g.NativeTools,
 			MaxTokens:       g.MaxTokens,
+			PromptCacheKey:  g.PromptCacheKey,
 		}
 		c.Caps = with(c.Capabilities())
 		return c, nil

@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -43,6 +45,10 @@ type OpenAIClient struct {
 	MaxTokens int
 	// Caps overrides DefaultCapabilities when non-nil (the per-generator config).
 	Caps *domain.Capabilities
+	// PromptCacheKey sends OpenAI's prompt_cache_key on requests that carry
+	// cache-marked system blocks (GeneratorConfig.PromptCacheKey, ENG-2133). Off by
+	// default: strict OpenAI-compatible servers may refuse the unknown field.
+	PromptCacheKey bool
 
 	// provider names the adapter in errors and extension keys ("openai", or
 	// "ollama" when wrapped by OllamaClient). Empty = "openai".
@@ -67,7 +73,8 @@ func (c *OpenAIClient) name() string {
 // The defaults are what an unknown OpenAI-compatible endpoint can be trusted with:
 // json_schema is best-effort (deepseek accepts only json_object; claudebox pastes
 // the schema into the prompt), so the provider layer validates and repairs it;
-// caching is implicit on every such endpoint, never an explicit breakpoint. A real
+// caching is implicit on every such endpoint, never an explicit breakpoint (a
+// generator may opt into the prompt_cache_key routing hint, cacheKeyFor). A real
 // OpenAI generator can raise response_schema to "enforced" in its config.
 func (c *OpenAIClient) Capabilities() domain.Capabilities {
 	if c.Caps != nil {
@@ -89,6 +96,45 @@ func (c *OpenAIClient) Capabilities() domain.Capabilities {
 		CacheBreakpoints: domain.LevelUnsupported,
 		Images:           domain.LevelUnsupported,
 	}
+}
+
+// promptCacheKeyPrefix marks the key as Cambrian's so it is recognisable in an
+// endpoint's logs; the rest is a digest, never a name.
+const promptCacheKeyPrefix = "cmb-"
+
+// cacheKeyFor returns the prompt_cache_key for req, or "" when the switch is off or
+// the request marks no system block for caching (ENG-2133, owner decision
+// 2026-11-18).
+//
+// The key is a SHA-256 digest of the system prefix up to and including the LAST
+// cache-marked block — exactly the prefix the caller asked to be cached, the same
+// boundary an explicit breakpoint marks on Anthropic. Requests that share that
+// prefix share the key, so OpenAI routes them to the same cache; a change to any
+// byte of the prefix changes the key. It is derived only from the request's own
+// text: no clock, no agent, customer or session name (those would split one shared
+// prefix into many keys, or leak an identity into the provider's logs). Each block
+// is length-prefixed so two different splittings of the same text never collide.
+// 128 bits of the digest are kept: short enough for any key-length limit, far beyond
+// collision risk for prompt prefixes.
+func (c *OpenAIClient) cacheKeyFor(req domain.GenerateRequest) string {
+	if !c.PromptCacheKey {
+		return ""
+	}
+	last := -1
+	for i, b := range req.System {
+		if b.Cache {
+			last = i
+		}
+	}
+	if last < 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, b := range req.System[:last+1] {
+		fmt.Fprintf(h, "%d:", len(b.Text))
+		h.Write([]byte(b.Text))
+	}
+	return promptCacheKeyPrefix + hex.EncodeToString(h.Sum(nil)[:16])
 }
 
 // client builds the SDK client for one call. Built per call, not cached, so a
@@ -205,6 +251,7 @@ func (c *OpenAIClient) params(req domain.GenerateRequest) (openai.ChatCompletion
 
 // GenerateRequest implements domain.RequestGenerator.
 func (c *OpenAIClient) GenerateRequest(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	cacheKey := c.cacheKeyFor(req) // before prepareRequest strips the cache marks
 	req, ignored, err := prepareRequest(req, c.Capabilities())
 	if err != nil {
 		return domain.GenerateResponse{}, err
@@ -212,6 +259,9 @@ func (c *OpenAIClient) GenerateRequest(ctx context.Context, req domain.GenerateR
 	p, opts, err := c.params(req)
 	if err != nil {
 		return domain.GenerateResponse{}, err
+	}
+	if cacheKey != "" {
+		p.PromptCacheKey = openai.String(cacheKey)
 	}
 	cl := c.client(false)
 	completion, err := cl.Chat.Completions.New(ctx, p, opts...)
@@ -269,6 +319,7 @@ func (c *OpenAIClient) logRejected(err error, p openai.ChatCompletionNewParams) 
 // StreamRequest implements domain.RequestGenerator. Usage is requested with
 // stream_options.include_usage; the final chunk carries the whole response.
 func (c *OpenAIClient) StreamRequest(ctx context.Context, req domain.GenerateRequest) (<-chan domain.StreamChunk, error) {
+	cacheKey := c.cacheKeyFor(req) // before prepareRequest strips the cache marks
 	req, ignored, err := prepareRequest(req, c.Capabilities())
 	if err != nil {
 		return nil, err
@@ -276,6 +327,9 @@ func (c *OpenAIClient) StreamRequest(ctx context.Context, req domain.GenerateReq
 	p, opts, err := c.params(req)
 	if err != nil {
 		return nil, err
+	}
+	if cacheKey != "" {
+		p.PromptCacheKey = openai.String(cacheKey)
 	}
 	p.StreamOptions.IncludeUsage = openai.Bool(true)
 	cl := c.client(true)

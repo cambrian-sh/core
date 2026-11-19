@@ -540,6 +540,8 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 			entry.MaxTokens = list[i].MaxTokens
 			entry.ContextWindowTokens = list[i].ContextWindowTokens
 			entry.RequestCapabilities = list[i].RequestCapabilities
+			// ENG-2133: prompt_cache_key is not on the operator wire either.
+			entry.PromptCacheKey = list[i].PromptCacheKey
 			list[i] = entry
 			replaced = true
 			break

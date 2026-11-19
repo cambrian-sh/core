@@ -87,6 +87,15 @@ type GeneratorConfig struct {
 	// "tool_choice":"best_effort","parallel_tools":"best_effort",
 	// "cache_breakpoints":"unsupported","images":"unsupported"}.
 	RequestCapabilities map[string]string `json:"request_capabilities,omitempty"`
+	// PromptCacheKey sends OpenAI's `prompt_cache_key` routing hint on every request
+	// that carries cache-marked system blocks (ENG-2133, owner decision 2026-11-18).
+	// OpenAI caches a long shared prefix automatically; the key routes requests with
+	// the same prefix to the same cache and raises the hit rate. The key is a hash of
+	// the cache-marked system prefix, so it is deterministic and names no agent,
+	// customer or time. OFF by default: a strict OpenAI-compatible server (vLLM,
+	// Ollama, a proxy) may refuse an unknown body field. Only the "openai" provider
+	// reads it; validation refuses it on any other.
+	PromptCacheKey bool `json:"prompt_cache_key,omitempty"`
 }
 
 // AnthropicDefaultMaxTokens is the output cap applied to an Anthropic generator whose
@@ -290,6 +299,11 @@ func (c LLMProviderConfig) validate(embedder EmbedderConfig) []string {
 		}
 		ids[g.ID] = true
 		errs = append(errs, validateRequestCapabilities(i, g.RequestCapabilities)...)
+		// ENG-2133: only the OpenAI-compatible adapter reads prompt_cache_key; on any
+		// other provider the switch would be parsed and then do nothing.
+		if g.PromptCacheKey && g.Provider != "openai" {
+			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].prompt_cache_key is only read by the \"openai\" provider (got %q)", i, g.Provider))
+		}
 		if g.MaxTokens < 0 {
 			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].max_tokens must be >= 0", i))
 		}

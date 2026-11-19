@@ -382,7 +382,7 @@ func TestSaveGenerator_ReplacesByIDAndKeepsCatalogueCosts(t *testing.T) {
 	src := writeSource(t, bundle(t, map[string]string{}), nil)
 	src.generatorList = func() []config.GeneratorConfig {
 		return []config.GeneratorConfig{
-			{ID: "g", Provider: "openai", Model: "old", CostPer1MInput: 3, CostPer1MOutput: 15, ContextWindowTokens: 200000},
+			{ID: "g", Provider: "openai", Model: "old", CostPer1MInput: 3, CostPer1MOutput: 15, ContextWindowTokens: 200000, PromptCacheKey: true},
 		}
 	}
 
@@ -404,6 +404,10 @@ func TestSaveGenerator_ReplacesByIDAndKeepsCatalogueCosts(t *testing.T) {
 	// context_window_tokens is not on the operator wire either (ENG-1050).
 	if got[0].ContextWindowTokens != 200000 {
 		t.Fatalf("context window was erased by a save that never carried it: %+v", got[0])
+	}
+	// Nor is prompt_cache_key (ENG-2133).
+	if !got[0].PromptCacheKey {
+		t.Fatalf("prompt_cache_key was erased by a save that never carried it: %+v", got[0])
 	}
 }
 
