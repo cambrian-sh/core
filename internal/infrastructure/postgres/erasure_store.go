@@ -323,7 +323,14 @@ func (t erasureTx) Exec(ctx context.Context, sql string, args ...any) (int64, er
 func (s *PgErasureStore) eraseTx(ctx context.Context, run *erasureRun, sel domain.ErasureSelector) (bool, error) {
 	tx := run.tx
 	docSet := map[string]bool{}
-	for _, d := range sel.DocumentIDs {
+	// A source-doc entity id names its document rows (ENG-2245, the listing's
+	// resolution) — for a caller that skipped Resolve (the kernel's own erasures);
+	// the enforcing eraser already hands Erase row ids.
+	docIDs, _, err := expandEntityIDs(ctx, tx, sel.DocumentIDs)
+	if err != nil {
+		return false, fmt.Errorf("erase: resolve source-doc entity: %w", err)
+	}
+	for _, d := range docIDs {
 		docSet[d] = true
 	}
 

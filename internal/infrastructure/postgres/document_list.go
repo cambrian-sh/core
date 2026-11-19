@@ -84,13 +84,7 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f domain.DocumentFi
 		// for background embedding whose chunks are not written yet). The scope /
 		// owner-fence filters above still apply: a reader resolves only rows it may
 		// read. No id is re-derived from the URI.
-		e := placeholder(f.IDPrefix)
-		stamp, _ := json.Marshal(map[string]string{"source_doc_entity_id": f.IDPrefix})
-		ej := placeholder(string(stamp))
-		filters = append(filters, `d.id IN (
-			SELECT c.document_id FROM `+TableChunks+` c WHERE c.id = `+e+` AND c.document_id IS NOT NULL
-			UNION SELECT c.document_id FROM `+TableChunks+` c WHERE c.metadata @> `+ej+`::jsonb AND c.document_id IS NOT NULL
-			UNION SELECT j.document_id FROM `+TableDerivationJobs+` j WHERE j.kind = 'embed' AND j.staged->'doc'->>'entity_id' = `+e+`)`)
+		filters = append(filters, `d.id IN (`+entityDocumentRowsSQL(placeholder(f.IDPrefix), placeholder(entityStamp(f.IDPrefix)))+`)`)
 	case f.IDPrefix != "":
 		// ESCAPE is explicit because document ids routinely contain '_', which LIKE
 		// reads as "any single character" — without it a prefix filter silently
@@ -167,4 +161,62 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f domain.DocumentFi
 // ESCAPE '\' in the query.
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// entityDocumentRowsSQL is THE resolution of a source-doc entity id to the document
+// rows it stands for (ENG-2184; one per writer of the same source), as a SELECT of
+// document ids: the entity row's own document_id (the latest writer's row), every
+// chunk stamped with the entity (metadata.source_doc_entity_id, GIN-indexed
+// containment), and an embed job still staging one. entity and stamp are SQL
+// placeholders bound to the entity id and to entityStamp(entity id). The document
+// listing (ListDocuments) and the erasure selector (PgErasureStore.Resolve / Erase,
+// ENG-2245) both resolve through it, so the id a console holds names the same rows
+// everywhere.
+func entityDocumentRowsSQL(entity, stamp string) string {
+	return `SELECT c.document_id FROM ` + TableChunks + ` c WHERE c.id = ` + entity + ` AND c.document_id IS NOT NULL
+			UNION SELECT c.document_id FROM ` + TableChunks + ` c WHERE c.metadata @> ` + stamp + `::jsonb AND c.document_id IS NOT NULL
+			UNION SELECT j.document_id FROM ` + TableDerivationJobs + ` j WHERE j.kind = 'embed' AND j.staged->'doc'->>'entity_id' = ` + entity + ` AND j.document_id IS NOT NULL`
+}
+
+// entityStamp is the chunk-metadata containment value that marks a chunk as part of
+// a source-doc entity.
+func entityStamp(entityID string) string {
+	b, _ := json.Marshal(map[string]string{"source_doc_entity_id": entityID}) // a map of strings always marshals
+	return string(b)
+}
+
+// entityDocumentRows resolves a source-doc entity id to its document row ids
+// (entityDocumentRowsSQL), sorted and de-duplicated.
+func entityDocumentRows(ctx context.Context, q pgxQuerier, entityID string) ([]string, error) {
+	return collectIDs(ctx, q, `SELECT DISTINCT r.document_id FROM (`+entityDocumentRowsSQL("$1", "$2")+`) r(document_id) ORDER BY 1`,
+		entityID, entityStamp(entityID))
+}
+
+// expandEntityIDs replaces every source-doc entity id in ids by its document rows,
+// keeping plain row ids; via maps each resulting row id to the entity id that named
+// it (row ids named directly map to themselves). An entity with no rows contributes
+// nothing.
+func expandEntityIDs(ctx context.Context, q pgxQuerier, ids []string) ([]string, map[string]string, error) {
+	out := make([]string, 0, len(ids))
+	via := map[string]string{}
+	for _, id := range ids {
+		if !domain.IsSourceDocEntityID(id) {
+			if _, seen := via[id]; !seen {
+				out = append(out, id)
+			}
+			via[id] = id
+			continue
+		}
+		rows, err := entityDocumentRows(ctx, q, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, r := range rows {
+			if _, seen := via[r]; !seen {
+				out = append(out, r)
+				via[r] = id
+			}
+		}
+	}
+	return out, via, nil
 }

@@ -80,7 +80,27 @@ func (s *PgErasureStore) Resolve(ctx context.Context, sel domain.ErasureSelector
 		return nil
 	}
 
-	if err := docs("", sel.DocumentIDs); err != nil {
+	// A source-doc ENTITY id (what IngestMemory returns and every MemoryWrittenOp
+	// carries, "source_doc:<uri>") names every document row of that entity — one per
+	// writer — through the document listing's own resolution (entityDocumentRowsSQL,
+	// ENG-2184/ENG-2245); each row is a document candidate with Via = the entity id,
+	// so the enforcing eraser's scope check decides it row by row exactly like a
+	// row id named directly. An entity with no rows names nothing.
+	var plain []string
+	for _, id := range sel.DocumentIDs {
+		if !domain.IsSourceDocEntityID(id) {
+			plain = append(plain, id)
+			continue
+		}
+		rows, err := entityDocumentRows(ctx, q, id)
+		if err != nil {
+			return nil, fmt.Errorf("erasure resolve: source-doc entity: %w", err)
+		}
+		if err := docs(id, rows); err != nil {
+			return nil, err
+		}
+	}
+	if err := docs("", plain); err != nil {
 		return nil, err
 	}
 	for _, th := range sel.ThreadIDs {
