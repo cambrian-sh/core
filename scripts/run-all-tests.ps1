@@ -103,38 +103,42 @@ if (-not $SkipE2E) {
     Write-Host "[6/7] E2E benchmarks skipped (-SkipE2E)" -ForegroundColor DarkGray
 }
 
-# Prefer the repo-local Cambrian venv built by setup-python-runtime.ps1.
-$venvPython = Join-Path $root ".venv\Scripts\python.exe"
-$haveVenv = Test-Path $venvPython
-
 # ------------------------------------------------------------------
-# 7. Python contract tests (uses the Cambrian venv when present)
+# 7. Python SDK tests (ENG-2058)
+#    The SDK is the sibling sdk/ repo (there is no python-sdk/ here). Its tests
+#    run ONLY through its own memory-capped runner (AGENTS.md §4.7: the Python
+#    3.13.1 recursion bug can exhaust memory), never a bare pytest.
 # ------------------------------------------------------------------
 if (-not $SkipPython) {
-    Write-Host "[7/8] Python contract tests" -ForegroundColor Yellow
-    Set-Location "$root\python-sdk"
-    if ($haveVenv) {
-        & $venvPython -m pytest tests/ -v *>&1 | Tee-Object -FilePath "$outDir\07-python-contract.txt"
+    Write-Host "[7/8] Python SDK tests (sdk/, memory-capped)" -ForegroundColor Yellow
+    $sdkRoot = Join-Path (Split-Path -Parent $root) "sdk"
+    $capped = Join-Path $sdkRoot "scripts\pytest_capped.ps1"
+    if (-not (Test-Path $capped)) {
+        Write-Host "  SKIP (no sdk checkout with scripts\pytest_capped.ps1 next to cambrian-core: $sdkRoot)" -ForegroundColor DarkGray
     } else {
-        Write-Host "  (no .venv - using system pytest; run scripts\setup-python-runtime.ps1)" -ForegroundColor DarkGray
-        pytest tests/ -v *>&1 | Tee-Object -FilePath "$outDir\07-python-contract.txt"
+        Set-Location $sdkRoot
+        & $capped tests -q *>&1 | Tee-Object -FilePath "$outDir\07-python-sdk.txt"
+        $pyExit = $LASTEXITCODE
+        Set-Location $PSScriptRoot
+        if ($pyExit -ne 0) { Write-Host "  FAIL" -ForegroundColor Red } else { Write-Host "  PASS" -ForegroundColor Green }
     }
-    Set-Location $PSScriptRoot
-    if ($LASTEXITCODE -ne 0) { Write-Host "  FAIL" -ForegroundColor Red } else { Write-Host "  PASS" -ForegroundColor Green }
 } else {
     Write-Host "[7/8] Python tests skipped (-SkipPython)" -ForegroundColor DarkGray
 }
 
 # ------------------------------------------------------------------
 # 8. Multi-agent integration benchmark (ADR-0023)
-#    Requires: Ollama, PostgreSQL, and the Cambrian venv (.venv).
-#    The benchmark auto-detects .venv for booting agents.
+#    Requires: Ollama, PostgreSQL, and a healthy kernel-managed sandbox Python
+#    env: since ADR-0157 D7 agents boot only on that env (there is no repo .venv),
+#    so the step runs only when `python-env status` reports it healthy (build it
+#    with scripts\setup-python-runtime.ps1).
 # ------------------------------------------------------------------
 if (-not $SkipIntegration) {
     Write-Host "[8/8] Multi-agent integration benchmark" -ForegroundColor Yellow
     Set-Location $root
-    if (-not $haveVenv) {
-        Write-Host "  SKIP (.venv missing: run scripts\setup-python-runtime.ps1)" -ForegroundColor DarkGray
+    go run ./cmd/orchestrator python-env status --dir $root *>&1 | Tee-Object -FilePath "$outDir\08-python-env-status.txt" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  SKIP (kernel-managed Python env is not healthy - see 08-python-env-status.txt; run scripts\setup-python-runtime.ps1)" -ForegroundColor DarkGray
     } else {
         go test -tags=integration -bench=BenchmarkMultiAgent -benchtime=1x -timeout=600s ./cmd/orchestrator/... *>&1 | Tee-Object -FilePath "$outDir\08-integration-benchmark.txt"
         if ($LASTEXITCODE -ne 0) { Write-Host "  FAIL" -ForegroundColor Red } else { Write-Host "  PASS" -ForegroundColor Green }
