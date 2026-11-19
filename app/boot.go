@@ -143,7 +143,6 @@ type kernelBuild struct {
 	tokenSeries        *telemetry.TokenSeries
 	// MCP endpoint and connector
 	toolReg         *domain.InMemoryToolRegistry
-	toolFiles       map[string]string
 	mcpCoreBackends *mcpserve.CoreBackends
 	workerHub       *domain.WorkerHub
 	mcpTaskLane     *mcpTaskLane

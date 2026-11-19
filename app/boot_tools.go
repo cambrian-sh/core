@@ -21,8 +21,6 @@ import (
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 	"github.com/cambrian-sh/core/internal/supervision"
-	tooldiscovery "github.com/cambrian-sh/core/internal/tool/discovery"
-	toolproc "github.com/cambrian-sh/core/internal/tool/proc"
 
 	"google.golang.org/grpc/metadata"
 )
@@ -35,15 +33,14 @@ func (b *kernelBuild) buildMCPEndpoint() error {
 	cfg, opts, composed := b.cfg, b.opts, b.composed
 	vec, mem, docReader, sessionMgr, authorizer := b.vec, b.mem, b.docReader, b.sessionMgr, b.authorizer
 	cambrianServer, conversations, idStores, calendar := b.cambrianServer, b.conversations, b.idStores, b.calendar
-	// ADR-0039: kernel-owned tool registry. Tools are auto-discovered from the
-	// tools/ dir (no Go registration); the executor authorizes every call
-	// (grant + resource policy + scope + approval) and runs it in a confined
-	// Python child. Default: no grants ⇒ no system tools (fail-closed).
+	// ADR-0039: the kernel-owned tool registry. It holds the MCP servers'
+	// tools (registered after ConnectAll below); the executor authorizes every
+	// call (grant + resource policy + scope + approval). Default: no grants ⇒ no
+	// tools (fail-closed). The native tools/*tool.py discovery and its confined
+	// Python process handler were deleted (ENG-1421): none ever shipped, and the
+	// owner directive decisions/agent-stack-v2-mcp-tools-and-profiles.md allows
+	// MCP tools only.
 	toolReg := domain.NewInMemoryToolRegistry()
-	toolFiles, terr := tooldiscovery.LoadRegistry("tools", toolReg, cfg.Execution.Tools.ToolEffectsStrict)
-	if terr != nil {
-		slog.Warn("tool discovery failed; system tools disabled", "err", terr)
-	}
 
 	// ADR-0126 D3: the INBOUND MCP endpoint, started here — immediately before
 	// ConnectAll, and that order is the decision, not an accident. ConnectAll is
@@ -152,7 +149,7 @@ func (b *kernelBuild) buildMCPEndpoint() error {
 		return err
 	}
 
-	b.toolReg, b.toolFiles, b.mcpCoreBackends, b.workerHub = toolReg, toolFiles, mcpCoreBackends, workerHub
+	b.toolReg, b.mcpCoreBackends, b.workerHub = toolReg, mcpCoreBackends, workerHub
 	b.mcpTaskLane, b.mcpEndpoint = mcpTaskLane, mcpEndpoint
 	return nil
 }
@@ -304,8 +301,8 @@ func (b *kernelBuild) buildMCPConnector() error {
 func (b *kernelBuild) buildToolExecutor() error {
 	ctx, cfg := b.ctx, b.cfg
 	vec, reg, storeHandle, mem, aw, meta, authorizer := b.vec, b.reg, b.storeHandle, b.mem, b.aw, b.meta, b.authorizer
-	toolApproval, cambrianServer, toolReg, toolFiles, profiles := b.toolApproval, b.cambrianServer, b.toolReg, b.toolFiles, b.profiles
-	mcpHandler, workerHub, workerConsent, pyEnv := b.mcpHandler, b.workerHub, b.workerConsent, b.pyEnv
+	toolApproval, cambrianServer, toolReg, profiles := b.toolApproval, b.cambrianServer, b.toolReg, b.profiles
+	mcpHandler, workerHub, workerConsent := b.mcpHandler, b.workerHub, b.workerConsent
 	mcpAuditor, mcpBudget, mcpPricing, hookChain, artifactVault := b.mcpAuditor, b.mcpBudget, b.mcpPricing, b.hookChain, b.artifactVault
 	turnDelegations, eventBus, forgetSvc, chatTurns, calendar := b.turnDelegations, b.eventBus, b.forgetSvc, b.chatTurns, b.calendar
 	runTracer, principalSchedules := b.runTracer, b.principalSchedules
@@ -397,23 +394,10 @@ func (b *kernelBuild) buildToolExecutor() error {
 		// whose target machine is offline (0 ⇒ 24h).
 		Consent:      workerConsent,
 		ParkDeadline: time.Duration(cfg.MCP.WorkerParkDeadlineMs) * time.Millisecond,
-		Handler: &toolproc.ProcessHandler{
-			Interpreter:    pythonInterpreterPath(pyEnv),
-			ToolFiles:      toolFiles,
-			DefaultTimeout: 30 * time.Second,
-			// Deny-by-default env scrub, with an explicit passthrough allowlist for
-			// the web tool's provider config (ADR-0040 web tool). Includes the
-			// Firecrawl provider vars (local instance: base URL + optional token).
-			EnvPassthrough: []string{
-				"CAMBRIAN_WEB_PROVIDER", "CAMBRIAN_WEB_API_KEY", "CAMBRIAN_SEARXNG_URL",
-				"CAMBRIAN_WEB_EXTRACT_PROVIDER", "CAMBRIAN_FIRECRAWL_URL",
-				"CAMBRIAN_FIRECRAWL_API_KEY", "CAMBRIAN_FIRECRAWL_TIMEOUT",
-			},
-			// Sweep tool-created jail files into CAS so relative-path writes
-			// (e.g. write_file "hello.txt") persist instead of being lost to the
-			// per-call tempdir teardown; CIDs surface in the result "_artifacts".
-			ContentStore: storeHandle.ContentStore,
-		},
+		// No default Handler: every registered tool is an MCP tool (ADR-0043) or
+		// a contributed local:<machine>/<tool> step (ADR-0127). The native
+		// tool.py process handler and its CAMBRIAN_WEB_* env passthrough are gone
+		// (ENG-1421); any other identity is refused "no tool handler configured".
 		EgressAuditor: mcpAuditor, // ADR-0043: nil ⇒ no egress auditing
 		Budget:        mcpBudget,  // ADR-0043: nil ⇒ MCP calls unmetered
 		Pricing:       mcpPricing, // ADR-0043: nil ⇒ MCP calls unmetered
@@ -603,8 +587,7 @@ func (b *kernelBuild) buildCatalogs() {
 	// here. Best-effort — a failure leaves the system-skill menu empty, never
 	// blocks boot. The SkillRetriever and ListSkills are wired just below.
 	//
-	// "skills" is resolved against the process working directory, like "tools"
-	// above: running from cambrian-core finds cambrian-core/skills (the shipped
+	// "skills" is resolved against the process working directory: running from cambrian-core finds cambrian-core/skills (the shipped
 	// system skills, ADR-0139 D13). skills/README.md says how other deployments
 	// point at it. A missing directory means zero system skills, not an error.
 	skillReg := domain.NewInMemorySkillRegistry()

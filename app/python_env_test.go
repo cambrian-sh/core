@@ -53,11 +53,6 @@ func TestStartPythonEnvRefusesWhenMissingAndBuildOff(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), pyenv.FixCommand) {
 		t.Fatalf("want a refusal naming %q, got %v", pyenv.FixCommand, err)
 	}
-	// The Python system tools resolve the same interpreter and are refused too
-	// (ADR-0157 D7.14: one interpreter, no fallback).
-	if py, err := pythonInterpreterPath(gate)(); err == nil || py != "" {
-		t.Fatalf("tool interpreter = %q, %v; want the same refusal", py, err)
-	}
 }
 
 func TestPythonEnvCLI(t *testing.T) {

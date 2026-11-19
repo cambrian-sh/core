@@ -1,6 +1,5 @@
 // Package discovery auto-discovers system skills from skills/<name>/SKILL.md
-// files into the kernel-owned SkillRegistry (ADR-0046 D2/D7) — the analog of
-// internal/tool/discovery. A SKILL.md carries YAML frontmatter (name,
+// files into the kernel-owned SkillRegistry (ADR-0046 D2/D7). A SKILL.md carries YAML frontmatter (name,
 // description, tools, scope) + a markdown body (the instructions). Agent skills
 // are NOT discovered here — they are SDK-local.
 package discovery

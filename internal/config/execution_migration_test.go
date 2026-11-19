@@ -267,7 +267,9 @@ var retiredExecutionFields = map[string]string{
 	// longer written; dropped with a WARN by retiredConfigKeys.
 	"experience_surprise_floor": "Retired 2026-11-14 (ENG-1595): the A2.3 failure record it gated is no longer written.",
 	// ENG-1321 (owner decision 2026-11-15): IRCoT deleted like HyDE; WARN via retiredConfigKeys.
-	"agentic_ircot_enabled":              "Retired 2026-11-15 (ENG-1321): IRCoT is a disqualified lever; its branch was deleted.",
+	"agentic_ircot_enabled": "Retired 2026-11-15 (ENG-1321): IRCoT is a disqualified lever; its branch was deleted.",
+	// ENG-1421 (owner decision 2026-11-19): the native tool.py discovery it governed was deleted.
+	"tool_effects_strict":                "Retired 2026-11-19 (ENG-1421): the native tool.py discovery it governed was deleted.",
 	"max_partial_context_bytes":          "Retired in schema v3 (ENG-1502): no reader.",
 	"budget_exhaustion_alarm_rate":       "Retired in schema v3 (ENG-1502): no reader.",
 	"min_gc_age_days":                    "Retired in schema v3 (ENG-1502): no reader.",

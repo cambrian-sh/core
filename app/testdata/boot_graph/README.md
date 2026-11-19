@@ -14,6 +14,10 @@ to a landed change is a wiring regression, not a golden to regenerate.
 
 History of golden updates:
 
+- ENG-1421: `Handler: *proc.ProcessHandler` -> `Handler: nil` (ToolExecutor, both
+  goldens): the native tools/*tool.py process handler was deleted with its
+  discovery; tools come only from MCP (and kernel tools / local: steps keep their
+  own paths), so the executor has no default handler.
 - ENG-117: `+ untrustedOutput: *domain.UntrustedOutputGuard` (ToolExecutor, both
   goldens), the MCP response injection scan built from execution.tools.output_scan
   (default on) and passed as ToolExecutorControls.UntrustedOutput.

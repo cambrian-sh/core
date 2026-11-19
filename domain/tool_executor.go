@@ -205,9 +205,13 @@ type ToolCallResponse struct {
 // kernel-side and pre-invocation (A1.4), then dispatches to the handler, audits,
 // and offloads large results. It never panics.
 type ToolExecutor struct {
-	Registry   ToolRegistry
-	Grants     GrantsProvider
-	Handler    ToolHandler // the confined Python tool-process invoker (A1.2)
+	Registry ToolRegistry
+	Grants   GrantsProvider
+	// Handler is the default handler for an identity that is neither mcp: nor
+	// local:. nil in production since ENG-1421 deleted the native tool.py
+	// process handler (MCP tools only, decisions/agent-stack-v2-mcp-tools-and-profiles.md),
+	// so such a call is refused "no tool handler configured".
+	Handler    ToolHandler
 	MCPHandler ToolHandler // ADR-0043: invokes external MCP tools (mcp:<server>/<tool>); nil ⇒ none
 	// ADR-0127 (contribution lane, CL-0): the owner-scoped source of contributed
 	// worker tools, and the handler that relays an authorized
@@ -1036,8 +1040,9 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 
 	// Dispatch. ADR-0043: an mcp:<server>/<tool> identity routes to the MCP
 	// handler; ADR-0127 D5: a local:<machine>/<tool> identity routes to the
-	// worker relay; everything else runs as a confined native subprocess. All
-	// three implement ToolHandler, so authorization above is identical — no
+	// worker relay; anything else goes to the default Handler (nil in
+	// production, ENG-1421 ⇒ refused below). All implement ToolHandler, so
+	// authorization above is identical — no
 	// prefix ever changes what a call must pass, only who executes it.
 	handler := e.Handler
 	isMCP := strings.HasPrefix(req.ToolName, "mcp:")
@@ -1292,8 +1297,9 @@ func (e *ToolExecutor) previewChars() int {
 	return 600
 }
 
-// artifactRef mirrors the "_artifacts" entries the ProcessHandler injects: the
-// jail-relative path, the GC'd-ContentStore CID, and the byte size.
+// artifactRef mirrors the "_artifacts" entries a handler may inject: the
+// jail-relative path, the GC'd-ContentStore CID, and the byte size. (Their one
+// producer, the native tool.py ProcessHandler, was deleted with ENG-1421.)
 type artifactRef struct {
 	Path  string `json:"path"`
 	CID   string `json:"cid"`

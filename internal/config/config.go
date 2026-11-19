@@ -1528,17 +1528,9 @@ const (
 // Field names, types and json tags are unchanged; only the nesting is new, so
 // each field means exactly what it meant before.
 type ToolsConfig struct {
-	// ToolEffectsStrict (ADR-0086) makes an undeclared effect set a REGISTRATION
-	// ERROR instead of inferring effects from the tool's other manifest fields. A
-	// tool that declares no effects is a registration error, not an unrestricted
-	// tool — but flipping that on before the manifests carry `effects` would refuse
-	// every tool in an existing install, so the default is false and inference
-	// covers the migration. Turn it on once `cambrian tools` reports no inferred
-	// tools; after that, a new tool cannot ship unclassified.
-	//
-	// An effect OUTSIDE the closed set is fatal in both modes — this flag governs
-	// absence, never validity.
-	ToolEffectsStrict bool `json:"tool_effects_strict,omitempty"`
+	// (tool_effects_strict RETIRED 2026-11-19, owner decision ENG-1421: it governed
+	// only the native tools/*tool.py discovery, deleted because no such tool ever
+	// shipped; MCP tools register non-strict. A layer setting it loads with a WARN.)
 
 	// ToolsUnrestricted (ADR-0039) is the operator-chosen bypass of the tool-grant
 	// system: when true, every named agent may call every registered tool with an

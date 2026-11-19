@@ -189,7 +189,7 @@ planActions: network.planActionLedger
 ## Server.ToolExecutor
 Registry: *domain.InMemoryToolRegistry
 Grants: *domain.LayeredGrantsStore
-Handler: *proc.ProcessHandler
+Handler: nil
 MCPHandler: *mcp.Handler
 Fleet: *domain.WorkerHub
 LocalHandler: domain.WorkerRelayHandler

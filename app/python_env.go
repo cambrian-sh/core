@@ -115,13 +115,3 @@ func pythonSpawnReadinessOf(env pythonEnvGate) PythonSpawnReadiness {
 	}
 	return PythonSpawnReadiness{Ready: env.ReadyC(), Settled: env.SettledC()}
 }
-
-// pythonInterpreterPath adapts the env to the Python system tools' resolver
-// (toolproc.ProcessHandler.Interpreter): the same managed interpreter as the
-// agents, read per call (ADR-0157 D7.14, one interpreter).
-func pythonInterpreterPath(env pythonEnvGate) func() (string, error) {
-	return func() (string, error) {
-		pi, err := env.Interpreter()
-		return pi.Path, err
-	}
-}

@@ -107,6 +107,9 @@ var retiredConfigKeys = map[string]string{
 	// Retired 2026-11-15 (owner decision, ENG-1321): IRCoT was recorded as a disqualified
 	// lever and its reason-then-retrieve branch is deleted, as HyDE's was.
 	"execution.retrieval.agentic_ircot_enabled": "IRCoT is a disqualified retrieval lever; its branch was deleted (owner decision, ENG-1321)",
+	// Retired 2026-11-19 (owner decision, ENG-1421): it governed only the native
+	// tools/*tool.py discovery, which loaded nothing and was deleted.
+	"execution.tools.tool_effects_strict": "the native tools/*tool.py discovery it governed was deleted — no such tool ever shipped; MCP tools only (owner decision, ENG-1421)",
 }
 
 // retiredLogged makes each retired key's WARN appear once per process and origin.
@@ -836,7 +839,6 @@ var legacyExecutionKey = map[string]string{
 	"step_timeout_base_buffer_ms":              "plan",
 	"step_timeout_multiplier":                  "plan",
 	"structure_graph_enabled":                  "retrieval",
-	"tool_effects_strict":                      "tools",
 	"tool_retrieval_floor":                     "tools",
 	"tools_auto_approve":                       "tools",
 	"tools_unrestricted":                       "tools",
