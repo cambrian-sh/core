@@ -123,27 +123,35 @@ func TestWatcher_EnrichSignal_NilRecall(t *testing.T) {
 	}
 }
 
-// The formatting keeps poisoned memories as failures to avoid, drops dense hits
-// at or below the cosine floor, keeps rows with no cosine, and caps the list.
+// The formatting drops dense hits at or below the cosine floor, keeps rows with
+// no cosine, caps the list, and renders no "failures to avoid" block: nothing
+// writes is_poisoned since PoisonMemory was deleted (ENG-1336, ENG-1601).
 func TestFormatSignalRecall(t *testing.T) {
 	t.Parallel()
 	res := []domain.SearchResult{
-		{Document: domain.Document{ID: "p", Text: "bad route", Metadata: map[string]interface{}{"is_poisoned": true, "correction": "use route B"}}},
 		{Document: domain.Document{ID: "low", Text: "weak"}, RawScore: 0.5},
 		{Document: domain.Document{ID: "a", Text: "first"}, RawScore: 0.9},
 		{Document: domain.Document{ID: "lex", Text: "lexical"}, RawScore: 0},
 		{Document: domain.Document{ID: "c", Text: "over the cap"}, RawScore: 0.95},
 	}
 	out := formatSignalRecall(res, 0.7, 2)
-	for _, want := range []string{"ERROR: bad route", "CORRECTION: use route B", "1. (Rel: 0.00) first", "2. (Rel: 0.00) lexical"} {
+	for _, want := range []string{"1. (Rel: 0.00) first", "2. (Rel: 0.00) lexical"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:%s", want, out)
 		}
 	}
-	for _, not := range []string{"weak", "over the cap"} {
+	for _, not := range []string{"weak", "over the cap", "FAILURES TO AVOID"} {
 		if strings.Contains(out, not) {
 			t.Errorf("%q must be dropped:%s", not, out)
 		}
+	}
+}
+
+// No relevant memory renders nothing at all, not an empty header.
+func TestFormatSignalRecall_NothingRelevantIsEmpty(t *testing.T) {
+	t.Parallel()
+	if out := formatSignalRecall([]domain.SearchResult{{Document: domain.Document{ID: "low"}, RawScore: 0.5}}, 0.7, 3); out != "" {
+		t.Fatalf("want empty, got %q", out)
 	}
 }
 

@@ -186,28 +186,19 @@ func (w *Watcher) EnrichSignal(ctx context.Context, signalType, signalData strin
 	return formatSignalRecall(results, w.Config.RecallMinCosine, w.Config.RecallMaxResults)
 }
 
-// formatSignalRecall renders recalled memories for the signal's prompt: poisoned
-// memories (is_poisoned, with their correction) as failures to avoid, the rest
-// as a numbered list of up to max relevant memories.
+// formatSignalRecall renders recalled memories for the signal's prompt as a
+// numbered list of up to max relevant memories.
+//
+// The "failures to avoid" block for is_poisoned memories is gone (ENG-1601): its
+// only writer, memory.Agent.PoisonMemory, was deleted with ENG-1336, so nothing
+// marks a memory poisoned any more.
 func formatSignalRecall(results []domain.SearchResult, minCosine float64, max int) string {
-	var sb, poisonedSb strings.Builder
+	var sb strings.Builder
 	seen := make(map[string]bool)
 	memoryCount := 0
-	hasPoisoned := false
 	sb.WriteString("\n\n--- RELEVANT MEMORY CONTEXT ---\n")
-	poisonedSb.WriteString("\n--- CRITICAL FAILURES TO AVOID (ANTI-ANTIBODIES) ---\n")
 	for _, res := range results {
 		if seen[res.Document.ID] {
-			continue
-		}
-		if poisoned, _ := res.Document.Metadata["is_poisoned"].(bool); poisoned {
-			hasPoisoned = true
-			correction, _ := res.Document.Metadata["correction"].(string)
-			poisonedSb.WriteString(fmt.Sprintf("- ERROR: %s\n", res.Document.Text))
-			if correction != "" {
-				poisonedSb.WriteString(fmt.Sprintf("  CORRECTION: %s\n", correction))
-			}
-			seen[res.Document.ID] = true
 			continue
 		}
 		if res.RawScore > 0 && res.RawScore <= minCosine {
@@ -220,16 +211,11 @@ func formatSignalRecall(results []domain.SearchResult, minCosine float64, max in
 		seen[res.Document.ID] = true
 		memoryCount++
 	}
-	final := ""
-	if hasPoisoned {
-		poisonedSb.WriteString("---------------------------------------------------\n")
-		final += poisonedSb.String()
+	if memoryCount == 0 {
+		return ""
 	}
-	if memoryCount > 0 {
-		sb.WriteString("-------------------------------\n")
-		final += sb.String()
-	}
-	return final
+	sb.WriteString("-------------------------------\n")
+	return sb.String()
 }
 
 // BuildInspiration constructs an unstructured prompt from a signal.
