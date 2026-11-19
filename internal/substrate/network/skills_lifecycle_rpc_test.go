@@ -88,7 +88,7 @@ func TestProposeSkill_RejectionMappingAndShapeErrors(t *testing.T) {
 	if resp.GetRejection() != pb.SkillProposalRejection_SKILL_PROPOSAL_REJECTION_LOCKED || resp.GetAccepted() {
 		t.Fatalf("resp = %v", resp)
 	}
-	if _, err := s.ProposeSkill(skillAgentCtx("agent-a", nil), &pb.ProposeSkillRequest{Name: "t", SkillMd: "x"}); status.Code(err) != codes.InvalidArgument {
+	if _, err := s.ProposeSkill(skillAgentCtx("agent-a", nil), &pb.ProposeSkillRequest{Name: "t", SkillMd: "x"}); status.Code(err) != codes.PermissionDenied { // ENG-2171
 		t.Fatalf("missing lease: %v", err)
 	}
 	if _, err := (&Server{}).ProposeSkill(context.Background(), &pb.ProposeSkillRequest{LeaseId: "l"}); status.Code(err) != codes.Unimplemented {

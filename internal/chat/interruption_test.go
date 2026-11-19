@@ -95,6 +95,7 @@ func TestFailureReason_Table(t *testing.T) {
 		// ENG-2156: the gateway's other refusals, relayed by code.
 		{"OutOfRange relayed", status.Error(codes.OutOfRange, "prompt too large"), "", domain.TurnInterruptContextTooLarge},
 		{"PermissionDenied relayed", status.Error(codes.PermissionDenied, "lease is not valid for this caller"), "", domain.TurnInterruptSessionLost},
+		{"no lease relayed (ENG-2171)", status.Error(codes.PermissionDenied, "a lease is required"), "", domain.TurnInterruptSessionLost},
 		{"PermissionDenied without the word lease", status.Error(codes.PermissionDenied, "no agent identity is bound"), "", domain.TurnInterruptSessionLost},
 		{"NotFound relayed", status.Error(codes.NotFound, "session not found: x"), "", domain.TurnInterruptSessionLost},
 		// Before ENG-2125 the refusal arrives as Internal text; "lease" must be the word.

@@ -137,8 +137,10 @@ func failureReason(err error, fault domain.ProviderFault) domain.TurnInterruptRe
 		return domain.TurnInterruptContextTooLarge
 	case codes.PermissionDenied, codes.NotFound:
 		// The gateway refused the turn's lease: foreign, expired or swept
-		// (PermissionDenied "lease is not valid for this caller") or unknown
-		// (NotFound "session not found") — ENG-2156.
+		// (PermissionDenied "lease is not valid for this caller"), missing
+		// (PermissionDenied "a lease is required", ENG-2171 — it was Unauthenticated
+		// and read as a provider credential failure) or unknown (NotFound "session
+		// not found") — ENG-2156.
 		return domain.TurnInterruptSessionLost
 	case codes.DeadlineExceeded:
 		return domain.TurnInterruptTimeout

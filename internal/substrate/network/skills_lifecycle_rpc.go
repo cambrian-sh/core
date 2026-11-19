@@ -47,7 +47,8 @@ func (s *Server) ProposeSkill(ctx context.Context, req *pb.ProposeSkillRequest) 
 		lease = domain.LeaseID(mdValue(ctx, domain.LeaseHeader))
 	}
 	if lease == "" {
-		return nil, status.Error(codes.InvalidArgument, "lease_id is required")
+		// No lease is refused like an invalid one on every agent-plane RPC (ENG-2171).
+		return nil, status.Error(codes.PermissionDenied, "a lease is required")
 	}
 	if req.GetName() == "" || req.GetSkillMd() == "" {
 		return nil, status.Error(codes.InvalidArgument, "name and skill_md are required")

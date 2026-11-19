@@ -27,7 +27,12 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 	// a per-step BudgetLease — which is exactly why the old name had to go.
 	leaseID := leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId())
 	if leaseID == "" {
-		return status.Error(codes.Unauthenticated, "lease_id is required")
+		// A missing lease is a worker/kernel wiring fault, not a provider credential:
+		// PermissionDenied like every other agent-plane lease refusal, which the chat
+		// lane reads as a lost working session. Unauthenticated is reserved for a
+		// provider refusing our credentials (gatewayStatus, ErrProviderAuth) and told
+		// the person to fix the model settings (ENG-2171).
+		return status.Error(codes.PermissionDenied, "a lease is required")
 	}
 	if s.LLMGateway == nil {
 		return status.Error(codes.Unimplemented, "GenerateViaModelStream: LLMGateway not wired")

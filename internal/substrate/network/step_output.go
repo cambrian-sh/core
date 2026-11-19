@@ -146,7 +146,8 @@ func (s *Server) EmitStepOutput(stream grpc.ClientStreamingServer[pb.StepOutputC
 		}
 		lease := domain.LeaseID(c.GetLeaseId())
 		if lease == "" {
-			return status.Error(codes.InvalidArgument, "lease_id is required on every chunk")
+			// No lease is refused like an invalid one on every agent-plane RPC (ENG-2171).
+			return status.Error(codes.PermissionDenied, "a lease is required on every chunk")
 		}
 		if c.GetSeq() == 0 {
 			return status.Error(codes.InvalidArgument, "seq must start at 1 and increase per lease")

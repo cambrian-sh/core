@@ -329,7 +329,7 @@ func TestEmitStepOutput_DeadForeignAndMissingLeasesAreRefused(t *testing.T) {
 	}{
 		{"dead lease", ctx, &pb.StepOutputChunk{LeaseId: "lease-that-never-was", Seq: 1, Data: "x"}, codes.PermissionDenied},
 		{"foreign lease", ctxWithMD("x-agent-id", "intruder"), &pb.StepOutputChunk{LeaseId: string(lease), Seq: 1, Data: "x"}, codes.PermissionDenied},
-		{"no lease", ctx, &pb.StepOutputChunk{Seq: 1, Data: "x"}, codes.InvalidArgument},
+		{"no lease", ctx, &pb.StepOutputChunk{Seq: 1, Data: "x"}, codes.PermissionDenied}, // ENG-2171
 		{"seq zero", ctx, &pb.StepOutputChunk{LeaseId: string(lease), Data: "x"}, codes.InvalidArgument},
 	}
 	for _, c := range cases {

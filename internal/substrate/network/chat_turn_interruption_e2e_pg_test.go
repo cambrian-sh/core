@@ -23,7 +23,8 @@ import (
 // ENG-2124 end to end, through the real chat TurnService, the real LLM gateway over the
 // real llm.Provider (the readiness fault shapes, faultServer), and the real Postgres
 // conversation store: a provider credential failure, a provider 429 and a worker killed
-// mid-turn, and a turn with no model allocated (ENG-2156) each reach the person as one plain sentence and leave an interruption marker
+// mid-turn, a turn with no model allocated (ENG-2156) and a worker that calls without the
+// turn's lease (ENG-2171) each reach the person as one plain sentence and leave an interruption marker
 // in conversation_messages; nothing raw leaks.
 //
 // The worker stands in for the SDK chat worker as it behaves before ENG-2125: it makes
@@ -55,6 +56,23 @@ type relayingWorker struct {
 
 func (w relayingWorker) Dispatch(_ context.Context, h *domain.Handoff) (*domain.Handoff, error) {
 	resp, err := turn(w.s, w.ctx, domain.LeaseID(h.Context["_session_token_id"]))
+	if err != nil {
+		st := status.Convert(err)
+		return nil, status.Error(st.Code(), st.Message())
+	}
+	return &domain.Handoff{Payload: &domain.Payload{Data: []byte(resp.GetText())}}, nil
+}
+
+// noLeaseWorker is a worker wired wrong: it makes the model call WITHOUT the turn's
+// lease and relays the gateway's code (ENG-2171). The person must hear that the
+// working session was lost, never that the AI service rejected our credentials.
+type noLeaseWorker struct {
+	s   *Server
+	ctx context.Context
+}
+
+func (w noLeaseWorker) Dispatch(_ context.Context, _ *domain.Handoff) (*domain.Handoff, error) {
+	resp, err := turn(w.s, w.ctx, "")
 	if err != nil {
 		st := status.Convert(err)
 		return nil, status.Error(st.Code(), st.Message())
@@ -115,6 +133,8 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 		// noModel: the turn's allocation names no model and no default is configured;
 		// the worker relays the gateway's Unavailable (ENG-2156).
 		noModel bool
+		// noLease: the worker calls the gateway without the turn's lease (ENG-2171).
+		noLease bool
 		reason  domain.TurnInterruptReason
 		want    corechat.MessageID // the exact sentence, when the case pins it
 	}{
@@ -122,6 +142,7 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 		{name: "provider_429", fault: fault429, reason: domain.TurnInterruptProviderBusy},
 		{name: "worker_killed", kill: true, reason: domain.TurnInterruptAssistantRestarted},
 		{name: "no_model_allocated", noModel: true, reason: domain.TurnInterruptNotConfigured, want: corechat.MsgNotConfigured},
+		{name: "no_lease", noLease: true, reason: domain.TurnInterruptSessionLost, want: corechat.MsgSessionLost},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -149,6 +170,9 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 				worker = relayingWorker{s: s, ctx: workerCtx}
 				alloc = domain.StepAllocation{} // no winner, and the gateway has no default model
 			}
+			if c.noLease {
+				worker = noLeaseWorker{s: s, ctx: workerCtx}
+			}
 			svc := corechat.NewTurnService(store, worker, func(ctx context.Context, limit int, ttl time.Duration) (string, func(), error) {
 				lease, err := gw.Acquire(ctx, alloc, limit, ttl)
 				if err != nil {
@@ -170,6 +194,9 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 			assertNoRawLeak(t, "the person's message", ti.Message)
 			if c.want != "" && ti.Message != corechat.Message(c.want, "en") {
 				t.Fatalf("told %q, want %q", ti.Message, corechat.Message(c.want, "en"))
+			}
+			if c.noLease && strings.Contains(strings.ToLower(ti.Message), "credential") {
+				t.Fatalf("told %q: a missing lease is not a provider credential failure", ti.Message)
 			}
 			if c.noModel && (strings.Contains(strings.ToLower(ti.Message), "allocated") || strings.Contains(strings.ToLower(ti.Message), "restarted")) {
 				t.Fatalf("told %q: raw gateway text or the restart sentence", ti.Message)

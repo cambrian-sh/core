@@ -233,3 +233,19 @@ func TestExecuteTool_UnboundLeaseDeniedToAgent(t *testing.T) {
 		t.Errorf("the owner's own lease was refused: %q", resp.GetDenyReason())
 	}
 }
+
+// ENG-2171: GenerateViaModelStream with no lease at all is refused PermissionDenied,
+// like the unbound and foreign leases above — not Unauthenticated, which the chat
+// lane reads as "the AI service rejected our credentials".
+func TestGenerateViaModelStream_NoLeaseIsPermissionDenied(t *testing.T) {
+	t.Parallel()
+	s, _, _, _ := unboundLeaseFixture(t)
+	rec := &streamRecorder{ctx: agentPlaneCtx("agent-owner")}
+	err := s.GenerateViaModelStream(&pb.GenerateStreamRequest{Prompt: "hi"}, rec)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("no lease: want PermissionDenied, got %v", err)
+	}
+	if rec.text.Len() != 0 {
+		t.Errorf("generated %q with no lease", rec.text.String())
+	}
+}

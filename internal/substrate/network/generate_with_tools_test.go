@@ -107,11 +107,14 @@ func TestGenerateWithTools_RealErrorIsInternal(t *testing.T) {
 	}
 }
 
+// ENG-2171: no lease is a wiring fault, refused PermissionDenied like every other
+// agent-plane lease refusal — never Unauthenticated, which means "the provider
+// refused our credentials" and sends the person to the model settings.
 func TestGenerateWithTools_RequiresLease(t *testing.T) {
 	t.Parallel()
 	s := &Server{LLMGateway: &toolGateway{}}
-	if _, err := s.GenerateWithTools(context.Background(), &pb.GenerateWithToolsRequest{}); status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("want Unauthenticated, got %v", status.Code(err))
+	if _, err := s.GenerateWithTools(context.Background(), &pb.GenerateWithToolsRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", status.Code(err))
 	}
 }
 
