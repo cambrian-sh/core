@@ -357,3 +357,45 @@ func TestValidateAuthoredPlan_FanOutWithoutPlaceholderWarns(t *testing.T) {
 		t.Fatalf("templated step still warned: %+v", issues)
 	}
 }
+
+type briefSubmitter struct {
+	stubSubmitter
+	brief bool
+}
+
+func (b *briefSubmitter) RunsAsOneBrief() bool { return b.brief }
+
+// ENG-2246: on the single-agent lane SubmitPlan states, as an advisory, that the
+// plan runs as one brief (pins, depends_on and fan_out_over are guidance); the
+// planner lane (or a submitter that says nothing) gets no such advisory.
+func TestSubmitPlan_OneBriefAdvisoryOnTheSingleAgentLane(t *testing.T) {
+	t.Parallel()
+	steps := []*pb.AuthoredStepOp{{Query: "summarise", PreferredAgent: "assistant", AgentPin: "hard", FanOutOver: -1}}
+	for _, tc := range []struct {
+		name string
+		sub  PlanSubmitter
+		want bool
+	}{
+		{"single-agent lane", &briefSubmitter{brief: true}, true},
+		{"planner lane", &briefSubmitter{brief: false}, false},
+		{"submitter without the capability", &stubSubmitter{}, false},
+	} {
+		s := newSubmitService(tc.sub)
+		resp, err := s.SubmitPlan(context.Background(), &pb.SubmitPlanOpRequest{CommandId: "c-" + tc.name, Reason: "r", DryRun: true, Steps: steps})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got *pb.PlanValidationIssueOp
+		for _, i := range resp.GetIssues() {
+			if i.GetCode() == IssueRunsAsOneBrief {
+				got = i
+			}
+		}
+		if (got != nil) != tc.want {
+			t.Fatalf("%s: advisory present = %v, want %v (%v)", tc.name, got != nil, tc.want, resp.GetIssues())
+		}
+		if got != nil && (got.GetFatal() || got.GetStepIndex() != -1 || !resp.GetAccepted()) {
+			t.Fatalf("%s: the advisory must be non-fatal and whole-plan: %+v accepted=%v", tc.name, got, resp.GetAccepted())
+		}
+	}
+}

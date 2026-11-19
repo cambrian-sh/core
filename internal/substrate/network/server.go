@@ -543,6 +543,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 	// there is nothing for the router to classify — and running it anyway could
 	// route the plan's own text to CHAT and answer instead of executing it.
 	authoredPlanJSON := in.GetMetadata()[AuthoredPlanMetadataKey]
+	var authored *domain.ExecutionPlan // set for an authored plan in the single-agent lane
 	if bypass && authoredPlanJSON != "" {
 		// ENG-1377 (owner decision 2026-11-14): under the single-agent lane an
 		// authored plan (SubmitPlan, KernelServices.PlanExecutor) is handed to the
@@ -555,6 +556,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 			return nil, berr
 		}
 		rawInput = brief
+		// ENG-2246: the run is persisted and its session closed with the outcome
+		// (single_agent_lane.go authoredRun); authoredPlanBrief validated the plan.
+		if authored, _ = parseAuthoredPlan(authoredPlanJSON); authored == nil {
+			authored = &domain.ExecutionPlan{}
+		}
 	}
 
 	// The caller-deadline reserve (plan_watchdog.go), fixed once for this Execute:
@@ -606,7 +612,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 	// place; the authored-plan rule was decided above (a brief in the single-agent
 	// lane, the plan itself in the planner lane).
 	if bypass {
-		return s.executeSingleAgent(ctx, in, rawInput, sessionID, delegated, reserve)
+		return s.executeSingleAgent(ctx, in, rawInput, sessionID, delegated, reserve, authored)
 	}
 	return s.executePlanned(ctx, in, plannerLaneRequest{
 		rawInput: rawInput, authoredPlanJSON: authoredPlanJSON,

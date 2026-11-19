@@ -15667,6 +15667,13 @@ func (x *SetConfigOpResponse) GetOutcomes() []*ConfigWriteOutcomeOp {
 
 // AuthoredStepOp is one step of an operator-authored plan. Field-for-field
 // domain.Step — the DAG builder is a face for the plan schema, not a new one.
+//
+// The step semantics below (hard pin, depends_on parallelism, fan_out_over) are
+// ENFORCED by the planner lane (execution.lane.default: planner). The
+// single-agent lane, the default (ADR-0150), runs an authored plan as ONE brief
+// for one agent: the steps are rendered in order and these fields are guidance
+// only; SubmitPlan then returns the advisory issue "runs_as_one_brief". Either
+// lane closes the session with the outcome (ENG-2246).
 type AuthoredStepOp struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	Query                string                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
@@ -15902,7 +15909,9 @@ type PlanValidationIssueOp struct {
 	// step_index is the offending step, or -1 for a whole-plan problem.
 	StepIndex int32 `protobuf:"varint,1,opt,name=step_index,json=stepIndex,proto3" json:"step_index,omitempty"`
 	// code is a stable machine token: "cycle", "out_of_bounds_dependency",
-	// "empty_query", "unknown_capability", "unknown_agent", "bad_fan_out".
+	// "empty_query", "unknown_capability", "unknown_agent", "bad_fan_out",
+	// "runs_as_one_brief" (advisory: the default single-agent lane runs the plan
+	// as one brief, not step by step).
 	Code    string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
 	Message string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
 	// fatal distinguishes "this plan cannot run" from "this will probably not do

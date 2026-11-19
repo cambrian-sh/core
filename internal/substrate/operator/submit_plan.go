@@ -19,7 +19,28 @@ const (
 	IssueUnknownAgent      = "unknown_agent"
 	IssueUnknownCapability = "unknown_capability"
 	IssueBadFanOut         = "bad_fan_out"
+	// IssueRunsAsOneBrief (advisory, whole plan) says the kernel's default lane
+	// will run the plan as ONE brief for one agent (ENG-2246, ENG-1377), not
+	// step by step.
+	IssueRunsAsOneBrief = "runs_as_one_brief"
 )
+
+// OneBriefRunner is optionally implemented by a PlanSubmitter whose kernel runs
+// an authored plan as one brief (the ADR-0150 single-agent lane, the default).
+// SubmitPlan then adds the advisory IssueRunsAsOneBrief, so the console states
+// what will happen instead of promising step semantics the lane does not have.
+type OneBriefRunner interface {
+	RunsAsOneBrief() bool
+}
+
+// oneBriefMessage is the advisory's text: the honest description of how the
+// single-agent lane runs an authored plan (ENG-1377, ENG-2246).
+const oneBriefMessage = "This kernel runs on the single-agent lane (execution.lane.default: single_agent), " +
+	"which runs an authored plan as ONE brief: one agent receives every step, in the order written, and may " +
+	"fan work out itself. Hard pins (agent_pin), parallelism from depends_on and fan_out_over are guidance in " +
+	"the brief, not enforced per step; a hard-pinned agent is not required to run. The session closes with the " +
+	"outcome when the agent finishes or fails. To dispatch the steps one by one, run the planner lane " +
+	"(execution.lane.default: planner)."
 
 // PlanSubmitter runs an operator-authored plan.
 //
@@ -49,6 +70,9 @@ func (s *Service) SubmitPlan(ctx context.Context, req *pb.SubmitPlanOpRequest) (
 	issues, order := validateAuthoredPlan(steps, func(id string) bool {
 		return s.planSubmitter.KnownAgent(ctx, id)
 	})
+	if b, ok := s.planSubmitter.(OneBriefRunner); ok && b.RunsAsOneBrief() {
+		issues = append(issues, PlanIssue{StepIndex: -1, Code: IssueRunsAsOneBrief, Message: oneBriefMessage})
+	}
 
 	fatal := false
 	for _, i := range issues {

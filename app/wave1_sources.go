@@ -375,13 +375,25 @@ func vectorCounterFor(v any) func(ctx context.Context) int64 {
 
 // ── operator-authored plans (contract 0074) ──────────────────────────────────
 
-// planSubmitter runs a plan the operator wrote, through the SAME execution path
-// a planner-produced plan takes (see network.AuthoredPlanMetadataKey).
+// planSubmitter runs a plan the operator wrote through Orchestrator.Execute
+// (network.AuthoredPlanMetadataKey). How it runs depends on the lane
+// (ADR-0150 D10): the planner lane dispatches the steps (pins, depends_on,
+// fan_out_over enforced); the single-agent lane — the default — hands the whole
+// plan to one agent as ONE brief (ENG-1377), so those step semantics are
+// guidance there, and oneBrief makes SubmitPlan say so (operator.OneBriefRunner,
+// ENG-2246). Either lane persists the run and closes the session with its
+// outcome. Honouring step semantics in the default lane is an open owner
+// decision (ENG-2246 log).
 type planSubmitter struct {
 	sessions func(ctx context.Context, goal string) (string, error)
 	execute  func(ctx context.Context, sessionID, planJSON string)
 	known    func(ctx context.Context, id string) bool
+	// oneBrief: the kernel runs on the single-agent lane.
+	oneBrief bool
 }
+
+// RunsAsOneBrief implements operator.OneBriefRunner.
+func (p planSubmitter) RunsAsOneBrief() bool { return p.oneBrief }
 
 func (p planSubmitter) KnownAgent(ctx context.Context, id string) bool {
 	if p.known == nil {

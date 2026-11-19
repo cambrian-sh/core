@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -83,8 +84,13 @@ func (s *Server) LaneLimits() domain.LaneLimits { return s.laneLimits() }
 // turn liveness as a plan (plan_watchdog.go), which stay outer guards over the
 // lane's own D4 caps (stamped on the handoff, enforced in the agent loop).
 // The "/plan " slash-prefix is stripped, as the router would have consumed it.
+//
+// authored is the operator- or plugin-authored plan this request carries
+// (contract 0074; nil for an ordinary request): the lane runs it as ONE brief
+// (ENG-1377) and, like the planner lane, persists the run and closes the
+// session with its outcome (authoredRun, ENG-2246).
 func (s *Server) executeSingleAgent(ctx context.Context, in *pb.Handoff, rawInput string,
-	sessionID domain.SessionID, delegated *DelegatedRun, reserve callerReserve) (*pb.Handoff, error) {
+	sessionID domain.SessionID, delegated *DelegatedRun, reserve callerReserve, authored *domain.ExecutionPlan) (out *pb.Handoff, err error) {
 	agentID := s.ExecCfg.Lane.SingleAgent.AgentID
 	if agentID == "" && (s.RequestComposer == nil || s.LLMGateway == nil) {
 		return nil, status.Error(codes.FailedPrecondition,
@@ -94,6 +100,10 @@ func (s *Server) executeSingleAgent(ctx context.Context, in *pb.Handoff, rawInpu
 	// refusal in Execute) and the turn registry's name for this work.
 	runID := domain.RunID(newPlanID())
 	operator.AttachRunID(ctx, runID) // contract 0102 CancelRun by run_id
+	if authored != nil {
+		finish := s.authoredRun(ctx, runID, sessionID, authored)
+		defer func() { finish(out, err) }()
+	}
 	// The session's spend before the lane's run, so the result reports what THIS
 	// run cost and which generators answered it (ADR-0131 _llm_* keys; ENG-453
 	// _llm_models), the same figures a plan's result carries.
@@ -201,12 +211,69 @@ func (s *Server) executeSingleAgent(ctx context.Context, in *pb.Handoff, rawInpu
 		resp.FromAgent = agentID
 	}
 	singleAgentOutcome(resp, runID, sessionID)
-	out := handoffToProto(resp)
+	out = handoffToProto(resp)
 	if out.Metadata == nil {
 		out.Metadata = map[string]string{}
 	}
 	s.stampSpend(out.Metadata, sessionID, spendBase)
 	return out, nil
+}
+
+// authoredRun persists an authored plan's single-agent run and returns the
+// function that records its outcome (ENG-2246). Before it, SubmitPlan under the
+// default lane left the session `active` for ever and wrote no run row, success
+// or failure, so the operator never saw the plan finish.
+//
+// The run row carries the plan's subject but NOT the plan: this lane ran the
+// plan as one brief (ENG-1377), so a step index has nothing to resume into and
+// the row must never read as resumable (domain.Run.Resumable needs the plan).
+// The outcome: an operator CancelRun keeps the cancelled row run_cancel.go
+// wrote and leaves the session to the operator; an error, a D4 partial or an
+// ask-back that ended the run is failed; anything else completed. An active
+// session is then closed with the outcome as its reason — the planner lane's
+// DAG executor closes it on success; here a failure closes it too, because the
+// authored plan was the session's whole goal and nothing will continue it.
+func (s *Server) authoredRun(ctx context.Context, runID domain.RunID, sessionID domain.SessionID, plan *domain.ExecutionPlan) func(*pb.Handoff, error) {
+	started := time.Now()
+	run := domain.Run{ID: runID, SessionID: sessionID, PlanID: string(runID), Subject: plan.Subject,
+		Status: domain.RunRunning, StartedAt: started}
+	if s.Runs != nil && sessionID != "" {
+		if err := s.Runs.SaveRun(ctx, run); err != nil {
+			slog.Warn("authored plan: run persist failed", "run", runID, "err", err)
+		}
+	}
+	return func(out *pb.Handoff, err error) {
+		// Detached from the request (AGENTS.md §2.7): its cancellation on the way
+		// out must not stop the outcome being recorded; its values are kept.
+		dctx := context.WithoutCancel(ctx)
+		if _, cancelled := operator.RunCancelled(ctx); cancelled {
+			return
+		}
+		run.Status, run.EndedAt = domain.RunCompleted, time.Now()
+		reason := "authored plan finished"
+		switch {
+		case err != nil:
+			run.Status, reason = domain.RunFailed, "authored plan failed: "+err.Error()
+		case out != nil && (out.GetMetadata()["_partial_plan"] == "true" || out.GetMetadata()[domain.HandoffKeyInputRequired] != ""):
+			run.Status, reason = domain.RunFailed, "authored plan ended without a final answer (partial or awaiting input)"
+		}
+		if s.Runs != nil && sessionID != "" {
+			if serr := s.Runs.SaveRun(dctx, run); serr != nil {
+				slog.Warn("authored plan: run outcome persist failed", "run", runID, "err", serr)
+			}
+		}
+		if s.SessionMgr == nil || sessionID == "" {
+			return
+		}
+		ses, gerr := s.SessionMgr.GetSession(dctx, sessionID)
+		if gerr != nil || ses == nil || ses.Status != domain.SessionActive {
+			return // paused/dormant are operator decisions; completed is done
+		}
+		if terr := s.SessionMgr.TransitionStatusReason(dctx, sessionID, domain.SessionCompleted, reason); terr != nil {
+			slog.Warn("authored plan: could not close the session", "session", sessionID, "err", terr)
+		}
+		slog.Info("authored plan run recorded (single-agent lane)", "run", runID, "session", sessionID, "status", run.Status)
+	}
 }
 
 // singleAgentOutcome maps what the lane's agent returned onto the Execute

@@ -969,10 +969,14 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 }
 
 // planSubmitterFor builds the contract 0074 SubmitPlan seam: operator-authored
-// plans. The submitter reuses the SAME execution path a planner-produced plan
-// takes — it hands the plan in via network.AuthoredPlanMetadataKey rather than
-// opening a second entrypoint, so session binding, run persistence,
-// checkpointing and the feed are all the existing code. It returns an untyped
+// plans. The submitter hands the plan to Orchestrator.Execute via
+// network.AuthoredPlanMetadataKey rather than opening a second entrypoint. On
+// the planner lane that is the planner-produced plan's path (DAG executor,
+// checkpoints, step dispatch); on the single-agent lane, the default, the plan
+// runs as ONE brief for one agent (ENG-1377) — pins, depends_on and
+// fan_out_over are guidance there, which SubmitPlan states as an advisory
+// (oneBrief) — and the lane persists the run and closes the session with its
+// outcome (ENG-2246). It returns an untyped
 // nil (never a typed-nil planSubmitter) when the kernel has no session manager
 // or server, so Options.HasPlanSubmitter and the "authored-plans" capability
 // read false exactly when SubmitPlan answers Unimplemented. known reports
@@ -1004,7 +1008,8 @@ func planSubmitterFor(k *Kernel, known func(ctx context.Context, id string) bool
 				}
 			}()
 		},
-		known: known,
+		known:    known,
+		oneBrief: k.Server.ExecCfg.Lane.IsSingleAgent(),
 	}
 }
 
