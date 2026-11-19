@@ -99,8 +99,9 @@ service Orchestrator {
   // Upload validates classification tags against the writer's scope + controlled
   // vocabulary and kernel-stamps provenance before persisting.
   rpc UploadArtifact(UploadArtifactRequest) returns (UploadArtifactResponse);
-  // Get an artifact by content hash; returns empty when the caller's effective
-  // scope does not permit the artifact's tags (fail-closed).
+  // Get an artifact by its reference (the run-ledger id UploadArtifact returned,
+  // ADR-0157 S4); returns empty when the caller's effective scope does not
+  // permit the artifact's tags (fail-closed).
   rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
   // List artifacts produced by a session+step, scope-filtered for the caller.
   rpc ListStepArtifacts(ListStepArtifactsRequest) returns (ListStepArtifactsResponse);
@@ -757,7 +758,10 @@ message GetIngestStatusRequest {
   string document_id = 1;
 }
 
-// ADR-0034 / REQ-SDK-007c artifact messages.
+// ADR-0034 / REQ-SDK-007c artifact messages. Since ADR-0157 S4 the run ledger
+// serves them, and every `hash` field below carries the artifact REFERENCE — a
+// ledger id (`led_…`) — not a content hash. The field keeps its name for wire
+// and source compatibility (renaming it is a later, name-only contract change).
 message UploadArtifactRequest {
   bytes content = 1;
   string content_type = 2;
@@ -767,11 +771,11 @@ message UploadArtifactRequest {
   string semantic_summary = 6;
 }
 message UploadArtifactResponse {
-  string hash = 1;
+  string hash = 1; // the artifact reference: a run-ledger id (led_…), not a content hash
   repeated string tags = 2; // effective tags after validation + provenance stamping
 }
 message GetArtifactRequest {
-  string hash = 1;
+  string hash = 1; // the artifact reference UploadArtifact returned (a run-ledger id)
 }
 message GetArtifactResponse {
   bytes content = 1;
@@ -784,7 +788,7 @@ message ListStepArtifactsRequest {
   int32 step_index = 2;
 }
 message ArtifactMeta {
-  string hash = 1;
+  string hash = 1; // the artifact reference: a run-ledger id (led_…), not a content hash
   string content_type = 2;
   int64 size_bytes = 3;
   repeated string tags = 4;
@@ -1293,7 +1297,7 @@ message SpawnSubagentResponse {
   // true when text / structured_json is incomplete (cut by budget, timeout or a
   // size cap). A parent MUST NOT treat a truncated result as complete.
   bool truncated = 5;
-  // Content ids (ContentStore CIDs / artifact hashes) the child produced,
+  // Content ids (ContentStore CIDs / artifact references) the child produced,
   // readable by the parent under the same scope.
   repeated string artifacts = 6;
   // The child's model usage summed over its calls. Already counted against the

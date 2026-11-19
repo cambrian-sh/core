@@ -95,8 +95,9 @@ type OrchestratorClient interface {
 	// Upload validates classification tags against the writer's scope + controlled
 	// vocabulary and kernel-stamps provenance before persisting.
 	UploadArtifact(ctx context.Context, in *UploadArtifactRequest, opts ...grpc.CallOption) (*UploadArtifactResponse, error)
-	// Get an artifact by content hash; returns empty when the caller's effective
-	// scope does not permit the artifact's tags (fail-closed).
+	// Get an artifact by its reference (the run-ledger id UploadArtifact returned,
+	// ADR-0157 S4); returns empty when the caller's effective scope does not
+	// permit the artifact's tags (fail-closed).
 	GetArtifact(ctx context.Context, in *GetArtifactRequest, opts ...grpc.CallOption) (*GetArtifactResponse, error)
 	// List artifacts produced by a session+step, scope-filtered for the caller.
 	ListStepArtifacts(ctx context.Context, in *ListStepArtifactsRequest, opts ...grpc.CallOption) (*ListStepArtifactsResponse, error)
@@ -626,8 +627,9 @@ type OrchestratorServer interface {
 	// Upload validates classification tags against the writer's scope + controlled
 	// vocabulary and kernel-stamps provenance before persisting.
 	UploadArtifact(context.Context, *UploadArtifactRequest) (*UploadArtifactResponse, error)
-	// Get an artifact by content hash; returns empty when the caller's effective
-	// scope does not permit the artifact's tags (fail-closed).
+	// Get an artifact by its reference (the run-ledger id UploadArtifact returned,
+	// ADR-0157 S4); returns empty when the caller's effective scope does not
+	// permit the artifact's tags (fail-closed).
 	GetArtifact(context.Context, *GetArtifactRequest) (*GetArtifactResponse, error)
 	// List artifacts produced by a session+step, scope-filtered for the caller.
 	ListStepArtifacts(context.Context, *ListStepArtifactsRequest) (*ListStepArtifactsResponse, error)

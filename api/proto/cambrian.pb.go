@@ -4328,7 +4328,10 @@ func (x *GetIngestStatusRequest) GetDocumentId() string {
 	return ""
 }
 
-// ADR-0034 / REQ-SDK-007c artifact messages.
+// ADR-0034 / REQ-SDK-007c artifact messages. Since ADR-0157 S4 the run ledger
+// serves them, and every `hash` field below carries the artifact REFERENCE — a
+// ledger id (`led_…`) — not a content hash. The field keeps its name for wire
+// and source compatibility (renaming it is a later, name-only contract change).
 type UploadArtifactRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Content         []byte                 `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
@@ -4415,7 +4418,7 @@ func (x *UploadArtifactRequest) GetSemanticSummary() string {
 
 type UploadArtifactResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"` // the artifact reference: a run-ledger id (led_…), not a content hash
 	Tags          []string               `protobuf:"bytes,2,rep,name=tags,proto3" json:"tags,omitempty"` // effective tags after validation + provenance stamping
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4467,7 +4470,7 @@ func (x *UploadArtifactResponse) GetTags() []string {
 
 type GetArtifactRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"` // the artifact reference UploadArtifact returned (a run-ledger id)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4631,7 +4634,7 @@ func (x *ListStepArtifactsRequest) GetStepIndex() int32 {
 
 type ArtifactMeta struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Hash            string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Hash            string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"` // the artifact reference: a run-ledger id (led_…), not a content hash
 	ContentType     string                 `protobuf:"bytes,2,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	SizeBytes       int64                  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
 	Tags            []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
@@ -7331,7 +7334,7 @@ type SpawnSubagentResponse struct {
 	// true when text / structured_json is incomplete (cut by budget, timeout or a
 	// size cap). A parent MUST NOT treat a truncated result as complete.
 	Truncated bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
-	// Content ids (ContentStore CIDs / artifact hashes) the child produced,
+	// Content ids (ContentStore CIDs / artifact references) the child produced,
 	// readable by the parent under the same scope.
 	Artifacts []string `protobuf:"bytes,6,rep,name=artifacts,proto3" json:"artifacts,omitempty"`
 	// The child's model usage summed over its calls. Already counted against the
