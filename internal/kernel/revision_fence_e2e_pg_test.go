@@ -223,7 +223,12 @@ type revisionFactGen struct {
 	entered      func()
 }
 
-var revisionPassage = regexp.MustCompile(`(?m)^\[1\] `)
+// revisionPassage recognises a fact-extraction window: since ENG-94 the numbered
+// passage list is ONE JSON-encoded line inside the ingested_document payload fence,
+// so passage [1] opens the line right after the fence's nonce line (ENG-2238). It
+// matches only the fenced form: a window sent unfenced would get no facts and the
+// tests would fail, so the fakes also hold the fence in place.
+var revisionPassage = regexp.MustCompile(`(?m)^PAYLOAD_FENCE_[0-9a-f]+\n"\[1\] `)
 
 func (g *revisionFactGen) Generate(ctx context.Context, prompt string) (string, error) {
 	if !revisionPassage.MatchString(prompt) {
