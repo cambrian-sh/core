@@ -97,7 +97,8 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	o.EventTimeFutureTolerance = &eventTimeTol
 	// ADR-0136 A3.5 (contract 0104): the same descriptive-field caps the agent plane reads.
 	mc := k.Config.Execution.Ingestion.SourceMetaCaps()
-	o.SourceMetaCaps = operator.SourceMetaCaps{Kind: mc.Kind, Title: mc.Title, Author: mc.Author, Speaker: mc.Speaker}
+	o.SourceMetaCaps = operator.SourceMetaCaps{Kind: mc.Kind, Title: mc.Title, Author: mc.Author, Speaker: mc.Speaker,
+		LabelCount: mc.LabelCount, LabelChars: mc.LabelChars}
 	d.Ingestor = operatorMemoryIngestor(k.Server.IngestionProcessor)
 	// ADR-0138 Amendment B1.3 (contract 0100): the console's "Replace <name>?" lookup,
 	// answered by the ingestion manager's own identity resolution over the same
@@ -885,7 +886,11 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// GetIngestStatus + IngestStatusOp, IngestMemoryOpResponse.status and
 	// GetDocumentOpResponse.ingest ("ingest-status" capability); agent plane
 	// GetIngestStatus + IngestStatus and IngestMemoryResponse.document_id / status.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0111", operatorCaps
+	// 0112 (2026-11-19, additive; ENG-2170): ingest labels - IngestMemoryOpRequest.labels
+	// and agent-plane IngestMemoryRequest.labels, the writer's non-classification
+	// markers (a revision's lifecycle, rev<N>, corpus/document ids) carried beside the
+	// tags; the write ceiling never filters them and access policy never reads them.
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0112", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

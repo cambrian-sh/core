@@ -8837,9 +8837,18 @@ type IngestMemoryOpRequest struct {
 	// operator stamped as writer), trimmed, a control character is INVALID_ARGUMENT,
 	// cut to execution.ingestion.source_*_max_chars. title, when set, replaces the
 	// filename-derived title. All optional.
-	SourceKind    string `protobuf:"bytes,15,opt,name=source_kind,json=sourceKind,proto3" json:"source_kind,omitempty"`
-	Title         string `protobuf:"bytes,16,opt,name=title,proto3" json:"title,omitempty"`
-	Author        string `protobuf:"bytes,17,opt,name=author,proto3" json:"author,omitempty"`
+	SourceKind string `protobuf:"bytes,15,opt,name=source_kind,json=sourceKind,proto3" json:"source_kind,omitempty"`
+	Title      string `protobuf:"bytes,16,opt,name=title,proto3" json:"title,omitempty"`
+	Author     string `protobuf:"bytes,17,opt,name=author,proto3" json:"author,omitempty"`
+	// Contract 0112 (ENG-2170): labels, the operator-plane twin of the agent
+	// plane's IngestMemoryRequest.labels under the same rules — writer-set,
+	// non-classification markers (a revision's lifecycle "in-force"/"superseded",
+	// "rev3", corpus and document ids) that say what the document IS. Access policy
+	// never reads them and the write ceiling never filters them; `tags` stays the
+	// classification. Trimmed, de-duplicated; a control character, more than
+	// execution.ingestion.label_max_count or one longer than label_max_chars is
+	// INVALID_ARGUMENT. Optional.
+	Labels        []string `protobuf:"bytes,18,rep,name=labels,proto3" json:"labels,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8991,6 +9000,13 @@ func (x *IngestMemoryOpRequest) GetAuthor() string {
 		return x.Author
 	}
 	return ""
+}
+
+func (x *IngestMemoryOpRequest) GetLabels() []string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
 }
 
 // MemoryPartOp is one timed part of a multi-part upload (ADR-0134 D1). The
@@ -27004,7 +27020,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x06denied\x18\x04 \x01(\bR\x06denied\x12\x1f\n" +
 	"\vdeny_reason\x18\x05 \x01(\tR\n" +
 	"denyReason\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\xa1\x04\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"\xb9\x04\n" +
 	"\x15IngestMemoryOpRequest\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
@@ -27029,7 +27045,8 @@ const file_operator_proto_rawDesc = "" +
 	"\vsource_kind\x18\x0f \x01(\tR\n" +
 	"sourceKind\x12\x14\n" +
 	"\x05title\x18\x10 \x01(\tR\x05title\x12\x16\n" +
-	"\x06author\x18\x11 \x01(\tR\x06author\"y\n" +
+	"\x06author\x18\x11 \x01(\tR\x06author\x12\x16\n" +
+	"\x06labels\x18\x12 \x03(\tR\x06labels\"y\n" +
 	"\fMemoryPartOp\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12;\n" +
 	"\voccurred_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +

@@ -473,6 +473,14 @@ func chunkMetadata(
 	if len(doc.Tags) > 0 {
 		meta["tags"] = append([]string(nil), doc.Tags...)
 	}
+	// ENG-2170: the writer's labels ride on every chunk, beside — never inside — its
+	// classification, so the query side (the ENG-2158 superseded demotion) reads them
+	// off the hit and erasure removes them with the chunk.
+	if len(doc.Labels) > 0 {
+		meta[domain.MetaLabels] = append([]string(nil), doc.Labels...)
+	} else {
+		delete(meta, domain.MetaLabels) // a chunker never supplies labels; only the writer does
+	}
 	// ADR-0134: the event time lives in the typed columns (Document.EventStamp, set by
 	// persistChunks per chunk). The chunker's own "timestamp" key is the DOCUMENT time,
 	// which for a multi-part chunk is wrong, and a second copy that a re-ingest could

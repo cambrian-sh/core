@@ -122,3 +122,32 @@ func TestSupersededDemotion_OffLeavesRankingUnchanged(t *testing.T) {
 		})
 	}
 }
+
+// ENG-2170: the lifecycle now arrives as a LABEL (metadata "labels"), not a tag. A
+// labelled superseded row is demoted exactly like a tagged one, in both metadata
+// encodings ([]string as written, []any after a JSON round-trip from Postgres), and
+// a label that is not a configured marker (`in-force`, `rev4`) demotes nothing.
+func TestSupersededDemotion_ReadsLabels(t *testing.T) {
+	var q QueryService
+	q.EnableSupersededDemotion([]string{"superseded"}, 0.5)
+	labelled := func(id string, score float64, labels any) domain.SearchResult {
+		r := supRow(id, score, "scope-docs") // classification only: no marker in the tags
+		r.Document.Metadata[domain.MetaLabels] = labels
+		return r
+	}
+	in := []domain.SearchResult{
+		labelled("rev1", 0.80, []string{"sop-001", "rev1", "superseded"}),
+		labelled("rev2", 0.80, []any{"sop-001", "rev2", "Superseded"}),
+		labelled("rev3", 0.80, []string{"sop-001", "rev3", "in-force"}),
+		supRow("note", 0.60, "scope-docs"),
+	}
+	out := q.superseded.demote(in)
+	got := ids(out)
+	want := []string{"rev3", "note", "rev1", "rev2"}
+	if !sameIDs(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	if out[2].Score != 0.40 || out[0].Score != 0.80 {
+		t.Fatalf("scores = %v / %v, want the superseded row scaled to 0.40 and the in-force one kept at 0.80", out[2].Score, out[0].Score)
+	}
+}

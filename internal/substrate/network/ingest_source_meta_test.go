@@ -140,3 +140,46 @@ func TestIngestMemory_SourceMetaValidationAndCaps(t *testing.T) {
 		t.Fatalf("default caps = %+v", c)
 	}
 }
+
+// ENG-2170 (contract 0112): labels reach the document as LABELS, separate from the
+// classification hint — never appended to Tags — normalised, bounded by the
+// configured caps, and a control character is refused before any work.
+func TestIngestMemory_LabelsTravelSeparatelyFromTags(t *testing.T) {
+	t.Parallel()
+	p := &fakeIngestionProcessor{docID: "source_doc:x"}
+	s := &Server{IngestionProcessor: p}
+	if _, err := s.IngestMemory(agentCtx("analyst"), &pb.IngestMemoryRequest{
+		Text: "x", Tags: []string{"scope-docs"}, Labels: []string{" superseded ", "rev2", "rev2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d := p.gotDoc
+	if len(d.Labels) != 2 || d.Labels[0] != "superseded" || d.Labels[1] != "rev2" {
+		t.Fatalf("labels = %v, want [superseded rev2]", d.Labels)
+	}
+	if len(d.Tags) != 1 || d.Tags[0] != "scope-docs" {
+		t.Fatalf("tags = %v: labels must never become classification", d.Tags)
+	}
+	if got := domain.LabelsOf(domain.SourceDocumentMetadata(d)); len(got) != 2 {
+		t.Fatalf("documents metadata labels = %v", got)
+	}
+
+	for name, req := range map[string]*pb.IngestMemoryRequest{
+		"control character": {Text: "x", Labels: []string{"in-force\nadmin"}},
+		"too many":          {Text: "x", Labels: []string{"a", "b", "c"}},
+		"too long":          {Text: "x", Labels: []string{"superseded"}},
+	} {
+		p := &fakeIngestionProcessor{docID: "d"}
+		s := &Server{IngestionProcessor: p}
+		s.ExecCfg.Ingestion = config.IngestionConfig{LabelMaxCount: 2, LabelMaxChars: 8}
+		if _, err := s.IngestMemory(agentCtx("a"), req); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: err = %v, want InvalidArgument", name, err)
+		}
+		if p.gotDoc.Body != "" {
+			t.Errorf("%s: the ingest ran; a refused label must stop it before any work", name)
+		}
+	}
+	if c := (config.IngestionConfig{}).SourceMetaCaps(); c.LabelCount != domain.DefaultLabelMaxCount || c.LabelChars != domain.DefaultLabelMaxChars {
+		t.Fatalf("default label caps = %+v", c)
+	}
+}

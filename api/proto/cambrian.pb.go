@@ -3942,7 +3942,17 @@ type IngestMemoryRequest struct {
 	// title is the source's own title. Unset: the body's first line, as before.
 	Title string `protobuf:"bytes,10,opt,name=title,proto3" json:"title,omitempty"`
 	// author is the source's author as the source names it. Descriptive only.
-	Author        string `protobuf:"bytes,11,opt,name=author,proto3" json:"author,omitempty"`
+	Author string `protobuf:"bytes,11,opt,name=author,proto3" json:"author,omitempty"`
+	// labels say WHAT the content is, never who may read it (ENG-2170, contract
+	// 0112): writer-set, non-classification markers such as a document revision's
+	// lifecycle ("in-force" / "superseded"), its revision ("rev3") or the corpus and
+	// document ids it belongs to. Access policy never reads them and the write
+	// ceiling never filters them — classification stays in `tags`. Stored on the
+	// document and every chunk (metadata "labels"), returned on hits, erased with
+	// the row. Each is trimmed; a control character, more than
+	// execution.ingestion.label_max_count labels or one longer than
+	// label_max_chars is INVALID_ARGUMENT. Duplicates are dropped. Optional.
+	Labels        []string `protobuf:"bytes,12,rep,name=labels,proto3" json:"labels,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4052,6 +4062,13 @@ func (x *IngestMemoryRequest) GetAuthor() string {
 		return x.Author
 	}
 	return ""
+}
+
+func (x *IngestMemoryRequest) GetLabels() []string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
 }
 
 // MemoryPart is one timed part of a multi-part memory (ADR-0134 D1).
@@ -8279,7 +8296,7 @@ const file_cambrian_proto_rawDesc = "" +
 	"\vapprover_id\x18\x03 \x01(\tR\n" +
 	"approverId\"*\n" +
 	"\x18ApprovalDecisionResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok\"\xf3\x02\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x8b\x03\n" +
 	"\x13IngestMemoryRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x12\n" +
 	"\x04tags\x18\x02 \x03(\tR\x04tags\x12\x1e\n" +
@@ -8297,7 +8314,8 @@ const file_cambrian_proto_rawDesc = "" +
 	"sourceKind\x12\x14\n" +
 	"\x05title\x18\n" +
 	" \x01(\tR\x05title\x12\x16\n" +
-	"\x06author\x18\v \x01(\tR\x06author\"w\n" +
+	"\x06author\x18\v \x01(\tR\x06author\x12\x16\n" +
+	"\x06labels\x18\f \x03(\tR\x06labels\"w\n" +
 	"\n" +
 	"MemoryPart\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12;\n" +

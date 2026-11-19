@@ -81,7 +81,9 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	tol := time.Duration(cfg.Ingestion.EventTimeFutureToleranceMs) * time.Millisecond
 	add("eventTimeTolerance", &tol)
 	mc := cfg.Ingestion.SourceMetaCaps()
-	add("sourceMetaCaps", operator.SourceMetaCaps{Kind: mc.Kind, Title: mc.Title, Author: mc.Author, Speaker: mc.Speaker})
+	// ENG-2170 added the label bounds to the same struct (a new field, not a changed seam).
+	add("sourceMetaCaps", operator.SourceMetaCaps{Kind: mc.Kind, Title: mc.Title, Author: mc.Author, Speaker: mc.Speaker,
+		LabelCount: mc.LabelCount, LabelChars: mc.LabelChars})
 	add("watches", k.Server.WatchHandler)
 	addType("pipelines", deferredPipelineLister{})
 	addType("pipelineDryRun", deferredPipelineDryRunner{})
@@ -124,7 +126,7 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("forget", k.Server.Forgetter)
 	add("logs", when(k.Logs != nil, k.Logs))
 	add("kernelVersion", KernelVersion)
-	add("contractVersion", "0111")
+	add("contractVersion", "0112")
 	add("plugins", pluginHandshake(k.PluginStatuses))
 	addType("sessionOps", operator.SessionOpsFuncs{})
 	addType("planSubmitter", when(k.SessionMgr != nil && k.Server != nil, planSubmitter{}))

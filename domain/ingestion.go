@@ -46,7 +46,13 @@ type ExternalDocument struct {
 	ThreadID    string
 	Attachments []Attachment
 	Tags        []string
-	Importance  float64
+	// Labels are the writer's non-classification markers (ENG-2170; domain.MetaLabels):
+	// what the document IS (a revision's lifecycle, "rev3", corpus/document ids),
+	// never who may read it. Already normalised (NormalizeLabels) by the door that
+	// accepted them. The write chokepoints never read or filter them; they are stored
+	// on the document row and on every chunk.
+	Labels     []string
+	Importance float64
 
 	// EventTimeEnd is the span end of a multi-part document (latest part time);
 	// zero for a single instant.

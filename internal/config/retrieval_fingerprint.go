@@ -133,11 +133,13 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	}
 
 	// ENG-2158: the superseded-revision demotion changes the ranking function. Written
-	// only when it acts, the same pattern as the switches above.
-	if len(c.Retrieval.SupersededTags) > 0 && c.Retrieval.SupersededRankFactor > 0 && c.Retrieval.SupersededRankFactor < 1 {
-		tags := append([]string(nil), c.Retrieval.SupersededTags...)
-		sort.Strings(tags)
-		fmt.Fprintf(&b, "superseded_tags=%s\nsuperseded_rank_factor=%g\n", strings.Join(tags, ","), c.Retrieval.SupersededRankFactor)
+	// only when it acts, the same pattern as the switches above. ENG-2170 renamed the
+	// key and widened the match to labels; the line is renamed with it, so runs before
+	// and after that change do not claim the same ranking function.
+	if len(c.Retrieval.SupersededMarkers) > 0 && c.Retrieval.SupersededRankFactor > 0 && c.Retrieval.SupersededRankFactor < 1 {
+		markers := append([]string(nil), c.Retrieval.SupersededMarkers...)
+		sort.Strings(markers)
+		fmt.Fprintf(&b, "superseded_markers=%s\nsuperseded_rank_factor=%g\n", strings.Join(markers, ","), c.Retrieval.SupersededRankFactor)
 	}
 
 	// Stage-B cross-encoder. The model id lives in the reranker agent's environment,

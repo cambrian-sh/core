@@ -2265,6 +2265,15 @@ message IngestMemoryOpRequest {
   string source_kind = 15;
   string title = 16;
   string author = 17;
+  // Contract 0112 (ENG-2170): labels, the operator-plane twin of the agent
+  // plane's IngestMemoryRequest.labels under the same rules — writer-set,
+  // non-classification markers (a revision's lifecycle "in-force"/"superseded",
+  // "rev3", corpus and document ids) that say what the document IS. Access policy
+  // never reads them and the write ceiling never filters them; `tags` stays the
+  // classification. Trimmed, de-duplicated; a control character, more than
+  // execution.ingestion.label_max_count or one longer than label_max_chars is
+  // INVALID_ARGUMENT. Optional.
+  repeated string labels = 18;
 }
 // MemoryPartOp is one timed part of a multi-part upload (ADR-0134 D1). The
 // operator-plane twin of the agent plane's MemoryPart (distinct messages per

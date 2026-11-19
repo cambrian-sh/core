@@ -120,7 +120,9 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 			ThreadID:    req.GetSessionId(),
 			// ADR-0146 D5: owner tags are kernel-stamped (withConversationOwner above),
 			// never taken from the request.
-			Tags:       append([]string(nil), domain.DropCallerOwnerTags(ctx, "IngestMemory.tags", req.GetTags())...),
+			Tags: append([]string(nil), domain.DropCallerOwnerTags(ctx, "IngestMemory.tags", req.GetTags())...),
+			// ENG-2170: what the content is (never who may read it); validated above.
+			Labels:     meta.labels,
 			Importance: float64(req.GetImportance()),
 		}
 		doc.ApplyEventTime(et)
@@ -246,9 +248,10 @@ func (s *Server) resolveIngestEventTime(req *pb.IngestMemoryRequest) (domain.Ing
 // ingestSourceMeta is the client's validated descriptive source metadata (A3.1).
 type ingestSourceMeta struct {
 	kind, title, author string
+	labels              []string // ENG-2170: normalised labels (domain.NormalizeLabels)
 }
 
-// resolveIngestSourceMeta validates source_kind, title and author against the
+// resolveIngestSourceMeta validates source_kind, title, author and labels against the
 // configured caps (execution.ingestion.source_*_max_chars).
 func (s *Server) resolveIngestSourceMeta(req *pb.IngestMemoryRequest) (ingestSourceMeta, error) {
 	caps := s.ExecCfg.Ingestion.SourceMetaCaps()
@@ -262,6 +265,9 @@ func (s *Server) resolveIngestSourceMeta(req *pb.IngestMemoryRequest) (ingestSou
 	}
 	if m.author, err = descriptiveField("author", req.GetAuthor(), caps.Author); err != nil {
 		return m, err
+	}
+	if m.labels, err = domain.NormalizeLabels(req.GetLabels(), caps.LabelCount, caps.LabelChars); err != nil {
+		return m, status.Errorf(codes.InvalidArgument, "labels: %v", err)
 	}
 	return m, nil
 }

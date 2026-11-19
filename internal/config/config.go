@@ -912,18 +912,21 @@ type RetrievalConfig struct {
 	// languages here. Empty ⇒ only hierarchical numbers scope by section.
 	SectionScopeCues []string `json:"section_scope_cues,omitempty"`
 
-	// SupersededTags are the tags a writer puts on a document revision that is no
-	// longer in force (cambrian-apply marks every revision `in-force` or
+	// SupersededMarkers are the markers a writer puts on a document revision that is
+	// no longer in force (cambrian-apply labels every revision `in-force` or
 	// `superseded`). A chunk carrying one ranks below the same or a similar chunk of
 	// its successor: its score is multiplied by SupersededRankFactor before the
 	// final top-k cut, so the copies of one text across a document's revisions stop
 	// filling the window (ENG-2158). Old revisions are demoted, never removed — a
 	// query only the old revision matches, or a read filter selecting superseded
-	// rows, still returns them. Matched case-insensitively. Empty ⇒ off.
-	SupersededTags []string `json:"superseded_tags,omitempty"`
+	// rows, still returns them. Matched case-insensitively against the chunk's
+	// LABELS (ENG-2170: the writer's non-classification markers, metadata "labels")
+	// and, for rows written before labels existed, its tags. Empty ⇒ off.
+	// Formerly superseded_tags, which still loads as this key.
+	SupersededMarkers []string `json:"superseded_markers,omitempty"`
 	// SupersededRankFactor is the score multiplier for a chunk carrying a
-	// SupersededTags tag, in (0, 1]. Multiplicative because scores are on different
-	// scales by then (RRF, Stage-A blend, section promotion); 1 ⇒ off.
+	// SupersededMarkers marker, in (0, 1]. Multiplicative because scores are on
+	// different scales by then (RRF, Stage-A blend, section promotion); 1 ⇒ off.
 	SupersededRankFactor float64 `json:"superseded_rank_factor,omitempty"`
 
 	// AgenticRetrievalEnabled turns on the agentic retrieval loop
@@ -1371,6 +1374,14 @@ type IngestionConfig struct {
 	SourceTitleMaxChars  int `json:"source_title_max_chars,omitempty"`
 	SourceAuthorMaxChars int `json:"source_author_max_chars,omitempty"`
 	PartSpeakerMaxChars  int `json:"part_speaker_max_chars,omitempty"`
+	// ENG-2170: bounds on an ingest's LABELS (IngestMemory / IngestMemoryOp `labels`,
+	// the writer's non-classification markers — a revision's lifecycle, its revision,
+	// corpus/document ids). At most LabelMaxCount distinct labels, each at most
+	// LabelMaxChars characters; more is INVALID_ARGUMENT, never silently cut (a cut
+	// label is a different word). Read by both ingest handlers through SourceMetaCaps.
+	// Defaults 32 / 128; each must be >= 0, and 0 means the default.
+	LabelMaxCount int `json:"label_max_count,omitempty"`
+	LabelMaxChars int `json:"label_max_chars,omitempty"`
 
 	// KgExtractorCallAttempts is the total number of times one triplet batch's
 	// call to the kg_extractor agent is attempted when the agent cannot be
@@ -3504,7 +3515,7 @@ func DefaultConfig() *Config {
 				// factor halves a superseded copy's score, enough to put the in-force copy of
 				// the same text first and let other answers back into the window, while an
 				// old revision that alone matches the query still ranks.
-				SupersededTags:       []string{"superseded"},
+				SupersededMarkers:    []string{"superseded"},
 				SupersededRankFactor: 0.5,
 
 				// ── The tuned retrieval stack, promoted to shipped defaults ──
@@ -3598,6 +3609,9 @@ func DefaultConfig() *Config {
 				SourceTitleMaxChars:  DefaultSourceTitleMaxChars,
 				SourceAuthorMaxChars: DefaultSourceAuthorMaxChars,
 				PartSpeakerMaxChars:  DefaultPartSpeakerMaxChars,
+				// ENG-2170: label bounds (both ingest planes).
+				LabelMaxCount: domain.DefaultLabelMaxCount,
+				LabelMaxChars: domain.DefaultLabelMaxChars,
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: absorb a
 				// cold kg_extractor boot instead of dropping the first batches.
 				KgExtractorCallAttempts:   3,
@@ -4535,9 +4549,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		errs = append(errs, "retrieval.temporal_fit_weight must be >= 0")
 	}
 	// ENG-2158: a factor the consumer would ignore (<= 0, > 1) is refused while
-	// superseded_tags asks for the demotion; 1 is the explicit "off".
-	if len(c.Retrieval.SupersededTags) > 0 && (c.Retrieval.SupersededRankFactor <= 0 || c.Retrieval.SupersededRankFactor > 1) {
-		errs = append(errs, fmt.Sprintf("retrieval.superseded_rank_factor must be in (0, 1] when superseded_tags is set (got %g)", c.Retrieval.SupersededRankFactor))
+	// superseded_markers asks for the demotion; 1 is the explicit "off".
+	if len(c.Retrieval.SupersededMarkers) > 0 && (c.Retrieval.SupersededRankFactor <= 0 || c.Retrieval.SupersededRankFactor > 1) {
+		errs = append(errs, fmt.Sprintf("retrieval.superseded_rank_factor must be in (0, 1] when superseded_markers is set (got %g)", c.Retrieval.SupersededRankFactor))
 	}
 	// ADR-0136 D4/D5: the fact layer's tunables. Each is checked only when the switch
 	// that reads it is on, as the consumer would otherwise silently replace it.
@@ -4663,6 +4677,8 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		{"source_title_max_chars", c.Ingestion.SourceTitleMaxChars},
 		{"source_author_max_chars", c.Ingestion.SourceAuthorMaxChars},
 		{"part_speaker_max_chars", c.Ingestion.PartSpeakerMaxChars},
+		{"label_max_count", c.Ingestion.LabelMaxCount},
+		{"label_max_chars", c.Ingestion.LabelMaxChars},
 	} {
 		if f.v < 0 {
 			errs = append(errs, fmt.Sprintf("ingestion.%s must be >= 0 (0 = the default; got %d)", f.name, f.v))

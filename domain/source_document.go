@@ -111,7 +111,7 @@ const (
 )
 
 // SourceDocumentMetadata is the documents-row metadata of an ingested document: the
-// client's SourceKind and AuthorLabel when set, else nil (no keys).
+// client's SourceKind, AuthorLabel and Labels (MetaLabels) when set, else nil (no keys).
 func SourceDocumentMetadata(doc ExternalDocument) map[string]any {
 	var m map[string]any
 	set := func(k, v string) {
@@ -124,5 +124,13 @@ func SourceDocumentMetadata(doc ExternalDocument) map[string]any {
 	}
 	set(DocMetaSourceKind, doc.SourceKind)
 	set(DocMetaAuthorLabel, doc.AuthorLabel)
+	// ENG-2170: the writer's labels (what the document is) sit beside the descriptive
+	// metadata, never in the tags column (who may read it).
+	if len(doc.Labels) > 0 {
+		if m == nil {
+			m = map[string]any{}
+		}
+		m[MetaLabels] = append([]string(nil), doc.Labels...)
+	}
 	return m
 }

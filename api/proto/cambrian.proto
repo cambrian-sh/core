@@ -706,6 +706,16 @@ message IngestMemoryRequest {
   string title = 10;
   // author is the source's author as the source names it. Descriptive only.
   string author = 11;
+  // labels say WHAT the content is, never who may read it (ENG-2170, contract
+  // 0112): writer-set, non-classification markers such as a document revision's
+  // lifecycle ("in-force" / "superseded"), its revision ("rev3") or the corpus and
+  // document ids it belongs to. Access policy never reads them and the write
+  // ceiling never filters them — classification stays in `tags`. Stored on the
+  // document and every chunk (metadata "labels"), returned on hits, erased with
+  // the row. Each is trimmed; a control character, more than
+  // execution.ingestion.label_max_count labels or one longer than
+  // label_max_chars is INVALID_ARGUMENT. Duplicates are dropped. Optional.
+  repeated string labels = 12;
 }
 // MemoryPart is one timed part of a multi-part memory (ADR-0134 D1).
 message MemoryPart {

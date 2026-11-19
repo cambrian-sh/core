@@ -131,7 +131,10 @@ func operatorIngestDoc(req operator.IngestRequest) domain.ExternalDocument {
 		Author:      req.Author,
 		ThreadID:    req.SessionID,
 		Tags:        req.Tags,
-		Importance:  req.Importance,
+		// ENG-2170: what the document is (lifecycle, revision, corpus ids) — beside the
+		// classification, never in it, and not part of the upload's identity key.
+		Labels:     req.Labels,
+		Importance: req.Importance,
 		// ADR-0138 Amendment B1: an uploaded file is a NAMED source — keyed by (the
 		// operator, the classification scope, the normalised file name) — so a changed
 		// re-upload replaces its earlier version and an identical one is a no-op. A

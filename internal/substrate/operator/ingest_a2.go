@@ -50,12 +50,19 @@ type IngestRequest struct {
 	SourceKind  string
 	Title       string
 	AuthorLabel string
+	// Labels are the request's non-classification markers (ENG-2170, contract 0112),
+	// already normalised by IngestMemory (domain.NormalizeLabels). Never part of the
+	// classification: Tags stays "who may read", Labels say "what it is".
+	Labels []string
 }
 
 // SourceMetaCaps bounds the descriptive ingest fields, in characters
 // (execution.ingestion.source_*_max_chars / part_speaker_max_chars). 0 = no cap.
+// LabelCount / LabelChars bound the labels (execution.ingestion.label_max_count /
+// label_max_chars, ENG-2170); 0 = the domain default.
 type SourceMetaCaps struct {
 	Kind, Title, Author, Speaker int
+	LabelCount, LabelChars       int
 }
 
 // opDescriptive is domain.NormalizeDescriptiveField as INVALID_ARGUMENT naming field.
@@ -220,6 +227,11 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	if err != nil {
 		return nil, err
 	}
+	// ENG-2170: labels are validated before any work, like the descriptive fields.
+	labels, err := domain.NormalizeLabels(req.GetLabels(), caps.LabelCount, caps.LabelChars)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "labels: %v", err)
+	}
 	if s.audit == nil {
 		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
 	}
@@ -270,6 +282,7 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 		SourceKind:  sourceKind,
 		Title:       title,
 		AuthorLabel: authorLabel,
+		Labels:      labels,
 	})
 	if err != nil {
 		// ADR-0138 Q1: a caller-named document id held by another writer is refused, not

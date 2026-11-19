@@ -47,3 +47,36 @@ func TestIngestMemory_DescriptiveSourceMetadata(t *testing.T) {
 		}
 	}
 }
+
+// ENG-2170 (contract 0112): the operator ingest carries labels separately from the
+// classification hint, normalised and bounded under the same rule as the agent plane.
+func TestIngestMemory_LabelsTravelSeparatelyFromTags(t *testing.T) {
+	t.Parallel()
+	svc, _, ing := newIngestService()
+	svc.SetSourceMetaCaps(operator.SourceMetaCaps{LabelCount: 3, LabelChars: 16})
+	if _, err := svc.IngestMemory(opCtx(), &pb.IngestMemoryOpRequest{
+		CommandId: "l1", Reason: "seed", Text: "x", Tags: []string{"scope-docs"},
+		Labels: []string{"vantis", " sop-001 ", "superseded", "sop-001"},
+	}); err != nil {
+		t.Fatalf("IngestMemory: %v", err)
+	}
+	got := ing.last
+	if len(got.Labels) != 3 || got.Labels[1] != "sop-001" || got.Labels[2] != "superseded" {
+		t.Fatalf("labels = %v", got.Labels)
+	}
+	if len(got.Tags) != 1 || got.Tags[0] != "scope-docs" {
+		t.Fatalf("tags = %v: labels must never join the classification", got.Tags)
+	}
+	for _, bad := range []*pb.IngestMemoryOpRequest{
+		{CommandId: "l2", Reason: "r", Text: "x", Labels: []string{"a\x00"}},
+		{CommandId: "l3", Reason: "r", Text: "x", Labels: []string{"a", "b", "c", "d"}},
+		{CommandId: "l4", Reason: "r", Text: "x", Labels: []string{"a-label-longer-than-16"}},
+	} {
+		if _, err := svc.IngestMemory(opCtx(), bad); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: want InvalidArgument, got %v", bad.GetCommandId(), err)
+		}
+	}
+	if ing.calls != 1 {
+		t.Errorf("ingestor called %d times; a refused label must stop the request before any work", ing.calls)
+	}
+}

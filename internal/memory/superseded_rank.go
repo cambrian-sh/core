@@ -15,13 +15,18 @@ import (
 // and the copies filled the window (readiness phase B: four SOP-001 revisions in
 // the top 5).
 //
-// How "superseded" is known: the revision's own tags. Core has no lifecycle state
-// for separately-named revisions — ADR-0138 versions only a re-ingest of the SAME
-// document id, and deletes the version it retires — so the writer marks the
-// revision (cambrian-apply: `in-force` / `superseded`) and the marker reaches the
-// chunk's metadata tags with the rest of its classification. Which tags mean
-// "superseded" is configuration (execution.retrieval.superseded_tags), never a
-// literal here.
+// How "superseded" is known: the revision's own LABELS (ENG-2170, owner decision
+// 2026-11-19). Core has no lifecycle state for separately-named revisions —
+// ADR-0138 versions only a re-ingest of the SAME document id, and deletes the
+// version it retires — so the writer marks the revision (cambrian-apply:
+// `in-force` / `superseded`) and the marker reaches the chunk's metadata "labels"
+// (domain.MetaLabels). It used to ride in the classification tags, where a write
+// ceiling dropped it (and since ENG-2115 refused the write); labels are never
+// classification, so the ceiling never sees them. A row written before labels
+// existed still carries the marker in its tags, so the tags are read too — one
+// more loop over a short list, and it keeps those corpora demoted without a
+// re-ingest. Which markers mean "superseded" is configuration
+// (execution.retrieval.superseded_markers), never a literal here.
 //
 // Why a multiplicative demotion, not a cap or an additive penalty:
 //   - a per-document cap was rejected 2026-11-03 (it lost evidence);
@@ -37,15 +42,15 @@ import (
 
 // supersededDemotion is the configured demotion; the zero value is off.
 type supersededDemotion struct {
-	tags   map[string]bool // lower-cased marker tags
+	tags   map[string]bool // lower-cased markers, matched against labels and tags
 	factor float64         // Score multiplier for a row carrying one, in (0, 1)
 }
 
 func (d supersededDemotion) active() bool { return len(d.tags) > 0 && d.factor > 0 && d.factor < 1 }
 
-// EnableSupersededDemotion multiplies the score of every candidate whose tags carry
-// one of markers by factor before the final assembly (execution.retrieval.
-// superseded_tags / superseded_rank_factor). No markers, or a factor outside (0, 1),
+// EnableSupersededDemotion multiplies the score of every candidate whose labels (or,
+// for rows written before labels, tags) carry one of markers by factor before the
+// final assembly (execution.retrieval.superseded_markers / superseded_rank_factor). No markers, or a factor outside (0, 1),
 // leaves ranking unchanged.
 func (q *QueryService) EnableSupersededDemotion(markers []string, factor float64) {
 	if q == nil {
@@ -66,8 +71,14 @@ func (q *QueryService) EnableSupersededDemotion(markers []string, factor float64
 	q.superseded = d
 }
 
-// isSuperseded reports whether a document's tags carry a configured marker.
+// isSuperseded reports whether a document's labels — or, for a row written before
+// labels existed (ENG-2170), its tags — carry a configured marker.
 func (d supersededDemotion) isSuperseded(doc domain.Document) bool {
+	for _, l := range domain.LabelsOf(doc.Metadata) {
+		if d.tags[strings.ToLower(l)] {
+			return true
+		}
+	}
 	for _, t := range docTags(doc.Metadata) {
 		if d.tags[strings.ToLower(t)] {
 			return true

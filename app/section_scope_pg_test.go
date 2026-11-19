@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -68,11 +69,11 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 	stamp := strings.ReplaceAll(time.Now().UTC().Format("150405.000000"), ".", "")
 	ingest := operatorMemoryIngestor(mem.IngestionManager)
 	opCtx := domain.WithPrincipal(ctx, domain.UserPrincipal("eng2108-op-"+stamp))
-	put := func(filename, text string, importance float64, tags ...string) string {
+	put := func(filename, text string, importance float64, labels ...string) string {
 		t.Helper()
 		id, err := ingest.Ingest(opCtx, operator.IngestRequest{
 			Text: text, Filename: filename, Importance: importance,
-			SessionID: "eng2108-" + stamp, Tags: append([]string{"scope-docs"}, tags...),
+			SessionID: "eng2108-" + stamp, Tags: []string{"scope-docs"}, Labels: labels,
 			EventTime: domain.IngestEventTime{EventTime: time.Now().UTC(), Source: domain.TimeSourceIngestDefault},
 		})
 		if err != nil {
@@ -80,15 +81,17 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 		}
 		return id
 	}
-	// The revisions carry the identity tags the document importer writes
-	// (cambrian-premium cmd/cambrian-apply docTags): the document id, rev<N>, and
+	// The revisions carry the identity LABELS the document importer writes
+	// (cambrian-premium cmd/cambrian-apply docLabels): the document id, rev<N>, and
 	// in-force for the current revision, superseded for every older one (ENG-2158).
+	// ENG-2170: labels, not tags — the classification stays "scope-docs" alone.
+	sopIDs := map[int]string{}
 	for rev := 1; rev <= 4; rev++ {
 		lifecycle := "superseded"
 		if rev == 4 {
 			lifecycle = "in-force"
 		}
-		put(fmt.Sprintf("sop-001-rev%d-%s.md", rev, stamp), sop001(rev), 0.6, "sop-001", fmt.Sprintf("rev%d", rev), lifecycle)
+		sopIDs[rev] = put(fmt.Sprintf("sop-001-rev%d-%s.md", rev, stamp), sop001(rev), 0.6, "sop-001", fmt.Sprintf("rev%d", rev), lifecycle)
 	}
 	put("sop-002-"+stamp+".md", sop002, 0.6)
 	put("sop-007-"+stamp+".md", sop007, 0.6)
@@ -164,8 +167,35 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 	if n := supersededCopies(before); n < 3 {
 		t.Fatalf("demotion off: %d superseded copies of an in-force chunk in the top 8; the corpus no longer reproduces ENG-2158", n)
 	}
-	mem.QueryService.EnableSupersededDemotion(cfg.Execution.Retrieval.SupersededTags, cfg.Execution.Retrieval.SupersededRankFactor)
+	mem.QueryService.EnableSupersededDemotion(cfg.Execution.Retrieval.SupersededMarkers, cfg.Execution.Retrieval.SupersededRankFactor)
 	after := top8()
+	// ENG-2170: the lifecycle reached every stored chunk as a LABEL and stayed out of
+	// its classification; the document row carries the same labels in its metadata.
+	for _, r := range append(append([]domain.SearchResult(nil), before...), after...) {
+		if !hasTag(r, "sop-001") {
+			continue
+		}
+		for _, tg := range authz.DocTags(&r.Document) {
+			if tg == "superseded" || tg == "in-force" || tg == "sop-001" || strings.HasPrefix(tg, "rev") {
+				t.Errorf("chunk %s carries the label %q in its classification tags %v", r.Document.ID, tg, authz.DocTags(&r.Document))
+			}
+		}
+	}
+	for rev, entity := range sopIDs {
+		var labels []string
+		if err := vec.Pool().QueryRow(ctx, `SELECT COALESCE(ARRAY(SELECT jsonb_array_elements_text(d.metadata->'labels')), '{}')
+			FROM documents d WHERE d.id = (SELECT c.metadata->>'document_id' FROM chunks c
+			WHERE c.metadata->>'source_doc_entity_id' = $1 LIMIT 1)`, entity).Scan(&labels); err != nil {
+			t.Fatalf("rev%d document row: %v", rev, err)
+		}
+		want := "superseded"
+		if rev == 4 {
+			want = "in-force"
+		}
+		if !slices.Contains(labels, want) || !slices.Contains(labels, fmt.Sprintf("rev%d", rev)) {
+			t.Errorf("rev%d: documents.metadata labels = %v, want rev%d and %s", rev, labels, rev, want)
+		}
+	}
 	t.Logf("demotion ON (shipped default) %q\n%s", antalya, dump(after))
 	if n, was := supersededCopies(after), supersededCopies(before); n > 1 || n >= was {
 		t.Errorf("%q: %d superseded copies of an in-force chunk in the top 8 (%d with the demotion off); want at most one: the old revisions must not fill the window", antalya, n, was)
@@ -227,9 +257,9 @@ func TestPg_VerbatimMemoOutranksSectionMatchedChunks(t *testing.T) {
 	}
 }
 
-// revTag is the rev<N> identity tag of a row, "" for a row without one.
+// revTag is the rev<N> identity label of a row, "" for a row without one.
 func revTag(r domain.SearchResult) string {
-	for _, tg := range authz.DocTags(&r.Document) {
+	for _, tg := range domain.LabelsOf(r.Document.Metadata) {
 		if strings.HasPrefix(tg, "rev") {
 			return tg
 		}
@@ -244,8 +274,10 @@ func revOf(r *domain.SearchResult) string {
 	return revTag(*r)
 }
 
+// hasTag reports whether a row carries the identity label tag (ENG-2170: the
+// importer's markers are labels, not classification tags).
 func hasTag(r domain.SearchResult, tag string) bool {
-	for _, tg := range authz.DocTags(&r.Document) {
+	for _, tg := range domain.LabelsOf(r.Document.Metadata) {
 		if tg == tag {
 			return true
 		}

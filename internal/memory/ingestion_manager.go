@@ -754,6 +754,9 @@ func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.Extern
 	if len(doc.Tags) > 0 {
 		meta["tags"] = append([]string(nil), doc.Tags...)
 	}
+	if len(doc.Labels) > 0 { // ENG-2170: what the document is, beside who may read it
+		meta[domain.MetaLabels] = append([]string(nil), doc.Labels...)
+	}
 	if cid != "" {
 		meta["content_cid"] = cid
 	}

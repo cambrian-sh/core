@@ -187,11 +187,12 @@ func composeRetrieval(qs *memory.QueryService, execCfg config.ExecutionConfig, b
 		slog.Info("ADR-0060: section-scoped retrieval ENABLED", "title_cues", rc.SectionScopeCues)
 	}
 
-	// ENG-2158: superseded revisions rank below their successors.
-	if len(rc.SupersededTags) > 0 && rc.SupersededRankFactor > 0 && rc.SupersededRankFactor < 1 {
-		qs.EnableSupersededDemotion(rc.SupersededTags, rc.SupersededRankFactor)
+	// ENG-2158: superseded revisions rank below their successors. ENG-2170: the
+	// markers are read from a row's labels (and, for older rows, its tags).
+	if len(rc.SupersededMarkers) > 0 && rc.SupersededRankFactor > 0 && rc.SupersededRankFactor < 1 {
+		qs.EnableSupersededDemotion(rc.SupersededMarkers, rc.SupersededRankFactor)
 		slog.Info("ENG-2158: superseded-revision demotion ENABLED",
-			"tags", rc.SupersededTags, "factor", rc.SupersededRankFactor)
+			"markers", rc.SupersededMarkers, "factor", rc.SupersededRankFactor)
 	}
 }
 

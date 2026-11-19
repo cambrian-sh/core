@@ -282,8 +282,22 @@ func migrateConfigMap(doc map[string]any) []string {
 // idle watchdog runs at its default on top. A layer that states both keeps its
 // plan_max_duration_ms — the newer statement of intent, as in
 // migrateExecutionBlock's nested-wins rule.
+//
+// retrieval.superseded_tags became retrieval.superseded_markers on 2026-11-19
+// (ENG-2170, owner decision: a separate label field). The markers are matched
+// against a row's LABELS first — where a writer now puts a revision's lifecycle —
+// and its tags only for rows written before labels existed, so "tags" in the name
+// had become wrong. Same value, same meaning.
 var deprecatedExecutionKey = map[string]map[string]string{
-	"plan": {"plan_timeout_ms": "plan_max_duration_ms"},
+	"plan":      {"plan_timeout_ms": "plan_max_duration_ms"},
+	"retrieval": {"superseded_tags": "superseded_markers"},
+}
+
+// deprecatedKeyTicket names the ticket that replaced a deprecatedExecutionKey, for
+// the one-time INFO line ("block.old_leaf" → ticket).
+var deprecatedKeyTicket = map[string]string{
+	"plan.plan_timeout_ms":      "T-20261105-owner-decision-needed-120-s-plan-timeout-ms",
+	"retrieval.superseded_tags": "T-20261119-document-revision-lifecycle-in-force-superseded",
 }
 
 // relocatedExecutionKey is a key that MOVED to another v2 block, unchanged in
@@ -321,7 +335,7 @@ func logDeprecatedKey(block, oldKey, newKey, origin string, overridden bool) {
 		slog.String("deprecated", "execution."+block+"."+oldKey),
 		slog.String("successor", "execution."+block+"."+newKey),
 		slog.String("origin", origin),
-		slog.String("ticket", "T-20261105-owner-decision-needed-120-s-plan-timeout-ms"))
+		slog.String("ticket", deprecatedKeyTicket[block+"."+oldKey]))
 }
 
 func logRelocatedKey(from, to, origin string, overridden bool) {
