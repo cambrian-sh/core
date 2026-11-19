@@ -255,7 +255,7 @@ func (h *AddressedHub) runRecovery(ctx context.Context, rec ApprovalRecoverer, i
 	if !created {
 		switch {
 		case stored.State.Settled() && stored.Result != nil:
-			return "approved and carried out: " + string(stored.Result.ResultJSON), nil
+			return "approved and carried out: " + storedRecoverySummary(it.Intent.Tool, stored.Result), nil
 		case stored.State == ActionStateNotConfirmed:
 			d := "approved, but it was not carried out: " + stored.Error
 			return d, fmt.Errorf("%w: %s", ErrApprovalNotCarriedOut, d)
@@ -291,14 +291,33 @@ func (h *AddressedHub) runRecovery(ctx context.Context, rec ApprovalRecoverer, i
 			"approval", it.ID, "executor", it.Intent.Executor, "err", rerr)
 		return d, fmt.Errorf("%w: %s", ErrApprovalNotCarriedOut, d)
 	}
+	result := &ToolCallResponse{ResultJSON: []byte(summary)}
+	if UntrustedToolSource(it.Intent.Tool) {
+		// ENG-2213: the recoverer fenced the MCP output in the summary; the mark
+		// says so, so a later read returns it as it is (storedRecoverySummary).
+		result.Untrusted = &UntrustedOutput{Source: it.Intent.Tool, Scan: ContentScan{Verdict: ContentScanNotScanned}}
+	}
 	if _, aerr := h.actions.Advance(ctx, key, ActionStateAccepted, ActionUpdate{
-		Result: &ToolCallResponse{ResultJSON: []byte(summary)},
+		Result: result,
 	}); aerr != nil {
 		h.logger.Warn("approvals: recovery outcome not recorded on its action record", "approval", it.ID, "err", aerr)
 	}
 	h.logger.Info("approvals: approval raised by an earlier kernel run carried out", "event", "approval_recovered",
 		"approval", it.ID, "executor", it.Intent.Executor, "outcome", summary)
 	return "approved and carried out: " + summary, nil
+}
+
+// storedRecoverySummary is the summary an earlier recovery stored, as the person
+// (and any model reading the approval) gets it again. A summary stored with the
+// untrusted mark was fenced when it was written; one of an MCP tool stored
+// without it predates ENG-2213 and holds the raw output, so it is fenced now
+// (the hub holds no scanner: not scanned).
+func storedRecoverySummary(tool string, r *ToolCallResponse) string {
+	s := string(r.ResultJSON)
+	if r.Untrusted != nil || !UntrustedToolSource(tool) {
+		return s
+	}
+	return FenceRecoverySummary(UntrustedOutput{Source: tool, Scan: ContentScan{Verdict: ContentScanNotScanned}}, s)
 }
 
 // resumeRecoveries carries out the approved intents a crash interrupted between

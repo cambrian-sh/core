@@ -31,12 +31,16 @@ const ledgerTurnEndTimeout = 5 * time.Second
 // and stop, nil when the ledger is off.
 func wireLedger(ctx context.Context, cfg config.LedgerConfig, content config.ContentConfig, pool *pgxpool.Pool, artifactVault *vault.ArtifactVault,
 	legacy kernel.LegacyArtifactSource, authorizer domain.Authorizer, privateByDefault bool,
-	server *subnetwork.Server, delegations *subnetwork.TurnDelegations, bus domain.EventBus) *ledger.Sweeper {
+	server *subnetwork.Server, delegations *subnetwork.TurnDelegations, bus domain.EventBus,
+	outputGuard *domain.UntrustedOutputGuard) *ledger.Sweeper {
 	deps := kernel.LedgerStackDeps{
 		Pool:             pool,
 		Authorizer:       authorizer,
 		PrivateByDefault: privateByDefault,
 		Legacy:           legacy,
+		// ENG-2213: ledger_get / ledger_find fence and rescan MCP entries with the
+		// same guard the ToolExecutor scans live MCP output with.
+		UntrustedOutput: outputGuard,
 	}
 	if artifactVault != nil {
 		deps.Bodies = artifactVault

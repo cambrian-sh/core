@@ -168,9 +168,17 @@ func (r *toolRecoverer) Recover(ctx context.Context, it ApprovalItem) (string, e
 	case resp.Denied:
 		return "", fmt.Errorf("%w: %s", ErrRecoveryRefused, resp.DenyReason)
 	case resp.Error != "":
-		return "", fmt.Errorf("%s ran and failed: %s", req.ToolName, resp.Error)
+		// A tool-reported error is written by the tool server: fenced like a
+		// result (ENG-2213), through the one agent-facing rendering.
+		_, errText := AgentToolResult(resp)
+		return "", fmt.Errorf("%s ran and failed: %s", req.ToolName, errText)
 	}
 	out := string(resp.ResultJSON)
+	if resp.Untrusted != nil && out != "" {
+		// ENG-2213: an MCP result reaches the person and any model that reads
+		// the approval only fenced, with the verdict Execute's scan gave it.
+		return req.ToolName + " ran: " + FenceRecoverySummary(*resp.Untrusted, out), nil
+	}
 	if out == "" && resp.ResultCID != "" {
 		out = "result stored as " + resp.ResultCID
 	}

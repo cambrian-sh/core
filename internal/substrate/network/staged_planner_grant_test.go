@@ -31,7 +31,7 @@ func grantFixture(t *testing.T) (*Server, context.Context, map[string]string) {
 	w := ledger.NewRecorder(store, nil, ledger.RecorderConfig{PrivateByDefault: true})
 	reader := authz.NewEnforcingLedger(store, nil)
 	s.Ledger = &LedgerAccess{Writer: w, Reader: reader}
-	s.ToolExecutor = &domain.ToolExecutor{KernelTools: ledger.Tools(reader, 0)}
+	s.ToolExecutor = &domain.ToolExecutor{KernelTools: ledger.Tools(reader, 0, nil)}
 
 	ids := map[string]string{}
 	rec := func(name, run, owner, writer, body string) {

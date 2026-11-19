@@ -151,7 +151,7 @@ func TestE2E_ArtifactsLeaveOnlyThroughTheKernel(t *testing.T) {
 	prevLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&bootLog, nil)))
 	sw := wireLedger(ctx, exec.Ledger, exec.Content, pool, av, legacy, az, false, srvImpl,
-		network.NewTurnDelegations(), nil)
+		network.NewTurnDelegations(), nil, nil)
 	slog.SetDefault(prevLog)
 	if sw == nil {
 		t.Fatal("the run ledger did not come up (is PG_TEST_DSN migrated through 0053?)")

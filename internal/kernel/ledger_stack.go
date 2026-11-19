@@ -43,6 +43,10 @@ type LedgerStackDeps struct {
 	Legacy           LegacyArtifactSource
 	Authorizer       domain.Authorizer
 	PrivateByDefault bool
+	// UntrustedOutput is the ENG-117 guard (execution.tools.output_scan) the
+	// ledger tools rescan an MCP entry with before handing it back fenced
+	// (ENG-2213). nil ⇒ fenced, not scanned.
+	UntrustedOutput *domain.UntrustedOutputGuard
 }
 
 // LegacyArtifactSource is the retired pre-ADR-0157 artifact metadata store (the
@@ -84,7 +88,7 @@ func NewLedgerStack(ctx context.Context, cfg config.LedgerConfig, content config
 			PrivateByDefault: deps.PrivateByDefault,
 		}),
 		Reader:  reader,
-		Tools:   ledger.Tools(reader, content.Page()), // execution.content.page_bytes
+		Tools:   ledger.Tools(reader, content.Page(), deps.UntrustedOutput), // execution.content.page_bytes
 		Sweeper: ledger.NewSweeper(raw, cfg.SweepInterval()),
 	}
 	slog.Info("ADR-0145: run ledger enabled", "retention", cfg.Retention(), "max_entry_bytes", cfg.EntryCap())

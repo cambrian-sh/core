@@ -182,7 +182,7 @@ func TestSweeper_RetentionAndTurnScratch(t *testing.T) {
 }
 
 func toolsOver(st *memStore) (get, find domain.KernelTool) {
-	ts := Tools(authz.NewEnforcingLedger(st, nil), 40)
+	ts := Tools(authz.NewEnforcingLedger(st, nil), 40, nil)
 	return ts[0], ts[1]
 }
 

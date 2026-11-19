@@ -450,7 +450,7 @@ func (b *kernelBuild) buildToolExecutor() error {
 	// result and step output recorded, scope-enforced, read by reference. Threaded
 	// to the executor, the server and the turn end here; nil sweeper when off.
 	ledgerSweeper := wireLedger(ctx, cfg.Execution.Ledger, cfg.Execution.Content, vec.Pool(), artifactVault, reg, authorizer,
-		cfg.Privacy.PrivateByDefaultOn(), cambrianServer, turnDelegations, eventBus)
+		cfg.Privacy.PrivateByDefaultOn(), cambrianServer, turnDelegations, eventBus, outputGuard)
 	// Effect-checked dispatch (T-20261106-kernel-does-not-check-that-a-declared): an
 	// agent's effects are derived from the tools the executor would let it call
 	// (grants × profile ceiling × live registry), so routing and enforcement read one

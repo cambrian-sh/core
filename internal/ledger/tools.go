@@ -22,17 +22,21 @@ const (
 )
 
 // Tools returns the two ledger tools over the ENFORCED reader. pageBytes bounds
-// one page of a text body (execution.content.page_bytes; <= 0 ⇒ 16000).
-func Tools(reader domain.LedgerReader, pageBytes int) []domain.KernelTool {
+// one page of a text body (execution.content.page_bytes; <= 0 ⇒ 16000). guard is
+// the ENG-117 untrusted-output guard (execution.tools.output_scan; nil ⇒ fenced
+// but not scanned): what an entry of an MCP tool holds is handed back fenced as
+// data and rescanned (ENG-2213), like the live ExecuteTool boundary.
+func Tools(reader domain.LedgerReader, pageBytes int, guard *domain.UntrustedOutputGuard) []domain.KernelTool {
 	if pageBytes <= 0 {
 		pageBytes = 16000
 	}
-	return []domain.KernelTool{getTool{reader: reader, page: pageBytes}, findTool{reader: reader}}
+	return []domain.KernelTool{getTool{reader: reader, page: pageBytes, guard: guard}, findTool{reader: reader, guard: guard}}
 }
 
 type getTool struct {
 	reader domain.LedgerReader
 	page   int
+	guard  *domain.UntrustedOutputGuard
 }
 
 func (getTool) Spec() domain.SystemTool {
@@ -123,7 +127,7 @@ func (t getTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, 
 		b, _ := json.Marshal(value)
 		if len(b) <= t.page && a.Page <= 1 && a.Find == "" {
 			out["value"] = json.RawMessage(b)
-			return json.Marshal(out)
+			return t.finish(e, out)
 		}
 		text = string(b)
 	default:
@@ -138,7 +142,7 @@ func (t getTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, 
 	out["total_chars"] = len(text)
 	if q := strings.TrimSpace(a.Find); q != "" {
 		findIn(out, e.ID, text, q, starts)
-		return json.Marshal(out)
+		return t.finish(e, out)
 	}
 	p := max(a.Page, 1)
 	if p > pages && pages > 0 {
@@ -146,7 +150,7 @@ func (t getTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, 
 	}
 	if pages == 0 {
 		out["text"], out["page"] = "", 1
-		return json.Marshal(out)
+		return t.finish(e, out)
 	}
 	from, to := starts[p-1], len(text)
 	if p < pages {
@@ -155,6 +159,45 @@ func (t getTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, 
 	out["text"] = text[from:to]
 	out["page"] = p
 	out["note"] = PageNote(e.ID, len(text), from, to, p, pages)
+	return t.finish(e, out)
+}
+
+// finish renders a ledger_get answer. For an entry of an untrusted source (an
+// MCP tool, ENG-2213) the part of the body the answer carries — value, a page of
+// text, or the find snippets — moves into "fenced": the payload fence with the
+// rescan's verdict beside it (domain.UntrustedOutputGuard.Resurface: the whole
+// stored body is scanned, only the part shown is fenced), or the withheld notice. Ids, pages and the kernel's notes stay outside the fence.
+func (t getTool) finish(e *domain.LedgerEntry, out map[string]any) ([]byte, error) {
+	if !domain.UntrustedToolSource(e.ToolName) {
+		return json.Marshal(out)
+	}
+	for _, key := range []string{"value", "text", "matches"} {
+		v, ok := out[key]
+		if !ok {
+			continue
+		}
+		var raw []byte
+		switch x := v.(type) {
+		case json.RawMessage:
+			raw = x
+		case string:
+			raw = []byte(x)
+		default:
+			b, err := json.Marshal(x)
+			if err != nil {
+				return nil, fmt.Errorf("ledger_get: %v", err)
+			}
+			raw = b
+		}
+		delete(out, key)
+		fenced, withheld := t.guard.Resurface(e.ToolName, e.Body, raw)
+		out["fenced_field"] = key
+		if withheld {
+			out["withheld"] = true
+		}
+		out["fenced"] = json.RawMessage(fenced)
+		break
+	}
 	return json.Marshal(out)
 }
 
@@ -210,7 +253,10 @@ func findIn(out map[string]any, id, text, q string, starts []int) {
 	out["note"] = note
 }
 
-type findTool struct{ reader domain.LedgerReader }
+type findTool struct {
+	reader domain.LedgerReader
+	guard  *domain.UntrustedOutputGuard
+}
 
 func (findTool) Spec() domain.SystemTool {
 	return domain.SystemTool{
@@ -307,12 +353,21 @@ func (t findTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte,
 		SizeBytes int64  `json:"size_bytes"`
 		Truncated bool   `json:"truncated,omitempty"`
 		CreatedAt string `json:"created_at"`
+		// ENG-2213: an MCP tool's preview is fenced as data; the rescan's
+		// verdict travels beside it, outside the fence.
+		InjectionScan *domain.ContentScan `json:"injection_scan,omitempty"`
+		Withheld      bool                `json:"preview_withheld,omitempty"`
 	}
 	items := make([]item, 0, len(rows))
 	for _, e := range rows {
-		items = append(items, item{ID: e.ID, Kind: string(e.Kind), Tool: e.ToolName, Step: e.StepIndex,
+		it := item{ID: e.ID, Kind: string(e.Kind), Tool: e.ToolName, Step: e.StepIndex,
 			RunID: e.RunID, Preview: e.Preview, SizeBytes: e.SizeBytes, Truncated: e.Truncated,
-			CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339)})
+			CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339)}
+		if domain.UntrustedToolSource(e.ToolName) && e.Preview != "" {
+			fenced, scan, withheld := t.guard.ResurfaceText(e.ToolName, e.Preview)
+			it.Preview, it.InjectionScan, it.Withheld = fenced, &scan, withheld
+		}
+		items = append(items, it)
 	}
 	return json.Marshal(map[string]any{"scope": scope, "count": len(items), "entries": items})
 }

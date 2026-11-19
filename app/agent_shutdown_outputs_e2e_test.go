@@ -129,7 +129,7 @@ func TestE2E_GracefulShutdownCollectsLiveAgentsOutputs(t *testing.T) {
 	az := domain.AllowAllAuthorizer{}
 	srvImpl := &network.Server{LLMGateway: gw, Manager: mgr, Authz: az, ExecCfg: exec}
 	if sw := wireLedger(ctx, exec.Ledger, exec.Content, ledgerPool, av, kernel.NewAgentRepoDecorator(store), az, false, srvImpl,
-		network.NewTurnDelegations(), nil); sw == nil {
+		network.NewTurnDelegations(), nil, nil); sw == nil {
 		t.Fatal("the run ledger did not come up (is PG_TEST_DSN migrated?)")
 	}
 	// q77_hung's collection never finishes on its own (a stuck reclaim or

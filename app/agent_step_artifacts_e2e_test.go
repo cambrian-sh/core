@@ -115,7 +115,7 @@ func TestE2E_DispatchedStepArtifactsCarryTheStepsProvenance(t *testing.T) {
 	az := domain.AllowAllAuthorizer{}
 	srvImpl := &network.Server{LLMGateway: gw, Manager: mgr, Authz: az, ExecCfg: exec}
 	if sw := wireLedger(ctx, exec.Ledger, exec.Content, pool, av, kernel.NewAgentRepoDecorator(store), az, false, srvImpl,
-		network.NewTurnDelegations(), nil); sw == nil {
+		network.NewTurnDelegations(), nil, nil); sw == nil {
 		t.Fatal("the run ledger did not come up (is PG_TEST_DSN migrated?)")
 	}
 	verifier, err := authz.NewAgentCredentialVerifier(nil, im.Tokens(), kernelSpawnedAgent(reg), false)

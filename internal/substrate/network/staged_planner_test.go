@@ -74,7 +74,7 @@ func stagedServer(t *testing.T, items []domain.RequirementItem, replies ...func(
 	work, _ := calc.NewWorkCalendar(nil, []string{"2026-11-10"})
 	cal := domain.NewCalendar(time.UTC, func() time.Time { return time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC) })
 	tools := map[string]domain.KernelTool{}
-	kts := append(ledger.Tools(s.Ledger.Reader, 0), calc.Tools(calc.Deps{Calendar: cal, Work: work, Reader: s.Ledger.Reader, Writer: s.Ledger.Writer})...)
+	kts := append(ledger.Tools(s.Ledger.Reader, 0, nil), calc.Tools(calc.Deps{Calendar: cal, Work: work, Reader: s.Ledger.Reader, Writer: s.Ledger.Writer})...)
 	for _, kt := range kts {
 		tools[kt.Spec().Name] = kt
 	}

@@ -270,3 +270,55 @@ func FenceToolError(u UntrustedOutput, msg string) string {
 	return fmt.Sprintf("%s reported an error; its message is untrusted data (injection_scan %s):\n%s",
 		u.Source, scan, fenceToolText(u, msg))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Re-surfaced tool output (ENG-2213, owner decision 2026-11-19).
+//
+// The run ledger and the action records keep an MCP result RAW (kernel
+// consumers parse it), so every later path that hands that stored text back to a
+// model — ledger_get, ledger_find's previews, the approval-recovery summary —
+// fences it with the same payload fence (FenceUntrusted, ENG-94) and rescans it
+// with the same guard (ENG-117) as the ExecuteTool boundary does.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UntrustedToolSource reports whether output recorded under tool name is
+// untrusted data: every MCP tool (mcp:<server>/<tool>), the rule the
+// ToolExecutor applies to a live response.
+func UntrustedToolSource(tool string) bool { return strings.HasPrefix(tool, "mcp:") }
+
+// Resurface rescans stored output of an untrusted source and returns the part
+// of it being shown fenced as data (FenceToolResult's envelope: the fenced text
+// with the fresh verdict beside it), or, when the guard withholds the hit, a
+// kernel notice that names why (withheld=true). scanned is the WHOLE stored body
+// and shown the part handed back (a page, a JSON path, find snippets): the
+// verdict is the body's, so a pattern split across two pages is not missed. A
+// nil guard fences without scanning, exactly like the live boundary.
+func (g *UntrustedOutputGuard) Resurface(source string, scanned, shown []byte) (out []byte, withheld bool) {
+	u := g.Inspect(source, scanned)
+	logUntrustedHit(u)
+	if g.Withholds(u) {
+		b, _ := json.Marshal(map[string]string{"output_withheld": withheldReason(u)})
+		return b, true
+	}
+	return FenceToolResult(u, shown), false
+}
+
+// ResurfaceText is Resurface for one short piece of stored text (a ledger
+// preview): the fenced block itself, the verdict, or the withheld notice.
+func (g *UntrustedOutputGuard) ResurfaceText(source, text string) (fenced string, scan ContentScan, withheld bool) {
+	u := g.Inspect(source, []byte(text))
+	logUntrustedHit(u)
+	if g.Withholds(u) {
+		return withheldReason(u), u.Scan, true
+	}
+	return fenceToolText(u, text), u.Scan, false
+}
+
+// FenceRecoverySummary renders untrusted tool output for an approval-recovery
+// summary: the output shortened to the summary bound (RecoverySummary) FIRST,
+// then fenced, so a cut can never break the fence; the scan verdict is beside
+// it, outside the fence.
+func FenceRecoverySummary(u UntrustedOutput, raw string) string {
+	scan, _ := json.Marshal(u.Scan)
+	return fmt.Sprintf("(untrusted output of %s, injection_scan %s)\n%s", u.Source, scan, fenceToolText(u, RecoverySummary(raw)))
+}
