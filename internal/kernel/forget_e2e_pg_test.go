@@ -1194,8 +1194,27 @@ func TestPg_Forget_QueryPreview(t *testing.T) {
 			t.Fatalf("control hit %s has cosine %g to the query; want none", h.Document.ID, h.RawScore)
 		}
 	}
-	if !seen[mine] || !seen[bobs] || !seen[ctrl] || seen[fenced] {
-		t.Fatalf("precondition: alice's search saw mine=%t bobs=%t control=%t fenced=%t", seen[mine], seen[bobs], seen[ctrl], seen[fenced])
+	if !seen[mine] || !seen[bobs] || seen[fenced] {
+		t.Fatalf("precondition: alice's search saw mine=%t bobs=%t fenced=%t", seen[mine], seen[bobs], seen[fenced])
+	}
+	// The control is checked against this test's own documents, not the whole database
+	// (ENG-2181): its rows have no cosine to the query, so in a shared PG_TEST_DSN they
+	// tie with every unrelated row and need not make the top k of the secret search.
+	// What the preview below relies on is that alice CAN recall it — a search for its
+	// own token reaches it — while it has no cosine to the secret (above, and the
+	// hashCosine choice of the secret).
+	ctrlHits, err := g.mem.QueryService.SearchMatches(alice, g.tok("unrelated"), "eng411d-alice")
+	if err != nil {
+		t.Fatalf("Search (control): %v", err)
+	}
+	ctrlSeen := false
+	for _, h := range ctrlHits {
+		if docOf(h.Document.ID) == ctrl {
+			ctrlSeen = true
+		}
+	}
+	if !ctrlSeen {
+		t.Fatal("precondition: alice cannot recall the control document by its own token")
 	}
 
 	// At the default floor (0.60, the production embedder's scale) no hash-embedder hit

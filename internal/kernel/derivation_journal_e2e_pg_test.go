@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
@@ -57,6 +60,9 @@ func TestPg_DerivationJournal_RestartAndLLMOutageLoseNoDerivation(t *testing.T) 
 	for i := range toks {
 		toks[i] = fmt.Sprintf("zqjrnl%c%s", 'a'+i, stamp)
 	}
+	// The run leaves nothing in the shared database (ENG-2181): its four documents carry
+	// the paragraphs() boilerplate other tests rank against (TestPg_Forget_QueryPreview).
+	t.Cleanup(func() { cleanJournalRun(t, toks, stamp) })
 
 	// ---- kernel A: the provider is down for every document but the first; the
 	// triplet extractor hangs until A is dead, then fails. ----
@@ -292,4 +298,47 @@ func (e *journalTripletExtractor) ExtractBatch(ctx context.Context, texts, ids [
 		}
 	}
 	return out, nil
+}
+
+// cleanJournalRun deletes everything one run of the journal E2E wrote, by its stamp
+// (document ids are ingest_memory://eng2122/doc-zqjrnl<letter><stamp>…) and its tokens
+// (the fact values and triplet heads), and fails the test if any of it remains: a
+// shared PG_TEST_DSN (the hq gate DB) must not accumulate this run's chunks, whose
+// boilerplate crowds other tests' recall (ENG-2181).
+func cleanJournalRun(t *testing.T, toks []string, stamp string) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, os.Getenv("PG_TEST_DSN"))
+	if err != nil {
+		t.Errorf("cleanup: connect: %v", err)
+		return
+	}
+	defer conn.Close(ctx)
+	like := "ingest_memory://eng2122/doc-zqjrnl_" + stamp + "%"
+	items := `SELECT item_id FROM statement_values WHERE value_text = ANY($1)`
+	for _, q := range []struct {
+		sql string
+		arg any
+	}{
+		{`DELETE FROM derivation_jobs WHERE document_id LIKE $1`, like},
+		{`DELETE FROM chunk_triplets WHERE h = ANY($1)`, toks},
+		{`DELETE FROM knowledge_extractions WHERE document_id LIKE $1`, like},
+		{`DELETE FROM resolutions WHERE item_id IN (` + items + `)`, toks},
+		{`DELETE FROM knowledge_items WHERE id IN (` + items + `)`, toks},
+		{`DELETE FROM evidence WHERE source_key LIKE $1`, like},
+		{`DELETE FROM chunks WHERE document_id LIKE $1 OR id LIKE 'source_doc:' || $1`, like},
+		{`DELETE FROM documents WHERE id LIKE $1`, like},
+	} {
+		if _, err := conn.Exec(ctx, q.sql, q.arg); err != nil {
+			t.Errorf("cleanup: %s: %v", q.sql, err)
+		}
+	}
+	var left int
+	if err := conn.QueryRow(ctx, `SELECT (SELECT count(*) FROM chunks WHERE document_id LIKE $1 OR id LIKE 'source_doc:' || $1)
+		+ (SELECT count(*) FROM documents WHERE id LIKE $1) + (SELECT count(*) FROM derivation_jobs WHERE document_id LIKE $1)
+		+ (SELECT count(*) FROM statement_values WHERE value_text = ANY($2))`, like, toks).Scan(&left); err != nil {
+		t.Errorf("cleanup: count: %v", err)
+	} else if left != 0 {
+		t.Errorf("cleanup left %d rows of this run in the database", left)
+	}
 }
