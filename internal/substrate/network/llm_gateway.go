@@ -779,7 +779,13 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		g.mu.Unlock()
 
 		fullText.WriteString(chunk.Text)
-		accumulated += llm.EstimateTokens(chunk.Text)
+		// Estimate the WHOLE delivered text, not a sum of per-chunk estimates: the
+		// estimator is content-aware since ENG-1050 (base64/hex runs count denser),
+		// so it is not additive — short chunks never look like a run, and summing
+		// them let a base64/hex reply overrun its lease ~3x before the cut fired
+		// (ENG-2234). Delivered text is bounded by the lease, so re-estimating it per
+		// chunk stays cheap.
+		accumulated = llm.EstimateTokens(fullText.String())
 
 		if accumulated >= cutoff && !overrun {
 			overrun = true
