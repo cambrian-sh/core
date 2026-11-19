@@ -65,7 +65,7 @@ func TestLedgerGet_MCPEntryIsFencedAndRescanned(t *testing.T) {
 	fenced, _ := m["fenced"].(map[string]any)
 	block, _ := fenced["fenced_result"].(string)
 	scan, _ := fenced["injection_scan"].(map[string]any)
-	if m["fenced_field"] != "text" || !strings.Contains(block, "<"+domain.UntrustedDataTag+` provenance="tool_output" origin="mcp:drive/read_report"`) ||
+	if m["fenced_field"] != "text" || !strings.Contains(block, "<"+domain.UntrustedDataTag+` provenance="tool_output" source="web" origin="mcp:drive/read_report"`) ||
 		scan["verdict"] != "dangerous" {
 		t.Fatalf("not fenced with the rescan verdict: %s", raw)
 	}

@@ -1154,6 +1154,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		var reported *ToolReportedError
 		if isMCP && !req.System && errors.As(err, &reported) {
 			u := e.untrustedOutput.Inspect(req.ToolName, []byte(reported.Message))
+			u.SourceClass = ToolResultSourceClass(tool) // ENG-2223: the fence's source=
 			logUntrustedHit(u)
 			if e.untrustedOutput.Withholds(u) {
 				failed.Error = withheldReason(u)
@@ -1217,6 +1218,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	var untrusted *UntrustedOutput
 	if isMCP && !req.System {
 		u := e.untrustedOutput.Inspect(req.ToolName, result)
+		u.SourceClass = ToolResultSourceClass(tool) // ENG-2223: the fence's source=
 		logUntrustedHit(u)
 		if e.untrustedOutput.Withholds(u) {
 			result, _ = json.Marshal(map[string]string{"output_withheld": withheldReason(u)})

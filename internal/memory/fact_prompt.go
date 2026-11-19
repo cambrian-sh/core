@@ -143,7 +143,7 @@ func buildFactRequest(in factExtractionInput) domain.GenerateRequest {
 	return factExtractPrompts.mustRequest(map[string]string{
 		"source":               factSourceRegion(in),
 		"preferred_attributes": strings.Join(in.CanonicalPredicates, ", "),
-		"passages": domain.FenceUntrusted(domain.DataProvenance{Class: domain.ProvenanceIngestedDocument},
+		"passages": domain.FenceUntrusted(domain.DataProvenance{Class: domain.ProvenanceIngestedDocument, Source: domain.SourceIngested},
 			strings.TrimRight(passages.String(), "\n")),
 	})
 }

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"os"
@@ -84,7 +85,7 @@ func TestFenceWorkerResult_NamesItsProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := strings.Split(env["fenced_result"], "\n")[0]
-	if !strings.HasPrefix(head, `<WorkerResult machine="m1" provenance="worker_result" origin="machine:m1"`) {
+	if !strings.HasPrefix(head, `<WorkerResult machine="m1" provenance="worker_result" source="other-agent" origin="machine:m1"`) {
 		t.Errorf("worker header = %q", head)
 	}
 }
@@ -96,6 +97,7 @@ var updateFenceCases = flag.Bool("update-fence-cases", false, "rewrite testdata/
 type fenceCase struct {
 	Name   string `json:"name"`
 	Class  string `json:"class"`
+	Source string `json:"source"`
 	Origin string `json:"origin"`
 	Nonce  string `json:"nonce"`
 	Raw    string `json:"raw"`
@@ -107,8 +109,11 @@ const fenceCasesPath = "testdata/payload_fence_cases.json"
 func buildFenceCases() []fenceCase {
 	cases := []fenceCase{
 		{Name: "plain", Class: ProvenanceRecalledMemory, Origin: "agent:analyst", Raw: "The Q3 budget is 4.2M."},
-		{Name: "injection_forged_fence_and_close", Class: ProvenanceRecalledMemory, Origin: "source:gmail:inbox", Raw: injectedDocument},
+		{Name: "injection_forged_fence_and_close", Class: ProvenanceRecalledMemory, Source: string(SourceIngested), Origin: "source:gmail:inbox", Raw: injectedDocument},
 		{Name: "html_and_quotes", Class: ProvenanceToolOutput, Origin: "web_fetch", Raw: `<a href="x">A & B</a> 'q' \ back\slash /path`},
+		{Name: "tool_source_explicit", Class: ProvenanceToolOutput, Source: string(SourceTool), Origin: "mcp:files/read", Raw: "notes.txt: buy milk"},
+		{Name: "worker_result_default_source", Class: ProvenanceWorkerResult, Origin: "machine:m1", Raw: "done"},
+		{Name: "unknown_class_with_source", Class: "custom_channel", Source: string(SourceUser), Raw: "hi"},
 		{Name: "unicode_turkish_and_emoji", Class: ProvenanceIngestedDocument, Origin: "doc:İzmir-bütçe.pdf", Raw: "Şubat ayı çıktısı: ğüşıöç İ — ✓ 😀"},
 		{Name: "line_and_paragraph_separators", Class: ProvenanceIngestedDocument, Raw: "a b c"},
 		{Name: "control_characters", Class: ProvenanceToolOutput, Raw: "t\tn\nr\rb\bf\fnul\x00esc\x1bdel\x7fend"},
@@ -117,7 +122,7 @@ func buildFenceCases() []fenceCase {
 	}
 	for i := range cases {
 		cases[i].Nonce = "PAYLOAD_FENCE_" + strings.Repeat(string(rune('a'+i)), 16)
-		cases[i].Want = fenceBlock(UntrustedDataTag, nil, DataProvenance{Class: cases[i].Class, Origin: cases[i].Origin}, cases[i].Nonce, cases[i].Raw)
+		cases[i].Want = fenceBlock(UntrustedDataTag, nil, DataProvenance{Class: cases[i].Class, Source: SourceClass(cases[i].Source), Origin: cases[i].Origin}, cases[i].Nonce, cases[i].Raw)
 	}
 	return cases
 }
@@ -147,5 +152,62 @@ func TestPayloadFenceCasesFixture(t *testing.T) {
 	}
 	if strings.ReplaceAll(string(want), "\r\n", "\n") != string(data) {
 		t.Fatal("testdata/payload_fence_cases.json is stale: the fence format changed; regenerate it with -update-fence-cases and update the SDK renderer to match")
+	}
+}
+
+// ENG-2223: a fence names its channel (provenance=) AND its trust source
+// (source=, domain.SourceClass), so the model reads the origin the Rule-of-Two
+// gate reads. An explicit source wins; otherwise the channel's default.
+func TestFenceUntrusted_CarriesTheSourceClass(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		p    DataProvenance
+		want string
+	}{
+		{DataProvenance{Class: ProvenanceRecalledMemory, Source: SourceIngested}, `provenance="recalled_memory" source="ingested"`},
+		{DataProvenance{Class: ProvenanceRecalledMemory}, `provenance="recalled_memory" source="other-agent"`},
+		{DataProvenance{Class: ProvenanceIngestedDocument}, `provenance="ingested_document" source="ingested"`},
+		{DataProvenance{Class: ProvenanceToolOutput}, `provenance="tool_output" source="web"`},
+		{DataProvenance{Class: ProvenanceToolOutput, Source: SourceTool}, `provenance="tool_output" source="tool"`},
+		{DataProvenance{Class: ProvenanceWorkerResult}, `provenance="worker_result" source="other-agent"`},
+	}
+	for _, c := range cases {
+		if head := fencedLines(t, FenceUntrusted(c.p, "x"))[0]; !strings.Contains(head, c.want) {
+			t.Errorf("%+v: header %q lacks %q", c.p, head, c.want)
+		}
+	}
+	if head := fencedLines(t, FenceUntrusted(DataProvenance{}, "x"))[0]; strings.Contains(head, "source=") {
+		t.Errorf("an unknown channel with no source names none: %q", head)
+	}
+	// Every default is a member of the gate's closed set.
+	for _, c := range []string{ProvenanceRecalledMemory, ProvenanceIngestedDocument, ProvenanceToolOutput, ProvenanceWorkerResult} {
+		if !ValidSourceClass(DefaultSourceClass(c)) {
+			t.Errorf("%s default %q is not a SourceClass", c, DefaultSourceClass(c))
+		}
+	}
+}
+
+// The ToolExecutor stamps an MCP result with its tool's source class, and the
+// agent-facing fence renders it: a tool that reaches outside is web, one that
+// does not is tool.
+func TestAgentToolResult_FenceNamesTheToolsSourceClass(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		tool SystemTool
+		want string
+	}{
+		{SystemTool{Name: "mcp:files/read", Effects: []ToolEffect{EffectRead}}, `source=\"tool\"`},
+		{SystemTool{Name: "mcp:web/fetch", Effects: []ToolEffect{EffectRead, EffectEgressRead}}, `source=\"web\"`},
+	} {
+		reg := NewInMemoryToolRegistry()
+		reg.Register(c.tool)
+		e := newExec(reg, grantStore("a", ToolGrant{Tool: c.tool.Name}), &fakeHandler{result: []byte(`{"ok":1}`)})
+		resp := e.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: c.tool.Name, ArgsJSON: []byte(`{}`)})
+		if resp.Untrusted == nil || resp.Untrusted.SourceClass != ToolResultSourceClass(c.tool) {
+			t.Fatalf("%s: untrusted mark = %+v", c.tool.Name, resp.Untrusted)
+		}
+		if out, _ := AgentToolResult(resp); !strings.Contains(out, c.want) {
+			t.Errorf("%s: fenced result lacks %s: %s", c.tool.Name, c.want, out)
+		}
 	}
 }

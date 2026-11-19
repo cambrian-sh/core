@@ -85,6 +85,11 @@ type UntrustedOutput struct {
 	// ErrorFromSource: resp.Error carries text the source wrote (a tool-reported
 	// error), so it is fenced too.
 	ErrorFromSource bool `json:"error_from_source,omitempty"`
+	// SourceClass is the trust source of the output (ToolResultSourceClass of
+	// the tool: web or tool), rendered as the fence's source= (ENG-2223). Empty
+	// (a stored response from before it, or a re-read without the tool's
+	// policy): the tool_output default, web.
+	SourceClass SourceClass `json:"source_class,omitempty"`
 }
 
 // UntrustedOutputGuard scans untrusted tool output and decides what a hit does.
@@ -234,7 +239,7 @@ func AgentToolResult(resp ToolCallResponse) (resultJSON, errText string) {
 // untrusted-data fence (untrusted_fence.go, ENG-94) with the tool_output
 // provenance and the tool identity as its origin.
 func fenceToolText(u UntrustedOutput, text string) string {
-	return FenceUntrusted(DataProvenance{Class: ProvenanceToolOutput, Origin: u.Source}, text)
+	return FenceUntrusted(DataProvenance{Class: ProvenanceToolOutput, Source: u.SourceClass, Origin: u.Source}, text)
 }
 
 // toolEnvelope is the fenced tool result's wire shape.

@@ -41,7 +41,7 @@ func PayloadFenceNonce() string {
 // worker_result provenance and the machine as its origin (ENG-94).
 func fencedWorkerBlock(machine string, raw []byte) string {
 	return fenceBlock("WorkerResult", []fenceAttr{{"machine", machine}},
-		DataProvenance{Class: ProvenanceWorkerResult, Origin: "machine:" + machine},
+		DataProvenance{Class: ProvenanceWorkerResult, Source: SourceOtherAgent, Origin: "machine:" + machine},
 		PayloadFenceNonce(), string(raw))
 }
 

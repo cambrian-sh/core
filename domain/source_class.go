@@ -17,9 +17,11 @@ import (
 //
 // It is a TRUST source. The payload fence's DataProvenance.Class
 // (untrusted_fence.go, ENG-94) names the rendering channel instead
-// (recalled_memory, ingested_document, tool_output, worker_result); the two
-// were built in parallel and how they map is
-// T-20261119-two-provenance-vocabularies-fence.
+// (recalled_memory, ingested_document, tool_output, worker_result). Both are
+// kept (ENG-2223, owner decision 2026-11-19): every fence carries its channel
+// as provenance= AND its source class as source=, so the model reads the same
+// origin the gate does; DefaultSourceClass is how a channel maps when the exact
+// source is unknown.
 
 // SourceClass is where a piece of consumed content came from.
 type SourceClass string

@@ -87,7 +87,7 @@ func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, 
 // fence line can end its region, and the fence itself tells the model the text is
 // data.
 func fenceChunk(text string) string {
-	return domain.FenceUntrusted(domain.DataProvenance{Class: domain.ProvenanceIngestedDocument}, text)
+	return domain.FenceUntrusted(domain.DataProvenance{Class: domain.ProvenanceIngestedDocument, Source: domain.SourceIngested}, text)
 }
 
 // buildTripletRequest renders the structured extraction call. Chunk i (0-based) is

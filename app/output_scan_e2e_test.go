@@ -140,7 +140,7 @@ func unfence(t *testing.T, resultJSON string) (fencedEnvelope, string) {
 		t.Fatalf("agent result is not the fenced envelope: %v\n%s", err, resultJSON)
 	}
 	lines := strings.Split(env.FencedResult, "\n")
-	if len(lines) != 5 || !strings.HasPrefix(lines[0], `<untrusted_data provenance="tool_output" origin="mcp:stub/`) || lines[1] != lines[3] ||
+	if len(lines) != 5 || !strings.HasPrefix(lines[0], `<untrusted_data provenance="tool_output" source="tool" origin="mcp:stub/`) || lines[1] != lines[3] ||
 		!strings.HasPrefix(lines[1], "PAYLOAD_FENCE_") || lines[4] != "</untrusted_data>" {
 		t.Fatalf("not a nonce fence block:\n%s", env.FencedResult)
 	}
