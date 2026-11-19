@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
 	"github.com/cambrian-sh/core/internal/backup"
 	"github.com/cambrian-sh/core/internal/config"
@@ -68,6 +69,9 @@ func sandboxPolicyFromConfig(c config.MCPSandboxConfig, cat *integrations.Catalo
 	p.BwrapPath, p.DockerPath, p.CgroupParent = c.BwrapPath, c.DockerPath, c.CgroupParent
 	for k, v := range c.DockerImages {
 		p.DockerImages[k] = v
+	}
+	for k, v := range c.AppContainerReads {
+		p.AppContainerReads[strings.ToLower(k)] = append([]string(nil), v...)
 	}
 	p.HidePaths = append([]string(nil), c.HidePaths...)
 	for name, o := range c.Tiers {

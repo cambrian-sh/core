@@ -35,6 +35,12 @@ type MCPSandboxConfig struct {
 	// DockerImages maps a launch command's basename (npx, uvx, uv, node,
 	// python) to the image the docker runner uses; given keys replace defaults.
 	DockerImages map[string]string `json:"docker_images,omitempty"`
+	// AppContainerReads maps a launch command's basename to the extra paths a
+	// Windows MCP server container must read beyond the command's own
+	// installation (ENG-2215: uv/uvx read their managed Pythons under
+	// %APPDATA%\uv\python). ${VAR} is expanded from the kernel's environment;
+	// given keys replace defaults; an empty list removes one.
+	AppContainerReads map[string][]string `json:"appcontainer_reads,omitempty"`
 	// HidePaths are masked from a bubblewrap-confined server. Default: the
 	// directory of the primary config file (secret.key, config.db).
 	HidePaths []string `json:"hide_paths,omitempty"`
@@ -118,6 +124,13 @@ func (c MCPSandboxConfig) validate() []string {
 	for _, k := range keys {
 		if v := c.CatalogTiers[k]; !oneOf(v, validSandboxTiers) {
 			errs = append(errs, fmt.Sprintf("mcp.sandbox.catalog_tiers.%s %q must be one of %s", k, v, strings.Join(validSandboxTiers, ", ")))
+		}
+	}
+	for k, paths := range c.AppContainerReads {
+		for _, path := range paths {
+			if strings.TrimSpace(path) == "" {
+				errs = append(errs, fmt.Sprintf("mcp.sandbox.appcontainer_reads.%s: an empty path", k))
+			}
 		}
 	}
 	tiers := make([]string, 0, len(c.Tiers))

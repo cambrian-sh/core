@@ -228,11 +228,11 @@ func choose(ctx context.Context, spec Spec, p *Policy, c Command) (string, Repor
 			}
 			reason := capab.unusable
 			runner = RunnerNative
-			capab = nativeCapability(p, spec, tp)
+			capab = nativeCapability(p, spec, tp, c)
 			capab.notes = append(capab.notes, "runner: docker unavailable ("+reason+"), fell back to native")
 		}
 	case RunnerNative:
-		capab = nativeCapability(p, spec, tp)
+		capab = nativeCapability(p, spec, tp, c)
 	default:
 		return runner, Report{ServerID: spec.ServerID, Tier: spec.Tier, TierSource: spec.TierSource,
 			Runner: runner, Refused: true, Missing: []string{"runner: unknown runner " + runner}}, tp

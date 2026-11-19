@@ -236,6 +236,10 @@ type Policy struct {
 	BwrapPath    string            // "" ⇒ look up "bwrap" on PATH
 	DockerPath   string            // "" ⇒ look up "docker" on PATH
 	DockerImages map[string]string // launch command basename (npx, uvx, python…) → image
+	// AppContainerReads: launch command basename → extra paths a Windows MCP
+	// server container reads (${VAR} expanded), beyond the command's own
+	// installation (ENG-2215).
+	AppContainerReads map[string][]string
 	// HidePaths are masked from a bubblewrap-confined process (the kernel's
 	// config and data directories: secret.key, the bbolt store).
 	HidePaths []string
@@ -285,6 +289,12 @@ func DefaultPolicy() *Policy {
 			"npx": "node:22-bookworm-slim", "node": "node:22-bookworm-slim",
 			"uvx": "ghcr.io/astral-sh/uv:python3.12-bookworm-slim", "uv": "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
 			"python": "python:3.12-slim-bookworm", "python3": "python:3.12-slim-bookworm",
+		},
+		// uv and uvx discover their managed Pythons under %APPDATA%\uv\python
+		// (found live: "failed to read directory …\uv\python: access denied"
+		// in the container). Ignored where APPDATA is unset or the path is absent.
+		AppContainerReads: map[string][]string{
+			"uv": {`${APPDATA}\uv\python`}, "uvx": {`${APPDATA}\uv\python`},
 		},
 	}
 }

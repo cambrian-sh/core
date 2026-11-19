@@ -4,6 +4,9 @@ package sandbox
 
 import (
 	"fmt"
+	"log/slog"
+	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -11,6 +14,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
 )
 
 // Windows native containment:
@@ -35,13 +40,18 @@ import (
 //     unless its tier keeps one. When a grant is impossible (an interpreter
 //     owned by Administrators) the agent falls back to the low-integrity token
 //     and the report names hide_state and network missing, with the reason.
-//   - NOT available natively for MCP servers: network egress control. They
-//     keep the low-integrity token until the AppContainer runner is opted in
-//     for them (T-20261106-windows-appcontainer-runner-for-native-network:
-//     npx/uvx need their runtime and caches granted); Windows Filtering
-//     Platform needs admin. A third-party server that must have no network
-//     uses runner docker.
-func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
+//   - AppContainer behind the egress proxy (MCP servers whose declared hosts
+//     are enforced, ENG-2215; appcontainer_mcp_windows.go): no network
+//     capability, the kernel's executable re-run inside as the forwarder
+//     (egress_forwarder_windows.go) relays the server's 127.0.0.1 proxy port
+//     to the kernel's CONNECT proxy over an AF_UNIX socket in the workdir.
+//     When the server's runtime cannot be granted to the container the server
+//     keeps the low-integrity token and its hosts are recorded, not filtered.
+//   - NOT available natively for other MCP servers: a network deny. They keep
+//     the low-integrity token (T-20261106-windows-appcontainer-runner-for-
+//     native-network); Windows Filtering Platform needs admin. A third-party
+//     server that must have no network uses runner docker.
+func nativeCapability(p *Policy, spec Spec, tp TierPolicy, cmd Command) capability {
 	c := capability{
 		runner: RunnerNative,
 		enforced: map[Control]string{
@@ -61,14 +71,23 @@ func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
 		// Windows does not have yet; the tier's on_unavailable decides.
 		c.missing[ControlNetwork] = "no native network control on Windows for agents: the kernel-only agent network needs the AppContainer runner (ADR-0157 S5)"
 	}
-	// ENG-688: the docker and bubblewrap runners enforce declared egress
-	// hosts; this runner has no network control for MCP servers yet, so they
-	// are recorded and the report says why
-	// (T-20261119-windows-native-runner-does-not-enforce-declared).
-	if ok, why := egressPlan(p, spec, tp); ok {
-		c.egressWhy = "the Windows native runner cannot hold an MCP server to its hosts yet (AppContainer behind the egress proxy: T-20261119-windows-native-runner-does-not-enforce-declared); runner docker enforces them"
-	} else {
+	// ENG-688/ENG-2215: declared egress hosts are enforced by running the
+	// server in an AppContainer without network capabilities behind the
+	// kernel's proxy, when its runtime can be granted to the container.
+	if ok, why := egressPlan(p, spec, tp); !ok {
 		c.egressWhy = why
+	} else if !wantsMCPEgressContainer(p, spec, tp) {
+		c.egressWhy = "the tier runs the server unconfined (fs_confine and low_privilege off), outside any AppContainer"
+	} else if ac, _, why := mcpEgressContainer(p, spec, cmd); ac == nil {
+		c.egressWhy = why
+	} else {
+		ac.close()
+		c.egress = MechanismAppContainer
+		c.enforced[ControlFSConfine] = MechanismAppContainer
+		c.enforced[ControlLowPrivilege] = MechanismAppContainer
+		c.notes = append(c.notes, "network: an AppContainer with no network capability; the kernel's executable, re-run inside as the forwarder, relays the server's proxy port to the kernel's proxy over a unix socket in the workdir",
+			"fs: AppContainer: the server reads system directories, its command's installation and the forwarder only; writes only to the workdir")
+		return c
 	}
 	if wantsAppContainer(spec, tp) {
 		ac, pl := appContainerFor(p, spec, tp, true)
@@ -133,6 +152,20 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 		}
 	}
 	defer ac.close() // the process holds its own copy of the token once created
+	// ENG-2215: an egress-enforced MCP server runs in its own AppContainer
+	// (no network capability) as the forwarder's child. The plan made the
+	// same decision; a container that cannot be prepared now leaves the
+	// server on the low-integrity token, as the plan would have reported.
+	var mcpAC *appContainer
+	serverPath, serverArgs := c.Path, c.Args
+	if lowIL && wantsMCPEgressContainer(p, spec, tp) {
+		var why string
+		if mcpAC, serverPath, why = mcpEgressContainer(p, spec, c); mcpAC == nil {
+			serverPath = c.Path
+			slog.Warn("sandbox: egress container unavailable; declared hosts recorded, not filtered", "server", spec.ServerID, "why", why)
+		}
+	}
+	defer mcpAC.close()
 	if lowIL {
 		for _, dir := range lowWritable(workdir, spec) {
 			if err := labelLowIntegrity(dir); err != nil {
@@ -147,11 +180,25 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 			}
 		}
 	}
+	var egress *egressLink
+	if mcpAC != nil {
+		if err := mcpAC.grantInstanceDir(workdir); err != nil {
+			return fmt.Errorf("sandbox: grant the server container %s: %w", workdir, err)
+		}
+		if egress, err = openEgressLink(p, spec, workdir); err != nil {
+			return err
+		}
+		exe, _ := egressForwarderExe() // located by mcpEgressContainer
+		argv := forwarderArgv(exe, egress.socket, serverPath, c.Args)
+		serverPath, serverArgs = argv[0], argv[1:]
+		env = append(env, egressproxy.ProxyEnv()...)
+	}
 	job, err := newJob(tp, tp.ConfineFS)
 	if err != nil {
+		egress.close()
 		return fmt.Errorf("sandbox: job object: %w", err)
 	}
-	cmd := exec.Command(c.Path, c.Args...) //nolint:gosec // operator-configured command
+	cmd := exec.Command(serverPath, serverArgs...) //nolint:gosec // operator-configured command (or the forwarder wrapping it)
 	cmd.Env = env
 	cmd.Dir = workdir
 	if c.Dir != "" {
@@ -165,10 +212,13 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 	switch {
 	case ac != nil:
 		attr.Token = syscall.Token(ac.token)
+	case mcpAC != nil:
+		attr.Token = syscall.Token(mcpAC.token)
 	case lowIL:
 		tok, err = lowIntegrityToken()
 		if err != nil {
 			_ = windows.CloseHandle(job)
+			egress.close()
 			return fmt.Errorf("sandbox: low-integrity token: %w", err)
 		}
 		attr.Token = syscall.Token(tok)
@@ -197,6 +247,9 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 			h.stopWatcher()
 			return nil, fmt.Errorf("sandbox: resume: %w", err)
 		}
+		if egress != nil {
+			return &egressJobHandle{jobHandle: h, egress: egress}, nil
+		}
 		return h, nil
 	}
 	err = start(cmd, post)
@@ -205,8 +258,76 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 	}
 	if err != nil {
 		_ = windows.CloseHandle(job)
+		egress.close()
 	}
 	return err
+}
+
+// egressLink is an egress-enforced launch's proxy session and the AF_UNIX
+// listener its forwarder dials (ENG-2215). One connection is accepted and
+// served; the listener then closes. close ends both and is idempotent.
+type egressLink struct {
+	socket string
+	sess   *egressproxy.Session
+	ln     net.Listener
+	done   chan struct{}
+	once   sync.Once
+}
+
+// openEgressLink opens the launch's proxy session and listens on the
+// multiplex socket in the (already granted, low-integrity) workdir.
+func openEgressLink(p *Policy, spec Spec, workdir string) (*egressLink, error) {
+	sock, err := egressSocketPath(workdir)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: %w", err)
+	}
+	_ = os.Remove(sock) // a previous launch's socket file in a reused workdir
+	sess, err := p.Egress.Open(spec.ServerID, spec.Server.Hosts)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: egress proxy session: %w", err)
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		sess.Close()
+		return nil, fmt.Errorf("sandbox: egress socket: %w", err)
+	}
+	l := &egressLink{socket: sock, sess: sess, ln: ln, done: make(chan struct{})}
+	go func() {
+		defer close(l.done)
+		conn, aerr := ln.Accept()
+		_ = ln.Close()
+		if aerr != nil {
+			return // closed before the forwarder dialled (a failed start, or close)
+		}
+		if serr := sess.Serve(conn); serr != nil {
+			slog.Warn("sandbox: egress proxy session refused the forwarder", "server", spec.ServerID, "err", serr)
+		}
+	}()
+	return l, nil
+}
+
+func (l *egressLink) close() {
+	if l == nil {
+		return
+	}
+	l.once.Do(func() {
+		_ = l.ln.Close()
+		<-l.done
+		l.sess.Close()
+		_ = os.Remove(l.socket)
+	})
+}
+
+// egressJobHandle is the job handle of an egress-enforced launch: releasing
+// it also ends the proxy session.
+type egressJobHandle struct {
+	*jobHandle
+	egress *egressLink
+}
+
+func (h *egressJobHandle) release() {
+	h.jobHandle.release()
+	h.egress.close()
 }
 
 // instanceDirs are an agent instance's own directories: its workdir (scratch)

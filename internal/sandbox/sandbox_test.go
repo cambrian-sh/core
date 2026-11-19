@@ -103,6 +103,32 @@ func runFixture(mode string, args []string) int {
 		}
 		_ = f.Close()
 		time.Sleep(60 * time.Second)
+	case "connect": // CONNECT args[0] through $HTTPS_PROXY; then a direct dial (ENG-2215)
+		status := "error: no proxy"
+		if u := os.Getenv("HTTPS_PROXY"); u != "" {
+			addr := strings.TrimPrefix(strings.TrimPrefix(u, "http://"), "https://")
+			if c, err := net.DialTimeout("tcp", addr, 5*time.Second); err != nil {
+				status = "error: " + err.Error()
+			} else {
+				fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", args[0], args[0])
+				_ = c.SetReadDeadline(time.Now().Add(20 * time.Second))
+				line, err := bufio.NewReader(c).ReadString('\n')
+				if err != nil {
+					status = "error: " + err.Error()
+				} else {
+					status = strings.TrimSpace(line)
+				}
+				_ = c.Close()
+			}
+		}
+		direct := "connected"
+		if c, err := net.DialTimeout("tcp", "1.1.1.1:443", 3*time.Second); err != nil {
+			direct = "error: " + err.Error()
+		} else {
+			_ = c.Close()
+		}
+		fmt.Printf("connect=%s|direct=%s\n", status, direct)
+		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "net": // try to reach the internet
 		c, err := net.DialTimeout("tcp", "1.1.1.1:53", 3*time.Second)
 		if err == nil {

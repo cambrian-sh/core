@@ -57,3 +57,14 @@ func TestMCPServerSandboxValidation(t *testing.T) {
 		t.Fatal("ValidateMCPServer must refuse trust_tier system")
 	}
 }
+
+// ENG-2215: appcontainer_reads entries must name a path.
+func TestMCPSandboxAppContainerReadsValidation(t *testing.T) {
+	errs := MCPSandboxConfig{AppContainerReads: map[string][]string{"uvx": {" "}}}.validate()
+	if len(errs) != 1 || !strings.Contains(errs[0], "appcontainer_reads.uvx") {
+		t.Fatalf("errs = %v", errs)
+	}
+	if errs := (MCPSandboxConfig{AppContainerReads: map[string][]string{"uvx": {`${APPDATA}\uv\python`}, "uv": {}}}).validate(); len(errs) != 0 {
+		t.Fatalf("valid entries refused: %v", errs)
+	}
+}

@@ -43,7 +43,7 @@ import (
 //   - macOS / BSD: the sh ulimit limits and the process group; on macOS an
 //     AGENT additionally runs under a generated Seatbelt profile (sandbox-exec,
 //     seatbelt.go; ADR-0157 S5) for fs_confine, hide_state and network.
-func nativeCapability(p *Policy, spec Spec, tp TierPolicy) capability {
+func nativeCapability(p *Policy, spec Spec, tp TierPolicy, _ Command) capability {
 	c := capability{
 		runner: RunnerNative,
 		enforced: map[Control]string{
