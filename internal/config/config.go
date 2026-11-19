@@ -1020,6 +1020,15 @@ type RetrievalConfig struct {
 	// (hnsw.max_scan_tuples); 0 = pgvector's default (20000). Only read when
 	// HnswIterativeScan is on.
 	HnswMaxScanTuples int `json:"hnsw_max_scan_tuples,omitempty"`
+	// VectorPoolMultiplier / VectorPoolMax size the dense search's candidate
+	// pool (ENG-210): the adapter fetches top_k × multiplier rows (at least
+	// 10, at most max), re-ranks the whole pool by cosine × (floor + (1−floor)
+	// × activation), and only then keeps top_k. The re-rank can move a result
+	// by up to 5x, so the pool is the re-rank's reach, not dead weight — do not
+	// shrink it without measuring. 0 ⇒ 20 and 3000, the values the adapter
+	// hardcoded before they became config.
+	VectorPoolMultiplier int `json:"vector_pool_multiplier,omitempty"`
+	VectorPoolMax        int `json:"vector_pool_max,omitempty"`
 
 	// EmbeddingProjectionWrite dual-writes every chunk embedding into the
 	// chunk_embeddings projection under the active embedder's (model, dims) —
@@ -3697,6 +3706,10 @@ func DefaultConfig() *Config {
 				HybridRRFK:                    60,
 				HybridLexicalWeight:           1,
 				HnswEfSearch:                  120,
+				// ENG-210: the dense candidate pool the activation re-rank sees,
+				// as the adapter sized it before it became config.
+				VectorPoolMultiplier: 20,
+				VectorPoolMax:        3000,
 				// Owner decision 2026-11-02 (ADR-0134 P2): ON by default. Every principal
 				// read carries a scope predicate, which filters after an HNSW scan, so
 				// without the iterative scan a selective scope underfills top_k silently.
@@ -4911,6 +4924,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Retrieval.HnswMaxScanTuples < 0 {
 		errs = append(errs, "retrieval.hnsw_max_scan_tuples must be >= 0")
+	}
+	if c.Retrieval.VectorPoolMultiplier < 0 || c.Retrieval.VectorPoolMax < 0 {
+		errs = append(errs, "retrieval.vector_pool_multiplier and vector_pool_max must be >= 0 (0 uses 20 and 3000)")
 	}
 	if c.Retrieval.DocumentCompletionDocuments < 0 || c.Retrieval.DocumentCompletionMaxChunks < 0 {
 		errs = append(errs, "retrieval.document_completion_documents and document_completion_max_chunks must be >= 0")

@@ -120,6 +120,11 @@ type PgVectorAdapter struct {
 	// differs, column writes are skipped (stage 3c coexistence) — the typed
 	// column cannot hold the other model's vectors and must not fail the write.
 	colDim int
+	// poolMultiplier / poolMax size the dense candidate pool the activation
+	// re-rank sees (retrieval.vector_pool_multiplier / vector_pool_max,
+	// ENG-210); 0 ⇒ 20 and 3000 (a struct literal in tests).
+	poolMultiplier int
+	poolMax        int
 }
 
 // documentColumnNames is the ONE column list every retrievable-row read selects and
@@ -363,6 +368,7 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 		projectionRead:  cfg.Execution.Retrieval.EmbeddingProjectionRead,
 		projModelID:     cfg.Embedder.Model,
 	}
+	p.poolMultiplier, p.poolMax = cfg.Execution.Retrieval.EffectiveVectorPool()
 	if p.projectionWrite || p.projectionRead {
 		if p.projModelID == "" {
 			// The projection's whole point is model identity; an anonymous row
@@ -952,6 +958,35 @@ func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document
 	return err
 }
 
+// minCandidatePool is the smallest dense pool fetched (a tiny or unset top_k).
+const minCandidatePool = 10
+
+// candidatePool sizes the dense search's candidate pool (ENG-210): top_k ×
+// retrieval.vector_pool_multiplier, at least minCandidatePool, at most
+// retrieval.vector_pool_max. The whole pool is re-ranked by the activation
+// floor-multiplier below before top_k is kept, so the pool bounds how far
+// activation can lift a result (and feeds the opt-in exploration slots).
+func (p *PgVectorAdapter) candidatePool(topK int) int {
+	mult, max := p.poolMultiplier, p.poolMax
+	if mult <= 0 {
+		mult = config.DefaultVectorPoolMultiplier
+	}
+	if max <= 0 {
+		max = config.DefaultVectorPoolMax
+	}
+	if topK <= 0 {
+		return minCandidatePool
+	}
+	n := topK * mult
+	if n < minCandidatePool {
+		n = minCandidatePool
+	}
+	if n > max {
+		n = max
+	}
+	return n
+}
+
 func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {
 	floor := opts.RetrievalFloor
 	if floor <= 0 {
@@ -967,19 +1002,7 @@ func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts dom
 	// No production caller ever set this field, so the default was the feature.
 	exploreRate := opts.ExplorationRate
 
-	// Over-fetch: get enough candidates for exploration pool (capped at 3000).
-	overFetch := opts.TopK * 20
-	if overFetch < 10 {
-		overFetch = 10
-	}
-	const maxOverFetch = 3000
-	if overFetch > maxOverFetch {
-		overFetch = maxOverFetch
-	}
-	if opts.TopK <= 0 {
-		overFetch = 10
-	}
-
+	overFetch := p.candidatePool(opts.TopK)
 	allCandidates, err := p.fetchCandidates(ctx, vector, opts, overFetch)
 	if err != nil {
 		return nil, err

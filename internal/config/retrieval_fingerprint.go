@@ -56,6 +56,12 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 		iterative = "off"
 	}
 	fmt.Fprintf(&b, "hnsw_iterative_scan=%s\n", iterative)
+	// ENG-210: the dense pool the activation re-rank sees. Written only when it
+	// differs from the sizing the adapter always had (20x, cap 3000), so every
+	// existing fingerprint holds.
+	if m, mx := c.Retrieval.EffectiveVectorPool(); m != DefaultVectorPoolMultiplier || mx != DefaultVectorPoolMax {
+		fmt.Fprintf(&b, "vector_pool=%dx/%d\n", m, mx)
+	}
 	if iterative != "off" {
 		fmt.Fprintf(&b, "hnsw_max_scan_tuples=%d\n", c.Retrieval.HnswMaxScanTuples)
 	}
@@ -151,4 +157,24 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
+}
+
+// Dense candidate pool defaults (ENG-210): the sizing the pgvector adapter
+// hardcoded before it became config.
+const (
+	DefaultVectorPoolMultiplier = 20
+	DefaultVectorPoolMax        = 3000
+)
+
+// EffectiveVectorPool returns the dense pool multiplier and cap, 0 meaning the
+// default.
+func (r RetrievalConfig) EffectiveVectorPool() (multiplier, max int) {
+	multiplier, max = r.VectorPoolMultiplier, r.VectorPoolMax
+	if multiplier <= 0 {
+		multiplier = DefaultVectorPoolMultiplier
+	}
+	if max <= 0 {
+		max = DefaultVectorPoolMax
+	}
+	return multiplier, max
 }
