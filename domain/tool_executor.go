@@ -5,10 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -460,650 +458,88 @@ func (e *ToolExecutor) hydrateCIDArgs(ctx context.Context, argsJSON []byte) []by
 }
 
 // Execute authorizes and runs one tool call — the single chokepoint every tool
-// call passes (ADR-0039). The steps run in order: resolve the tool, validate its
-// arguments, apply grants, scope, effect and resource policy, run pre_tool hooks
-// and the approval gate, call the handler, then post_tool hooks and the ledger
-// record. A call refused by any step before the handler never reaches it.
+// call passes (ADR-0039). The stages run in order (card.core.tools-mcp):
+//
+//  1. step failures — a stopped step runs nothing more;
+//  2. kernel tools  — ledger_get/ledger_find and the other kernel-served tools;
+//  3. refusal record — an identical call this step had refused is answered from it;
+//  4. resolve       — the tool (registry, or the beneficiary's fleet) and its arguments;
+//  5. write keys    — the subtask effect ceiling and keys, the action key, step idempotency;
+//  6. authorize     — grant, CID hydration, resource policy, scope, effects, request
+//     guards, staged inputs;
+//  7. policy        — the verdict, pre_tool hooks, the outbound identifier guard, the
+//     Rule-of-Two gate;
+//  8. approval      — the approval gate, or the recovered approval;
+//  9. contributed   — the ADR-0127 parking and consent gate;
+//  10. dispatch     — the handler, egress audit, budget, the call;
+//  11. result       — staged outputs, binary blocks, post_tool hooks, the untrusted-output
+//     scan, memory, the ledger and offload.
+//
+// A call refused by any stage before dispatch never reaches the handler.
 func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out ToolCallResponse) {
-	argHash := hashBytes(req.ArgsJSON)
+	c := &toolCall{req: req, argHash: hashBytes(req.ArgsJSON)}
 
-	// Repeated identical failure (step_failures.go): a stopped step runs nothing
-	// more; every failure of this call is counted per step lease, the one before
-	// the threshold carries a hint and the one at it stops the step. Only a plan
-	// step's call (the server resolved its lease to a run step: StepCallFrom) — a
-	// chat turn's lease is not a step the re-planner can re-plan.
-	if _, isStep := StepCallFrom(ctx); isStep && e.StepFailures != nil && !req.System && req.SessionTokenID != "" {
-		lease := req.SessionTokenID
-		if stuck := e.StepFailures.Stuck(lease); stuck != nil {
-			return ToolCallResponse{Denied: true, ArgHash: argHash,
-				DenyReason: stuck.Error() + fmt.Sprintf(RepeatedFailureStop, stuck.Count)}
-		}
-		origTool, origArgs := req.ToolName, append([]byte(nil), req.ArgsJSON...)
-		defer func() { e.observeFailure(lease, origTool, origArgs, &out) }()
+	resp, stop, fin := e.stepFailureStage(ctx, c)
+	for _, f := range fin {
+		defer f(&out)
 	}
-
-	// Tool resolution. A contributed local:<machine>/<tool> identity NEVER
-	// resolves from the kernel-global registry: it resolves per call from the
-	// task beneficiary's own live fleet (ADR-0127 D4), and this is also where
-	// the dispatch-layer scoping holds — a machine outside the beneficiary's
-	// fleet is refused HERE, structurally, whatever any menu said (the D9
-	// defense in depth; the refusal is recorded as a decision). The two
-	// namespaces cannot answer for the same name: the registry refuses local:
-	// registrations at its chokepoint, and every contributed name carries the
-	// prefix.
-	// ADR-0145: a kernel-served tool (ledger_get, ledger_find) resolves first and
-	// runs in process under the caller's read predicate. Kernel tool names are
-	// reserved: a registry tool of the same name is never reached.
-	if kt := e.kernelTool(req.ToolName); kt != nil {
-		return e.runKernelTool(ctx, req, kt, argHash)
-	}
-
-	// ADR-0145 D14.5: an identical call (tool + canonical arguments) this step had
-	// refused already is answered from the record, without running the checks, an
-	// approval or the tool again; every new refusal is recorded.
-	if e.guards != nil && e.guards.Refusals != nil && !req.System {
-		scope := RefusalScope(ctx, req.SessionTokenID)
-		origTool, origArgs := req.ToolName, append([]byte(nil), req.ArgsJSON...)
-		if prev, ok := e.guards.Refusals.Lookup(scope, origTool, origArgs); ok {
-			slog.Info("ADR-0145 D14: repeated refused call answered from the step's refusal record",
-				"tool", origTool, "agent", req.AgentID, "reason", prev.DenyReason)
-			prev.DenyReason = strings.TrimSuffix(prev.DenyReason, RepeatedRefusalNote) + RepeatedRefusalNote
-			return prev
-		}
-		defer func() {
-			if out.Denied && refusalIsFinal(out.ApprovalState) {
-				e.guards.Refusals.Record(scope, origTool, origArgs, out)
-			}
-		}()
-	}
-
-	var tool SystemTool
-	var ok bool
-	var contrib *contributedResolution
-	if strings.HasPrefix(req.ToolName, LocalToolPrefix) {
-		res, reason, resolved := e.resolveContributed(ctx, req)
-		if !resolved {
-			return denied(reason, argHash)
-		}
-		contrib = &res
-		tool = res.tool
-		// The ladder (D6) may have chosen the machine for a bare-capability
-		// step: from here on the call IS the namespaced step it resolved to —
-		// grants, effects, egress audit and dispatch all see the real target.
-		req.ToolName = res.tool.Name
-	} else {
-		tool, ok = e.Registry.Get(req.ToolName)
-		if !ok {
-			return denied("unknown tool", argHash)
-		}
-	}
-
-	// ADR-0145 D9: arguments are validated against the tool's schema, and coerced
-	// where unambiguous (a JSON array sent as a string), before anything else sees
-	// them; an invalid call is an error the model can correct, and never runs.
-	if e.argValidator != nil && len(tool.Schema) > 0 {
-		fixed, verr := e.argValidator.ValidateArgs(req.ToolName, tool.Schema, req.ArgsJSON)
-		if verr != nil {
-			return ToolCallResponse{Error: verr.Error(), ArgHash: argHash, ResultHash: hashString(verr.Error())}
-		}
-		if string(fixed) != string(req.ArgsJSON) {
-			req.ArgsJSON = fixed
-			argHash = hashBytes(fixed)
-		}
-	}
-	// The arguments an approval's intent stores (tool_recovery.go): validated,
-	// before CID hydration (authorize resolves references again, under the
-	// access in force when the call is carried out), and after a pre_tool
-	// rewrite below.
-	intentArgs := req.ArgsJSON
-	// ADR-0150 D2: a call on a subtask's child lease must stay inside the lease's
-	// effect ceiling (default read + egress_read). Checked here, by the kernel,
-	// before any grant, approval or dispatch, whatever the authorizer would say:
-	// the ADR-0086 effect gate asks the authorizer, which allows everything in OSS.
-	subtaskLease := !req.System && e.subtasks.IsChild(req.SessionTokenID)
-	if subtaskLease {
-		if why := e.subtasks.EffectRefusal(req.SessionTokenID, tool); why != "" {
-			slog.Info("ADR-0150 D2: call outside the subtask effect ceiling refused",
-				"tool", req.ToolName, "agent", req.AgentID, "lease", req.SessionTokenID)
-			return denied(why, argHash)
-		}
-	}
-	// ADR-0150 D2/D5: every side-effecting call inside a subtask carries a
-	// deterministic key (subtask id + tool + canonical args + occurrence), so a
-	// resumed subtask answers a call that already ran from its stored result.
-	// The key is also the action's identity on the wire (ADR-0154 D4, ENG-812): it
-	// travels in the MCP request's _meta like a plan step's, and the call is
-	// recorded in the durable action record when the registry has one (ENG-1428).
-	var subtaskKey string
-	if subtaskLease && tool.SideEffecting() {
-		if key, ok := e.subtasks.CallKey(req.SessionTokenID, req.ToolName, req.ArgsJSON); ok {
-			subtaskKey = key
-			sid, _ := SessionIDFromContext(ctx)
-			stored, found, finish := e.subtasks.Idempotency().BeginAction(ctx, DurableAction{
-				Key: key, Tool: req.ToolName, Principal: RunPrincipalFromContext(ctx),
-				SessionID: sid, ArgsHash: argHash,
-			})
-			if found {
-				slog.Info("ADR-0150 D5: resumed subtask's side-effecting call answered from its stored result",
-					"tool", req.ToolName, "lease", req.SessionTokenID)
-				return stored
-			}
-			defer func() { finish(out, !out.Denied && out.Error == "") }()
-		}
-	}
-	// ADR-0154 D4 (ENG-812): a side-effecting call made by a plan step carries its
-	// deterministic action key to the target, in the MCP request's _meta
-	// (ActionKeyMetaKey), so the target — or premium's write-back confirmation —
-	// can recognise a retry of the same action. Computed whether or not
-	// idempotent_writes is on: it is the action's identity, not a cache key.
-	actionKey := subtaskKey
-	if tool.SideEffecting() && !req.System && !subtaskLease {
-		if sc, ok := StepCallFrom(ctx); ok {
-			actionKey = IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON)
-		}
-	}
-	// ADR-0145 D9: a side-effecting call made by a plan step has an idempotency
-	// key; a retry of the same call returns the stored result.
-	if e.idempotency != nil && tool.SideEffecting() && !req.System && !subtaskLease {
-		if sc, ok := StepCallFrom(ctx); ok {
-			sid, _ := SessionIDFromContext(ctx)
-			stored, found, finish := e.idempotency.BeginAction(ctx, DurableAction{
-				Key:  IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON),
-				Tool: req.ToolName, RunID: sc.RunID, StepIndex: sc.StepIndex,
-				Principal: RunPrincipalFromContext(ctx), SessionID: sid, ArgsHash: argHash,
-			})
-			if found {
-				slog.Info("ADR-0145 D9: duplicate side-effecting call answered from its stored result",
-					"tool", req.ToolName, "run", sc.RunID, "step", sc.StepIndex)
-				return stored
-			}
-			defer func() { finish(out, !out.Denied && out.Error == "") }()
-		}
-	}
-
-	// Grant → CID hydration → resource policy → scope → effects.
-	grant, reason, authorized := e.authorize(ctx, &req, tool)
-	if !authorized {
-		return denied(reason, argHash)
-	}
-
-	// ADR-0145 D14: the request-tied guards (constraints, the write-target record,
-	// the repair-turn write guard). unrequested is a write no open write/document
-	// item asked for: it goes to approval with a notice below.
-	unrequested := false
-	if !req.System {
-		g := e.requestGuards(ctx, req, tool, argHash)
-		if g.stop {
-			return g.resp
-		}
-		unrequested = g.unrequested
-		if g.finish != nil {
-			defer func() { g.finish(out) }()
-		}
-	}
-
-	// Staged inputs (option C, domain/staged_inputs.go): resolved under the
-	// caller's access AFTER every authorization above, so a call the kernel would
-	// refuse never reads anything; an input the caller cannot read refuses the
-	// call with nothing staged. The folder lives until this call returns.
-	var staged StagedCall
-	if tool.StagedInputs {
-		sc, resp, stop := e.stageInputs(ctx, req, tool, argHash)
-		if stop {
-			return resp
-		}
-		if sc != nil {
-			staged = sc
-			defer sc.Cleanup()
-		}
-	}
-	var stagedSources []string
-	var stagedMeta map[string]any
-	if staged != nil {
-		stagedSources, stagedMeta = staged.Sources(), staged.Meta()
-	}
-
-	// The policy decision: allow, or ask for a dangerous tool. A2.2: an operator
-	// ScopeSystem execution carries its own authority — no per-agent HITL gate. The
-	// operator command handler audits the call and emits a dangerous-tool feed
-	// event so the privileged action stays visible.
-	verdict := HookAllow
-	if (tool.Dangerous || unrequested) && !req.System {
-		verdict = HookAsk
-	}
-
-	// ADR-0139 D11 pre_tool hooks, AFTER the policy decision. They can only narrow
-	// it (allow → ask → deny). A rewritten call is re-authorized from the grant
-	// onward, so a rewrite can never reach what the original call could not.
-	var hookNotes []string // pre_tool + post_tool annotations, for the agent
-	if e.Hooks.Has(HookPreTool) {
-		out := e.Hooks.Run(ctx, e.toolHookEvent(ctx, req, tool, HookPreTool, verdict, nil))
-		hookNotes = append(hookNotes, out.Annotations...)
-		if out.ArgsRewritten {
-			argHash = hashBytes(out.Args) // the receipt names the call that runs
-			req.ArgsJSON = out.Args
-			intentArgs = out.Args
-			g, why, ok := e.authorize(ctx, &req, tool)
-			if !ok {
-				slog.Warn("ADR-0139 D11: hook-rewritten tool call refused by policy",
-					"tool", req.ToolName, "agent", req.AgentID, "reason", why)
-				return denied("hook rewrite refused: "+why, argHash)
-			}
-			grant = g
-		}
-		// Defence in depth over the chain's own rule: never looser than policy.
-		verdict, _ = NarrowVerdict(verdict, out.Verdict)
-		if verdict == HookDeny {
-			return denied(out.DenyReason(), argHash)
-		}
-	}
-
-	// The outbound identifier guard (ENG-917, owner decision 2026-11-15). Placed
-	// deliberately: AFTER argument validation, every authorization step and the
-	// pre_tool hooks — so it reads the validated arguments exactly as they will
-	// run (a hook rewrite included) and a call the kernel refuses anyway prompts
-	// nobody — and BEFORE the approval gate, which it feeds. A call that can send
-	// outside (egress_send; plain or inferred egress counts as send) whose text
-	// arguments carry a personal identifier is narrowed to ask; the identifiers
-	// are named in the approval request and the call is never rewritten or
-	// masked. A dangerous call (undeclared tools included: read+write+egress)
-	// already asks; the guard adds the identifiers to its approval. An operator
-	// ScopeSystem call carries its own authority, as for the approval gate.
-	var outbound []OutboundIdentifier
-	if e.outboundIdentifiers != nil && !req.System {
-		outbound = e.outboundIdentifiers.Check(tool, req.ArgsJSON)
-		if len(outbound) > 0 {
-			slog.Info("ENG-917: outbound call carries personal identifiers; approval required",
-				"tool", req.ToolName, "agent", req.AgentID, "identifiers", len(outbound))
-			verdict, _ = NarrowVerdict(verdict, HookAsk)
-		}
-	}
-
-	// The Rule-of-Two gate (ENG-531, owner decision 2026-11-19). Same placement
-	// and reasoning as the outbound guard above: after every authorization and
-	// the pre_tool hooks (a call refused anyway prompts nobody), before the
-	// approval gate it feeds. A write/egress call (configured gated effects) from
-	// a session that has consumed untrusted content (or whose provenance the
-	// kernel cannot tell) and holds sensitive access is narrowed to ask; what
-	// tainted the session is named for the approver. The call is never rewritten.
-	// An operator ScopeSystem call carries its own authority.
-	var rot *RuleOfTwoHit
-	if e.ruleOfTwo != nil && !req.System {
-		if hit, gated := e.ruleOfTwo.Check(TaintScopeFromContext(ctx), tool, func() ([]string, error) {
-			return e.grantedTags(ctx, req.AgentID)
-		}); gated {
-			rot = &hit
-			slog.Info("ENG-531: Rule of Two — tainted session with sensitive access calls a gated tool; approval required",
-				"tool", req.ToolName, "agent", req.AgentID, "sources", hit.Sources,
-				"unknown_provenance", hit.UnknownProvenance, "effects", hit.Effects)
-			verdict, _ = NarrowVerdict(verdict, HookAsk)
-		}
-	}
-
-	// Approval (fail-closed): a dangerous tool, or a call a hook narrowed to ask.
-	// There is no evaluation-session exemption any more: the ADR-0037 interview
-	// that minted evaluation sessions was deleted 2026-11-05, and ADR-0139 D5
-	// qualification will run against a mock tool executor that records intended
-	// calls, never this one.
-	//
-	// The conversation's action history (action_history.go): a side-effecting
-	// call is recorded from the moment it asks for approval (or, needing none, is
-	// dispatched) until it ends — done, or dropped when it never ran or failed — and
-	// an approval it raises carries a notice naming any earlier call of the
-	// conversation it may duplicate (T-20261107-approver-is-not-told-that-an-identical-side).
-	histScope := ""
-	if e.History != nil && tool.SideEffecting() {
-		hsid, _ := SessionIDFromContext(ctx)
-		histScope = ActionHistoryScope(ConversationIDFromContext(ctx), string(hsid))
-	}
-	var histRef ActionRef
-	dispatched := false
-	defer func() { e.finishHistory(ctx, histRef, dispatched, out) }()
-
-	approver := ""
-	if tool.Dangerous && req.System && verdict == HookAllow {
-		approver = "operator:system"
-	} else if pa, recovered := preApprovedFrom(ctx); recovered && verdict == HookAsk {
-		// A call approved after the kernel that raised its approval restarted
-		// (tool_recovery.go): the person's approval covers exactly the call they
-		// were shown. Anything else asks nobody and runs nothing — a recovery
-		// has no requester to wait on a new approval.
-		if pa.tool != req.ToolName || pa.argHash != argHash {
-			return denied("the call is not the one that was approved (approval "+pa.id+"); nothing was run", argHash)
-		}
-		approver = pa.approver
-	} else if verdict == HookAsk {
-		if e.approval == nil {
-			if rot != nil {
-				return denied(RuleOfTwoDenyReason(*rot), argHash)
-			}
-			if len(outbound) > 0 {
-				return denied(OutboundIdentifierDenyReason(outbound), argHash)
-			}
-			if unrequested {
-				return denied("approval required but unavailable: "+UnrequestedWriteNotice(req.ToolName), argHash)
-			}
-			return denied("approval required but unavailable", argHash)
-		}
-		// ADR-0142 D11: the request names who the call is for (kernel-held facts
-		// only: the task beneficiary, else the conversation owner) and where it
-		// came from, so the policy can route it and the hub can deliver it there.
-		beneficiary := TaskBeneficiaryFromContext(ctx)
-		if beneficiary.IsZero() {
-			beneficiary = PersonPrincipal(ConversationOwnerFromContext(ctx))
-		}
-		sid, _ := SessionIDFromContext(ctx)
-		notice := ""
-		if histScope != "" {
-			histRef = e.History.Begin(histScope, req.ToolName, req.ArgsJSON, ActionAwaitingApproval)
-			notice = RenderDuplicateNotice(e.History.Matches(histScope, req.ToolName, req.ArgsJSON, histRef))
-		}
-		if unrequested {
-			// ADR-0145 D14: the same notice channel as the duplicate notice (the
-			// approval item's duplicate_notice field), so every surface shows it.
-			notice = joinNotices(UnrequestedWriteNotice(req.ToolName), notice)
-		}
-		// ENG-917: the identifiers the guard found, named for the approver on the
-		// same notice channel (every surface shows it), ahead of the duplicate
-		// and unrequested-write notices.
-		if len(outbound) > 0 {
-			notice = joinNotices(RenderOutboundIdentifierNotice(outbound), notice)
-		}
-		// ENG-531: the Rule-of-Two notice leads — it is the reason the person is
-		// asked at all when nothing else would have asked.
-		if rot != nil {
-			notice = joinNotices(RenderRuleOfTwoNotice(*rot), notice)
-		}
-		// ADR-0150 D5.1: an approval raised inside a subtask reaches the person
-		// labelled with the subtask; only this call (so only that subtask) waits.
-		subtaskLabel := ""
-		if subtaskLease {
-			if b, ok := e.subtasks.Binding(req.SessionTokenID); ok {
-				subtaskLabel = b.Label
-				notice = joinNotices(SubtaskApprovalNotice(b.Label), notice)
-			}
-		}
-		dec, err := e.approval.Request(ctx, ApprovalRequest{
-			AgentID: req.AgentID, ToolName: req.ToolName, ArgsPreview: preview(req.ArgsJSON, 200),
-			Object: objectOfArgs(req.ArgsJSON), Beneficiary: beneficiary, Args: req.ArgsJSON,
-			ConversationID: ConversationIDFromContext(ctx), SessionID: string(sid),
-			DuplicateNotice: notice, Subtask: subtaskLabel,
-			PersonalIdentifiers: outbound,
-			Intent:              toolIntent(ctx, req, intentArgs, subtaskLease, contrib != nil),
-		})
-		if err != nil || !dec.Approved {
-			reason := ApprovalDenyReason(dec, err)
-			slog.Info("tool call not approved", "tool", req.ToolName, "agent", req.AgentID,
-				"state", string(dec.State), "approval", dec.ApprovalID, "beneficiary", beneficiary.String(),
-				"reason", reason)
-			return ToolCallResponse{Denied: true, DenyReason: reason, ArgHash: argHash, ApproverID: dec.ApproverID, ApprovalState: dec.State}
-		}
-		approver = dec.ApproverID
-		e.History.Approved(histRef, dec.ApprovalID)
-	}
-
-	// ADR-0127 CL-2: the contributed pre-dispatch gate — parking for an
-	// offline target (D6), then the consent decision (D7). Deliberately AFTER
-	// every kernel authorization above (a step the kernel would refuse anyway
-	// must not prompt anyone) and immediately BEFORE dispatch, so a consent
-	// approval approves what actually runs.
-	if contrib != nil {
-		resp, proceed := e.contributedGate(ctx, req, contrib, argHash)
-		if !proceed {
-			return resp
-		}
-		tool = contrib.tool // parking re-resolves against the fresh manifest
-	}
-
-	// Dispatch. ADR-0043: an mcp:<server>/<tool> identity routes to the MCP
-	// handler; ADR-0127 D5: a local:<machine>/<tool> identity routes to the
-	// worker relay; anything else goes to the default Handler (nil in
-	// production, ENG-1421 ⇒ refused below). All implement ToolHandler, so
-	// authorization above is identical — no
-	// prefix ever changes what a call must pass, only who executes it.
-	handler := e.Handler
-	isMCP := strings.HasPrefix(req.ToolName, "mcp:")
-	if isMCP && e.MCPHandler != nil {
-		handler = e.MCPHandler
-	}
-	isLocal := strings.HasPrefix(req.ToolName, LocalToolPrefix)
-	if isLocal {
-		handler = e.LocalHandler // nil ⇒ "no tool handler configured" below
-	}
-	// ADR-0043 D4: a remote MCP call sends the agent's args outside the trust
-	// boundary — record the egress (the call itself is allowed; the operator owns
-	// endpoint trust, and Regime-1 above already enforced any declared data class).
-	// A contributed call egresses too, unconditionally (ADR-0127, owner ruling
-	// 2026-08-20): the arguments leave the deployment for the consumer's machine
-	// even when the tool only reads.
-	if (isMCP || isLocal) && e.EgressAuditor != nil {
-		e.EgressAuditor.RecordEgress(req.AgentID, req.ToolName, tool.DataWriteKinds)
-	}
-	if handler == nil {
-		return ToolCallResponse{Error: "no tool handler configured", ArgHash: argHash}
-	}
-
-	// ADR-0043 budget regime (admission): reserve the estimated cost before
-	// dispatch; deny budget_exhausted if it does not fit the session budget. The
-	// hold is reconciled to actual (or released) after the call.
-	pricing, priced := e.priceFor(req)
-	var holdID string
-	if priced {
-		id, rerr := e.Budget.Reserve(pricing.Reserve(), budgetAccountFor(req))
-		if rerr != nil {
-			var be *BudgetExhaustedError
-			if errors.As(rerr, &be) {
-				return denied("budget_exhausted: "+be.Error(), argHash)
-			}
-			return ToolCallResponse{Error: rerr.Error(), ArgHash: argHash}
-		}
-		holdID = id
-	}
-
-	if histScope != "" && histRef.IsZero() {
-		histRef = e.History.Begin(histScope, req.ToolName, req.ArgsJSON, ActionRunning)
-	}
-	dispatched = true
-	if subtaskLease {
-		e.subtasks.ObserveCall(req.SessionTokenID, tool)
-	}
-	callMeta := stagedMeta
-	if actionKey != "" {
-		callMeta = make(map[string]any, len(stagedMeta)+1)
-		for k, v := range stagedMeta {
-			callMeta[k] = v
-		}
-		callMeta[ActionKeyMetaKey] = actionKey
-	}
-	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy, Meta: callMeta})
-	// ENG-531: the session consumes what the tool answered — its result, or its
-	// error text (a remote server writes that too). An operator System call is
-	// not a model's input. Observed before the post_tool hooks: a hook may
-	// redact or withhold, but the tool already ran against the session's lease
-	// and its answer is the provenance fact.
-	resultClass := ToolResultSourceClass(tool)
-	if !req.System {
-		e.observe(ctx, resultClass, tool.AuthzTags())
-	}
-	if err != nil {
-		if priced {
-			// Failure-cost (D7): never-reached ⇒ 0; otherwise the per-server policy.
-			reached := !strings.Contains(err.Error(), "not connected")
-			_ = e.Budget.Reconcile(holdID, pricing.FailureCost(reached, 0, false))
-		}
-		if contrib != nil && errors.Is(err, ErrWorkerConsentDenied) {
-			// The machine itself declined the step (on-machine-only knob,
-			// ADR-0127 D7): a recorded REFUSAL, not a worker error. The deny
-			// text is kernel-authored; nothing worker-written rides it.
-			e.recordFleetDecision(AccessDecision{
-				Resource:  ResourceRef{Kind: KindTool, ID: req.ToolName},
-				Principal: AgentPrincipal(req.AgentID),
-				Surface:   SurfaceFromContext(ctx),
-				Reason:    ReasonConsentDeniedOnMachine,
-				Detail:    "machine " + strconv.Quote(contrib.machine) + " declined consent locally",
-			})
-			dispatched = false // the machine refused it: it never ran
-			return denied("consent denied on machine "+strconv.Quote(contrib.machine), argHash)
-		}
-		if contrib != nil {
-			// The relay itself failed: the machine stopped answering, the call
-			// deadline passed, the transport broke. The step was consented and
-			// dispatched, so the ONLY record of what became of it is this one —
-			// a machine vanishing mid-step is the failure an operator most
-			// needs to see, and it used to leave the journal at the consent
-			// decision with nothing after it.
-			e.recordFleetDecision(AccessDecision{
-				Resource:  ResourceRef{Kind: KindTool, ID: req.ToolName},
-				Principal: AgentPrincipal(req.AgentID),
-				Surface:   SurfaceFromContext(ctx),
-				Reason:    ReasonRelayFailed,
-				Detail:    "machine " + strconv.Quote(contrib.machine) + ": " + err.Error(),
-			})
-		}
-		// ADR-0145 D1: a call that ran and failed is a result too (D5 needs the
-		// error to judge a "not found" honestly).
-		if errJSON, merr := json.Marshal(map[string]string{"error": err.Error()}); merr == nil {
-			id := e.recordToLedger(ctx, req, tool, errJSON, stagedSources)
-			if subtaskLease {
-				e.subtasks.AddEvidence(req.SessionTokenID, id)
-			}
-		}
-		failed := ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver, SourceClass: resultClass}
-		// ADR-0043 D4: a tool-reported error's message is written by the tool
-		// server — untrusted like a result. Scanned here, fenced at the agent
-		// boundary; Error itself stays raw so the repeated-failure detector
-		// compares stable text.
-		var reported *ToolReportedError
-		if isMCP && !req.System && errors.As(err, &reported) {
-			u := e.untrustedOutput.Inspect(req.ToolName, []byte(reported.Message))
-			u.SourceClass = ToolResultSourceClass(tool) // ENG-2223: the fence's source=
-			logUntrustedHit(u)
-			if e.untrustedOutput.Withholds(u) {
-				failed.Error = withheldReason(u)
-				failed.ResultHash = hashString(failed.Error)
-				return failed
-			}
-			u.ErrorFromSource = true
-			failed.Untrusted = &u
-			if note := untrustedNote(u); note != "" {
-				failed.Annotations = append(failed.Annotations, note)
-			}
-		}
-		return failed
-	}
-	if priced {
-		// Reconcile to actual. Usage-field extraction is a follow-up; absent it,
-		// reconcile is exact for flat and cap-on-unmeasurable for per_unit (D6).
-		_ = e.Budget.Reconcile(holdID, pricing.Reconcile(0, false))
-	}
-
-	// (The "_artifacts" promotion of files a confined tool.py handler swept into
-	// the ContentStore went with that handler — ENG-1421, ENG-2241. A result's
-	// "_artifacts" key is not read: an MCP server must not be able to name a
-	// content-store CID and have the kernel copy it into a run ledger or to disk.)
-	// A staged call's output files become artifact ledger entries derived from
-	// its inputs; the result gains a note naming them (staged_inputs.go).
-	var stagedRecorded map[string]string
-	if staged != nil {
-		result, stagedRecorded = e.recordStagedOutputs(ctx, req, tool, staged, result)
-	}
-	// Binary blocks become ledger references at record time, so the ledger, memory,
-	// the hooks and the agent all see the same readable result. An operator System
-	// call is left as the tool returned it (it records nothing and is not a model's
-	// input) (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
-	if !req.System {
-		result = e.referenceBinaryBlocks(ctx, req, tool, result, stagedRecorded, stagedSources)
-	}
-
-	// ADR-0139 D11 post_tool hooks: they may rewrite the output (may_rewrite; e.g.
-	// redaction) or withhold it (narrow to deny). The call already ran, so its
-	// artifacts were promoted above from what the tool really wrote; a withheld
-	// output is not recorded to memory and never reaches the agent.
-	if e.Hooks.Has(HookPostTool) {
-		out := e.Hooks.Run(ctx, e.toolHookEvent(ctx, req, tool, HookPostTool, HookAllow, result))
-		hookNotes = append(hookNotes, out.Annotations...)
-		if out.ResultRewritten {
-			result = out.Result
-		}
-		if out.Verdict != HookAllow {
-			return ToolCallResponse{Denied: true, DenyReason: out.DenyReason() + " (output withheld)", ArgHash: argHash, ApproverID: approver}
-		}
-	}
-
-	// ADR-0043 D4 (ENG-117): every MCP response is untrusted data. It is scanned
-	// here — after binary blocks became references and post_tool hooks ran, so
-	// the scan reads what the agent would — and fenced at the agent boundary
-	// (AgentToolResult). A withheld hit is replaced by a kernel notice BEFORE
-	// memory and the ledger see it; the call still succeeded (it ran, and a
-	// write it made must not be retried), only its output is kept from the
-	// agent. An operator System call is not a model's input and is left alone.
-	var untrusted *UntrustedOutput
-	if isMCP && !req.System {
-		u := e.untrustedOutput.Inspect(req.ToolName, result)
-		u.SourceClass = ToolResultSourceClass(tool) // ENG-2223: the fence's source=
-		logUntrustedHit(u)
-		if e.untrustedOutput.Withholds(u) {
-			result, _ = json.Marshal(map[string]string{"output_withheld": withheldReason(u)})
-		} else {
-			untrusted = &u
-			if note := untrustedNote(u); note != "" {
-				hookNotes = append(hookNotes, note)
-			}
-		}
-	}
-
-	// Report the output to memory, routed by the tool's declared nature (ADR-0049 D1):
-	// a MUTATION is an EVENT and becomes an action record regardless of size (a write
-	// that happened is durable history). Best-effort — never fails the call. A denied
-	// call is skipped outright: it never ran, so it touched nothing.
-	if e.ToolOutput != nil && !isDeniedResult(result) {
-		isMutation := len(tool.DataWriteKinds) > 0
-		_ = e.ToolOutput.RecordToolOutput(ctx, ToolOutputRecord{
-			ToolName:           req.ToolName,
-			ArgsJSON:           req.ArgsJSON,
-			Output:             result,
-			IsMutation:         isMutation,
-			TaskID:             req.TaskID,
-			ClassificationTags: tool.AuthzTags(),
-		})
-	}
-
-	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver, Annotations: hookNotes, Untrusted: untrusted, SourceClass: resultClass}
-	// ADR-0145 D1: with the ledger on, every result is recorded, and a large one
-	// travels as its ledger id instead of a plan-scoped content-store cid (one
-	// pathway: the content store holds no tool results then). A result the ledger
-	// could not record stays inline — never lost to the agent.
-	if e.Ledger != nil {
-		id := e.recordToLedger(ctx, req, tool, result, stagedSources)
-		if subtaskLease {
-			e.subtasks.AddEvidence(req.SessionTokenID, id)
-		}
-		switch {
-		case id != "" && e.InlineThreshold > 0 && len(result) > e.InlineThreshold:
-			resp.ResultCID = id
-			resp.ResultJSON = nil
-			s := NewOffloadSummary(id, req.ToolName, result, e.previewChars(), e.PageBytes)
-			resp.Offloaded = &s
-		case id != "" && (e.ReturnLedgerRef || ledgerRefWanted(ctx) || len(result) > e.previewChars()):
-			// Inline result plus its reference (ADR-0145 D6): a worker can cite
-			// it, and — for anything longer than a preview — hand it on unchanged
-			// with answer_ref instead of re-typing it
-			// (T-20261112-summarise-a-document-step-gets-only-the-first).
-			resp.ResultCID = id
-		}
+	if stop {
 		return resp
 	}
-	// Legacy path (ledger off): offload large results to CAS.
-	if e.ContentStore != nil && e.InlineThreshold > 0 && len(result) > e.InlineThreshold {
-		if cid, serr := e.ContentStore.Put(ctx, result, "tool_result", nil, preview(result, 500)); serr == nil {
-			resp.ResultCID = string(cid)
-			resp.ResultJSON = nil
-			s := NewOffloadSummary(string(cid), req.ToolName, result, e.previewChars(), e.PageBytes)
-			s.Read = fmt.Sprintf("resolve_cid cid='%s' page=1..%d; search inside it: resolve_cid cid='%s' find='<text>'", cid, max(s.Pages, 1), cid)
-			resp.Offloaded = &s
-		}
+
+	if kt := e.kernelTool(c.req.ToolName); kt != nil {
+		return e.runKernelTool(ctx, c.req, kt, c.argHash)
 	}
-	return resp
+
+	resp, stop, fin = e.refusalRecordStage(ctx, c)
+	for _, f := range fin {
+		defer f(&out)
+	}
+	if stop {
+		return resp
+	}
+
+	if resp, stop = e.resolveStage(ctx, c); stop {
+		return resp
+	}
+
+	resp, stop, fin = e.writeKeyStage(ctx, c)
+	for _, f := range fin {
+		defer f(&out)
+	}
+	if stop {
+		return resp
+	}
+
+	resp, stop, fin = e.authorizeStage(ctx, c)
+	for _, f := range fin {
+		defer f(&out)
+	}
+	if stop {
+		return resp
+	}
+
+	if resp, stop = e.policyStage(ctx, c); stop {
+		return resp
+	}
+
+	resp, stop, fin = e.approvalStage(ctx, c)
+	for _, f := range fin {
+		defer f(&out)
+	}
+	if stop {
+		return resp
+	}
+
+	if resp, stop = e.contributedStage(ctx, c); stop {
+		return resp
+	}
+
+	result, resp, stop := e.dispatchStage(ctx, c)
+	if stop {
+		return resp
+	}
+	return e.resultStage(ctx, c, result)
 }
 
 // checkResourcePolicy validates each declared resource arg against the policy.
