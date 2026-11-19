@@ -283,7 +283,7 @@ func (s *TurnService) observeReplyCheck(ctx context.Context, conv *domain.Conver
 		Report    replycheck.Report `json:"report"`
 	}{mode, attempt, delegated, rep}
 	// The report quotes the reply's values: it rests on what the reply does (ENG-2155).
-	s.recordState(ctx, conv, userMsg.ID, toolReplyCheck, record, nil, s.replyRefs(ctx, conv.ID, userMsg.ID, tc.givenRefs))
+	s.recordState(ctx, conv, userMsg.ID, toolReplyCheck, record, nil, unionRefs(s.turnSourceRefs(ctx, conv.ID, userMsg.ID), broadRefs(tc.given)))
 	if s.g.tracer != nil {
 		raw, _ := json.Marshal(rep)
 		now := time.Now()

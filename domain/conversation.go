@@ -186,6 +186,12 @@ type Message struct {
 	// the reply. An ADR-0137 erase of any of them redacts the reply
 	// (RedactedReplyText; ENG-2109). Empty on every other message.
 	SourceRefs []string
+	// OwnSourceRefs are the subset of SourceRefs the reply's OWN turn recalled or
+	// called; the rest it inherited from what it was given (ENG-2165). The next turn
+	// inherits only the preceding reply's own refs unconditionally (owner decision
+	// 2026-11-19, option B). A row stored before migration 0063 reads all its refs as
+	// own.
+	OwnSourceRefs []string
 	// RedactedAt is when an erase replaced this reply's text with RedactedReplyText;
 	// nil when it never was. The row keeps its role, Seq and CreatedAt.
 	RedactedAt *time.Time

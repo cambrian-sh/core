@@ -667,3 +667,22 @@ func scalarLeaves(jsonText string) []string {
 	}
 	return out
 }
+
+// SharesValue reports whether reply states a distinctive value — a figure, money
+// amount, percentage, date or identifier, extracted as Check extracts them — that
+// given also holds (numbers by value at the reply's written precision, dates by day,
+// identifiers by text). It is the content test of the chat lane's source inheritance
+// (ENG-2165): a reply inherits the memory records behind an older message only when it
+// repeats one of that message's values. Pure, like the rest of the package.
+func SharesValue(reply, given string, opt Options) bool {
+	if strings.TrimSpace(reply) == "" || strings.TrimSpace(given) == "" {
+		return false
+	}
+	ix := newIndex(given)
+	for _, m := range Extract(reply, opt) {
+		if ix.backs(m) {
+			return true
+		}
+	}
+	return false
+}

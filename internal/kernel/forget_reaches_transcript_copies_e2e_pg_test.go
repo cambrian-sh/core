@@ -35,11 +35,16 @@ import (
 //   - a turn recalls a contract note and answers quoting the agreement number; while it
 //     runs, the consent bridge posts a machine notice naming the note's file (an Emit
 //     outside the reply, built from the turn's work);
-//   - the next turn recalls nothing and repeats the number from the transcript;
-//   - the conversation goes on until the quoting reply is folded into the rolling
-//     summary, which the next turn is given — the summary holds the number;
-//   - the operator forgets the note: the quoting reply, the notice, the repeat and
-//     every later reply that was given the value read "[removed: forgotten source]",
+//   - the next turn (a bridging reply that says nothing of the note) inherits the
+//     quoting reply's own records (one hop, ENG-2165 option B);
+//   - the next turn recalls nothing and repeats the number from the transcript (it
+//     shares the value with the quoting reply, so it inherits the note);
+//   - unrelated replies follow until the quoting reply is folded into the rolling
+//     summary, which the next turn is given — the summary holds the number, and that
+//     turn copies it;
+//   - the operator forgets the note: the quoting reply, the notice, the bridging reply,
+//     the repeat and the copy read "[removed: forgotten source]" — the unrelated
+//     replies do NOT (ENG-2165; before, every later reply was blanked) —
 //     every summary that condensed it is deleted (counted on the receipt), and the
 //     next turn is given neither the value in its transcript nor in its summary;
 //   - after a restart (fresh adapter, stores, ledger and TurnService over the same
@@ -225,18 +230,27 @@ func TestPg_ForgetReachesEveryTranscriptCopyOfTheValue(t *testing.T) {
 	if !strings.Contains(quoting.Content, secret) {
 		t.Fatalf("precondition: the reply quotes the note: %q", quoting.Content)
 	}
+	bridging, _ := say(turns, "ok thanks")
+	if strings.Contains(bridging.Content, secret) {
+		t.Fatalf("precondition: the bridging reply says nothing of the note: %q", bridging.Content)
+	}
 	repeat, _ := say(turns, "Can you repeat it?")
 	if !strings.Contains(repeat.Content, secret) {
 		t.Fatalf("precondition: the repeat reply carries the value: %q", repeat.Content)
 	}
+	var unrelated []domain.Message
 	for i := 0; i < 4; i++ {
-		say(turns, "tell me more")
+		m, _ := say(turns, "tell me more")
+		unrelated = append(unrelated, m)
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM ledger_entries WHERE conversation_id = $1 AND tool_name = $2`,
 		convID, domain.LedgerToolConversationSummary); n == 0 {
 		t.Fatal("precondition: no rolling summary was written")
 	}
-	_, h := say(turns, "repeat the number please")
+	copying, h := say(turns, "repeat the number please")
+	if !strings.Contains(copying.Content, secret) {
+		t.Fatalf("precondition: the copying reply carries the value: %q", copying.Content)
+	}
 	if !strings.Contains(h.Payload.Metadata["conversation_summary"], secret) {
 		t.Fatalf("precondition: the turn was given a summary holding the value: %q", h.Payload.Metadata["conversation_summary"])
 	}
@@ -266,13 +280,24 @@ func TestPg_ForgetReachesEveryTranscriptCopyOfTheValue(t *testing.T) {
 	for _, id := range rec.RedactedMessages {
 		redacted[id] = true
 	}
-	for name, id := range map[string]string{"quoting reply": quoting.ID, "consent notice": notice.ID, "repeat reply": repeat.ID} {
+	for name, id := range map[string]string{"quoting reply": quoting.ID, "consent notice": notice.ID, "bridging reply": bridging.ID,
+		"repeat reply": repeat.ID, "copying reply": copying.ID} {
 		if !redacted[id] {
 			t.Errorf("the %s %s is not on the receipt's redacted messages %v", name, id, rec.RedactedMessages)
 		}
 	}
 	if redacted[hello.ID] {
 		t.Error("the greeting before the recall was redacted")
+	}
+	// ENG-2165: the unrelated replies after the bridge rest on nothing they could have
+	// repeated from the note, so forgetting it leaves them.
+	for i, m := range unrelated {
+		if redacted[m.ID] {
+			t.Errorf("unrelated reply %d (%s) was redacted; only replies that can repeat the note may be", i, m.ID)
+		}
+	}
+	if got := len(rec.RedactedMessages); got != 5 {
+		t.Errorf("receipt redacted %d messages %v, want exactly the 5 that carry or may repeat the note", got, rec.RedactedMessages)
 	}
 	if rec.Counts["conversation_summaries"] == 0 {
 		t.Errorf("receipt counts %v: no summary erased", rec.Counts)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/replycheck"
 )
 
 // The chat lane's own ledger entries (kind computed, stamped with the
@@ -131,10 +132,20 @@ func (s *TurnService) turnSourceRefs(ctx context.Context, conversationID, turnID
 	}
 	var sets [][]string
 	for _, e := range list {
+		// ENG-2165: the chat lane's own records of the turn (its summary, index entry
+		// and reply-check report) carry the BROAD refs of what the turn was given, so an
+		// erase deletes them; they are not what the turn recalled, and counting them as
+		// the reply's own would hand every given ref on unconditionally again.
+		if chatLaneTool[e.ToolName] {
+			continue
+		}
 		sets = append(sets, e.SourceRefs)
 	}
 	return unionRefs(sets...)
 }
+
+// chatLaneTool names the chat lane's own ledger entries (recordState).
+var chatLaneTool = map[string]bool{toolTurnIndex: true, toolSummary: true, toolReplyCheck: true}
 
 // unionRefs is the sorted, de-duplicated union of ref sets without empty ids; nil
 // when there are none.
@@ -165,4 +176,86 @@ func messageRefs(msgs []domain.Message) []string {
 		}
 	}
 	return unionRefs(sets...)
+}
+
+// givenSource is one thing a turn was given besides its own recalls, with the memory
+// records behind it (ENG-2165, owner decision 2026-11-19, option B). always are
+// inherited by the turn's reply whatever it says: the OWN refs of the immediately
+// preceding agent reply (one hop). onOverlap are inherited only when the reply states a
+// distinctive value text also holds (replycheck.SharesValue): an older reply's refs, the
+// preceding reply's inherited refs, the rolling summary's and the turn index's. Before,
+// every given ref travelled unconditionally, so one recall of a document reached every
+// later reply of the conversation and forgetting it blanked them all.
+type givenSource struct {
+	text      string
+	always    []string
+	onOverlap []string
+}
+
+// historySources is the transcript as given sources: the preceding agent reply's own
+// refs always and its inherited ones on overlap; every older reply's refs on overlap. A
+// redacted reply holds only domain.RedactedReplyText, so its refs no longer travel
+// (they would make every later reply rest on a record already gone).
+func historySources(msgs []domain.Message) []givenSource {
+	var out []givenSource
+	preceding := true
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != domain.MessageRoleAgent {
+			continue
+		}
+		if m.RedactedAt != nil || len(m.SourceRefs) == 0 {
+			preceding = false
+			continue
+		}
+		g := givenSource{text: m.Content}
+		if preceding {
+			g.always = unionRefs(m.OwnSourceRefs)
+			g.onOverlap = minusRefs(m.SourceRefs, g.always)
+		} else {
+			g.onOverlap = unionRefs(m.SourceRefs)
+		}
+		preceding = false
+		out = append(out, g)
+	}
+	return out
+}
+
+// inheritedRefs is what a reply text inherits from sources: every always ref, and the
+// onOverlap refs of each source the reply shares a distinctive value with.
+func inheritedRefs(reply string, sources []givenSource, opt replycheck.Options) []string {
+	var sets [][]string
+	for _, g := range sources {
+		sets = append(sets, g.always)
+		if len(g.onOverlap) > 0 && replycheck.SharesValue(reply, g.text, opt) {
+			sets = append(sets, g.onOverlap)
+		}
+	}
+	return unionRefs(sets...)
+}
+
+// broadRefs is every ref behind sources, gated by nothing: for a kernel record that
+// quotes the turn's whole input (the reply-check report), which an erase of any of them
+// must delete.
+func broadRefs(sources []givenSource) []string {
+	var sets [][]string
+	for _, g := range sources {
+		sets = append(sets, g.always, g.onOverlap)
+	}
+	return unionRefs(sets...)
+}
+
+// minusRefs is set a without the ids in b, sorted and unique; nil when empty.
+func minusRefs(a, b []string) []string {
+	drop := make(map[string]bool, len(b))
+	for _, r := range b {
+		drop[r] = true
+	}
+	var out []string
+	for _, r := range a {
+		if !drop[r] {
+			out = append(out, r)
+		}
+	}
+	return unionRefs(out)
 }

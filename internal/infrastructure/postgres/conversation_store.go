@@ -25,7 +25,7 @@ type PgConversationStore struct {
 
 var _ domain.ConversationStore = (*PgConversationStore)(nil)
 
-const msgCols = `id, conversation_id, seq, role, content, COALESCE(client_id, ''), created_at, source_refs, redacted_at`
+const msgCols = `id, conversation_id, seq, role, content, COALESCE(client_id, ''), created_at, source_refs, redacted_at, own_source_refs`
 
 // NewPgConversationStore returns the store, failing with an actionable error when the
 // schema has not been migrated (the only realistic cause is storage.auto_migrate=false).
@@ -216,27 +216,39 @@ func (s *PgConversationStore) AppendMessage(ctx context.Context, m domain.Messag
 	// ENG-2109: an agent reply carries what it rests on, so an erase of any of those
 	// records reaches it (PgErasureStore.redactReplies). Only agent replies: the
 	// redaction never touches the person's own words or an interruption marker.
-	refs := []string{}
+	refs, own := []string{}, []string{}
 	if m.Role == domain.MessageRoleAgent {
-		refs = domain.SortedUniqueIDs(m.SourceRefs)
+		// ENG-2165: the own refs are a subset of the union the erase redacts by.
+		own = domain.SortedUniqueIDs(m.OwnSourceRefs)
+		refs = domain.SortedUniqueIDs(append(append([]string(nil), m.SourceRefs...), own...))
 	}
 	if refs == nil {
 		refs = []string{} // '[]', never JSON null
+	}
+	if own == nil {
+		own = []string{}
 	}
 	refsJSON, err := json.Marshal(refs)
 	if err != nil {
 		return domain.Message{}, fmt.Errorf("append: source refs: %w", err)
 	}
+	ownJSON, err := json.Marshal(own)
+	if err != nil {
+		return domain.Message{}, fmt.Errorf("append: own source refs: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO conversation_messages (id, conversation_id, seq, role, content, client_id, created_at, source_refs)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
-		m.ID, m.ConversationID, m.Seq, string(m.Role), m.Content, clientID, m.CreatedAt, string(refsJSON)); err != nil {
+		INSERT INTO conversation_messages (id, conversation_id, seq, role, content, client_id, created_at, source_refs, own_source_refs)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)`,
+		m.ID, m.ConversationID, m.Seq, string(m.Role), m.Content, clientID, m.CreatedAt, string(refsJSON), string(ownJSON)); err != nil {
 		return domain.Message{}, fmt.Errorf("append: insert message: %w", err)
 	}
 	if len(refs) == 0 {
 		refs = nil
 	}
-	m.SourceRefs = refs
+	if len(own) == 0 {
+		own = nil
+	}
+	m.SourceRefs, m.OwnSourceRefs = refs, own
 	return m, tx.Commit(ctx)
 }
 
@@ -274,7 +286,7 @@ func (s *PgConversationStore) ListUnansweredTurns(ctx context.Context, before ti
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id, m.conversation_id, m.seq, m.role, m.content, COALESCE(m.client_id, ''), m.created_at,
-		       m.source_refs, m.redacted_at
+		       m.source_refs, m.redacted_at, m.own_source_refs
 		  FROM conversations c
 		  JOIN conversation_messages m ON m.conversation_id = c.id AND m.seq = c.next_seq - 1
 		 WHERE c.status = $1 AND m.role = $2 AND m.created_at < $3
@@ -302,9 +314,10 @@ func scanMessage(row pgx.Row) (domain.Message, error) {
 		m    domain.Message
 		role string
 		refs []byte
+		own  []byte
 	)
 	if err := row.Scan(&m.ID, &m.ConversationID, &m.Seq, &role, &m.Content, &m.ClientID, &m.CreatedAt,
-		&refs, &m.RedactedAt); err != nil {
+		&refs, &m.RedactedAt, &own); err != nil {
 		return domain.Message{}, err
 	}
 	m.Role = domain.MessageRole(role)
@@ -316,6 +329,15 @@ func scanMessage(row pgx.Row) (domain.Message, error) {
 		if len(m.SourceRefs) == 0 {
 			m.SourceRefs = nil
 		}
+	}
+	// ENG-2165: own_source_refs is NULL on a row written before 0063 — every ref of
+	// such a reply counts as its own (the broad rule it was written under).
+	if own == nil {
+		m.OwnSourceRefs = m.SourceRefs
+	} else if err := json.Unmarshal(own, &m.OwnSourceRefs); err != nil {
+		return domain.Message{}, fmt.Errorf("message %s: own_source_refs: %w", m.ID, err)
+	} else if len(m.OwnSourceRefs) == 0 {
+		m.OwnSourceRefs = nil
 	}
 	return m, nil
 }

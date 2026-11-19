@@ -33,10 +33,11 @@ import (
 //     agent-plane QueryMemory the chat worker calls on the turn's lease (which records
 //     the recall in the ledger with its source refs);
 //   - a contract note is ingested; a chat turn recalls it and answers quoting the
-//     agreement number — the reply records the document and chunk it rested on; a turn
-//     in a second conversation answers from another document, one in a third recalls
-//     nothing (separate conversations: since ENG-2155 a reply also rests on the
-//     transcript it was given, TestPg_ForgetReachesEveryTranscriptCopyOfTheValue);
+//     agreement number — the reply records the document and chunk it rested on (its
+//     own refs); earlier in the SAME conversation a turn recalled nothing and one
+//     answered from another document (ENG-2165: one conversation again — a reply
+//     inherits only the preceding reply's own records, and older ones only on a shared
+//     value, so the earlier replies are not blanked by forgetting the note);
 //   - the operator forgets the note (compliance erase, MemoryStack.Eraser): the quoting
 //     reply now reads "[removed: forgotten source]" with its row, role, seq and time
 //     kept, every other message is untouched, and the receipt lists the message;
@@ -81,8 +82,7 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 	person := "eng2109-emp-" + stamp
 	agentID := "eng2109-chat-" + stamp
 	convID := "eng2109-conv-" + stamp
-	visitConv, helloConv := convID+"-b", convID+"-c"
-	convIDs := []string{convID, visitConv, helloConv}
+	convIDs := []string{convID}
 	noteDoc, otherDoc := "eng2109-note-"+stamp, "eng2109-other-"+stamp
 	secret := "HERON-b5r1-" + stamp
 	t.Cleanup(func() {
@@ -193,17 +193,25 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 		}
 		return m
 	}
+	hello := sayIn(convID, "thanks, hi")
+	if len(hello.SourceRefs) != 0 {
+		t.Fatalf("a reply that recalled nothing cites %v", hello.SourceRefs)
+	}
+	visit := sayIn(convID, "When is the supplier visit?")
 	quoting := sayIn(convID, "What is the agreement number with the supplier?")
 	if !strings.Contains(quoting.Content, secret) {
 		t.Fatalf("precondition: the reply quotes the note: %q", quoting.Content)
 	}
-	if !reflect.DeepEqual(quoting.SourceRefs, domain.SortedUniqueIDs([]string{noteChunk, noteDoc})) {
-		t.Fatalf("the reply's citation = %v, want the note and its chunk", quoting.SourceRefs)
+	if !reflect.DeepEqual(quoting.OwnSourceRefs, domain.SortedUniqueIDs([]string{noteChunk, noteDoc})) {
+		t.Fatalf("the reply's own citation = %v, want the note and its chunk", quoting.OwnSourceRefs)
 	}
-	visit := sayIn(visitConv, "When is the supplier visit?")
-	hello := sayIn(helloConv, "thanks, hi")
-	if len(hello.SourceRefs) != 0 {
-		t.Fatalf("a reply that recalled nothing cites %v", hello.SourceRefs)
+	// ENG-2165: the reply right after the visit answer inherits that answer's own
+	// records (one hop), never the reverse.
+	if !reflect.DeepEqual(quoting.SourceRefs, domain.SortedUniqueIDs([]string{noteChunk, noteDoc, otherChunk, otherDoc})) {
+		t.Fatalf("the reply's citation = %v, want its own plus the preceding reply's", quoting.SourceRefs)
+	}
+	if !reflect.DeepEqual(visit.SourceRefs, domain.SortedUniqueIDs([]string{otherChunk, otherDoc})) {
+		t.Fatalf("the visit reply cites %v; the greeting before it recalled nothing", visit.SourceRefs)
 	}
 
 	// The operator forgets the note (the operator plane's compliance erase context).
@@ -248,12 +256,12 @@ func TestPg_ForgetRedactsChatRepliesThatQuotedTheDocument(t *testing.T) {
 				t.Errorf("%s (%s) was redacted but cited nothing erased", m.ID, m.Role)
 			}
 		}
-		if msgs[0].Role != domain.MessageRoleUser || !strings.Contains(msgs[0].Content, "agreement number") {
-			t.Errorf("the person's own question changed: %+v", msgs[0])
+		if msgs[4].Role != domain.MessageRoleUser || !strings.Contains(msgs[4].Content, "agreement number") {
+			t.Errorf("the person's own question changed: %+v", msgs[4])
 		}
 	}
 	check(convs, quoting.ID)
-	if got, _ := convs.ListMessages(ctx, visitConv, 0, 0); got[1].ID != visit.ID || got[1].Content != visit.Content {
+	if got, _ := convs.ListMessages(ctx, convID, 0, 0); got[3].ID != visit.ID || got[3].Content != visit.Content {
 		t.Fatalf("the reply from the other document must be untouched: %+v", got[1])
 	}
 

@@ -54,3 +54,44 @@ func TestConversationStore_AgentReplySourceRefs(t *testing.T) {
 		t.Errorf("user row source_refs = %q, %v; want []", raw, err)
 	}
 }
+
+// ENG-2165: a reply's own refs round-trip beside the union (and are folded into it); a
+// row stored before migration 0063 (own_source_refs NULL) reads every ref as its own.
+func TestConversationStore_AgentReplyOwnSourceRefs(t *testing.T) {
+	s, pool, ctx := newConvStore(t)
+	seedConv(t, s, ctx, "c-own")
+
+	reply, err := s.AppendMessage(ctx, domain.Message{ID: "m-own", ConversationID: "c-own", Role: domain.MessageRoleAgent,
+		Content: "it is X", SourceRefs: []string{"doc-inherited"}, OwnSourceRefs: []string{"doc-own", "chunk-own"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reply.OwnSourceRefs, []string{"chunk-own", "doc-own"}) ||
+		!reflect.DeepEqual(reply.SourceRefs, []string{"chunk-own", "doc-inherited", "doc-own"}) {
+		t.Fatalf("returned = own %v refs %v; the own refs belong to the union too", reply.OwnSourceRefs, reply.SourceRefs)
+	}
+	if _, err := s.AppendMessage(ctx, domain.Message{ID: "m-own-user", ConversationID: "c-own", Role: domain.MessageRoleUser,
+		Content: "ok", OwnSourceRefs: []string{"doc-x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(ctx, domain.Message{ID: "m-legacy", ConversationID: "c-own", Role: domain.MessageRoleAgent,
+		Content: "older", SourceRefs: []string{"doc-a", "doc-b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE conversation_messages SET own_source_refs = NULL WHERE id = 'm-legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := s.ListMessages(ctx, "c-own", 0, 0)
+	if err != nil || len(msgs) != 3 {
+		t.Fatalf("ListMessages = %d, %v", len(msgs), err)
+	}
+	if !reflect.DeepEqual(msgs[0].OwnSourceRefs, []string{"chunk-own", "doc-own"}) {
+		t.Errorf("reply own = %v", msgs[0].OwnSourceRefs)
+	}
+	if len(msgs[1].OwnSourceRefs) != 0 {
+		t.Errorf("user message own = %v, want none", msgs[1].OwnSourceRefs)
+	}
+	if !reflect.DeepEqual(msgs[2].OwnSourceRefs, []string{"doc-a", "doc-b"}) {
+		t.Errorf("legacy row own = %v, want every ref (pre-0063 rows read as own)", msgs[2].OwnSourceRefs)
+	}
+}

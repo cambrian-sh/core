@@ -121,7 +121,7 @@ func TestTheRollingSummaryRecordsTheSourcesOfWhatItCondensed(t *testing.T) {
 			r.recall(r.lastUserID(), "chunk-1", "doc-1")
 		}
 	}
-	r.pool.replies = []string{long, "HERON-7 " + long, long, long, long}
+	r.pool.replies = []string{long, "HERON-7 " + long, long, long, long, "We said HERON-7."}
 	r.turn(t, "pad "+long)
 	quoting, _ := r.turn(t, "the agreement number?")
 	r.turn(t, "next")
@@ -144,7 +144,16 @@ func TestTheRollingSummaryRecordsTheSourcesOfWhatItCondensed(t *testing.T) {
 		t.Fatalf("precondition: no summary condensed the quoting reply (%d summaries)", len(sums))
 	}
 
-	// A turn given that summary rests on it too.
+	// ENG-2165: a turn given that summary that repeats nothing of it does not rest on
+	// it (option B: a summary's records travel only on a shared value)...
+	unrelated, h := r.turn(t, "something else")
+	if !strings.Contains(h.Payload.Metadata[turnKeySummary], "HERON-7") {
+		t.Fatalf("precondition: the unrelated turn was given the summary: %q", h.Payload.Metadata[turnKeySummary])
+	}
+	if len(unrelated.SourceRefs) != 0 {
+		t.Fatalf("an unrelated reply given the summary rests on %v, want nothing", unrelated.SourceRefs)
+	}
+	// ... and a turn that copies the value from it rests on it.
 	given, h := r.turn(t, "what did we say?")
 	if !strings.Contains(h.Payload.Metadata[turnKeySummary], "HERON-7") {
 		t.Fatalf("precondition: the turn was given the summary: %q", h.Payload.Metadata[turnKeySummary])

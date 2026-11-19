@@ -1,0 +1,21 @@
+-- 0063_conversation_message_own_sources.sql — split a chat reply's OWN sources from the
+-- ones it inherited (T-20261118-forgetting-a-document-redacts-every-later-reply,
+-- ENG-2165; owner decision 2026-11-19, option B; builds on 0060).
+-- cambrian:not-destructive: one new nullable column; nothing existing is changed or dropped.
+-- ADDITIVE: older binaries ignore it (they keep inheriting every given reply's refs).
+--
+-- Since ENG-2155 a reply's source_refs are what its turn recalled PLUS the refs of
+-- everything it was given, so the refs travelled from reply to reply: forgetting a
+-- document redacted every later reply of a conversation that recalled it once. A turn now
+-- inherits the OWN refs of the immediately preceding agent reply always, and every other
+-- given ref (older replies, the rolling summary, the turn index) only when the reply
+-- shares a distinctive value (number, amount, date, id) with what carried it.
+--
+--   own_source_refs  JSONB array: the memory records the reply's own turn recalled or
+--                    called (a subset of source_refs). NULL for rows written before this
+--                    migration: they read as "every ref is own", the broad behaviour they
+--                    were written under. source_refs stays the union the erase redacts by.
+--
+-- Rollback: ALTER TABLE conversation_messages DROP COLUMN own_source_refs;
+
+ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS own_source_refs JSONB;

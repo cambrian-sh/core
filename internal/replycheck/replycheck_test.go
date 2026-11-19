@@ -393,3 +393,24 @@ func TestSourceLabelsFromSectionPathDocumentAndHeadings(t *testing.T) {
 		}
 	}
 }
+
+// ENG-2165: SharesValue is the chat lane's content test for source inheritance.
+func TestSharesValue(t *testing.T) {
+	opt := Options{MinInteger: 1000}
+	for _, tc := range []struct {
+		reply, given string
+		want         bool
+	}{
+		{"As I said: HERON-77.", "Agreement HERON-77 is signed.", true},
+		{"The total is about £1.4M.", "Invoice total £1,412,000.", true},
+		{"We meet on 8 November 2026.", "Visit: 08.11.2026", true},
+		{"Glad to help, anything else?", "Agreement HERON-77 is signed.", false},
+		{"There are 3 invoices.", "3 invoices were paid.", false}, // below MinInteger: a count, not a value
+		{"", "Agreement HERON-77", false},
+		{"HERON-77", "", false},
+	} {
+		if got := SharesValue(tc.reply, tc.given, opt); got != tc.want {
+			t.Errorf("SharesValue(%q, %q) = %v, want %v", tc.reply, tc.given, got, tc.want)
+		}
+	}
+}

@@ -312,12 +312,12 @@ type turnContext struct {
 	// shownIndex is the rendered index the agent was shown (kernel records; the
 	// reply check accepts values restated from it).
 	shownIndex string
-	// givenRefs are the memory records behind everything the turn was GIVEN besides
-	// its own recalls: the transcript's replies, the rolling summary and the turn
-	// index entries it was shown (ENG-2155, owner's broad rule 2026-11-19). A reply
-	// may repeat any of it, so the reply — and anything the turn emits — records
-	// them, and forgetting one of those records redacts it too.
-	givenRefs []string
+	// given is everything the turn was GIVEN besides its own recalls, with the memory
+	// records behind each: the transcript's replies, the rolling summary and the turn
+	// index entries it was shown (ENG-2155). A reply that repeats any of it records
+	// those records, so forgetting one of them redacts the reply too — but only what
+	// the reply can have repeated travels (ENG-2165, givenSource).
+	given []givenSource
 }
 
 // loadTurnContext fills tc with the turn index and an open ask-back, per the
@@ -336,11 +336,11 @@ func (s *TurnService) loadTurnContext(ctx context.Context, conv *domain.Conversa
 	if s.Grounding.TurnIndex {
 		tc.index = index
 		tc.shownIndex = renderTurnIndex(index)
-		tc.givenRefs = unionRefs(tc.givenRefs, indexRefs)
+		tc.given = append(tc.given, givenSource{text: tc.shownIndex, onOverlap: indexRefs})
 	} else if tc.pending != nil {
 		// Only the open ask-back was shown, from the latest entry; its refs are in
 		// indexRefs with the rest. Broad on purpose: a superset never misses a value.
-		tc.givenRefs = unionRefs(tc.givenRefs, indexRefs)
+		tc.given = append(tc.given, givenSource{text: renderTurnIndex(index), onOverlap: indexRefs})
 	}
 }
 

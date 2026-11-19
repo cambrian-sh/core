@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/replycheck"
 )
 
 // Dispatcher runs one turn on some worker. Satisfied by *agentpool.Pool.
@@ -206,15 +207,17 @@ func (s *TurnService) SetDelegationEnder(d DelegationEnder) { s.delegations = d 
 type activeTurn struct {
 	cancel context.CancelFunc
 	closed atomic.Bool
-	// turnID is the message the turn answers and given the refs of what it was
-	// given (turnContext.givenRefs): a message Emit posts into the conversation
-	// while the turn runs rests on them (ENG-2155).
+	// turnID is the message the turn answers and given what it was given
+	// (turnContext.given): a message Emit posts into the conversation while the turn
+	// runs rests on what of it the message repeats (ENG-2155, ENG-2165).
 	turnID string
-	given  []string
+	given  []givenSource
+	// lang is the turn's language, for the content test of the inheritance.
+	lang string
 }
 
-func (s *TurnService) trackActive(conversationID, turnID string, given []string, cancel context.CancelFunc) (*activeTurn, func()) {
-	at := &activeTurn{cancel: cancel, turnID: turnID, given: given}
+func (s *TurnService) trackActive(conversationID, turnID string, given []givenSource, lang string, cancel context.CancelFunc) (*activeTurn, func()) {
+	at := &activeTurn{cancel: cancel, turnID: turnID, given: given, lang: lang}
 	s.activeMu.Lock()
 	if s.active == nil {
 		s.active = map[string]map[*activeTurn]struct{}{}
@@ -474,36 +477,43 @@ func (s *TurnService) RunTurn(ctx context.Context, conversationID, text, clientI
 // recalled and records none. (Scheduled tasks and watches speak through a whole
 // turn, RunOwnedTurn, so their replies carry the turn's sources.)
 func (s *TurnService) Emit(ctx context.Context, conversationID, text string) (domain.Message, error) {
-	return s.emit(ctx, conversationID, text, s.runningTurnRefs(ctx, conversationID))
+	refs, own := s.runningTurnRefs(ctx, conversationID, text)
+	return s.emit(ctx, conversationID, text, refs, own)
 }
 
 // runningTurnRefs is the union of the sources of the turns running in the
-// conversation: each one's ledger entries so far and what it was given.
-func (s *TurnService) runningTurnRefs(ctx context.Context, conversationID string) []string {
+// conversation for a message of text: each one's ledger entries so far (own) and
+// what of its input the text inherits (replyRefs).
+func (s *TurnService) runningTurnRefs(ctx context.Context, conversationID, text string) (refs, own []string) {
 	s.activeMu.Lock()
 	running := make([]*activeTurn, 0, len(s.active[conversationID]))
 	for at := range s.active[conversationID] {
 		running = append(running, at)
 	}
 	s.activeMu.Unlock()
-	var sets [][]string
+	var sets, owns [][]string
 	for _, at := range running {
-		sets = append(sets, s.replyRefs(ctx, conversationID, at.turnID, at.given))
+		r, o := s.replyRefs(ctx, conversationID, at.turnID, at.given, text, at.lang)
+		sets, owns = append(sets, r), append(owns, o)
 	}
-	return unionRefs(sets...)
+	return unionRefs(sets...), unionRefs(owns...)
 }
 
-// replyRefs is what a reply of the turn rests on (owner's broad rule, ENG-2109 and
-// ENG-2155): every record the turn recalled or called (turnSourceRefs) and every
-// record behind what it was given (turnContext.givenRefs) — a reply that repeats an
-// earlier reply's value from the transcript is redacted with it.
-func (s *TurnService) replyRefs(ctx context.Context, conversationID, turnID string, given []string) []string {
-	return unionRefs(s.turnSourceRefs(ctx, conversationID, turnID), given)
+// replyRefs is what a reply text of the turn rests on (ENG-2109, ENG-2155, ENG-2165):
+// own is every record the turn recalled or called (turnSourceRefs); refs adds what the
+// reply inherits from what it was given — the preceding reply's own records always,
+// the rest only when the reply repeats one of their distinctive values
+// (inheritedRefs; owner decision 2026-11-19, option B). A reply that repeats an earlier
+// reply's value is redacted with it; an unrelated later reply is not.
+func (s *TurnService) replyRefs(ctx context.Context, conversationID, turnID string, given []givenSource, reply, lang string) (refs, own []string) {
+	own = s.turnSourceRefs(ctx, conversationID, turnID)
+	opt := replycheck.Options{MinInteger: s.Grounding.minInteger(), Lang: lang}
+	return unionRefs(own, inheritedRefs(reply, given, opt)), own
 }
 
 // emit is Emit with the memory records the message rests on (domain.Message.
 // SourceRefs; a turn's reply carries its turn's, ENG-2109).
-func (s *TurnService) emit(ctx context.Context, conversationID, text string, sourceRefs []string) (domain.Message, error) {
+func (s *TurnService) emit(ctx context.Context, conversationID, text string, sourceRefs, ownRefs []string) (domain.Message, error) {
 	if strings.TrimSpace(text) == "" {
 		return domain.Message{}, errors.New("chat: emitted text is required")
 	}
@@ -513,6 +523,7 @@ func (s *TurnService) emit(ctx context.Context, conversationID, text string, sou
 		Role:           domain.MessageRoleAgent,
 		Content:        text,
 		SourceRefs:     sourceRefs,
+		OwnSourceRefs:  ownRefs,
 	})
 	if err != nil {
 		return domain.Message{}, err
@@ -641,7 +652,8 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	if s.Grounding.TranscriptBudgetTokens > 0 {
 		var sum conversationSummary
 		history, sum, err = s.loadBudgetedHistory(ctx, conv, userMsg.Seq, userMsg.ID)
-		tc.summary, tc.givenRefs = sum.Text, sum.refs
+		tc.summary = sum.Text
+		tc.given = append(tc.given, givenSource{text: sum.Text, onOverlap: sum.refs})
 	} else {
 		history, err = s.loadHistory(ctx, req.ConversationID, userMsg.Seq)
 	}
@@ -650,8 +662,10 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	}
 	lang = s.turnLanguage(req.Text, history)
 	s.loadTurnContext(ctx, conv, history, tc)
-	// ENG-2155: the transcript the turn is given is something its reply may repeat.
-	tc.givenRefs = unionRefs(tc.givenRefs, messageRefs(history))
+	// ENG-2155/ENG-2165: the transcript the turn is given is something its reply may
+	// repeat (historySources: the preceding reply's own records always, the rest on a
+	// shared value).
+	tc.given = append(tc.given, historySources(history)...)
 
 	turnCtx := ctx
 	turnCancel := context.CancelFunc(func() {})
@@ -666,7 +680,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		turnCtx, turnCancel = context.WithCancel(ctx)
 	}
 	defer turnCancel()
-	turn, untrack := s.trackActive(req.ConversationID, userMsg.ID, tc.givenRefs, turnCancel)
+	turn, untrack := s.trackActive(req.ConversationID, userMsg.ID, tc.given, lang, turnCancel)
 	defer untrack()
 	// The deadline counts only time not spent waiting on a person (SetPersonWaitProbe).
 	if pauseForPerson {
@@ -821,8 +835,8 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 
 	// ENG-2109/ENG-2155: the reply records what the turn recalled and called and what
 	// it was given, so forgetting any of those records later redacts it.
-	refs := s.replyRefs(ctx, conv.ID, userMsg.ID, tc.givenRefs)
-	msg, derr := s.emit(ctx, req.ConversationID, reply, refs)
+	refs, own := s.replyRefs(ctx, conv.ID, userMsg.ID, tc.given, reply, lang)
+	msg, derr := s.emit(ctx, req.ConversationID, reply, refs, own)
 	if derr != nil {
 		slog.Warn("ADR-0090: turn reply stored but not delivered",
 			"conversation", req.ConversationID, "message", msg.ID, "err", derr)
@@ -831,7 +845,10 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		return domain.Message{}, derr
 	}
 	// ADR-0145 D2/D5a: the turn's index entry (and any ask-back it left open).
-	s.recordTurnIndex(context.WithoutCancel(ctx), conv, userMsg, results, refs)
+	// The index entry keeps the broad refs (what the turn recalled and everything it was
+	// given, ENG-2155), so an erase of any of them deletes it; a later turn shown it
+	// inherits them only on a shared value (ENG-2165).
+	s.recordTurnIndex(context.WithoutCancel(ctx), conv, userMsg, results, unionRefs(refs, broadRefs(tc.given)))
 	return msg, nil
 }
 
