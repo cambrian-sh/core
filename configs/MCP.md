@@ -57,6 +57,12 @@ Legend:
     identifier guard (`execution.tools.outbound_identifier_guard`, default on): a call
     carrying a personal identifier (national ID, phone, e-mail, IBAN, card) goes to approval
     with the identifiers named, never rewritten. Every shipped ES tool is also D (ENG-917).
+    Sending calls (ES, plain `egress` — R+E included — and inferred egress) and `write`,
+    `spend` and `admin` calls also pass the Rule-of-Two gate (`execution.tools.rule_of_two`,
+    default on, ENG-531): when the session has read untrusted content (by default web, tool,
+    other-agent or ingested — any tool answer or memory recall counts) and holds sensitive
+    access (`sensitive_tags`; empty means every session), the call goes to approval with a
+    notice naming what tainted the session. R+ER reads are not gated.
   - **D**: dangerous, so operator approval is required.
   - **FC**: fail-closed. There is no default policy, so every unlisted tool is D with
     read+write+egress.

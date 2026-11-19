@@ -356,3 +356,14 @@ func (t workingDaysTool) Call(ctx context.Context, call domain.KernelToolCall) (
 	}
 	return t.c.finish(ctx, call, ToolWorkingDays, nil, res)
 }
+
+// ResultSource implements domain.KernelToolSource (ENG-531): the date tools read
+// no content — their answers are computed from the arguments and the kernel's
+// own calendar — so a call adds nothing to what the session consumed.
+func (dateWindowTool) ResultSource() domain.SourceClass { return "" }
+
+// ResultSource: see dateWindowTool.ResultSource.
+func (dateAddTool) ResultSource() domain.SourceClass { return "" }
+
+// ResultSource: see dateWindowTool.ResultSource.
+func (workingDaysTool) ResultSource() domain.SourceClass { return "" }

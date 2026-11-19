@@ -17,6 +17,9 @@ History of golden updates:
 - ENG-117: `+ untrustedOutput: *domain.UntrustedOutputGuard` (ToolExecutor, both
   goldens), the MCP response injection scan built from execution.tools.output_scan
   (default on) and passed as ToolExecutorControls.UntrustedOutput.
+- ENG-531: `+ ruleOfTwo: *domain.RuleOfTwoGate` (ToolExecutor, both goldens), the
+  Rule-of-Two gate built by `app/rule_of_two.go` from execution.tools.rule_of_two
+  (default on) and passed to `NewToolExecutor` as a constructor control.
 - ENG-2169: `+ PipelineDrainerSliceTasks: int=64` and `+ PipelineDrainerWorkers: int=4`
   (KernelServices, both goldens), mirroring execution.pipelines.drainer_slice_tasks /
   drainer_workers for the premium drainers (round-robin per pipeline, bounded workers).

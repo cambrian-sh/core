@@ -183,8 +183,15 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	// (recall_ledger.go; T-20261109-chat-agent-answers-a-published-rule).
 	recallRef := s.recordRecall(ctx, callerID, req.GetQuery(), results)
 
+	// ENG-531: every recalled record is content the caller's session consumed,
+	// labelled with its source class (domain.RecordSourceClass, from the
+	// kernel-stamped provenance) and reported to the Rule-of-Two gate under the
+	// caller's taint scope. Reported for the whole window, before the top-k trim
+	// below: the agentic chain read them all.
+	classes := s.observeRecall(s.withTaintScope(ctx, callerLeaseID(ctx, nil)), results)
+
 	pbResults := make([]*pb.MemoryResult, 0, len(results))
-	for _, r := range results {
+	for i, r := range results {
 		// ADR-0048 A1 (D10): fold the provenance/freshness facts the SDK renders into
 		// the metadata payload. source_agent + session_id (D9) are already in Metadata
 		// (kernel-stamped at write, ADR-0048 D1); the TEMPORAL facts (created_at,
@@ -196,6 +203,8 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		meta := make(map[string]any, len(r.Document.Metadata)+3)
 		maps.Copy(meta, r.Document.Metadata)
 		meta["_activation_strength"] = r.Document.ActivationStrength
+		// Kernel-stamped, overwriting any stored key of the same name.
+		meta[domain.MetaSourceClass] = string(classes[i])
 		// Where the fact comes from, for the agent to name in its reply (the source
 		// document and its section), and the recall's ledger entry to cite.
 		if doc, sec := recallSource(r.Document); doc != "" || sec != "" {

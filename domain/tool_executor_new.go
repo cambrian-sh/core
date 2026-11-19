@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -52,6 +53,10 @@ type ToolExecutorControls struct {
 	// response is scanned with the shared content scanner and a hit is flagged or
 	// withheld. nil ⇒ not scanned (MCP responses are fenced either way).
 	UntrustedOutput *UntrustedOutputGuard
+	// RuleOfTwo is the Rule-of-Two gate (execution.tools.rule_of_two, default
+	// on; ENG-531): a write/egress call from a session that consumed untrusted
+	// content and holds sensitive access goes to approval. nil ⇒ off.
+	RuleOfTwo *RuleOfTwoGate
 }
 
 // ErrToolExecutorControl reports a missing or doubly supplied security control.
@@ -74,7 +79,8 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 		features.ceiling != nil || features.unrestricted || features.argValidator != nil ||
 		features.idempotency != nil || features.guards != nil || features.writeTargets != nil ||
 		features.leaseCeiling != nil || features.subtasks != nil || features.outboundIdentifiers != nil ||
-		features.untrustedOutput != nil {
+		features.untrustedOutput != nil ||
+		features.ruleOfTwo != nil {
 		return nil, fmt.Errorf("%w: set on features; pass it in ToolExecutorControls", ErrToolExecutorControl)
 	}
 	te := features
@@ -92,6 +98,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	te.subtasks = controls.Subtasks
 	te.outboundIdentifiers = controls.OutboundIdentifiers
 	te.untrustedOutput = controls.UntrustedOutput
+	te.ruleOfTwo = controls.RuleOfTwo
 	return &te, nil
 }
 
@@ -129,4 +136,52 @@ func (e *ToolExecutor) Subtasks() *Subtasks {
 		return nil
 	}
 	return e.subtasks
+}
+
+// RuleOfTwo returns the Rule-of-Two gate (nil ⇒ off).
+func (e *ToolExecutor) RuleOfTwo() *RuleOfTwoGate {
+	if e == nil {
+		return nil
+	}
+	return e.ruleOfTwo
+}
+
+// ObserveContent reports content a session consumed outside a tool call — a
+// memory recall (QueryMemory) — to the Rule-of-Two gate, under the taint scope
+// the transport put on ctx (WithTaintScope). class is the content's source
+// class, tags its classification tags (only the sensitive ones are kept). A
+// no-op when the gate is off.
+func (e *ToolExecutor) ObserveContent(ctx context.Context, class SourceClass, tags []string) {
+	e.observe(ctx, class, tags)
+}
+
+func (e *ToolExecutor) observe(ctx context.Context, class SourceClass, tags []string) {
+	if e == nil || e.ruleOfTwo == nil {
+		return
+	}
+	e.ruleOfTwo.Observe(TaintScopeFromContext(ctx), class, tags)
+}
+
+// grantedTags returns the classification tags of every tool agentID holds a
+// grant on (the Rule-of-Two sensitive-access leg). An unreadable grant store is
+// an error, which the gate reads as "sensitive" (fail closed).
+func (e *ToolExecutor) grantedTags(ctx context.Context, agentID string) ([]string, error) {
+	if agentID == "" {
+		return nil, nil
+	}
+	var tools []SystemTool
+	if e.unrestricted {
+		tools = e.Registry.All()
+	} else {
+		grants, err := e.Grants.GrantsFor(ctx, agentID)
+		if err != nil {
+			return nil, fmt.Errorf("grants for %s: %w", agentID, err)
+		}
+		tools = e.Registry.SchemasFor(grants)
+	}
+	var out []string
+	for _, t := range tools {
+		out = append(out, t.AuthzTags()...)
+	}
+	return out, nil
 }

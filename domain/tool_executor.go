@@ -184,6 +184,10 @@ type ToolCallResponse struct {
 	// Structured so a consumer (the per-run unroutable bound in ExecuteTool) never has
 	// to parse DenyReason.
 	ApprovalState ApprovalState
+	// SourceClass labels the content of a result the call returned (ENG-531,
+	// source_class.go): web for a tool that reaches outside, tool otherwise, a
+	// kernel tool's own class. "" when nothing reached the agent (a refusal).
+	SourceClass SourceClass
 	// Annotations is the context pre_tool / post_tool hooks added (ADR-0139 D11),
 	// delivered to the agent BESIDE the result, never inside ResultJSON, so ledger
 	// records and replayed results stay byte-identical (owner decision 2026-11-15,
@@ -390,6 +394,13 @@ type ToolExecutor struct {
 	// what a hit does (ADR-0043 D4, ENG-117; execution.tools.output_scan). nil ⇒
 	// MCP responses are still marked untrusted and fenced, but not scanned.
 	untrustedOutput *UntrustedOutputGuard
+	// ruleOfTwo is the Rule-of-Two gate (ENG-531, domain/rule_of_two.go;
+	// execution.tools.rule_of_two): a gated (write/egress) call from a session
+	// that has consumed untrusted content and holds sensitive access goes to
+	// approval, what tainted it named in the request. It also tracks what each
+	// session consumed: every tool result here, every recall through
+	// ObserveContent. nil ⇒ off.
+	ruleOfTwo *RuleOfTwoGate
 }
 
 // observeFailure counts a failed call (a tool error, or a final refusal) against
@@ -476,10 +487,19 @@ func (e *ToolExecutor) runKernelTool(ctx context.Context, req ToolCallRequest, k
 		return denied(reason, argHash)
 	}
 	result, err := kt.Call(WithScope(ctx, eff), KernelToolCall{AgentID: req.AgentID, ArgsJSON: req.ArgsJSON, SessionTokenID: req.SessionTokenID})
-	if err != nil {
-		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error())}
+	// ENG-531: what a kernel tool hands back is content the session consumed,
+	// under the tool's own provenance (KernelToolSource; SourceTool otherwise).
+	class := SourceTool
+	if ks, ok := kt.(KernelToolSource); ok {
+		class = ks.ResultSource()
 	}
-	return ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result)}
+	if !req.System {
+		e.observe(ctx, class, kt.Spec().AuthzTags())
+	}
+	if err != nil {
+		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), SourceClass: class}
+	}
+	return ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), SourceClass: class}
 }
 
 // callerReadScope resolves the caller's own read predicate from the decision
@@ -874,6 +894,27 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		}
 	}
 
+	// The Rule-of-Two gate (ENG-531, owner decision 2026-11-19). Same placement
+	// and reasoning as the outbound guard above: after every authorization and
+	// the pre_tool hooks (a call refused anyway prompts nobody), before the
+	// approval gate it feeds. A write/egress call (configured gated effects) from
+	// a session that has consumed untrusted content (or whose provenance the
+	// kernel cannot tell) and holds sensitive access is narrowed to ask; what
+	// tainted the session is named for the approver. The call is never rewritten.
+	// An operator ScopeSystem call carries its own authority.
+	var rot *RuleOfTwoHit
+	if e.ruleOfTwo != nil && !req.System {
+		if hit, gated := e.ruleOfTwo.Check(TaintScopeFromContext(ctx), tool, func() ([]string, error) {
+			return e.grantedTags(ctx, req.AgentID)
+		}); gated {
+			rot = &hit
+			slog.Info("ENG-531: Rule of Two — tainted session with sensitive access calls a gated tool; approval required",
+				"tool", req.ToolName, "agent", req.AgentID, "sources", hit.Sources,
+				"unknown_provenance", hit.UnknownProvenance, "effects", hit.Effects)
+			verdict, _ = NarrowVerdict(verdict, HookAsk)
+		}
+	}
+
 	// Approval (fail-closed): a dangerous tool, or a call a hook narrowed to ask.
 	// There is no evaluation-session exemption any more: the ADR-0037 interview
 	// that minted evaluation sessions was deleted 2026-11-05, and ADR-0139 D5
@@ -908,6 +949,9 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		approver = pa.approver
 	} else if verdict == HookAsk {
 		if e.approval == nil {
+			if rot != nil {
+				return denied(RuleOfTwoDenyReason(*rot), argHash)
+			}
 			if len(outbound) > 0 {
 				return denied(OutboundIdentifierDenyReason(outbound), argHash)
 			}
@@ -939,6 +983,11 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		// and unrequested-write notices.
 		if len(outbound) > 0 {
 			notice = joinNotices(RenderOutboundIdentifierNotice(outbound), notice)
+		}
+		// ENG-531: the Rule-of-Two notice leads — it is the reason the person is
+		// asked at all when nothing else would have asked.
+		if rot != nil {
+			notice = joinNotices(RenderRuleOfTwoNotice(*rot), notice)
 		}
 		// ADR-0150 D5.1: an approval raised inside a subtask reaches the person
 		// labelled with the subtask; only this call (so only that subtask) waits.
@@ -1041,6 +1090,15 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		callMeta[ActionKeyMetaKey] = actionKey
 	}
 	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy, Meta: callMeta})
+	// ENG-531: the session consumes what the tool answered — its result, or its
+	// error text (a remote server writes that too). An operator System call is
+	// not a model's input. Observed before the post_tool hooks: a hook may
+	// redact or withhold, but the tool already ran against the session's lease
+	// and its answer is the provenance fact.
+	resultClass := ToolResultSourceClass(tool)
+	if !req.System {
+		e.observe(ctx, resultClass, tool.AuthzTags())
+	}
 	if err != nil {
 		if priced {
 			// Failure-cost (D7): never-reached ⇒ 0; otherwise the per-server policy.
@@ -1084,7 +1142,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 				e.subtasks.AddEvidence(req.SessionTokenID, id)
 			}
 		}
-		failed := ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver}
+		failed := ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver, SourceClass: resultClass}
 		// ADR-0043 D4: a tool-reported error's message is written by the tool
 		// server — untrusted like a result. Scanned here, fenced at the agent
 		// boundary; Error itself stays raw so the repeated-failure detector
@@ -1182,7 +1240,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		})
 	}
 
-	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver, Annotations: hookNotes, Untrusted: untrusted}
+	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver, Annotations: hookNotes, Untrusted: untrusted, SourceClass: resultClass}
 	// ADR-0145 D1: with the ledger on, every result is recorded, and a large one
 	// travels as its ledger id instead of a plan-scoped content-store cid (one
 	// pathway: the content store holds no tool results then). A result the ledger

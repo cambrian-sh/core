@@ -227,6 +227,7 @@ StepFailures: *domain.StepFailures
 subtasks: *domain.Subtasks
 outboundIdentifiers: *domain.OutboundIdentifierGuard
 untrustedOutput: *domain.UntrustedOutputGuard
+ruleOfTwo: *domain.RuleOfTwoGate
 
 ## Lifecycles (registration order)
 retention start=true stop=true

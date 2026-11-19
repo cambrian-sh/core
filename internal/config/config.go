@@ -1637,6 +1637,11 @@ type ToolsConfig struct {
 	// Every MCP response is fenced as untrusted data whether or not it is
 	// scanned. Default ON, hit at dangerous, on_hit flag.
 	OutputScan ToolOutputScanConfig `json:"output_scan"`
+	// RuleOfTwo is the Rule-of-Two gate (owner decision 2026-11-19, ENG-531,
+	// T-20261104-no-content-provenance-reaches-tool): a write/egress call from a
+	// session that has consumed untrusted content AND holds sensitive access goes
+	// to approval, what tainted the session named for the approver. Default ON.
+	RuleOfTwo RuleOfTwoConfig `json:"rule_of_two"`
 	// IdempotentWrites gives every side-effecting tool call made by a plan step an
 	// idempotency key, hash(run, step, tool, canonical arguments) (ADR-0145 D9): a
 	// retry of the same call returns the stored result instead of running again.
@@ -1766,6 +1771,49 @@ func (c ToolOutputScanConfig) validate() []string {
 		}
 	}
 	return errs
+}
+
+// RuleOfTwoConfig is execution.tools.rule_of_two (domain/rule_of_two.go).
+// Additive block: a file that does not mention it loads the defaults, so it
+// needs no schema migration.
+type RuleOfTwoConfig struct {
+	// Enabled wires the gate into the tool executor (default true). No
+	// omitempty: an explicit false must survive a merge over the true default.
+	Enabled bool `json:"enabled"`
+	// UntrustedSources are the source classes whose consumption taints a session
+	// (user, operator, web, tool, other-agent, ingested). Default: web, tool,
+	// other-agent, ingested. Must not be empty while enabled.
+	UntrustedSources []string `json:"untrusted_sources,omitempty"`
+	// SensitiveTags are the classification tags that make a session's access
+	// sensitive: it read a record carrying one, or its agent holds a grant on a
+	// tool classified with one. EMPTY ⇒ every session holds sensitive access
+	// (fail closed; the default until a deployment names its sensitive tags).
+	SensitiveTags []string `json:"sensitive_tags,omitempty"`
+	// GatedEffects are the effect classes that make a call state-changing or
+	// outbound (ADR-0086 set). Default: write, egress_send, spend, admin. Must not
+	// be empty while enabled.
+	GatedEffects []string `json:"gated_effects,omitempty"`
+	// TaintTTLMinutes is how long a session's taint lives after the last content
+	// it consumed (0 ⇒ 1440).
+	TaintTTLMinutes int `json:"taint_ttl_minutes,omitempty"`
+}
+
+// Sources returns UntrustedSources as domain source classes.
+func (c RuleOfTwoConfig) Sources() []domain.SourceClass {
+	out := make([]domain.SourceClass, 0, len(c.UntrustedSources))
+	for _, s := range c.UntrustedSources {
+		out = append(out, domain.SourceClass(strings.TrimSpace(s)))
+	}
+	return out
+}
+
+// Effects returns GatedEffects as domain effect classes.
+func (c RuleOfTwoConfig) Effects() []domain.ToolEffect {
+	out := make([]domain.ToolEffect, 0, len(c.GatedEffects))
+	for _, e := range c.GatedEffects {
+		out = append(out, domain.ToolEffect(strings.TrimSpace(e)))
+	}
+	return out
 }
 
 // IdentifierKinds returns Kinds as domain kinds (empty ⇒ nil, meaning all).
@@ -3770,6 +3818,15 @@ func DefaultConfig() *Config {
 				// ENG-117 MCP response injection scan, on by default (owner
 				// decision 2026-11-19): hit at dangerous, flag.
 				OutputScan: ToolOutputScanConfig{Enabled: true},
+				// ENG-531 Rule-of-Two gate, on by default (owner decision
+				// 2026-11-19). Sensitive tags empty ⇒ every session counts as
+				// holding sensitive access until the deployment names its tags.
+				RuleOfTwo: RuleOfTwoConfig{
+					Enabled:          true,
+					UntrustedSources: []string{"web", "tool", "other-agent", "ingested"},
+					GatedEffects:     []string{"write", "egress_send", "spend", "admin"},
+					TaintTTLMinutes:  1440,
+				},
 				// ADR-0145 D4 calculation tools, on by default (owner decision
 				// 2026-11-15, ENG-897; no prior A/B/A).
 				CalcTools: true,
@@ -4529,6 +4586,27 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		if !domain.ValidIdentifierKind(k) {
 			errs = append(errs, fmt.Sprintf("tools.outbound_identifier_guard.kinds: unknown kind %q (want national_id|phone|email|iban|card)", k))
 		}
+	}
+	if r := c.Tools.RuleOfTwo; r.Enabled {
+		if len(r.UntrustedSources) == 0 {
+			errs = append(errs, "tools.rule_of_two.untrusted_sources must name at least one source class while enabled")
+		}
+		for _, s := range r.Sources() {
+			if !domain.ValidSourceClass(s) {
+				errs = append(errs, fmt.Sprintf("tools.rule_of_two.untrusted_sources: unknown source class %q (want user|operator|web|tool|other-agent|ingested)", s))
+			}
+		}
+		if len(r.GatedEffects) == 0 {
+			errs = append(errs, "tools.rule_of_two.gated_effects must name at least one effect class while enabled")
+		}
+		for _, e := range r.Effects() {
+			if !domain.ValidToolEffect(e) {
+				errs = append(errs, fmt.Sprintf("tools.rule_of_two.gated_effects: unknown effect class %q", e))
+			}
+		}
+	}
+	if c.Tools.RuleOfTwo.TaintTTLMinutes < 0 {
+		errs = append(errs, "tools.rule_of_two.taint_ttl_minutes must be >= 0 (0 uses 1440)")
 	}
 	if c.Tools.RepeatedFailureStop < 0 {
 		errs = append(errs, "repeated_failure_stop must be >= 0 (0 or 1 disables it)")

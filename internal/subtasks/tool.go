@@ -790,3 +790,7 @@ func RenderTask(b Brief, tools []string, allowed []domain.ToolEffect) string {
 	fmt.Fprintf(&sb, "- If what you were asked to find does not exist, end your answer with one final line: %s <what you looked for and where>\n", markerNotFound)
 	return sb.String()
 }
+
+// ResultSource implements domain.KernelToolSource (ENG-531): a subtask's answer
+// is what its worker agents wrote, from whatever they read.
+func (t *Tool) ResultSource() domain.SourceClass { return domain.SourceOtherAgent }

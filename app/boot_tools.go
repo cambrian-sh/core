@@ -360,6 +360,12 @@ func (b *kernelBuild) buildToolExecutor() error {
 	if err != nil {
 		return fmt.Errorf("tool executor: %w", err)
 	}
+	// ENG-531: the Rule-of-Two gate, read from execution.tools.rule_of_two
+	// (default on) and handed to the constructor like every other control.
+	ruleOfTwo, err := ruleOfTwoGate(cfg.Execution.Tools.RuleOfTwo)
+	if err != nil {
+		return fmt.Errorf("tool executor: %w", err)
+	}
 	toolControls := execLeases.controls(evidenceToolControls(cfg.Execution, actionRecords, domain.ToolExecutorControls{
 		Registry: toolReg,
 		Grants:   toolGrants,
@@ -373,6 +379,8 @@ func (b *kernelBuild) buildToolExecutor() error {
 		OutboundIdentifiers: outboundGuard,
 		// ENG-117: every MCP response is scanned; a hit is flagged or withheld.
 		UntrustedOutput: outputGuard,
+		// ENG-531: tainted ∧ sensitive ∧ write/egress calls go to approval.
+		RuleOfTwo: ruleOfTwo,
 	}))
 	toolExecutor, err := domain.NewToolExecutor(toolControls, domain.ToolExecutor{
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)

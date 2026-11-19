@@ -600,3 +600,7 @@ func nonNil(s []string) []string {
 	}
 	return s
 }
+
+// ResultSource implements domain.KernelToolSource (ENG-531): company records are
+// what an ingress mapped from outside systems — ingested content.
+func (t *tool) ResultSource() domain.SourceClass { return domain.SourceIngested }

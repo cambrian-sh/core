@@ -122,6 +122,10 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		return &pb.ExecuteToolResponse{Denied: true, DenyReason: why}, nil
 	}
 	ctx = s.withRunPrincipal(ctx, sessionToken)
+	// ENG-531: the session this call's provenance is tracked under (Rule of Two),
+	// from the lease binding — what tainted it earlier, and where this call's
+	// result is recorded as consumed.
+	ctx = s.withTaintScope(ctx, sessionToken)
 	// Work a chat turn ordered dies with the turn (turn_delegation.go): a lease of an
 	// ended turn is refused BEFORE authorisation, so no approval can be raised for it,
 	// and a call in flight when the turn ends is cancelled — which withdraws the
