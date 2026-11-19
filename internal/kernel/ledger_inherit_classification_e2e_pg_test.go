@@ -3,6 +3,8 @@ package kernel
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/calc"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
@@ -76,7 +79,11 @@ func (eng2173Handler) Execute(_ context.Context, call domain.ToolCall) ([]byte, 
 //     the untagged default, and the entry was dropped);
 //   - the ToolExecutor: a tool that reads nothing, with domain tags, records its result
 //     with them; a tool with neither sources nor tags is refused — not written, the
-//     recorder's Unrecorded count rises, and the refusal is logged at WARN.
+//     recorder's Unrecorded count rises, and the refusal is logged at WARN;
+//   - ENG-2183 (owner decision 2026-11-19, inherit for step outputs and computed
+//     entries): a step output inherits its step's scope-finance tool result, a
+//     source-less step output is refused loudly, and calc_aggregate's computed entry
+//     inherits the scope-finance recall it counted (its operand).
 //
 // Requires PG_TEST_DSN.
 func TestPg_E2E_LedgerToolResultsInheritTheirSourcesUnderAClosedCeiling(t *testing.T) {
@@ -173,8 +180,9 @@ func TestPg_E2E_LedgerToolResultsInheritTheirSourcesUnderAClosedCeiling(t *testi
 	reg := domain.NewInMemoryToolRegistry()
 	reg.Register(domain.SystemTool{Name: "weather", ClassificationTags: []string{"scope-public"}, Effects: []domain.ToolEffect{domain.EffectRead}})
 	reg.Register(domain.SystemTool{Name: "echo", Effects: []domain.ToolEffect{domain.EffectRead}})
+	reg.Register(domain.SystemTool{Name: "ledger_export", ClassificationTags: []string{"scope-finance"}, Effects: []domain.ToolEffect{domain.EffectRead}})
 	grants := domain.NewInMemoryGrantsStore()
-	grants.Set(agentID, []domain.ToolGrant{{Tool: "weather"}, {Tool: "echo"}})
+	grants.Set(agentID, []domain.ToolGrant{{Tool: "weather"}, {Tool: "echo"}, {Tool: "ledger_export"}})
 	exec, err := domain.NewToolExecutor(domain.ToolExecutorControls{Registry: reg, Grants: grants, Authz: dp},
 		domain.ToolExecutor{Handler: eng2173Handler{}, Ledger: led.Writer})
 	if err != nil {
@@ -209,5 +217,79 @@ func TestPg_E2E_LedgerToolResultsInheritTheirSourcesUnderAClosedCeiling(t *testi
 		if !strings.Contains(log, w) {
 			t.Errorf("the refusal must be logged at WARN with %q: %s", w, log)
 		}
+	}
+
+	// 4. ENG-2183: a STEP OUTPUT under the same closed-tag ceiling. The step's tool
+	// result (a scope-finance tool) is recorded through the ToolExecutor under the
+	// run/step provenance; the step output is recorded exactly as the DAG executor
+	// records it (executer.recordStepOutput: the step's provenance, the step's agent,
+	// no hint) and inherits the step's classification.
+	stepProv := domain.LedgerProvenance{ConversationID: convID, TurnID: "turn-" + stamp, RunID: "eng2183-run-" + stamp, StepIndex: 0}
+	if out := exec.Execute(domain.WithLedgerProvenance(ctx, stepProv), domain.ToolCallRequest{AgentID: agentID,
+		ToolName: "ledger_export", ArgsJSON: []byte(`{"period":"Q3"}`)}); out.Denied || out.Error != "" {
+		t.Fatalf("ledger_export: %+v", out)
+	}
+	so, err := led.Writer.Record(ctx, domain.LedgerRecord{Kind: domain.LedgerStepOutput, Provenance: stepProv,
+		Writer: domain.AgentPrincipal(agentID), ContentType: "text/plain", Body: []byte("Q3 margin fell to 12%.")})
+	if err != nil {
+		t.Fatalf("a step output built from its step's classified tool result must be recorded: %v", err)
+	}
+	if !slices.Contains(so.Tags, "scope-finance") || slices.Contains(so.Tags, "scope-public") {
+		t.Fatalf("step output tags = %v, want the step's scope-finance", so.Tags)
+	}
+	if got, err := led.Reader.Get(financeReader, so.ID); err != nil || got == nil {
+		t.Fatalf("a scope-finance reader could not read the step output: %v", err)
+	}
+	if got, _ := led.Reader.Get(outsider, so.ID); got != nil {
+		t.Fatal("a reader forbidden scope-finance read the step output")
+	}
+	// A step that recorded nothing, with no tags of its own: refused, loudly.
+	emptyStep := stepProv
+	emptyStep.StepIndex = 1
+	before := rec.Unrecorded()
+	if _, err := led.Writer.Record(ctx, domain.LedgerRecord{Kind: domain.LedgerStepOutput, Provenance: emptyStep,
+		Writer: domain.AgentPrincipal(agentID), ContentType: "text/plain", Body: []byte("nothing to go on")}); !errors.Is(err, ledger.ErrUnclassifiable) {
+		t.Fatalf("a source-less step output under a closed ceiling: err = %v, want ErrUnclassifiable", err)
+	}
+	if rec.Unrecorded()-before != 1 || !strings.Contains(warn.String(), "kind=step_output") {
+		t.Fatalf("the step output refusal must be counted and logged at WARN (unrecorded +%d): %s", rec.Unrecorded()-before, warn.String())
+	}
+
+	// 5. ENG-2183: a COMPUTED entry through the calc kernel tool (calc.Tools over the
+	// enforced reader and the recorder): counting the recall's hits by reference
+	// records a computed entry derived from its operand, which inherits the
+	// operand's scope-finance.
+	var aggregate domain.KernelTool
+	for _, kt := range calc.Tools(calc.Deps{Reader: led.Reader, Writer: led.Writer}) {
+		if kt.Spec().Name == calc.ToolAggregate {
+			aggregate = kt
+		}
+	}
+	calcCtx := domain.WithLedgerProvenance(financeReader, stepProv)
+	raw, err := aggregate.Call(calcCtx, domain.KernelToolCall{AgentID: agentID,
+		ArgsJSON: []byte(`{"ref":"` + recall[0].ID + `","path":"hits","op":"count"}`)})
+	if err != nil {
+		t.Fatalf("calc_aggregate: %v", err)
+	}
+	var calcOut struct {
+		Result    float64 `json:"result"`
+		LedgerRef string  `json:"ledger_ref"`
+		Note      string  `json:"note"`
+	}
+	if err := json.Unmarshal(raw, &calcOut); err != nil {
+		t.Fatal(err)
+	}
+	if calcOut.LedgerRef == "" || calcOut.Result != 1 {
+		t.Fatalf("calc_aggregate under a closed ceiling must record its computed entry: %s", raw)
+	}
+	computed, err := led.Reader.Get(financeReader, calcOut.LedgerRef)
+	if err != nil || computed == nil {
+		t.Fatalf("a scope-finance reader could not read the computed entry: %v", err)
+	}
+	if computed.Kind != domain.LedgerComputed || !slices.Contains(computed.Tags, "scope-finance") {
+		t.Fatalf("computed entry kind %s tags %v, want computed with the operand's scope-finance", computed.Kind, computed.Tags)
+	}
+	if got, _ := led.Reader.Get(outsider, calcOut.LedgerRef); got != nil {
+		t.Fatal("a reader forbidden scope-finance read the computed entry")
 	}
 }

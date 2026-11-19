@@ -37,8 +37,10 @@ func TestStepOutputInheritsTheClassificationOfItsSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out0.Tags) != 0 {
-		t.Fatalf("precondition: the step output's own tags are empty under allow-all, got %v", out0.Tags)
+	// ENG-2183: the step output's own classification is its sources' (the OSS
+	// allow-all keeps the hint), on top of the SourceTags read gate.
+	if len(out0.Tags) != 1 || out0.Tags[0] != "hr" {
+		t.Fatalf("the step output's own tags must be its sources' [hr], got %v", out0.Tags)
 	}
 	hasHR := func(sets [][]string) bool {
 		for _, s := range sets {
@@ -73,9 +75,9 @@ func TestStepOutputInheritsTheClassificationOfItsSources(t *testing.T) {
 			t.Fatalf("an hr-admitting reader (%+v) could not read the derived entry (err %v)", eff, err)
 		}
 	}
-	// A plain tool result with no sources is unaffected.
-	if e := st.rows[out0.ID]; len(e.Tags) != 0 {
-		t.Fatalf("own tags changed: %v", e.Tags)
+	// The stored step output carries its sources' classification as its own (ENG-2183).
+	if e := st.rows[out0.ID]; len(e.Tags) != 1 || e.Tags[0] != "hr" {
+		t.Fatalf("stored own tags = %v, want [hr]", e.Tags)
 	}
 }
 

@@ -193,15 +193,84 @@ func TestToolResultNoCeilingWriterKeepsTheDefault(t *testing.T) {
 	}
 }
 
-// The inheritance is the tool-result rule only (the owner's decision): a step output
-// keeps its own hint; with none under a closed ceiling it is refused and counted.
-func TestStepOutputDoesNotTakeTheInheritedHint(t *testing.T) {
-	captureWarn(t)
+// ENG-2183 (owner decision 2026-11-19, inherit for step outputs and computed
+// entries): a step output built from closed-tag sources under a closed-tag ceiling
+// takes their classification, exactly as a tool result does (it was refused before).
+func TestStepOutputTakesTheInheritedHint(t *testing.T) {
 	r, _ := eng2173Recorder()
-	_, err := r.Record(context.Background(), domain.LedgerRecord{Kind: domain.LedgerStepOutput, Provenance: eng2173Prov,
+	ctx := context.Background()
+	e, err := r.Record(ctx, domain.LedgerRecord{Kind: domain.LedgerStepOutput, Provenance: eng2173Prov,
 		Writer: domain.AgentPrincipal("analyst"), SourceClassifications: [][]string{{"scope-finance"}},
 		ContentType: "text/plain", Body: []byte("summary")})
+	if err != nil {
+		t.Fatalf("a step output built from classified sources must be recorded: %v", err)
+	}
+	if !slices.Contains(e.Tags, "scope-finance") || slices.Contains(e.Tags, "scope-public") {
+		t.Fatalf("tags = %v, want the sources' scope-finance", e.Tags)
+	}
+	if r.Unrecorded() != 0 {
+		t.Fatalf("unrecorded = %d", r.Unrecorded())
+	}
+}
+
+// A step output inherits its own step's tool results without being told, and a
+// computed entry (calc) its operands named in DerivedFrom.
+func TestStepOutputAndComputedInheritFromTheLedger(t *testing.T) {
+	r, _ := eng2173Recorder()
+	ctx := context.Background()
+	src, err := r.Record(ctx, domain.LedgerRecord{Kind: domain.LedgerToolResult, Provenance: eng2173Prov,
+		ToolName: "ledger_export", Writer: domain.AgentPrincipal("analyst"), ClassificationHint: []string{"scope-finance"},
+		ContentType: "text/plain", Body: []byte("revenue 4.1M")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := r.Record(ctx, domain.LedgerRecord{Kind: domain.LedgerStepOutput, Provenance: eng2173Prov,
+		Writer: domain.AgentPrincipal("analyst"), ContentType: "text/plain", Body: []byte("revenue is 4.1M")})
+	if err != nil || !slices.Contains(out.Tags, "scope-finance") {
+		t.Fatalf("step output: %v tags %v, want its step's scope-finance", err, out.Tags)
+	}
+	calc, err := r.Record(ctx, domain.LedgerRecord{Kind: domain.LedgerComputed, Provenance: eng2173Prov,
+		ToolName: "calc_aggregate", Writer: domain.AgentPrincipal("analyst"), DerivedFrom: []string{src.ID},
+		ContentType: "application/json", Body: []byte(`{"result":4.1}`)})
+	if err != nil || !slices.Contains(calc.Tags, "scope-finance") {
+		t.Fatalf("computed: %v tags %v, want its operand's scope-finance", err, calc.Tags)
+	}
+}
+
+// No sources and no tags of its own: a step output is refused, loudly.
+func TestStepOutputWithNeitherIsRefusedLoudly(t *testing.T) {
+	buf := captureWarn(t)
+	r, _ := eng2173Recorder()
+	p := eng2173Prov
+	p.RunID, p.StepIndex = "run-empty", 3
+	_, err := r.Record(context.Background(), domain.LedgerRecord{Kind: domain.LedgerStepOutput, Provenance: p,
+		Writer: domain.AgentPrincipal("analyst"), ContentType: "text/plain", Body: []byte("thinking")})
 	if !errors.Is(err, ErrUnclassifiable) || r.Unrecorded() != 1 {
 		t.Fatalf("err = %v unrecorded = %d, want a counted refusal", err, r.Unrecorded())
+	}
+	if !strings.Contains(buf.String(), "ledger_entry_unclassifiable") || !strings.Contains(buf.String(), "kind=step_output") {
+		t.Fatalf("the refusal must be logged at WARN: %s", buf.String())
+	}
+}
+
+// Artifacts are excluded (lead clarification of the ENG-2183 decision): an artifact
+// keeps the writer's own requested tags; its sources do not become its hint.
+func TestArtifactDoesNotTakeTheInheritedHint(t *testing.T) {
+	captureWarn(t)
+	r, _ := eng2173Recorder()
+	e, err := r.Record(context.Background(), domain.LedgerRecord{Kind: domain.LedgerArtifact, Provenance: eng2173Prov,
+		Writer: domain.AgentPrincipal("analyst"), ClassificationHint: []string{"scope-public"},
+		SourceClassifications: [][]string{{"scope-finance"}}, ContentType: "text/plain", Body: []byte("chart")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(e.Tags, "scope-public") || slices.Contains(e.Tags, "scope-finance") {
+		t.Fatalf("artifact tags = %v, want the writer's own scope-public", e.Tags)
+	}
+	_, err = r.Record(context.Background(), domain.LedgerRecord{Kind: domain.LedgerArtifact, Provenance: eng2173Prov,
+		Writer: domain.AgentPrincipal("analyst"), SourceClassifications: [][]string{{"scope-finance"}},
+		ContentType: "text/plain", Body: []byte("chart 2")})
+	if !errors.Is(err, ErrUnclassifiable) {
+		t.Fatalf("an untagged artifact under a closed ceiling: err = %v, want refused", err)
 	}
 }

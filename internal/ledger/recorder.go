@@ -170,18 +170,25 @@ func (r *Recorder) Unrecorded() uint64 { return r.unrecorded.Load() }
 // The candidates, in order (ENG-2173, owner decision 2026-11-19 "inherit from
 // sources"):
 //
-//  1. a TOOL RESULT built from classified records — a memory recall's chunks
-//     (rec.SourceClassifications), a staged call's input entries (DerivedFrom) —
-//     is classified with their classification: the union of the source tag sets'
-//     requested classification (authz.RequestedClassification: provenance stamps
-//     and owner tags are kernel-stamped, never requested). Union, because the
-//     entry holds every source at once. The sources still gate reads through
-//     SourceTags (domain.LedgerEntryReadable), so the entry is readable by exactly
-//     the people who could read every source.
-//  2. the tool's domain tags (rec.ClassificationHint) — what the result came from
-//     when the ledger knows no sources. A writer's OWN requested tags
-//     (UploadArtifact) also arrive here; the RPC refuses an unhonourable request
-//     before the recorder sees it.
+//  1. an entry built from classified records is classified with their
+//     classification: the union of the source tag sets' requested classification
+//     (authz.RequestedClassification: provenance stamps and owner tags are
+//     kernel-stamped, never requested). The sources are what sources() walks: a
+//     tool result's recalled chunks (rec.SourceClassifications) and staged inputs
+//     (DerivedFrom); a step output's step tool results and upstream outputs; a
+//     computed entry's operands (calc) or the turn's entries (chat turn state).
+//     Union, because the entry holds every source at once. The sources still gate
+//     reads through SourceTags (domain.LedgerEntryReadable), so the entry is
+//     readable by exactly the people who could read every source. Every kind but
+//     an ARTIFACT (ENG-2173 for tool results, ENG-2183 for step outputs and
+//     computed entries, owner decisions 2026-11-19): an artifact keeps the
+//     writer's own requested tags (UploadArtifact) or its tool's, never a
+//     classification the kernel inferred for it.
+//  2. the kind's own tags (rec.ClassificationHint: a tool's domain tags, an
+//     upload's requested tags) — what the entry came from when the ledger knows
+//     no sources. A writer's OWN requested tags (UploadArtifact) never reach an
+//     unhonourable fallback: the RPC refuses an unhonourable request before the
+//     recorder sees it.
 //  3. no hint: the decision point's default for the writer (its write ceiling).
 //     Since ENG-2161 the decision point refuses this when the ceiling holds a
 //     closed tag (ClassificationRequiredError); an open-only ceiling keeps it.
@@ -197,7 +204,7 @@ func (r *Recorder) classify(ctx context.Context, rec domain.LedgerRecord, src in
 		hint []string
 	}
 	var cands []candidate
-	if rec.Kind == domain.LedgerToolResult && len(src.tags) > 0 {
+	if rec.Kind != domain.LedgerArtifact && len(src.tags) > 0 {
 		var union []string
 		for _, set := range src.tags {
 			for _, t := range authz.RequestedClassification(domain.ClassificationHint(set)) {
