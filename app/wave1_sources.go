@@ -105,13 +105,14 @@ func (m mcpLister) MCPServers(ctx context.Context) []operator.MCPServerInfo {
 	out := make([]operator.MCPServerInfo, 0, len(servers))
 	for _, s := range servers {
 		info := operator.MCPServerInfo{
-			Name:               s.ID,
-			Transport:          s.Transport,
-			Endpoint:           s.Endpoint,
-			Args:               s.Args,
-			AuthType:           s.AuthType,
-			AuthHeader:         s.AuthHeader,
-			ClassificationTags: s.DefaultClassificationTags,
+			Name:                s.ID,
+			Transport:           s.Transport,
+			Endpoint:            s.Endpoint,
+			Args:                s.Args,
+			AuthType:            s.AuthType,
+			AuthHeader:          s.AuthHeader,
+			ClassificationTags:  s.DefaultClassificationTags,
+			AllowPrivateNetwork: s.AllowPrivateNetwork,
 		}
 		info.TokenConfigured, info.TokenSource = m.tokenFacts(ctx, s)
 		// Endpoint carries a URL for http/sse and a command for stdio. Split them

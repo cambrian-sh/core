@@ -13551,9 +13551,12 @@ type MCPServerOp struct {
 	ClassificationTags []string `protobuf:"bytes,14,rep,name=classification_tags,json=classificationTags,proto3" json:"classification_tags,omitempty"`
 	// containment: the ADR-0139 D8 effective containment of a stdio server;
 	// unset for http/sse servers.
-	Containment   *IntegrationContainmentOp `protobuf:"bytes,15,opt,name=containment,proto3" json:"containment,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Containment *IntegrationContainmentOp `protobuf:"bytes,15,opt,name=containment,proto3" json:"containment,omitempty"`
+	// allow_private_network (contract 0114, ENG-1545): the server's ADR-0153
+	// private-network opt-in as configured, so a console edit shows and keeps it.
+	AllowPrivateNetwork bool `protobuf:"varint,16,opt,name=allow_private_network,json=allowPrivateNetwork,proto3" json:"allow_private_network,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *MCPServerOp) Reset() {
@@ -13689,6 +13692,13 @@ func (x *MCPServerOp) GetContainment() *IntegrationContainmentOp {
 		return x.Containment
 	}
 	return nil
+}
+
+func (x *MCPServerOp) GetAllowPrivateNetwork() bool {
+	if x != nil {
+		return x.AllowPrivateNetwork
+	}
+	return false
 }
 
 type ListMCPServersOpResponse struct {
@@ -14935,8 +14945,16 @@ type MCPServerSpecOp struct {
 	// D2). Without a server-level default, dynamically discovered tools arrive
 	// untagged — and an untagged tool is one no tag predicate can restrict.
 	ClassificationTags []string `protobuf:"bytes,7,rep,name=classification_tags,json=classificationTags,proto3" json:"classification_tags,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// allow_private_network (contract 0114, ENG-1545) is the ADR-0153 opt-in that
+	// lets this http/sse server's endpoint be a loopback, private or link-local
+	// address (a server on the operator's own network). Without it the guarded
+	// egress transport refuses such an endpoint at save and at dial. Operator-only,
+	// like every SaveMCPServer field. Absent = keep the stored entry's value (a
+	// console built before 0114 never sends it, and must not drop an opt-in an
+	// operator set in the file); present = the operator's decision, either way.
+	AllowPrivateNetwork *bool `protobuf:"varint,8,opt,name=allow_private_network,json=allowPrivateNetwork,proto3,oneof" json:"allow_private_network,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *MCPServerSpecOp) Reset() {
@@ -15016,6 +15034,13 @@ func (x *MCPServerSpecOp) GetClassificationTags() []string {
 		return x.ClassificationTags
 	}
 	return nil
+}
+
+func (x *MCPServerSpecOp) GetAllowPrivateNetwork() bool {
+	if x != nil && x.AllowPrivateNetwork != nil {
+		return *x.AllowPrivateNetwork
+	}
+	return false
 }
 
 type SaveMCPServerOpRequest struct {
@@ -27922,7 +27947,7 @@ const file_operator_proto_rawDesc = "" +
 	"\tresumable\x18\a \x01(\bR\tresumable\"c\n" +
 	" ListSessionCheckpointsOpResponse\x12?\n" +
 	"\vcheckpoints\x18\x01 \x03(\v2\x1d.cambrian.SessionCheckpointOpR\vcheckpoints\"\x19\n" +
-	"\x17ListMCPServersOpRequest\"\xfa\x03\n" +
+	"\x17ListMCPServersOpRequest\"\xae\x04\n" +
 	"\vMCPServerOp\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
 	"\ttransport\x18\x02 \x01(\tR\ttransport\x12\x18\n" +
@@ -27942,7 +27967,8 @@ const file_operator_proto_rawDesc = "" +
 	"\x10token_configured\x18\f \x01(\bR\x0ftokenConfigured\x12!\n" +
 	"\ftoken_source\x18\r \x01(\tR\vtokenSource\x12/\n" +
 	"\x13classification_tags\x18\x0e \x03(\tR\x12classificationTags\x12D\n" +
-	"\vcontainment\x18\x0f \x01(\v2\".cambrian.IntegrationContainmentOpR\vcontainment\"k\n" +
+	"\vcontainment\x18\x0f \x01(\v2\".cambrian.IntegrationContainmentOpR\vcontainment\x122\n" +
+	"\x15allow_private_network\x18\x10 \x01(\bR\x13allowPrivateNetwork\"k\n" +
 	"\x18ListMCPServersOpResponse\x12/\n" +
 	"\aservers\x18\x01 \x03(\v2\x15.cambrian.MCPServerOpR\aservers\x12\x1e\n" +
 	"\n" +
@@ -28042,7 +28068,7 @@ const file_operator_proto_rawDesc = "" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x12\n" +
 	"\x04role\x18\x03 \x01(\tR\x04role\x12!\n" +
-	"\fgenerator_id\x18\x04 \x01(\tR\vgeneratorId\"\xde\x01\n" +
+	"\fgenerator_id\x18\x04 \x01(\tR\vgeneratorId\"\xb1\x02\n" +
 	"\x0fMCPServerSpecOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
 	"\ttransport\x18\x02 \x01(\tR\ttransport\x12\x1a\n" +
@@ -28051,7 +28077,9 @@ const file_operator_proto_rawDesc = "" +
 	"\tauth_type\x18\x05 \x01(\tR\bauthType\x12\x1f\n" +
 	"\vauth_header\x18\x06 \x01(\tR\n" +
 	"authHeader\x12/\n" +
-	"\x13classification_tags\x18\a \x03(\tR\x12classificationTags\"\x82\x01\n" +
+	"\x13classification_tags\x18\a \x03(\tR\x12classificationTags\x127\n" +
+	"\x15allow_private_network\x18\b \x01(\bH\x00R\x13allowPrivateNetwork\x88\x01\x01B\x18\n" +
+	"\x16_allow_private_network\"\x82\x01\n" +
 	"\x16SaveMCPServerOpRequest\x121\n" +
 	"\x06server\x18\x01 \x01(\v2\x19.cambrian.MCPServerSpecOpR\x06server\x12\x1d\n" +
 	"\n" +
@@ -30147,6 +30175,7 @@ func file_operator_proto_init() {
 		(*OperatorEvent_HitlResolved)(nil),
 		(*OperatorEvent_Selection)(nil),
 	}
+	file_operator_proto_msgTypes[181].OneofWrappers = []any{}
 	file_operator_proto_msgTypes[220].OneofWrappers = []any{
 		(*LogAttrOp_S)(nil),
 		(*LogAttrOp_I)(nil),

@@ -712,6 +712,35 @@ func TestSaveMCPServer_PrivateEndpointNeedsTheOptIn(t *testing.T) {
 	}
 }
 
+// Contract 0114 (ENG-1545): the opt-in travels on the operator wire. A NEW private
+// server is added from the console with it; an explicit false withdraws a stored
+// opt-in (and the save is then refused like any private endpoint); absent keeps it.
+func TestSaveMCPServer_ConsoleSetsThePrivateNetworkOptIn(t *testing.T) {
+	src := mcpSource(t, nil)
+	on, off := true, false
+	out, err := src.SaveMCPServer(operator.MCPServerSpec{ID: "lan", Transport: "http",
+		Endpoint: "http://10.1.2.3:8080/mcp", AllowPrivateNetwork: &on})
+	if err != nil || out.Effect == operator.EffectRejected {
+		t.Fatalf("a new private server with the console's opt-in was refused: %+v %v", out, err)
+	}
+	prior := config.MCPServerConfig{ID: "lan", Transport: "http", Endpoint: "http://10.1.2.3:8080/mcp", AllowPrivateNetwork: true}
+	if e := mcpConfigFromSpec(operator.MCPServerSpec{ID: "lan", Transport: "http", Endpoint: prior.Endpoint}, &prior); !e.AllowPrivateNetwork {
+		t.Fatal("an absent opt-in (pre-0114 console) dropped the stored one")
+	}
+	withdrawn := mcpConfigFromSpec(operator.MCPServerSpec{ID: "lan", Transport: "http", Endpoint: prior.Endpoint, AllowPrivateNetwork: &off}, &prior)
+	if withdrawn.AllowPrivateNetwork {
+		t.Fatal("an explicit false did not withdraw the opt-in")
+	}
+	if out := src.saveMCPEntry(withdrawn); out.Effect != operator.EffectRejected {
+		t.Fatalf("a private endpoint whose opt-in was withdrawn was saved: %+v", out)
+	}
+	// A public endpoint never needs it, either way.
+	if out, _ := src.SaveMCPServer(operator.MCPServerSpec{ID: "pub", Transport: "http",
+		Endpoint: "https://mcp.example.com/mcp", AllowPrivateNetwork: &off}); out.Effect == operator.EffectRejected {
+		t.Fatalf("public endpoint refused: %+v", out)
+	}
+}
+
 func TestSaveMCPServer_RejectsAnUnknownTransport(t *testing.T) {
 	src := mcpSource(t, nil)
 	out, err := src.SaveMCPServer(operator.MCPServerSpec{

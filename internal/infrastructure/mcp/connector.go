@@ -80,6 +80,11 @@ type ServerConfig struct {
 	// link-local targets (config mcp.servers[].allow_private_network, ADR-0153).
 	// Without it the guarded egress dialer refuses them.
 	AllowPrivateNetwork bool
+	// proxy chooses a forward proxy per request for the http/sse transport; nil =
+	// the kernel's environment (HTTP_PROXY / HTTPS_PROXY / NO_PROXY,
+	// http.ProxyFromEnvironment; loopback is never proxied). Unexported: the
+	// environment is the one production source (ENG-1545); tests set it.
+	proxy egress.ProxyFunc
 }
 
 // egressPolicy is the guarded-egress policy this server's http/sse transport
@@ -94,9 +99,19 @@ func (s ServerConfig) egressPolicy() egress.Policy {
 // stripped of credentials, no client-wide timeout (the SSE GET stream is
 // long-lived; each call is bounded by its own ctx, execution.tools
 // call_timeout_ms).
+//
+// It honours the kernel's HTTP(S)_PROXY / NO_PROXY (ENG-1545, owner decision
+// 2026-11-19: enterprise networks reach the internet only through a proxy): a
+// proxied request's TARGET passes the same endpoint policy before it is handed
+// to the proxy (egress.NewProxiedTransport), so the private-network opt-in still
+// decides; with no proxy configured the transport is exactly the guarded one.
 func (s ServerConfig) guardedHTTPClient(wrap func(base http.RoundTripper) http.RoundTripper) *http.Client {
 	p := s.egressPolicy()
-	var rt http.RoundTripper = egress.NewTransport(p, nil)
+	proxy := s.proxy
+	if proxy == nil {
+		proxy = http.ProxyFromEnvironment
+	}
+	var rt http.RoundTripper = egress.NewProxiedTransport(p, nil, proxy)
 	if wrap != nil {
 		rt = wrap(rt)
 	}

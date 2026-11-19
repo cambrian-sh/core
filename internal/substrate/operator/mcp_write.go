@@ -45,6 +45,10 @@ type MCPServerSpec struct {
 	AuthType           string // "none" | "bearer" | "header"
 	AuthHeader         string
 	ClassificationTags []string
+	// AllowPrivateNetwork is the ADR-0153 opt-in (contract 0114, ENG-1545): nil =
+	// the request did not carry it (a pre-0114 console), so the stored entry's
+	// value is kept; non-nil = the operator's decision.
+	AllowPrivateNetwork *bool
 }
 
 // MCPTestResult is what one ephemeral connection attempt learned.
@@ -55,15 +59,29 @@ type MCPTestResult struct {
 	Error     string
 }
 
+// privateNetworkNote names a private-network decision in the audit summary, so an
+// opt-in (or its withdrawal) is visible in the audit trail, not only in the file.
+func privateNetworkNote(v *bool) string {
+	switch {
+	case v == nil:
+		return ""
+	case *v:
+		return " (allow_private_network: on)"
+	default:
+		return " (allow_private_network: off)"
+	}
+}
+
 func mcpSpecFromOp(g *pb.MCPServerSpecOp) MCPServerSpec {
 	return MCPServerSpec{
-		ID:                 g.GetId(),
-		Transport:          g.GetTransport(),
-		Endpoint:           g.GetEndpoint(),
-		Args:               g.GetArgs(),
-		AuthType:           g.GetAuthType(),
-		AuthHeader:         g.GetAuthHeader(),
-		ClassificationTags: g.GetClassificationTags(),
+		ID:                  g.GetId(),
+		Transport:           g.GetTransport(),
+		Endpoint:            g.GetEndpoint(),
+		Args:                g.GetArgs(),
+		AuthType:            g.GetAuthType(),
+		AuthHeader:          g.GetAuthHeader(),
+		ClassificationTags:  g.GetClassificationTags(),
+		AllowPrivateNetwork: g.AllowPrivateNetwork,
 	}
 }
 
@@ -96,7 +114,7 @@ func (s *Service) SaveMCPServer(ctx context.Context, req *pb.SaveMCPServerOpRequ
 	var outcome ConfigWriteOutcome
 	ack, err := s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
 		"save_mcp_server", "mcp_server", spec.ID,
-		"mcp server "+spec.ID+" → "+spec.Transport+" "+spec.Endpoint,
+		"mcp server "+spec.ID+" → "+spec.Transport+" "+spec.Endpoint+privateNetworkNote(spec.AllowPrivateNetwork),
 		func() error {
 			var applyErr error
 			outcome, applyErr = s.mcpWriter.SaveMCPServer(spec)

@@ -2956,6 +2956,9 @@ message MCPServerOp {
   // containment: the ADR-0139 D8 effective containment of a stdio server;
   // unset for http/sse servers.
   IntegrationContainmentOp containment = 15;
+  // allow_private_network (contract 0114, ENG-1545): the server's ADR-0153
+  // private-network opt-in as configured, so a console edit shows and keeps it.
+  bool allow_private_network = 16;
 }
 
 message ListMCPServersOpResponse {
@@ -3182,6 +3185,14 @@ message MCPServerSpecOp {
   // D2). Without a server-level default, dynamically discovered tools arrive
   // untagged — and an untagged tool is one no tag predicate can restrict.
   repeated string classification_tags = 7;
+  // allow_private_network (contract 0114, ENG-1545) is the ADR-0153 opt-in that
+  // lets this http/sse server's endpoint be a loopback, private or link-local
+  // address (a server on the operator's own network). Without it the guarded
+  // egress transport refuses such an endpoint at save and at dial. Operator-only,
+  // like every SaveMCPServer field. Absent = keep the stored entry's value (a
+  // console built before 0114 never sends it, and must not drop an opt-in an
+  // operator set in the file); present = the operator's decision, either way.
+  optional bool allow_private_network = 8;
 }
 
 message SaveMCPServerOpRequest {

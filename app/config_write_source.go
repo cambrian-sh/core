@@ -881,9 +881,15 @@ func mcpConfigFromSpec(spec operator.MCPServerSpec, prior *config.MCPServerConfi
 		entry.CatalogVersion = prior.CatalogVersion
 		entry.DisplayName = prior.DisplayName
 		entry.Category = prior.Category
-		// The private-network opt-in (ADR-0153) is not on the operator wire
-		// either; a console save keeps it.
+		// The private-network opt-in (ADR-0153): a console that does not send
+		// it (pre-0114) keeps the stored value; below, a sent value wins.
 		entry.AllowPrivateNetwork = prior.AllowPrivateNetwork
+	}
+	// Contract 0114 (ENG-1545): the opt-in is on the operator wire, so a NEW
+	// private server can be added from the console, and an operator can withdraw
+	// an opt-in. Absent (nil) = the stored value above, or off for a new entry.
+	if spec.AllowPrivateNetwork != nil {
+		entry.AllowPrivateNetwork = *spec.AllowPrivateNetwork
 	}
 	return entry
 }
@@ -927,7 +933,7 @@ func (c configWriteSource) saveMCPEntry(entry config.MCPServerConfig) operator.C
 			res.Effect = operator.EffectRejected
 			res.Error = err.Error()
 			if errors.Is(err, egress.ErrBlockedAddr) && !entry.AllowPrivateNetwork {
-				res.Error += " (a private or loopback MCP server needs allow_private_network: true on its mcp.servers entry)"
+				res.Error += " (a private or loopback MCP server needs allow_private_network: true on its mcp.servers entry, or the console's private-network switch)"
 			}
 			return res
 		}

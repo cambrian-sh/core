@@ -69,6 +69,8 @@ type MCPServerInfo struct {
 	// Containment is a stdio server's ADR-0139 D8 effective containment; nil for
 	// http/sse servers (T-20261106-integrationop-has-no-structured-containment).
 	Containment *pb.IntegrationContainmentOp
+	// AllowPrivateNetwork is the configured ADR-0153 opt-in (contract 0114).
+	AllowPrivateNetwork bool
 }
 
 // EmbeddingReporter reports the embedding model, its dimensions and the stored
@@ -145,21 +147,22 @@ func (s *Service) ListMCPServers(ctx context.Context, _ *pb.ListMCPServersOpRequ
 	out := make([]*pb.MCPServerOp, 0, len(servers))
 	for _, m := range servers {
 		out = append(out, &pb.MCPServerOp{
-			Name:               m.Name,
-			Transport:          m.Transport,
-			Command:            m.Command,
-			Url:                m.URL,
-			Connected:          m.Connected,
-			LastError:          m.LastError,
-			ToolCount:          int32(m.ToolCount),
-			Endpoint:           m.Endpoint,
-			Args:               m.Args,
-			AuthType:           m.AuthType,
-			AuthHeader:         m.AuthHeader,
-			TokenConfigured:    m.TokenConfigured,
-			TokenSource:        m.TokenSource,
-			ClassificationTags: m.ClassificationTags,
-			Containment:        m.Containment,
+			Name:                m.Name,
+			Transport:           m.Transport,
+			Command:             m.Command,
+			Url:                 m.URL,
+			Connected:           m.Connected,
+			LastError:           m.LastError,
+			ToolCount:           int32(m.ToolCount),
+			Endpoint:            m.Endpoint,
+			Args:                m.Args,
+			AuthType:            m.AuthType,
+			AuthHeader:          m.AuthHeader,
+			TokenConfigured:     m.TokenConfigured,
+			TokenSource:         m.TokenSource,
+			ClassificationTags:  m.ClassificationTags,
+			Containment:         m.Containment,
+			AllowPrivateNetwork: m.AllowPrivateNetwork,
 		})
 	}
 	return &pb.ListMCPServersOpResponse{

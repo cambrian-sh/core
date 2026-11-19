@@ -902,7 +902,11 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// last error; identifiers and counts only) and RequeueDerivationJob (command_id +
 	// reason; NotFound when no dead job of that version exists); capability
 	// "derivation-journal".
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0113", operatorCaps
+	// 0114 (2026-11-20, additive; ENG-1545): MCPServerSpecOp.allow_private_network
+	// (optional: absent keeps the stored opt-in, present decides) on SaveMCPServer /
+	// TestMCPServer, and MCPServerOp.allow_private_network on ListMCPServers - the
+	// ADR-0153 private-network opt-in is set from the console.
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0114", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".
