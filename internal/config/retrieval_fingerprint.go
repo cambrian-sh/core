@@ -69,6 +69,8 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	// Stage toggles, in pipeline order.
 	fmt.Fprintf(&b, "hybrid=%t\n", c.Retrieval.HybridSearchEnabled)
 	fmt.Fprintf(&b, "hybrid_rrf_k=%d\n", c.Retrieval.HybridRRFK)
+	// ENG-111: how the lexical lane combines terms decides which rows it ranks.
+	fmt.Fprintf(&b, "lexical_match=%s\n", c.Retrieval.EffectiveLexicalMatchMode())
 	fmt.Fprintf(&b, "kg2rag=%t\n", c.Retrieval.KG2RAGEnabled)
 	fmt.Fprintf(&b, "query_entity_seeding=%t\n", c.Retrieval.QueryEntitySeedingEnabled)
 	fmt.Fprintf(&b, "anchor=%t\n", c.Retrieval.AnchorConstraintEnabled)
@@ -177,4 +179,18 @@ func (r RetrievalConfig) EffectiveVectorPool() (multiplier, max int) {
 		max = DefaultVectorPoolMax
 	}
 	return multiplier, max
+}
+
+// Lexical match modes (retrieval.lexical_match_mode, ENG-111).
+const (
+	LexicalMatchAndFirst = "and_first"
+	LexicalMatchOrOnly   = "or_only"
+)
+
+// EffectiveLexicalMatchMode returns the lexical match mode, "" meaning and_first.
+func (r RetrievalConfig) EffectiveLexicalMatchMode() string {
+	if r.LexicalMatchMode == "" {
+		return LexicalMatchAndFirst
+	}
+	return r.LexicalMatchMode
 }

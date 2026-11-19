@@ -125,6 +125,9 @@ type PgVectorAdapter struct {
 	// ENG-210); 0 ⇒ 20 and 3000 (a struct literal in tests).
 	poolMultiplier int
 	poolMax        int
+	// lexOrOnly selects the lexical lane's pre-ENG-111 any-term match
+	// (retrieval.lexical_match_mode = or_only); false = and_first, the default.
+	lexOrOnly bool
 }
 
 // documentColumnNames is the ONE column list every retrievable-row read selects and
@@ -369,6 +372,7 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 		projModelID:     cfg.Embedder.Model,
 	}
 	p.poolMultiplier, p.poolMax = cfg.Execution.Retrieval.EffectiveVectorPool()
+	p.lexOrOnly = cfg.Execution.Retrieval.EffectiveLexicalMatchMode() == config.LexicalMatchOrOnly
 	if p.projectionWrite || p.projectionRead {
 		if p.projModelID == "" {
 			// The projection's whole point is model identity; an anonymous row
@@ -1328,17 +1332,53 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 // Results are ordered best-lexical-first. RRF fusion uses the ORDER; the raw
 // ts_rank_cd value (Score) is carried as SearchResult.LexicalRaw and read only by the
 // calibrated Stage A (ADR-0136 D1, execution.retrieval.stage_a_calibrated).
+// LexicalSearch is the keyword lane (ADR-0054). Terms are matched AND-first by
+// default (ENG-111): rows carrying every query term, ranked by ts_rank_cd; only
+// when that finds fewer than TopK rows (with no TopK: none) does the lane run
+// the any-term (OR) query instead, so a question whose answer lacks one of its
+// words still finds it. retrieval.lexical_match_mode = or_only keeps the
+// pre-ENG-111 OR-only match.
 func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, opts domain.SearchOptions) ([]domain.SearchResult, error) {
 	if strings.TrimSpace(queryText) == "" {
 		return nil, nil
 	}
-	// OR-tsquery: plainto -> text (' & ' joined lexemes) -> swap & for | -> tsquery.
-	orQuery := goqu.L("replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery", queryText)
+	if p.lexOrOnly {
+		return p.lexicalQuery(ctx, queryText, opts, true)
+	}
+	all, err := p.lexicalQuery(ctx, queryText, opts, false)
+	if err != nil {
+		return nil, err
+	}
+	if (opts.TopK > 0 && len(all) >= opts.TopK) || (opts.TopK <= 0 && len(all) > 0) {
+		return all, nil
+	}
+	return p.lexicalQuery(ctx, queryText, opts, true)
+}
+
+// lexicalTSVector is the tsvector a lexical query matches and ranks on: the
+// stored chunks.text_tsv column (migration 0064, ENG-111), else — descriptor
+// tables carry no stored column — the same expression computed per row.
+func lexicalTSVector(table string) string {
+	if table == TableChunks {
+		return "text_tsv"
+	}
+	return "to_tsvector('english', text)"
+}
+
+// lexicalQuery runs one lexical match: every term (plainto_tsquery's AND), or
+// any term (its lexemes OR-joined) when anyTerm.
+func (p *PgVectorAdapter) lexicalQuery(ctx context.Context, queryText string, opts domain.SearchOptions, anyTerm bool) ([]domain.SearchResult, error) {
+	// AND: plainto_tsquery. OR: plainto -> text (' & ' joined lexemes) -> swap & for | -> tsquery.
+	tsq := "plainto_tsquery('english', ?)"
+	if anyTerm {
+		tsq = "replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery"
+	}
 	lexTable := tableFor(opts.DocumentType)
+	vec := lexicalTSVector(lexTable)
 	ds := dialect.From(lexTable).
 		Select(p.readColumns(lexTable)...).
-		SelectAppend(goqu.L("ts_rank_cd(to_tsvector('english', text), replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery)", queryText).As("distance")).
-		Where(goqu.L("to_tsvector('english', text) @@ ?", orQuery)).
+		SelectAppend(goqu.L("ts_rank_cd("+vec+", "+tsq+")", queryText).As("distance")).
+		Where(goqu.L(vec+" @@ "+tsq, queryText)).
 		Order(goqu.C("distance").Desc())
 
 	if opts.DocumentType != "" {

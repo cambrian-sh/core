@@ -1052,6 +1052,13 @@ type RetrievalConfig struct {
 	HybridSearchEnabled bool    `json:"hybrid_search_enabled,omitempty"`
 	HybridRRFK          int     `json:"hybrid_rrf_k,omitempty"`
 	HybridLexicalWeight float64 `json:"hybrid_lexical_weight,omitempty"` // >1 leans RRF toward exact-term/entity matches; ≤0 ⇒ 1.0
+	// LexicalMatchMode is how the lexical lane combines the query's terms
+	// (ENG-111, owner decision 2026-11-19): "and_first" (the default; "" means
+	// it) matches rows carrying EVERY term and falls back to any-term (OR) only
+	// when that finds fewer than top_k rows; "or_only" matches any term, the
+	// behaviour before ENG-111. With OR alone a common term pulled most of the
+	// corpus into the ranked set.
+	LexicalMatchMode string `json:"lexical_match_mode,omitempty"`
 	// (agentic_ircot_enabled RETIRED 2026-11-15, owner decision ENG-1321: IRCoT is a
 	// disqualified lever, its branch deleted like HyDE; a layer setting it loads with a WARN.)
 	AgenticDecomposeEnabled bool `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
@@ -3705,6 +3712,7 @@ func DefaultConfig() *Config {
 				HybridSearchEnabled:           true, // dense+lexical RRF fusion (ADR-0054)
 				HybridRRFK:                    60,
 				HybridLexicalWeight:           1,
+				LexicalMatchMode:              LexicalMatchAndFirst, // ENG-111 (owner decision 2026-11-19)
 				HnswEfSearch:                  120,
 				// ENG-210: the dense candidate pool the activation re-rank sees,
 				// as the adapter sized it before it became config.
@@ -4921,6 +4929,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		default:
 			errs = append(errs, fmt.Sprintf("ingestion.structure_junk_filter_backends: unknown backend %q (valid: docling, markdown, text)", b))
 		}
+	}
+	if m := c.Retrieval.LexicalMatchMode; m != "" && m != LexicalMatchAndFirst && m != LexicalMatchOrOnly {
+		errs = append(errs, fmt.Sprintf("retrieval.lexical_match_mode %q must be %s or %s", m, LexicalMatchAndFirst, LexicalMatchOrOnly))
 	}
 	if c.Retrieval.HnswMaxScanTuples < 0 {
 		errs = append(errs, "retrieval.hnsw_max_scan_tuples must be >= 0")
