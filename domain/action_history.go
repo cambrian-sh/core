@@ -1,8 +1,12 @@
 package domain
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -35,8 +39,13 @@ import (
 // the approval item as a notice for the approver. It annotates, never refuses: a
 // legitimate repeat (the same reminder sent again) must stay approvable.
 //
-// In-memory and bounded, like the plan ledger: a restart forgets it, and the
-// notice is a hint to a person, not a control.
+// Bounded in memory. With a store (NewDurableActionHistory, Postgres in production,
+// ENG-784) the completed calls also outlive a restart: Finish persists a done entry,
+// and the first match against a scope loads that scope's done entries back. Only
+// completed calls persist — a call still awaiting approval is raised again by
+// approval recovery (tool_recovery.go), and a running one died with the process.
+// The notice stays a hint to a person, not a control: a store error is logged and
+// the history carries on in memory.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Action history entry states.
@@ -71,6 +80,39 @@ type ActionRecord struct {
 
 	seq  uint64
 	norm actionArgs
+	// key is the persisted identity of a done entry (ActionRecordKey); "" until
+	// the entry is done.
+	key string
+}
+
+// ActionHistoryStore persists the done entries of the action history (ENG-784),
+// so a conversation's earlier writes are still matched after a kernel restart.
+// Implementations: postgres.PgActionHistoryStore. Rows older than the history's
+// window are neither returned nor kept.
+type ActionHistoryStore interface {
+	// RecordDone upserts one done entry under rec's key (ActionRecordKey) and
+	// deletes every entry, of any scope, done before keepAfter.
+	RecordDone(ctx context.Context, scope string, rec ActionRecord, key string, keepAfter time.Time) error
+	// LoadDone returns scope's done entries done after since, oldest first, at
+	// most limit (the most recent ones).
+	LoadDone(ctx context.Context, scope string, since time.Time, limit int) ([]ActionRecord, error)
+}
+
+// ActionRecordKey is a done entry's persisted identity, derived from its content
+// (AGENTS.md §2.6): scope, tool, canonical arguments, approval and returned ids.
+// Two identical completed calls of a scope share one row — one is enough to name
+// as a possible duplicate.
+func ActionRecordKey(scope string, rec ActionRecord) string {
+	h := sha256.New()
+	args := normaliseActionArgs(rec.Args).canonical
+	if args == "" {
+		args = string(rec.Args)
+	}
+	for _, part := range []string{scope, rec.Tool, args, rec.ApprovalID, strings.Join(rec.IDs, "\x00")} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return "ah_" + hex.EncodeToString(h.Sum(nil))[:32]
 }
 
 // ActionRef names one entry so its state can be advanced; the zero value is a
@@ -89,10 +131,15 @@ type ActionHistory struct {
 	window time.Duration
 	now    func() time.Time
 
+	// store persists done entries; nil = in memory only.
+	store ActionHistoryStore
+
 	mu      sync.Mutex
 	seq     uint64
 	scopes  map[string][]ActionRecord
 	touched map[string]time.Time
+	// loaded marks the scopes whose done entries were read back from store.
+	loaded map[string]bool
 }
 
 // NewActionHistory builds a history whose matches look back window. window <= 0
@@ -104,7 +151,19 @@ func NewActionHistory(window time.Duration, now func() time.Time) *ActionHistory
 	if now == nil {
 		now = time.Now
 	}
-	return &ActionHistory{window: window, now: now, scopes: map[string][]ActionRecord{}, touched: map[string]time.Time{}}
+	return &ActionHistory{window: window, now: now, scopes: map[string][]ActionRecord{}, touched: map[string]time.Time{},
+		loaded: map[string]bool{}}
+}
+
+// NewDurableActionHistory is NewActionHistory whose done entries are persisted
+// in store and read back after a restart (ENG-784). A nil store is the in-memory
+// history.
+func NewDurableActionHistory(window time.Duration, now func() time.Time, store ActionHistoryStore) *ActionHistory {
+	h := NewActionHistory(window, now)
+	if h != nil {
+		h.store = store
+	}
+	return h
 }
 
 // Begin opens an entry for a call about to be approved or dispatched. scope ""
@@ -140,11 +199,26 @@ func (h *ActionHistory) Approved(ref ActionRef, approvalID string) {
 // incident it fixes: a calendar_create_event refused with not_found ("No user
 // Fenella Oakhurst in the directory") stayed in the history as "failed (it may or
 // may not have taken effect)", so the corrected retry was flagged and denied.
-func (h *ActionHistory) Finish(ref ActionRef, ids []string) {
+//
+// With a store, the done entry is persisted (best-effort: an error is logged and
+// the entry stays in memory). ctx is the call's; persisting outlives its cancel.
+func (h *ActionHistory) Finish(ctx context.Context, ref ActionRef, ids []string) {
+	var done ActionRecord
+	found := false
 	h.update(ref, func(r *ActionRecord) {
 		r.State = ActionDone
 		r.IDs = append([]string(nil), ids...)
+		r.key = ActionRecordKey(ref.scope, *r)
+		done, found = *r, true
 	})
+	if !found || h.store == nil {
+		return
+	}
+	done.At = h.now()
+	if err := h.store.RecordDone(context.WithoutCancel(ctx), ref.scope, done, done.key, done.At.Add(-h.window)); err != nil {
+		slog.Warn("action history: persisting a done call failed; it is matched in memory only",
+			"tool", done.Tool, "scope", ref.scope, "error", err)
+	}
 }
 
 // Drop removes ref: the call was refused and never ran, or it ran and failed.
@@ -183,10 +257,15 @@ func (h *ActionHistory) update(ref ActionRef, fn func(*ActionRecord)) {
 // Matches returns the earlier entries of scope that the call (tool, args) may
 // duplicate, most recent first, at most duplicateNoticeMax. except excludes the
 // call's own entry.
-func (h *ActionHistory) Matches(scope, tool string, args []byte, except ActionRef) []ActionMatch {
+//
+// With a store, the scope's persisted done entries are read back the first time
+// it is matched (or after it was evicted), so a restart forgets nothing inside
+// the window.
+func (h *ActionHistory) Matches(ctx context.Context, scope, tool string, args []byte, except ActionRef) []ActionMatch {
 	if h == nil || scope == "" {
 		return nil
 	}
+	h.load(ctx, scope)
 	cand := normaliseActionArgs(args)
 	now := h.now()
 	h.mu.Lock()
@@ -203,6 +282,61 @@ func (h *ActionHistory) Matches(scope, tool string, args []byte, except ActionRe
 		}
 	}
 	return out
+}
+
+// load reads scope's persisted done entries back once, placing them before the
+// entries this process holds (they are older) and skipping any this process
+// already finished itself (same key). A store error is logged and retried on the
+// next match.
+func (h *ActionHistory) load(ctx context.Context, scope string) {
+	if h.store == nil {
+		return
+	}
+	h.mu.Lock()
+	done := h.loaded[scope]
+	h.mu.Unlock()
+	if done {
+		return
+	}
+	now := h.now()
+	recs, err := h.store.LoadDone(ctx, scope, now.Add(-h.window), actionHistoryPerScope)
+	if err != nil {
+		slog.Warn("action history: reading persisted calls failed; matching against this process's calls only",
+			"scope", scope, "error", err)
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.loaded[scope] {
+		return
+	}
+	h.loaded[scope] = true
+	have := map[string]bool{}
+	for _, r := range h.scopes[scope] {
+		if r.key != "" {
+			have[r.key] = true
+		}
+	}
+	prior := make([]ActionRecord, 0, len(recs))
+	for _, r := range recs {
+		key := ActionRecordKey(scope, r)
+		if have[key] {
+			continue
+		}
+		h.seq++
+		r.State, r.seq, r.key, r.norm = ActionDone, h.seq, key, normaliseActionArgs(r.Args)
+		prior = append(prior, r)
+	}
+	if len(prior) == 0 {
+		return
+	}
+	list := append(prior, h.scopes[scope]...)
+	if len(list) > actionHistoryPerScope {
+		list = append([]ActionRecord(nil), list[len(list)-actionHistoryPerScope:]...)
+	}
+	h.scopes[scope] = list
+	h.touched[scope] = now
+	h.evict()
 }
 
 // expired reports whether r is outside the window. A call still waiting for its
@@ -242,6 +376,7 @@ func (h *ActionHistory) evict() {
 	}
 	delete(h.scopes, oldest)
 	delete(h.touched, oldest)
+	delete(h.loaded, oldest) // matched again later, it is read back again
 }
 
 // SideEffecting reports whether a call of t can change the world: a dangerous

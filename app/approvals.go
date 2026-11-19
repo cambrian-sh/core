@@ -76,6 +76,23 @@ func buildActionRecordStore(ctx context.Context, pool *pgxpool.Pool) domain.Acti
 	return pg
 }
 
+// buildActionHistory builds the conversation action history behind the
+// approver's duplicate notice: nil when the window is 0 (disabled), persisted in
+// Postgres when the database has migration 0066 so a restart forgets no earlier
+// write of a conversation (ENG-784), in memory otherwise.
+func buildActionHistory(ctx context.Context, windowMinutes int, pool *pgxpool.Pool) *domain.ActionHistory {
+	window := time.Duration(windowMinutes) * time.Minute
+	if window <= 0 || pool == nil {
+		return domain.NewActionHistory(window, nil)
+	}
+	pg := postgres.NewPgActionHistoryStore(pool)
+	if !pg.Ready(ctx) {
+		slog.Warn("ENG-784: action_history table missing (migration 0066 not applied); the duplicate notice forgets earlier writes on a restart")
+		return domain.NewActionHistory(window, nil)
+	}
+	return domain.NewDurableActionHistory(window, nil, pg)
+}
+
 // wireApprovalRecovery registers the recoverers that carry out an approval
 // approved after the kernel run that raised it ended
 // (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart; owner decision

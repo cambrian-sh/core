@@ -634,5 +634,5 @@ func (e *ToolExecutor) finishHistory(ctx context.Context, ref ActionRef, dispatc
 		e.History.Drop(ref)
 		return
 	}
-	e.History.Finish(ref, PlanActionIDs(result))
+	e.History.Finish(ctx, ref, PlanActionIDs(result))
 }

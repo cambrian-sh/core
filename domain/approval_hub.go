@@ -68,14 +68,10 @@ type AddressedHub struct {
 	local map[string]bool
 	// actions is the ADR-0154 durable action record a recovered execution runs
 	// under (exactly once, keyed RecoveryActionKey).
-	actions ActionRecordStore
-	notices int
-	// dupNotices holds the DuplicateNotice of each pending item by id, for a store
-	// that does not persist it (Postgres): Get and List overlay it, so a console
-	// that lists pending approvals sees the notice the stream delivered.
-	dupNotices map[string]string
-	answerMu   sync.Mutex // serialises answer/resolve read-check-write per hub
-	started    bool
+	actions  ActionRecordStore
+	notices  int
+	answerMu sync.Mutex // serialises answer/resolve read-check-write per hub
+	started  bool
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -228,7 +224,6 @@ func NewAddressedHub(cfg AddressedHubConfig) *AddressedHub {
 		recoverers:    map[string]ApprovalRecoverer{},
 		local:         map[string]bool{},
 		actions:       cfg.ActionRecords,
-		dupNotices:    map[string]string{},
 		stopCh:        make(chan struct{}),
 		done:          make(chan struct{}),
 	}
@@ -577,9 +572,6 @@ func (h *AddressedHub) raise(ctx context.Context, req ApprovalRequest, async boo
 		return it, ApprovalDecision{}, true, fmt.Errorf("approvals: persist: %w", err)
 	}
 	if it.DuplicateNotice != "" {
-		h.mu.Lock()
-		h.dupNotices[it.ID] = it.DuplicateNotice
-		h.mu.Unlock()
 		h.logger.Info("approvals: raised with a possible-duplicate notice", "event", "approval_duplicate_notice",
 			"approval", it.ID, "tool", it.ToolName, "conversation", it.ConversationID, "notice", it.DuplicateNotice)
 	}
@@ -785,10 +777,6 @@ func (h *AddressedHub) finish(ctx context.Context, it ApprovalItem) {
 	ws := h.waiters[it.ID]
 	delete(h.waiters, it.ID)
 	delete(h.local, it.ID)
-	if it.DuplicateNotice == "" {
-		it.DuplicateNotice = h.dupNotices[it.ID]
-	}
-	delete(h.dupNotices, it.ID) // resolved: the in-memory copy has done its job
 	h.mu.Unlock()
 	if len(ws) > 0 && (it.State == ApprovalApproved || it.State == ApprovalDenied) {
 		if err := h.store.MarkConsumed(ctx, it.ID); err == nil {
@@ -1037,28 +1025,14 @@ func (h *AddressedHub) Get(ctx context.Context, id string) (ApprovalItem, error)
 	if err != nil {
 		return it, err
 	}
-	return h.withNotice(it), nil
+	return it, nil
 }
 
 // List lists items.
 func (h *AddressedHub) List(ctx context.Context, q ApprovalQuery) ([]ApprovalItem, error) {
-	items, err := h.store.ListApprovals(ctx, q)
-	for i := range items {
-		items[i] = h.withNotice(items[i])
-	}
-	return items, err
-}
-
-// withNotice restores a pending item's DuplicateNotice when the store did not
-// keep it.
-func (h *AddressedHub) withNotice(it ApprovalItem) ApprovalItem {
-	if it.DuplicateNotice != "" {
-		return it
-	}
-	h.mu.Lock()
-	it.DuplicateNotice = h.dupNotices[it.ID]
-	h.mu.Unlock()
-	return it
+	// The store keeps each item's DuplicateNotice (Postgres since 0066, ENG-784),
+	// so a listing after a restart carries it too.
+	return h.store.ListApprovals(ctx, q)
 }
 
 // Answerable reports whether by may answer it, and if not, why.

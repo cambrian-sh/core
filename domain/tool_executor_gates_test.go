@@ -99,7 +99,7 @@ func newGateRig(t *testing.T, mutate func(c *ToolExecutorControls, f *ToolExecut
 func gateCtx() context.Context { return WithConversationID(context.Background(), gateConv) }
 
 func (r *gateRig) historyCount(tool, args string) int {
-	return len(r.history.Matches(ActionHistoryScope(gateConv, ""), tool, []byte(args), ActionRef{}))
+	return len(r.history.Matches(context.Background(), ActionHistoryScope(gateConv, ""), tool, []byte(args), ActionRef{}))
 }
 
 type gateOutcome struct {

@@ -1578,7 +1578,9 @@ type ToolsConfig struct {
 	// match is shown to the approver as a "Possible duplicate of … at …" notice on
 	// the approval item. Informational only: the call is never refused for it
 	// (T-20261107-approver-is-not-told-that-an-identical-side). Default 1440 (one
-	// day); 0 disables the history and the notice.
+	// day); 0 disables the history and the notice. It is also the retention of the
+	// completed calls persisted in Postgres (action_history, ENG-784): older rows
+	// are deleted on every write and never read.
 	DuplicateNoticeWindowMinutes int `json:"duplicate_notice_window_minutes"`
 
 	// RepeatedFailureStop stops a plan step whose worker made the same tool call

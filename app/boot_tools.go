@@ -416,8 +416,8 @@ func (b *kernelBuild) buildToolExecutor() error {
 		// The conversation's record of side-effecting calls: every approval the
 		// executor raises names an earlier call it may duplicate
 		// (T-20261107-approver-is-not-told-that-an-identical-side). nil when the
-		// window is 0 (disabled).
-		History: domain.NewActionHistory(time.Duration(cfg.Execution.Tools.DuplicateNoticeWindowMinutes)*time.Minute, nil),
+		// window is 0 (disabled); persisted across restarts (ENG-784).
+		History: buildActionHistory(ctx, cfg.Execution.Tools.DuplicateNoticeWindowMinutes, vec.Pool()),
 	})
 	if err != nil {
 		return fmt.Errorf("tool executor: %w", err)

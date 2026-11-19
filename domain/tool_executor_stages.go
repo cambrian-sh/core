@@ -410,7 +410,7 @@ func (e *ToolExecutor) approvalStage(ctx context.Context, c *toolCall) (ToolCall
 		notice := ""
 		if c.histScope != "" {
 			c.histRef = e.History.Begin(c.histScope, req.ToolName, req.ArgsJSON, ActionAwaitingApproval)
-			notice = RenderDuplicateNotice(e.History.Matches(c.histScope, req.ToolName, req.ArgsJSON, c.histRef))
+			notice = RenderDuplicateNotice(e.History.Matches(ctx, c.histScope, req.ToolName, req.ArgsJSON, c.histRef))
 		}
 		if c.unrequested {
 			// ADR-0145 D14: the same notice channel as the duplicate notice (the

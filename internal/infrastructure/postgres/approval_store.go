@@ -91,7 +91,7 @@ func apprFromNullTime(t *time.Time) time.Time {
 const approvalCols = `id, natural_key, round, kind, action_class, resource, scope, agent_id, tool_name, args_preview,
 	object, machine, candidates, beneficiary_id, beneficiary_kind, conversation_id, task_id, session_id, rules,
 	allow_standing, never_self, async, state, raised_at, expires_at, resolved_at, resolved_by, choice, standing_id,
-	detail, consumed, intent`
+	detail, consumed, intent, duplicate_notice`
 
 func approvalArgs(it domain.ApprovalItem) []any {
 	return []any{it.ID, it.NaturalKey, it.Round, it.Kind, it.ActionClass, it.Resource, it.Scope, it.AgentID,
@@ -99,7 +99,7 @@ func approvalArgs(it domain.ApprovalItem) []any {
 		string(it.Beneficiary.Kind), it.ConversationID, it.TaskID, it.SessionID, apprEncodeRules(it.Rules),
 		it.AllowStanding, it.NeverSelf, it.Async, string(it.State), it.RaisedAt.UTC(), apprNullTime(it.ExpiresAt),
 		apprNullTime(it.ResolvedAt), it.ResolvedBy, it.Choice, it.StandingID, it.Detail, it.Consumed,
-		apprEncodeIntent(it.Intent)}
+		apprEncodeIntent(it.Intent), it.DuplicateNotice}
 }
 
 // apprEncodeIntent is the 0059 intent column: JSON text, or NULL.
@@ -135,7 +135,8 @@ func scanApproval(row pgx.Row) (domain.ApprovalItem, error) {
 	err := row.Scan(&it.ID, &it.NaturalKey, &it.Round, &it.Kind, &it.ActionClass, &it.Resource, &it.Scope,
 		&it.AgentID, &it.ToolName, &it.ArgsPreview, &it.Object, &it.Machine, &cands, &it.Beneficiary.ID, &benKind,
 		&it.ConversationID, &it.TaskID, &it.SessionID, &rules, &it.AllowStanding, &it.NeverSelf, &it.Async, &state,
-		&it.RaisedAt, &expires, &resolved, &it.ResolvedBy, &it.Choice, &it.StandingID, &it.Detail, &it.Consumed, &intent)
+		&it.RaisedAt, &expires, &resolved, &it.ResolvedBy, &it.Choice, &it.StandingID, &it.Detail, &it.Consumed, &intent,
+		&it.DuplicateNotice)
 	if err != nil {
 		return it, err
 	}
@@ -155,7 +156,7 @@ func scanApproval(row pgx.Row) (domain.ApprovalItem, error) {
 // PutApproval upserts one item.
 func (s *PgApprovalStore) PutApproval(ctx context.Context, it domain.ApprovalItem) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO approvals (`+approvalCols+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 		ON CONFLICT (id) DO UPDATE SET
 			kind = EXCLUDED.kind, action_class = EXCLUDED.action_class, resource = EXCLUDED.resource,
 			scope = EXCLUDED.scope, agent_id = EXCLUDED.agent_id, tool_name = EXCLUDED.tool_name,
@@ -167,7 +168,7 @@ func (s *PgApprovalStore) PutApproval(ctx context.Context, it domain.ApprovalIte
 			state = EXCLUDED.state, raised_at = EXCLUDED.raised_at, expires_at = EXCLUDED.expires_at,
 			resolved_at = EXCLUDED.resolved_at, resolved_by = EXCLUDED.resolved_by, choice = EXCLUDED.choice,
 			standing_id = EXCLUDED.standing_id, detail = EXCLUDED.detail, consumed = EXCLUDED.consumed,
-			intent = EXCLUDED.intent`,
+			intent = EXCLUDED.intent, duplicate_notice = EXCLUDED.duplicate_notice`,
 		approvalArgs(it)...)
 	if err != nil {
 		return fmt.Errorf("approvals: put: %w", err)

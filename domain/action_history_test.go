@@ -105,15 +105,15 @@ func TestActionHistory_ScopeWindowAndStates(t *testing.T) {
 
 	ref := h.Begin("conversation:c1", "send_mail", args, ActionAwaitingApproval)
 	h.Approved(ref, "apr-1")
-	h.Finish(ref, []string{"message_id=m-1"})
+	h.Finish(context.Background(), ref, []string{"message_id=m-1"})
 
-	if got := h.Matches("conversation:c2", "send_mail", args, ActionRef{}); len(got) != 0 {
+	if got := h.Matches(context.Background(), "conversation:c2", "send_mail", args, ActionRef{}); len(got) != 0 {
 		t.Fatalf("another conversation must not match: %+v", got)
 	}
-	if got := h.Matches("conversation:c1", "post_message", args, ActionRef{}); len(got) != 0 {
+	if got := h.Matches(context.Background(), "conversation:c1", "post_message", args, ActionRef{}); len(got) != 0 {
 		t.Fatalf("another tool must not match: %+v", got)
 	}
-	got := h.Matches("conversation:c1", "send_mail", args, ActionRef{})
+	got := h.Matches(context.Background(), "conversation:c1", "send_mail", args, ActionRef{})
 	if len(got) != 1 || got[0].Prior.ApprovalID != "apr-1" || got[0].Prior.State != ActionDone {
 		t.Fatalf("matches = %+v", got)
 	}
@@ -128,7 +128,7 @@ func TestActionHistory_ScopeWindowAndStates(t *testing.T) {
 	// A refused call is dropped: it never ran.
 	r2 := h.Begin("conversation:c1", "delete_repo", []byte(`{"repo":"x"}`), ActionAwaitingApproval)
 	h.Drop(r2)
-	if got := h.Matches("conversation:c1", "delete_repo", []byte(`{"repo":"x"}`), ActionRef{}); len(got) != 0 {
+	if got := h.Matches(context.Background(), "conversation:c1", "delete_repo", []byte(`{"repo":"x"}`), ActionRef{}); len(got) != 0 {
 		t.Fatalf("a dropped call must not match: %+v", got)
 	}
 
@@ -136,15 +136,15 @@ func TestActionHistory_ScopeWindowAndStates(t *testing.T) {
 	// approval never expires.
 	pending := h.Begin("conversation:c1", "send_mail", []byte(`{"to":"z@x.com","subject":"Later"}`), ActionAwaitingApproval)
 	now = now.Add(2 * time.Hour)
-	if got := h.Matches("conversation:c1", "send_mail", args, ActionRef{}); len(got) != 0 {
+	if got := h.Matches(context.Background(), "conversation:c1", "send_mail", args, ActionRef{}); len(got) != 0 {
 		t.Fatalf("an expired call must not match: %+v", got)
 	}
-	got = h.Matches("conversation:c1", "send_mail", []byte(`{"to":"z@x.com","subject":"Later"}`), ActionRef{})
+	got = h.Matches(context.Background(), "conversation:c1", "send_mail", []byte(`{"to":"z@x.com","subject":"Later"}`), ActionRef{})
 	if len(got) != 1 || got[0].Prior.State != ActionAwaitingApproval {
 		t.Fatalf("pending call must still match: %+v", got)
 	}
 	// Its own entry is excluded.
-	if got := h.Matches("conversation:c1", "send_mail", []byte(`{"to":"z@x.com","subject":"Later"}`), pending); len(got) != 0 {
+	if got := h.Matches(context.Background(), "conversation:c1", "send_mail", []byte(`{"to":"z@x.com","subject":"Later"}`), pending); len(got) != 0 {
 		t.Fatalf("a call must not match itself: %+v", got)
 	}
 
@@ -153,8 +153,8 @@ func TestActionHistory_ScopeWindowAndStates(t *testing.T) {
 	if off != nil {
 		t.Fatal("window 0 must disable the history")
 	}
-	off.Finish(off.Begin("conversation:c1", "x", nil, ActionRunning), nil)
-	if off.Matches("conversation:c1", "x", nil, ActionRef{}) != nil {
+	off.Finish(context.Background(), off.Begin("conversation:c1", "x", nil, ActionRunning), nil)
+	if off.Matches(context.Background(), "conversation:c1", "x", nil, ActionRef{}) != nil {
 		t.Fatal("disabled history matched")
 	}
 }
@@ -163,7 +163,7 @@ func TestActionHistory_Bounded(t *testing.T) {
 	t.Parallel()
 	h := NewActionHistory(time.Hour, nil)
 	for i := 0; i < actionHistoryPerScope+50; i++ {
-		h.Finish(h.Begin("conversation:c", "t", []byte(fmt.Sprintf(`{"n":%d}`, i)), ActionRunning), nil)
+		h.Finish(context.Background(), h.Begin("conversation:c", "t", []byte(fmt.Sprintf(`{"n":%d}`, i)), ActionRunning), nil)
 	}
 	h.mu.Lock()
 	n := len(h.scopes["conversation:c"])
@@ -318,12 +318,12 @@ func TestExecute_HistoryRecordsOnlyWritesThatRan(t *testing.T) {
 
 	e.Execute(ctx, ToolCallRequest{AgentID: "a", ToolName: "search", ArgsJSON: args})
 	e.Execute(ctx, ToolCallRequest{AgentID: "a", ToolName: "post_note", ArgsJSON: args})
-	got := e.History.Matches(ActionHistoryScope("conv-1", ""), "post_note", args, ActionRef{})
+	got := e.History.Matches(context.Background(), ActionHistoryScope("conv-1", ""), "post_note", args, ActionRef{})
 	if len(got) != 1 || got[0].Prior.State != ActionDone || got[0].Prior.ApprovalID != "" ||
 		strings.Join(got[0].Prior.IDs, ",") != "id=n-1" {
 		t.Fatalf("post_note history = %+v", got)
 	}
-	if got := e.History.Matches(ActionHistoryScope("conv-1", ""), "search", args, ActionRef{}); len(got) != 0 {
+	if got := e.History.Matches(context.Background(), ActionHistoryScope("conv-1", ""), "search", args, ActionRef{}); len(got) != 0 {
 		t.Fatalf("a read-only call was recorded: %+v", got)
 	}
 
@@ -331,7 +331,7 @@ func TestExecute_HistoryRecordsOnlyWritesThatRan(t *testing.T) {
 	// 2026-11-10, T-20261109-duplicate-notice-fires-on-the-retry-of-a-write).
 	h.err = fmt.Errorf("upstream 502")
 	e.Execute(ctx, ToolCallRequest{AgentID: "a", ToolName: "post_note", ArgsJSON: []byte(`{"path":"x.md","content":"q"}`)})
-	if got := e.History.Matches(ActionHistoryScope("conv-1", ""), "post_note", []byte(`{"path":"x.md","content":"q"}`), ActionRef{}); len(got) != 0 {
+	if got := e.History.Matches(context.Background(), ActionHistoryScope("conv-1", ""), "post_note", []byte(`{"path":"x.md","content":"q"}`), ActionRef{}); len(got) != 0 {
 		t.Fatalf("a failed write must not be kept: %+v", got)
 	}
 	// So is one whose result reports an error or a refusal in-band.
@@ -339,7 +339,7 @@ func TestExecute_HistoryRecordsOnlyWritesThatRan(t *testing.T) {
 	for _, res := range []string{`{"error":"not_found"}`, `{"denied":"policy"}`} {
 		h.result = []byte(res)
 		e.Execute(ctx, ToolCallRequest{AgentID: "a", ToolName: "post_note", ArgsJSON: []byte(`{"path":"y.md","content":"r"}`)})
-		if got := e.History.Matches(ActionHistoryScope("conv-1", ""), "post_note", []byte(`{"path":"y.md","content":"r"}`), ActionRef{}); len(got) != 0 {
+		if got := e.History.Matches(context.Background(), ActionHistoryScope("conv-1", ""), "post_note", []byte(`{"path":"y.md","content":"r"}`), ActionRef{}); len(got) != 0 {
 			t.Fatalf("result %s must not be kept: %+v", res, got)
 		}
 	}
@@ -409,7 +409,7 @@ func TestExecute_ConcurrentDuplicateWhileFirstAwaitsApproval(t *testing.T) {
 		close(done)
 	}()
 	<-first
-	notice := RenderDuplicateNotice(e.History.Matches(ActionHistoryScope("conv-1", ""), "create_issue", args, ActionRef{}))
+	notice := RenderDuplicateNotice(e.History.Matches(context.Background(), ActionHistoryScope("conv-1", ""), "create_issue", args, ActionRef{}))
 	if !strings.Contains(notice, "awaiting approval") {
 		t.Fatalf("notice = %q, want the first call shown awaiting approval", notice)
 	}
@@ -428,25 +428,11 @@ func (b *blockingApproval) Request(context.Context, ApprovalRequest) (ApprovalDe
 	return ApprovalDecision{Approved: true, Decided: true, State: ApprovalApproved, ApprovalID: "apr-1"}, nil
 }
 
-// noticeDroppingStore is a store without a duplicate_notice column (the Postgres
-// adapter today).
-type noticeDroppingStore struct{ ApprovalStore }
-
-func (s noticeDroppingStore) PutApproval(ctx context.Context, it ApprovalItem) error {
-	it.DuplicateNotice = ""
-	return s.ApprovalStore.PutApproval(ctx, it)
-}
-
-func (s noticeDroppingStore) ResolveApproval(ctx context.Context, it ApprovalItem) (bool, error) {
-	it.DuplicateNotice = ""
-	return s.ApprovalStore.ResolveApproval(ctx, it)
-}
-
-// End to end through the real hub: the approver's stream and a later listing both
-// carry the notice, even when the store does not persist it.
+// End to end through the real hub: the approver's stream, a later listing and the
+// resolution all carry the notice, which the store keeps (ENG-784).
 func TestHub_DuplicateNoticeReachesTheApprover(t *testing.T) {
 	t.Parallel()
-	hub := NewAddressedHub(AddressedHubConfig{Store: noticeDroppingStore{NewMemoryApprovalStore()}})
+	hub := NewAddressedHub(AddressedHubConfig{Store: NewMemoryApprovalStore()})
 	evs, cancel := hub.Watch(opWatch("op"))
 	defer cancel()
 	e := dupExec(hub, &fakeHandler{result: []byte(`{"key":"OPS-11"}`)})
@@ -502,12 +488,6 @@ func TestHub_DuplicateNoticeReachesTheApprover(t *testing.T) {
 			t.Fatalf("resolution of the flagged item lost its notice: %q", res.DuplicateNotice)
 		}
 		break
-	}
-	hub.mu.Lock()
-	left := len(hub.dupNotices)
-	hub.mu.Unlock()
-	if left != 0 {
-		t.Fatalf("resolved items' notices still held in memory: %d", left)
 	}
 }
 
