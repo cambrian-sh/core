@@ -5,6 +5,7 @@
 # Groups:
 #   unit              All unit tests
 #   separability      OTel / premium import gate
+#   parity            Published-tool parity ledger (ADR-0126 D11)
 #   integration       SystemHarness E2E tests
 #   chaos             Per-PR chaos scenarios (in-process, no Docker)
 #   chaos-real        Real-service chaos (requires Docker Compose)
@@ -15,14 +16,14 @@
 #   bench-compare     Micro benchmarks + benchstat diff vs baseline
 #   fuzz              Fuzzing, 10 minutes
 #   fuzz-release      Fuzzing, 1 hour
-#   per-pr            Full per-PR pipeline (unit + separability + integration + chaos + bench-micro)
+#   per-pr            Full per-PR pipeline (unit + separability + parity + integration + chaos + bench-micro)
 #   nightly           Nightly pipeline (bench-macro + fuzz + leak)
 #   release-gate      Full release gate (Docker + 1h fuzz, ~30 min)
 
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet(
-        "unit", "separability", "integration",
+        "unit", "separability", "parity", "integration",
         "chaos", "chaos-real",
         "leak", "leak-integration",
         "bench-micro", "bench-macro", "bench-compare",
@@ -58,6 +59,12 @@ function Step-Unit {
 function Step-Separability {
     Run-Step "OTel / premium separability gate" {
         pwsh -File "$root\scripts\check-separability.ps1"
+    }
+}
+
+function Step-Parity {
+    Run-Step "Published-tool parity ledger (ADR-0126 D11)" {
+        pwsh -File "$root\scripts\check-parity.ps1"
     }
 }
 
@@ -153,6 +160,7 @@ function Pipeline-PerPR {
     Write-Host "========================================" -ForegroundColor Yellow
     Step-Unit
     Step-Separability
+    Step-Parity
     Step-Integration
     Step-Chaos
     Step-BenchMicro
@@ -191,6 +199,7 @@ function Pipeline-ReleaseGate {
 switch ($Group) {
     "unit"               { Step-Unit }
     "separability"       { Step-Separability }
+    "parity"             { Step-Parity }
     "integration"        { Step-Integration }
     "chaos"              { Step-Chaos }
     "chaos-real"         { Step-ChaosReal }

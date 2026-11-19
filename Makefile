@@ -7,7 +7,7 @@
         leak leak-integration \
         bench-micro bench-macro bench-compare \
         fuzz fuzz-release \
-        separability archlint \
+        separability parity archlint \
         lint lint-new deadcode \
         proto-sync proto-sync-check \
         per-pr nightly release-gate
@@ -21,6 +21,7 @@ help:
 	@echo "  FAST (no external deps)"
 	@echo "    make test              Unit tests, all packages                  ~30s"
 	@echo "    make separability      OTel / premium import gate                 ~1s"
+	@echo "    make parity            Published-tool parity ledger (ADR-0126 D11) ~1s"
 	@echo "    make archlint          Architecture rules (layering, ctors, ctx)  ~5s"
 	@echo "    make lint              golangci-lint, full report (advisory)      ~40s"
 	@echo "    make lint-new          golangci-lint vs $(LINT_BASE) (the gate)     ~40s"
@@ -152,6 +153,24 @@ separability:
 		pwsh -File scripts/check-separability.ps1; \
 	else \
 		powershell -NoProfile -File scripts/check-separability.ps1; \
+	fi
+
+# ─── Parity Gate ─────────────────────────────────────────────────────────────
+
+# ADR-0126 D11: every tool core publishes over MCP has a row in
+# docs/published-tool-parity.md, and the ledger's founding exclusions stay
+# written down. "A new agent capability with neither entry is a red build, not a
+# review comment" — which it was not until this target joined per-pr and CI
+# (ENG-1424): the script existed and passed by hand, but nothing ran it.
+# Same bash-first / pwsh-fallback shape as separability.
+parity:
+	@echo "--- Checking published-tool parity ledger (ADR-0126 D11) ---"
+	@if command -v bash > /dev/null 2>&1; then \
+		bash scripts/check-parity.sh; \
+	elif command -v pwsh > /dev/null 2>&1; then \
+		pwsh -File scripts/check-parity.ps1; \
+	else \
+		powershell -NoProfile -File scripts/check-parity.ps1; \
 	fi
 
 # ─── Architecture Gate ───────────────────────────────────────────────────────
@@ -323,7 +342,7 @@ fuzz-release:
 # control rules while being wired into no pipeline at all — the reason a contract
 # change once reached main unbumped was that nothing ran the check, not that
 # someone bypassed it.
-per-pr: proto-check proto-breaking vet-tagged archlint test-race separability integration chaos
+per-pr: proto-check proto-breaking vet-tagged archlint test-race separability parity integration chaos
 	@echo ""
 	@echo "=== Per-PR pipeline complete ==="
 
