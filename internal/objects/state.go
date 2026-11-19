@@ -48,11 +48,61 @@ func NotRetired(alias string) string {
 // the new declarations.
 func ApplyStateTx(ctx context.Context, tx pgx.Tx, kinds domain.KindSource, namespace string, entityIDs ...string) error {
 	for _, e := range dedupe(entityIDs) {
-		if err := applyEntity(ctx, tx, kinds, namespace, e, nil); err != nil {
+		if err := applyEntity(ctx, tx, kinds, namespace, e, nil, false); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// LockedInsertCTE is the CTE a history INSERT puts in front of itself to take
+// the entity's object lock IN the insert statement (ENG-1103; owner decision
+// 2026-11-19): `WITH l AS (SELECT pg_advisory_xact_lock($n)) INSERT … SELECT …
+// FROM l`. Reading FROM l makes the lock part of the insert's own execution, so
+// it cannot be skipped or deferred; it is a transaction lock, so it is held
+// until the explicit transaction commits. keyParam is the placeholder of the
+// EntityLockKey argument. The caller then calls ApplyLockedStateTx in the same
+// transaction instead of ApplyStateTx — one round trip less, the same lock.
+func LockedInsertCTE(keyParam string) string {
+	return "WITH l AS (SELECT " + lockExprs(keyParam) + ")"
+}
+
+// lockExprs is the one lock statement's select list: the declarations key
+// SHARED (every object-row writer holds it, so Rebuild's barrier can wait for
+// them), then the entity's key exclusively. Both are transaction locks.
+func lockExprs(entityKeyParam string) string {
+	return "pg_advisory_xact_lock_shared(" + fmt.Sprint(declarationsLockKey) + "), pg_advisory_xact_lock(" + entityKeyParam + "::bigint)"
+}
+
+// declarationsLockKey is the barrier between object-row writers and a rebuild
+// (ENG-1103). Rebuild lists entities from COMMITTED history, so an in-flight
+// writer of a NEW entity — inserted, not committed, and having read the old
+// declarations after its entity lock — is in no list and nobody would write
+// its row (found by TestPg_ObservationWritersRacingATableApplyLoseNothing on
+// the code before this). Every writer holds this key shared while it reads
+// the declarations; Rebuild takes it exclusively once, after the live
+// declarations were swapped in and before it lists entities: it waits for
+// every writer that may have read the old declarations, and every writer that
+// locks after it reads the new ones.
+var declarationsLockKey = entityLockKey("*", "objects:declarations")
+
+// EntityLockKey is the per-entity advisory lock key every object-row writer
+// serialises on (ApplyStateTx, the rebuild, LockedInsertCTE).
+func EntityLockKey(ns, entity string) int64 { return entityLockKey(ns, entity) }
+
+// ApplyLockedStateTx is ApplyStateTx for one entity whose lock the caller
+// already took in this transaction through LockedInsertCTE, in the history
+// INSERT itself (ENG-1103). Everything after the lock is unchanged: the
+// declarations are consulted only now, after the lock, so the ontology
+// rebuild — which switches the registry before it takes entity locks — still
+// either waits for this writer or is followed by one that sees the new
+// declarations. It never skips the lock: the lock happened, earlier, in the
+// same transaction.
+func ApplyLockedStateTx(ctx context.Context, tx pgx.Tx, kinds domain.KindSource, namespace, entityID string) error {
+	if entityID == "" {
+		return nil
+	}
+	return applyEntity(ctx, tx, kinds, namespace, entityID, nil, true)
 }
 
 func dedupe(ids []string) []string {
@@ -77,9 +127,14 @@ func entityLockKey(ns, entity string) int64 {
 // applyEntity recomputes one entity's row. rebuilding names the table a rebuild
 // is walking: a row there whose entity is no longer an object of that table's
 // kind is removed.
-func applyEntity(ctx context.Context, tx pgx.Tx, kinds domain.KindSource, ns, entity string, rebuilding *Table) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, entityLockKey(ns, entity)); err != nil {
-		return fmt.Errorf("objects: lock %s: %w", entity, err)
+//
+// locked: the caller took the entity's transaction lock earlier in tx
+// (LockedInsertCTE); otherwise it is taken here.
+func applyEntity(ctx context.Context, tx pgx.Tx, kinds domain.KindSource, ns, entity string, rebuilding *Table, locked bool) error {
+	if !locked {
+		if _, err := tx.Exec(ctx, `SELECT `+lockExprs("$1"), entityLockKey(ns, entity)); err != nil {
+			return fmt.Errorf("objects: lock %s: %w", entity, err)
+		}
 	}
 	reg := kinds.KindsFor(ns)
 	spec, ok := reg.ObjectKind(entity)
@@ -481,6 +536,15 @@ const rebuildBatch = 500
 // Writes that land while it runs maintain themselves (the live declarations
 // were swapped in before it started) and serialise with it per object.
 func Rebuild(ctx context.Context, pool *pgxpool.Pool, kinds domain.KindSource, t Table) (int, error) {
+	// The declarations barrier (declarationsLockKey): wait for every in-flight
+	// writer that may have read the declarations before the swap, so its
+	// history row is committed — and listed below — before the walk starts.
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, declarationsLockKey)
+		return err
+	}); err != nil {
+		return 0, fmt.Errorf("objects: rebuild %s: declarations barrier: %w", t.Name, err)
+	}
 	rows, err := pool.Query(ctx, `
 		SELECT namespace_id, entity_id FROM observations WHERE split_part(entity_id, '/', 1) = ANY($1)
 		UNION SELECT namespace_id, entity_id FROM resolutions WHERE system_to IS NULL AND split_part(entity_id, '/', 1) = ANY($1)
@@ -507,7 +571,7 @@ func Rebuild(ctx context.Context, pool *pgxpool.Pool, kinds domain.KindSource, t
 		end := min(start+rebuildBatch, len(keys))
 		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 			for _, k := range keys[start:end] {
-				if err := applyEntity(ctx, tx, kinds, k.ns, k.entity, &t); err != nil {
+				if err := applyEntity(ctx, tx, kinds, k.ns, k.entity, &t, false); err != nil {
 					return err
 				}
 			}

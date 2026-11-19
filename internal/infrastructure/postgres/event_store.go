@@ -164,28 +164,38 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 		evidenceID = &e
 	}
 	// One transaction: the history row and the object row it may change commit
-	// together (ADR-0149 D3).
+	// together (ADR-0149 D3). The entity's object lock is taken INSIDE the
+	// insert (objects.LockedInsertCTE, ENG-1103): BEGIN → INSERT+lock →
+	// [object row] → COMMIT, one round trip less than a separate lock
+	// statement. The insert reads FROM l, so the lock is never skipped — also
+	// for an entity no table kind declares today, because a live ontology
+	// Apply may make it one (the rebuild then waits for this writer, or this
+	// writer sees the new declarations after its lock).
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
-	tag, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, objects.LockedInsertCTE("$17")+`
 		INSERT INTO observations (namespace_id, entity_id, predicate, value_type,
 			value_date, value_number, value_text, value_entity_id,
 			location, occurred_at, confidence, evidence_id, source_ref, time_basis, decl_version, classification)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		SELECT $1::text, $2::text, $3::text, $4::text, $5::timestamptz, $6::double precision, $7::text, $8::text,
+			$9::text, $10::timestamptz, $11::double precision, $12::text, $13::text, $14::text, $15::bigint, $16::text[]
+		FROM l
 		ON CONFLICT (namespace_id, source_ref, occurred_at) WHERE source_ref <> '' DO NOTHING`,
 		ns, ob.EntityID, ob.Predicate, ob.Value.Type,
 		date, num, text, ent,
 		ob.Location, ob.OccurredAt.UTC(), conf, evidenceID, ob.SourceRef, ob.TimeBasis,
-		declVersionOrNil(reg.Version()), rowClassificationArg(rowTags))
+		declVersionOrNil(reg.Version()), rowClassificationArg(rowTags),
+		objects.EntityLockKey(ns, ob.EntityID))
 	if err != nil {
 		return false, err
 	}
 	inserted := tag.RowsAffected() == 1
 	if inserted {
-		if err := objects.ApplyStateTx(ctx, tx, s.kinds, ns, ob.EntityID); err != nil {
+		// The registry check happens here, after the lock (ApplyLockedStateTx).
+		if err := objects.ApplyLockedStateTx(ctx, tx, s.kinds, ns, ob.EntityID); err != nil {
 			return false, err
 		}
 	}
