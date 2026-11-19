@@ -15966,9 +15966,11 @@ type ConfigWriteOutcomeOp struct {
 	// config files. shadowed_by above is the opposite direction (a higher layer
 	// beats the store); these say what the write did to, or against, a file.
 	//
-	// written_to names the config file the value was written INTO (write-through:
-	// the file already set the key and is writable, so the store override was
-	// removed and the file is the value's one durable home). Empty otherwise.
+	// written_to names the config file the value was MIRRORED into: the file
+	// already set the key and is writable, so after storing the value (the store
+	// is authoritative, ENG-1417) the kernel also wrote it into that file, keeping
+	// the file and the store in agreement. The stored value remains. Empty
+	// otherwise.
 	WrittenTo string `protobuf:"bytes,6,opt,name=written_to,json=writtenTo,proto3" json:"written_to,omitempty"`
 	// overrides_file names the file layer the stored value now OVERRIDES: the file
 	// sets the key but is not writable (committed, read-only), so a later edit of
