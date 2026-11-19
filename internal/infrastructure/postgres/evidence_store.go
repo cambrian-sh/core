@@ -99,6 +99,11 @@ func (s *PgEvidenceStore) Insert(ctx context.Context, ev domain.Evidence) (domai
 		r := string(ev.RevisesID)
 		revises = &r
 	}
+	var derived *string
+	if ev.DerivedFrom != "" {
+		d := string(ev.DerivedFrom)
+		derived = &d
+	}
 	tags := ev.Classification
 	if tags == nil {
 		tags = []string{}
@@ -115,13 +120,13 @@ func (s *PgEvidenceStore) Insert(ctx context.Context, ev domain.Evidence) (domai
 	err = tx.QueryRow(ctx, `
 		INSERT INTO evidence (id, namespace_id, source_id, source_key, source_revision,
 			source_time, ingested_at, content_hash, content_bytes, classification,
-			parties, cursor, trace_id, revises_id)
-		VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()),$8,$9,$10,$11,$12,$13,$14)
+			parties, cursor, trace_id, revises_id, derived_from)
+		VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()),$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT ON CONSTRAINT evidence_source_revision_unique DO NOTHING
 		RETURNING id`,
 		string(id), ns, ev.SourceID, ev.SourceKey, ev.SourceRevision,
 		srcTime, ingested, string(ev.ContentHash), ev.ContentBytes, tags,
-		parties, ev.Cursor, ev.TraceID, revises,
+		parties, ev.Cursor, ev.TraceID, revises, derived,
 	).Scan(&gotID)
 
 	switch {
@@ -165,15 +170,16 @@ func (s *PgEvidenceStore) Get(ctx context.Context, id domain.EvidenceID) (*domai
 		gotID   string
 		srcTime *time.Time
 		revises *string
+		derived *string
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, namespace_id, source_id, source_key, source_revision,
 			source_time, ingested_at, content_hash, content_bytes, classification,
-			parties, cursor, trace_id, revises_id
+			parties, cursor, trace_id, revises_id, derived_from
 		FROM evidence WHERE id = $1`, string(id),
 	).Scan(&gotID, &ev.NamespaceID, &ev.SourceID, &ev.SourceKey, &ev.SourceRevision,
 		&srcTime, &ev.IngestedAt, (*string)(&ev.ContentHash), &ev.ContentBytes,
-		&ev.Classification, &ev.Parties, &ev.Cursor, &ev.TraceID, &revises)
+		&ev.Classification, &ev.Parties, &ev.Cursor, &ev.TraceID, &revises, &derived)
 	if err != nil {
 		return nil, fmt.Errorf("evidence get %s: %w", id, err)
 	}
@@ -183,6 +189,9 @@ func (s *PgEvidenceStore) Get(ctx context.Context, id domain.EvidenceID) (*domai
 	}
 	if revises != nil {
 		ev.RevisesID = domain.EvidenceID(*revises)
+	}
+	if derived != nil {
+		ev.DerivedFrom = domain.EvidenceID(*derived)
 	}
 	return &ev, nil
 }

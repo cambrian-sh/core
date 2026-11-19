@@ -88,6 +88,15 @@ func (i *Ingestor) Ingest(ctx context.Context, raw Raw) (id domain.EvidenceID, i
 		}
 	}
 
+	// 0b. ENG-1611: material a pipeline node fetched carries exactly its parent's
+	// classification and parties (memo §12: derived records inherit
+	// monotonically, never widen). Resolved before any byte is written.
+	if raw.DerivedFrom != "" {
+		if err := i.inheritFromParent(ctx, &raw); err != nil {
+			return "", false, err
+		}
+	}
+
 	// 1. Bytes first. Put is idempotent under the CID, so a crash-and-retry
 	// re-puts the same content harmlessly.
 	cid, err := i.blobs.Put(ctx, raw.Bytes, contentNodeType, nil, snippet(raw.Bytes))
@@ -122,10 +131,11 @@ func (i *Ingestor) Ingest(ctx context.Context, raw Raw) (id domain.EvidenceID, i
 		// party silently — the rules resolved, the delivery carried them, the
 		// column existed and the INSERT bound it, and `evidence.parties` was
 		// empty on every row in the deployment (ADR-0121).
-		Parties:   raw.Parties,
-		Cursor:    raw.Cursor,
-		TraceID:   raw.TraceID,
-		RevisesID: raw.RevisesID,
+		Parties:     raw.Parties,
+		Cursor:      raw.Cursor,
+		TraceID:     raw.TraceID,
+		RevisesID:   raw.RevisesID,
+		DerivedFrom: raw.DerivedFrom,
 	})
 	if err != nil {
 		// The blob may now be an orphan. That is the deliberate trade (harmless
@@ -133,6 +143,63 @@ func (i *Ingestor) Ingest(ctx context.Context, raw Raw) (id domain.EvidenceID, i
 		return "", false, fmt.Errorf("evidence ingest: commit: %w", err)
 	}
 	return id, inserted, nil
+}
+
+// inheritFromParent gives a derived delivery its parent's classification and
+// parties (ENG-1611). The parent must exist in the same namespace; the delivery
+// may carry no labels of its own or exactly the parent's. Anything else is
+// refused: a union could widen what a tag predicate admits, and a narrower set
+// would widen it outright.
+func (i *Ingestor) inheritFromParent(ctx context.Context, raw *Raw) error {
+	parent, err := i.store.Get(ctx, raw.DerivedFrom)
+	if err != nil || parent == nil {
+		return fmt.Errorf("evidence ingest: %w: parent %s is not readable (%v); nothing derived from it is archived",
+			domain.ErrDerivedEvidence, raw.DerivedFrom, err)
+	}
+	if orNS(parent.NamespaceID) != orNS(raw.NamespaceID) {
+		return fmt.Errorf("evidence ingest: %w: parent %s is in namespace %q, the delivery in %q",
+			domain.ErrDerivedEvidence, raw.DerivedFrom, parent.NamespaceID, raw.NamespaceID)
+	}
+	if len(raw.Classification) > 0 && !sameSet(raw.Classification, parent.Classification) {
+		return fmt.Errorf("evidence ingest: %w: classification %v differs from the parent's %v",
+			domain.ErrDerivedEvidence, raw.Classification, parent.Classification)
+	}
+	if len(raw.Parties) > 0 && !sameSet(raw.Parties, parent.Parties) {
+		return fmt.Errorf("evidence ingest: %w: parties differ from the parent's", domain.ErrDerivedEvidence)
+	}
+	raw.Classification = append([]string(nil), parent.Classification...)
+	raw.Parties = append([]string(nil), parent.Parties...)
+	return nil
+}
+
+// orNS treats an empty namespace as the default one, as the stores do.
+func orNS(ns string) string {
+	if ns == "" {
+		return "default"
+	}
+	return ns
+}
+
+// sameSet reports whether a and b hold the same strings (order and duplicates
+// ignored).
+func sameSet(a, b []string) bool {
+	in := func(xs []string) map[string]bool {
+		m := make(map[string]bool, len(xs))
+		for _, x := range xs {
+			m[x] = true
+		}
+		return m
+	}
+	ma, mb := in(a), in(b)
+	if len(ma) != len(mb) {
+		return false
+	}
+	for k := range ma {
+		if !mb[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // Stage makes one delivery's bytes durable in the content store WITHOUT

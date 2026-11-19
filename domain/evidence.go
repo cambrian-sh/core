@@ -64,6 +64,10 @@ type Evidence struct {
 	// RevisesID links a newer revision of the same source artifact to the row
 	// it supersedes. Empty for a first revision.
 	RevisesID EvidenceID
+	// DerivedFrom is the evidence row whose processing fetched this one (a
+	// pipeline fetch node, ADR-0114 D10). A derived row carries exactly its
+	// parent's Classification and Parties (ENG-1611). Empty for a delivery.
+	DerivedFrom EvidenceID
 }
 
 // EvidenceID identifies one evidence row.
@@ -89,7 +93,19 @@ type RawEvidence struct {
 	// RevisesID links this delivery to the evidence row it supersedes, when the
 	// source itself declared a revision relationship.
 	RevisesID EvidenceID
+	// DerivedFrom names the evidence row that caused this material to be fetched
+	// (ENG-1611). The ingestor then gives the new row its parent's
+	// Classification and Parties, never anything wider: a caller may leave both
+	// empty (the fetch knows no labels of its own) or repeat the parent's, and a
+	// delivery naming other labels, a missing parent or a parent in another
+	// namespace is refused (fail closed: a fetched page of a classified source
+	// must never land readable by anyone).
+	DerivedFrom EvidenceID
 }
+
+// ErrDerivedEvidence refuses a derived delivery whose labels cannot be the
+// parent's (ENG-1611).
+var ErrDerivedEvidence = errors.New("derived evidence")
 
 // EvidenceOutboxItem is one unit of pending post-ingest work, inserted in the
 // SAME transaction as its evidence row (transactional outbox, memo §11) and
