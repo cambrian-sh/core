@@ -60,7 +60,10 @@ WHERE table_name = 'ledger_entries' AND column_name IN ('source_tags', 'source_r
 	return err == nil && n == 2
 }
 
-// ledgerSearchHead bounds the body text kept for ledger_find's text filter.
+// ledgerSearchHead bounds the body text kept in search_text, the column the SQL
+// text filter scans. A longer text body is still searched whole: Find re-checks
+// such rows against the vault body (findText, ENG-1761), so the head only keeps
+// the row small and the common case in SQL.
 const ledgerSearchHead = 16 * 1024
 
 // Put stores e's body in the vault and its metadata row. An existing id is left
@@ -202,11 +205,21 @@ func (s *PgLedgerStore) Find(ctx context.Context, q domain.LedgerQuery) ([]domai
 		add("kind = $%d", string(q.Kind))
 	}
 	if q.Text != "" {
-		add("strpos(lower(search_text), lower($%d)) > 0", q.Text)
+		// A hit in the indexed head, or a body longer than the head whose tail
+		// may hold the text: those rows are re-checked against the whole body
+		// below (ENG-1761).
+		args = append(args, q.Text)
+		where = append(where, fmt.Sprintf(
+			"(strpos(lower(search_text), lower($%d)) > 0 OR (size_bytes > %d AND COALESCE(body_hash, '') <> ''))",
+			len(args), ledgerSearchHead))
 	}
 	limit := q.Limit
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
+	}
+	sqlLimit := limit
+	if q.Text != "" {
+		sqlLimit = 1000 // candidates; the limit applies after the body re-check
 	}
 	sql := `SELECT ` + runLedgerCols + ` FROM ledger_entries WHERE `
 	for i, w := range where {
@@ -215,7 +228,7 @@ func (s *PgLedgerStore) Find(ctx context.Context, q domain.LedgerQuery) ([]domai
 		}
 		sql += w
 	}
-	sql += fmt.Sprintf(" ORDER BY created_at, id LIMIT %d", limit)
+	sql += fmt.Sprintf(" ORDER BY created_at, id LIMIT %d", sqlLimit)
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("ledger find: %w", err)
@@ -229,7 +242,47 @@ func (s *PgLedgerStore) Find(ctx context.Context, q domain.LedgerQuery) ([]domai
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if q.Text == "" {
+		return out, nil
+	}
+	return s.findText(out, q.Text, limit), nil
+}
+
+// findText keeps the candidates that hold text (case-insensitive) and applies
+// limit. A row whose body fits the indexed head was matched in SQL already; a
+// longer one is matched on its tool, arguments and preview, else on its whole
+// vault body, so a text body is searched past ledgerSearchHead (ENG-1761). A
+// body that cannot be read only loses the row from this result: a retrieval
+// read fails open, it does not fail the find.
+func (s *PgLedgerStore) findText(cands []domain.LedgerEntry, text string, limit int) []domain.LedgerEntry {
+	needle := strings.ToLower(text)
+	out := make([]domain.LedgerEntry, 0, min(len(cands), limit))
+	for _, e := range cands {
+		if len(out) >= limit {
+			break
+		}
+		if e.SizeBytes <= ledgerSearchHead || e.BodyHash == "" {
+			out = append(out, e)
+			continue
+		}
+		meta := strings.ToLower(e.ToolName + " " + string(e.Args) + " " + e.Preview)
+		if strings.Contains(meta, needle) {
+			out = append(out, e)
+			continue
+		}
+		body, err := s.bodies.Load(e.BodyHash)
+		if err != nil {
+			slog.Debug("ledger find: body unreadable, entry skipped for the text filter", "id", e.ID, "err", err)
+			continue
+		}
+		if isText(body) && strings.Contains(strings.ToLower(string(body)), needle) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // DeleteScratch removes a turn's scratch entries (ADR-0145 D1: scratch lives for

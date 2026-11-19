@@ -237,7 +237,7 @@ type LedgerQuery struct {
 	ToolName  string
 	Kind      LedgerKind
 	// Text is a case-insensitive substring over the entry's searchable text
-	// (preview, tool, arguments and the head of the body).
+	// (preview, tool, arguments and a text body, all of it: ENG-1761).
 	Text  string
 	Limit int
 }
