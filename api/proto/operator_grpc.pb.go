@@ -672,13 +672,13 @@ type OperatorConsoleClient interface {
 	// a healthy session would keep using the old token indefinitely and "saved"
 	// would mean nothing observable.
 	//
-	// Deprecated (ADR-0141 D11): on a kernel with the premium accounts provider
-	// both are thin aliases for the ORG ACCOUNT bound to the server's "token"
-	// slot (Set rotates it, creating and binding one when none is; Clear unbinds
-	// it) — the same slot SetIntegrationSecret writes. New clients use
-	// SetIntegrationSecret or AccountsAdmin. In OSS they still write the
-	// consumer-named secret mcp:<id>:token. Removal is an owner decision
-	// (T-20261106-accounts-delete-legacy-consumer-secrets-after).
+	// Both editions keep these (owner decision 2026-11-19, ENG-1750): they are
+	// the one path an OSS kernel has to store an MCP server's credential (the
+	// consumer-named secret mcp:<id>:token), and the Studio MCP editor uses them.
+	// On a kernel with the premium accounts provider they act on the ORG ACCOUNT
+	// bound to the server's "token" slot (ADR-0141 D11: Set rotates it, creating
+	// and binding one when none is; Clear unbinds it) — the same slot
+	// SetIntegrationSecret writes.
 	SetMCPServerToken(ctx context.Context, in *SetMCPServerTokenOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
 	ClearMCPServerToken(ctx context.Context, in *ClearMCPServerTokenOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// TestMCPServer dials the SUBMITTED spec once — connect, list tools,
@@ -2820,13 +2820,13 @@ type OperatorConsoleServer interface {
 	// a healthy session would keep using the old token indefinitely and "saved"
 	// would mean nothing observable.
 	//
-	// Deprecated (ADR-0141 D11): on a kernel with the premium accounts provider
-	// both are thin aliases for the ORG ACCOUNT bound to the server's "token"
-	// slot (Set rotates it, creating and binding one when none is; Clear unbinds
-	// it) — the same slot SetIntegrationSecret writes. New clients use
-	// SetIntegrationSecret or AccountsAdmin. In OSS they still write the
-	// consumer-named secret mcp:<id>:token. Removal is an owner decision
-	// (T-20261106-accounts-delete-legacy-consumer-secrets-after).
+	// Both editions keep these (owner decision 2026-11-19, ENG-1750): they are
+	// the one path an OSS kernel has to store an MCP server's credential (the
+	// consumer-named secret mcp:<id>:token), and the Studio MCP editor uses them.
+	// On a kernel with the premium accounts provider they act on the ORG ACCOUNT
+	// bound to the server's "token" slot (ADR-0141 D11: Set rotates it, creating
+	// and binding one when none is; Clear unbinds it) — the same slot
+	// SetIntegrationSecret writes.
 	SetMCPServerToken(context.Context, *SetMCPServerTokenOpRequest) (*SetConfigOpResponse, error)
 	ClearMCPServerToken(context.Context, *ClearMCPServerTokenOpRequest) (*CommandAck, error)
 	// TestMCPServer dials the SUBMITTED spec once — connect, list tools,
