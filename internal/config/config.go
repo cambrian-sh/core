@@ -2628,6 +2628,22 @@ type PipelinesConfig struct {
 	// queued executes at once, each run against the plan revision it was pinned
 	// to rather than any correction made since. Inspect the queue, then enable.
 	DrainerEnabled bool `json:"drainer_enabled,omitempty"`
+	// DrainerSliceTasks is the most tasks one pipeline gets per drainer turn
+	// (ENG-2169). The drainer round-robins over pipelines with ready work, one
+	// slice each, so one source's backlog cannot starve another source — an
+	// ingress pipeline is one source. Before it, a drainer ran a pipeline to
+	// empty, and on a fresh worldsim deployment the quality source produced no
+	// records for ~25 minutes behind the operations portal's history. Default
+	// 64; 0 uses the default. Read by the premium drainers (ingress studio live
+	// and backfill, reactive trigger lane) through KernelServices.
+	DrainerSliceTasks int `json:"drainer_slice_tasks"`
+	// DrainerWorkers is how many claimed tasks one drainer runs at once
+	// (ENG-2169). A task is several Postgres transactions and a serial drainer
+	// spends nearly all its time waiting on them; tasks of one claim are leased
+	// disjointly and every commit is lease-fenced, so running them concurrently
+	// changes no outcome (ADR-0114 §4.2). Default 4; 0 or 1 is serial. Each
+	// worker holds at most one pool connection at a time, per drainer.
+	DrainerWorkers int `json:"drainer_workers"`
 }
 
 // GraphConfig defines spreading activation parameters (ADR-0017).
@@ -3703,7 +3719,9 @@ func DefaultConfig() *Config {
 				TranscriptBudgetTokens: 64000,
 			},
 			Pipelines: PipelinesConfig{
-				DrainerEnabled: true, // owner default 2026-08-11
+				DrainerEnabled:    true, // owner default 2026-08-11
+				DrainerSliceTasks: 64,   // ENG-2169
+				DrainerWorkers:    4,    // ENG-2169
 			},
 			Graph: GraphConfig{
 				DecayFactor: 0.75,
@@ -4416,6 +4434,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if cr := c.Tools.CompanyRecords; cr.MaxRows < 0 || cr.MaxRows > 1000 || cr.MaxEvents < 0 || cr.MaxEvents > 1000 || cr.MaxAttributes < 0 {
 		errs = append(errs, "tools.company_records: max_rows and max_events must be in [0, 1000] and max_attributes >= 0 (0 uses the default)")
+	}
+	if p := c.Pipelines; p.DrainerSliceTasks < 0 || p.DrainerSliceTasks > 100000 || p.DrainerWorkers < 0 || p.DrainerWorkers > 64 {
+		errs = append(errs, "pipelines: drainer_slice_tasks must be in [0, 100000] and drainer_workers in [0, 64] (0 uses the default / serial)")
 	}
 	if c.Plan.CallerDeadlineReserveMs < 0 {
 		errs = append(errs, "caller_deadline_reserve_ms must be >= 0 (0 disables it)")

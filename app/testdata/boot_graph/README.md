@@ -14,6 +14,9 @@ to a landed change is a wiring regression, not a golden to regenerate.
 
 History of golden updates:
 
+- ENG-2169: `+ PipelineDrainerSliceTasks: int=64` and `+ PipelineDrainerWorkers: int=4`
+  (KernelServices, both goldens), mirroring execution.pipelines.drainer_slice_tasks /
+  drainer_workers for the premium drainers (round-robin per pipeline, bounded workers).
 - ENG-2117: `KernelTools len=9` -> `len=10` and `+ company_records *records.tool`
   (both goldens), the read-only company-records kernel tool wired by
   `wireCompanyRecords` (execution.tools.company_records, default on).

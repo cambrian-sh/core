@@ -307,6 +307,8 @@ RegisterIngress: func(context.Context, domain.IngressRegistration) error
 RetireIngressPipeline: func(context.Context, string) error
 TracePipelinePayloads: false
 PipelineDrainerEnabled: true
+PipelineDrainerSliceTasks: int=64
+PipelineDrainerWorkers: int=4
 Events: *postgres.PgEventStore
 Entities: *postgres.PgEntityStore
 Links: *postgres.PgLinkStore

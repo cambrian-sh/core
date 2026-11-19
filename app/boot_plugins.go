@@ -315,11 +315,13 @@ func (b *kernelBuild) buildKernelServices() {
 			}
 			return (*p)(ctx, agentID)
 		},
-		TracePipelinePayloads:  cfg.Execution.LLM.TracePipelinePayloads,
-		PipelineDrainerEnabled: cfg.Execution.Pipelines.DrainerEnabled,
-		Events:                 eventStore,
-		Entities:               entityStore,
-		Links:                  linkStore,
+		TracePipelinePayloads:     cfg.Execution.LLM.TracePipelinePayloads,
+		PipelineDrainerEnabled:    cfg.Execution.Pipelines.DrainerEnabled,
+		PipelineDrainerSliceTasks: cfg.Execution.Pipelines.DrainerSliceTasks,
+		PipelineDrainerWorkers:    cfg.Execution.Pipelines.DrainerWorkers,
+		Events:                    eventStore,
+		Entities:                  entityStore,
+		Links:                     linkStore,
 		// The identity producers' scan port (ENG-1393): retirements and scope
 		// applied inside, so premium never scans substrate tables with raw SQL.
 		IdentityScans: identityScans,

@@ -550,6 +550,12 @@ type KernelServices struct {
 	// which on a deployment that had never drained meant hundreds of runs, some
 	// belonging to an ingress that had been deleted.
 	PipelineDrainerEnabled bool
+	// PipelineDrainerSliceTasks and PipelineDrainerWorkers mirror
+	// execution.pipelines.drainer_slice_tasks / drainer_workers (ENG-2169): a
+	// pipeline's share of one drainer turn (round-robin fairness across
+	// sources) and how many claimed tasks a drainer runs at once.
+	PipelineDrainerSliceTasks int
+	PipelineDrainerWorkers    int
 
 	// Events is the substrate's typed event/observation boundary (ADR-0108 D2):
 	// point lookups and history over stored rows, exact, nothing embedded.
