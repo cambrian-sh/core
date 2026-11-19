@@ -1809,15 +1809,6 @@ func (q *QueryService) answer(ctx context.Context, query, callerID string) (stat
 	return status, answer, evidence, nil
 }
 
-// SearchActions is the "what did I do" lane (ADR-0049 D4). It retrieves
-// `mnemonic_action` records, kept SEPARATE from fact recall so action breadcrumbs
-// never re-bloat fact grounding. Same ACL/scope/relevance-floor gating; no graph
-// spreading (actions are events, not associatively-expanded knowledge).
-func (q *QueryService) SearchActions(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	ctx = domain.EnsureQueryCorrelation(ctx, callerID, query)
-	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicAction, false)
-}
-
 // SearchProcedures is the ADR-0094 D5 procedural lane: "how has this kind of work gone
 // here?". A third intent alongside facts and actions — grounding a claim,
 // reconstructing history and recalling a ROUTINE are different questions, and D4/A2.4

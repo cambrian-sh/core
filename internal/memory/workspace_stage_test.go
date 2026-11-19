@@ -83,9 +83,9 @@ func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
 }
 
 // ENG-465 + ENG-540 (owner decisions 2026-11-14/15): the FACT lane reads as the
-// planning principal; the NEGATIVE and PROCEDURE lanes are global company knowledge
-// and read as domain.SystemPrincipal — all through the recall (QueryService.RecallFor),
-// all with the task as the query.
+// planning principal; the PROCEDURE lane is global company knowledge and reads as
+// domain.SystemPrincipal — both through the recall (QueryService.RecallFor), both
+// with the task as the query. (The negatives lane was removed with ENG-1645.)
 func TestWorkspaceStage_LanesReadUnderTheDecidedScopes(t *testing.T) {
 	t.Parallel()
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{domain.DocTypeMnemonicFact: factDocs(1)}}
@@ -95,7 +95,6 @@ func TestWorkspaceStage_LanesReadUnderTheDecidedScopes(t *testing.T) {
 	}
 	want := map[string]domain.PrincipalRef{
 		domain.DocTypeMnemonicFact:      {ID: "ayse", Kind: domain.PrincipalUser},
-		domain.DocTypeNegativeEdge:      domain.SystemPrincipal,
 		domain.DocTypeMnemonicProcedure: domain.SystemPrincipal,
 	}
 	seen := map[string]bool{}
@@ -122,7 +121,7 @@ func TestWorkspaceStage_NoPrincipalNoPriming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Facts)+len(got.Negatives)+len(got.Procedures) != 0 || len(rec.calls) != 0 {
+	if len(got.Facts)+len(got.Procedures) != 0 || len(rec.calls) != 0 {
 		t.Fatalf("primed without a principal: %+v, calls %v", got, rec.calls)
 	}
 	m, err := ws.PrimeForExecution(context.Background(), &domain.ExecutionPlan{Subject: "s"}, nil)
@@ -131,32 +130,27 @@ func TestWorkspaceStage_NoPrincipalNoPriming(t *testing.T) {
 	}
 }
 
-// NegativeEdge docs appear in LTMEnrichment.Negatives, not Facts, capped at 3.
-func TestWorkspaceStage_NegativesInEnrichment(t *testing.T) {
+// ENG-1645: the planner no longer recalls negative_edge failure records (nothing
+// writes them since ENG-1595), so legacy rows never reach the enrichment.
+func TestWorkspaceStage_NoNegativesLane(t *testing.T) {
 	t.Parallel()
-	var negs []domain.SearchResult
-	for i := 0; i < 5; i++ {
-		negs = append(negs, domain.SearchResult{Document: domain.Document{
-			ID: fmt.Sprintf("neg-%d", i), Text: "BLOCKED: 'rm' is not in ALLOWED_COMMANDS",
-			DocumentType: domain.DocTypeNegativeEdge,
-		}})
-	}
 	rec := &recordingRecall{byType: map[string][]domain.SearchResult{
 		domain.DocTypeMnemonicFact: factDocs(1),
-		domain.DocTypeNegativeEdge: negs,
+		domain.DocTypeNegativeEdge: {{Document: domain.Document{ID: "neg-0", Text: "BLOCKED", DocumentType: domain.DocTypeNegativeEdge}}},
 	}}
 	ws := NewWorkspaceStage(rec, nil, 10, 5, 0.2)
-
 	result, err := ws.PrimeForPlanning(planningCtx(), "some query")
 	if err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
 	}
-	if len(result.Negatives) != 3 {
-		t.Fatalf("expected 3 negatives (capped), got %d", len(result.Negatives))
-	}
 	for _, f := range result.Facts {
 		if f.Document.DocumentType == domain.DocTypeNegativeEdge {
-			t.Error("negative_edge doc must NOT appear in Facts")
+			t.Error("negative_edge doc must not appear in Facts")
+		}
+	}
+	for _, c := range rec.calls {
+		if c.docType == domain.DocTypeNegativeEdge {
+			t.Fatalf("PrimeForPlanning still recalls the retired negatives lane: %v", rec.calls)
 		}
 	}
 }
@@ -213,8 +207,8 @@ func TestWorkspaceStage_EmptyAndFailingLanes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
 	}
-	if len(result.Facts) != 0 || len(result.Negatives) != 0 {
-		t.Errorf("expected empty enrichment, got facts=%d negatives=%d", len(result.Facts), len(result.Negatives))
+	if len(result.Facts) != 0 {
+		t.Errorf("expected empty enrichment, got facts=%d", len(result.Facts))
 	}
 }
 

@@ -1,10 +1,11 @@
 package domain
 
 // LTMEnrichment carries the typed LTM content returned by WorkspaceStage.PrimeForPlanning.
-// ADR-0025: replaces the flat map[string]string return to support distinct fact/negative sections.
+// ADR-0025: replaces the flat map[string]string return to support distinct sections.
 type LTMEnrichment struct {
-	Facts     []SearchResult // DocTypeMnemonicFact results
-	Negatives []SearchResult // DocTypeNegativeEdge results
+	Facts []SearchResult // DocTypeMnemonicFact results
+	// Negatives (DocTypeNegativeEdge failure records) were removed with ENG-1645:
+	// their writer, the ADR-0049 A2.3 failure record, stopped with ENG-1595.
 	// Episodes (ADR-0029: DocTypeEpisodicMemory hits above the "episodic" policy
 	// threshold — a policy itself retired 2026-10-31) is gone. Its writer was removed on 2026-07-18 and the reader — a
 	// WorkspaceStage lane and the planner's <EpisodicMemory> block — was retired with it.

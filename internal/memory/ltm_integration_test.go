@@ -222,7 +222,7 @@ func TestLTM_RelevanceGate(t *testing.T) {
 				t.Fatalf("PrimeForPlanning: %v", err)
 			}
 
-			t.Logf("query=%q facts=%d negatives=%d", q.query, len(enrichment.Facts), len(enrichment.Negatives))
+			t.Logf("query=%q facts=%d", q.query, len(enrichment.Facts))
 
 			// ── Assertion 1: Poison exclusion ────────────────────────────────
 			for _, f := range enrichment.Facts {

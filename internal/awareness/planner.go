@@ -569,14 +569,8 @@ func buildLTMBlock(enrichment domain.LTMEnrichment) string {
 		}
 		sb.WriteString("</FactLTM>\n")
 	}
-	if len(enrichment.Negatives) > 0 {
-		sb.WriteString("<NegativeLTM>\n")
-		for _, r := range enrichment.Negatives {
-			agentID, _ := r.Document.Metadata["agent_id"].(string)
-			fmt.Fprintf(&sb, "  <failure agent=\"%s\">%s</failure>\n", agentID, r.Document.Text)
-		}
-		sb.WriteString("</NegativeLTM>\n")
-	}
+	// The <NegativeLTM> block was removed with ENG-1645: nothing writes the
+	// negative_edge failure records it rendered since ENG-1595.
 	// The ADR-0029 <EpisodicMemory> block used to be rendered here. Removed with the
 	// rest of the episodic lane: nothing has written a DocTypeEpisodicMemory row since
 	// the extractor was deleted on 2026-07-18, so the block could only ever be empty.

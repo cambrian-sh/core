@@ -13,30 +13,20 @@ func (f *fakeToolOutputRecorder) RecordToolOutput(_ context.Context, rec ToolOut
 	return nil
 }
 
-// ADR-0049 D1: the action formatter renders a mutation into a compact deterministic
-// line; large arg values collapse, status reflects the outcome.
-func TestFormatActionLine(t *testing.T) {
+// actionStatus reads a tool result's outcome in-band (it gates which results the
+// LTM pre-filter keeps): denied, error, a failed shell shape, else ok.
+func TestActionStatus(t *testing.T) {
 	t.Parallel()
-	big := strings.Repeat("x", 200)
-	line := FormatActionLine("write_file", []byte(`{"path":"a.md","content":"`+big+`"}`), []byte(`{"message":"ok"}`))
-	if !strings.HasPrefix(line, "write_file → ok") {
-		t.Errorf("expected 'write_file → ok' prefix; got %q", line)
-	}
-	if !strings.Contains(line, "path=a.md") {
-		t.Errorf("small arg must stay verbatim; got %q", line)
-	}
-	if strings.Contains(line, big) || !strings.Contains(line, "<200 chars>") {
-		t.Errorf("large arg must collapse to a marker; got %q", line)
-	}
-	if s := FormatActionLine("rm", []byte(`{"path":"x"}`), []byte(`{"error":"perm"}`)); !strings.Contains(s, "→ error") {
-		t.Errorf("error status expected; got %q", s)
-	}
-	if s := FormatActionLine("rm", nil, []byte(`{"denied":true}`)); !strings.Contains(s, "→ denied") {
-		t.Errorf("denied status expected; got %q", s)
-	}
-	// A failed-shell shape reads as error (reuses the ADR-0048 #3 detector).
-	if s := FormatActionLine("terminal", []byte(`{"cmd":"x"}`), []byte(`{"exit_code":1,"stderr":"boom","stdout":""}`)); !strings.Contains(s, "→ error") {
-		t.Errorf("failed shell status expected; got %q", s)
+	for out, want := range map[string]string{
+		`{"message":"ok"}`: "ok",
+		`{"error":"perm"}`: "error",
+		`{"denied":true}`:  "denied",
+		`{"exit_code":1,"stderr":"boom","stdout":""}`: "error",
+		`not json`: "ok",
+	} {
+		if got := actionStatus([]byte(out)); got != want {
+			t.Errorf("actionStatus(%s) = %q, want %q", out, got, want)
+		}
 	}
 }
 

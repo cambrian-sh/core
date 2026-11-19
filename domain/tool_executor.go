@@ -10,19 +10,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
-// ToolOutputRecorder feeds a successful tool output into the memory layer. A MUTATION
-// output (ADR-0049 D1) is recorded as a `mnemonic_action` EVENT — what was done. A
-// READ output records nothing: the ADR-0048 D6 path that curated it as a fact through
-// the tier-2 judge was deleted on 2026-11-05 (decisions/scenes-cancelled.md). Routing
-// is the caller's deterministic read/write classification. Satisfied by the
-// MemoryAgent.
+// ToolOutputRecorder feeds a successful tool output into the memory layer. Satisfied
+// by the MemoryAgent, whose RecordToolOutput writes nothing since ENG-1595 (owner
+// decision 2026-11-14): the `mnemonic_action` action records it used to write, and
+// the action lane that read them (removed with ENG-1645), wait for the owner-led
+// redesign of agent-experience memory. The hook stays so the tool path needs no
+// change when that lands.
 type ToolOutputRecorder interface {
 	RecordToolOutput(ctx context.Context, rec ToolOutputRecord) error
 }
@@ -43,17 +42,6 @@ type ToolOutputRecord struct {
 	ClassificationTags []string
 }
 
-// FormatActionLine renders a mutation tool call into a compact, deterministic action
-// line — `<tool> → <status> | k=v, …` (ADR-0049 D1). No raw payload, no LLM; large
-// arg values collapse to a `<N chars>` marker so "wrote 8KB" doesn't inline 8KB.
-func FormatActionLine(toolName string, argsJSON, output []byte) string {
-	args := condenseActionArgs(argsJSON)
-	if args == "" {
-		return fmt.Sprintf("%s → %s", toolName, actionStatus(output))
-	}
-	return fmt.Sprintf("%s → %s | %s", toolName, actionStatus(output), args)
-}
-
 func actionStatus(output []byte) string {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(output, &obj) == nil {
@@ -68,34 +56,6 @@ func actionStatus(output []byte) string {
 		}
 	}
 	return "ok"
-}
-
-const actionArgValueCap = 80
-
-// condenseActionArgs renders args as sorted `k=v` pairs, collapsing any large value
-// to `<N chars>` (deterministic; the path/url stays, the content payload does not).
-func condenseActionArgs(argsJSON []byte) string {
-	var args map[string]json.RawMessage
-	if len(argsJSON) == 0 || json.Unmarshal(argsJSON, &args) != nil {
-		return ""
-	}
-	keys := make([]string, 0, len(args))
-	for k := range args {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		var s string
-		if json.Unmarshal(args[k], &s) != nil {
-			s = string(args[k]) // non-string value: its compact JSON
-		}
-		if len(s) > actionArgValueCap {
-			s = fmt.Sprintf("<%d chars>", len(s))
-		}
-		parts = append(parts, fmt.Sprintf("%s=%s", k, s))
-	}
-	return strings.Join(parts, ", ")
 }
 
 // isDeniedResult reports whether a tool result is a denial (the call did not run).

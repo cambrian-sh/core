@@ -119,7 +119,7 @@ func TestEmitDecision_NoCorrelationDerivesStableIDsFromTheRequest(t *testing.T) 
 	obs := &recordingObserver{}
 	q := NewQueryService(&fakeEmbedder{}, corpusOfOne(), &recordingAuthorizer{})
 	q.SetDecisionObserver(obs, "fp-1")
-	if _, err := q.SearchActions(bg, "what did I do", "ci-bot"); err != nil {
+	if _, err := q.SearchProcedures(bg, "what did I do", "ci-bot"); err != nil {
 		t.Fatal(err)
 	}
 	if want := domain.DerivedQueryCorrelation(bg, "ci-bot", "what did I do") + "-h1"; len(obs.queryIDs) != 1 || obs.queryIDs[0] != want {

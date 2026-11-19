@@ -154,30 +154,11 @@ func TestQueryMemory_ServesSummaryAndContentCID(t *testing.T) {
 }
 
 // A fact with no Summary falls back to its full Text (short facts are their own gist).
-// ADR-0049 D4: x-lane="actions" routes to the actions lane; default is facts.
-func TestQueryMemory_RoutesActionsLane(t *testing.T) {
-	t.Parallel()
-	searcher := &mockMemorySearcher{
-		results:       []domain.SearchResult{{Document: domain.Document{ID: "f", Text: "a fact"}, Score: 0.9}},
-		actionResults: []domain.SearchResult{{Document: domain.Document{ID: "a", Text: "write_file → ok"}, Score: 0.9}},
-	}
-	srv := makeQueryMemoryServer(searcher)
-
-	resp, _ := srv.QueryMemory(ctxWithAgentID("agent-a"), &pb.MemoryRequest{Query: "q"})
-	if searcher.lastLane != "facts" || resp.Results[0].Text != "a fact" {
-		t.Errorf("default lane must be facts; got lane=%q text=%q", searcher.lastLane, resp.Results[0].Text)
-	}
-
-	resp, _ = srv.QueryMemory(ctxWithLane("agent-a", "actions"), &pb.MemoryRequest{Query: "q"})
-	if searcher.lastLane != "actions" || resp.Results[0].Text != "write_file → ok" {
-		t.Errorf("x-lane=actions must route to the actions lane; got lane=%q text=%q", searcher.lastLane, resp.Results[0].Text)
-	}
-}
-
 // Retired lanes are no longer cases, so they fall through to the default fact lane like
 // any other unknown value — an unknown lane must never be an error. "entity" was retired
 // earlier; "scenes" and "precedents" on 2026-11-05 (decisions/scenes-cancelled.md), and
-// an SDK older than its deprecation shim still sends "precedents".
+// an SDK older than its deprecation shim still sends "precedents"; "actions" with
+// ENG-1645 (an SDK older than its recall_actions shim still sends it).
 func TestQueryMemory_RetiredLanesFallThroughToFacts(t *testing.T) {
 	t.Parallel()
 	searcher := &mockMemorySearcher{
@@ -186,7 +167,7 @@ func TestQueryMemory_RetiredLanesFallThroughToFacts(t *testing.T) {
 	}
 	srv := makeQueryMemoryServer(searcher)
 
-	for _, lane := range []string{"entity", "scenes", "precedents"} {
+	for _, lane := range []string{"entity", "scenes", "precedents", "actions"} {
 		searcher.lastLane = ""
 		resp, err := srv.QueryMemory(ctxWithLane("agent-a", lane), &pb.MemoryRequest{Query: "ship"})
 		if err != nil {

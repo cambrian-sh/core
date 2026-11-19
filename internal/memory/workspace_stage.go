@@ -88,18 +88,9 @@ func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery str
 	if err != nil {
 		return domain.LTMEnrichment{}, err
 	}
-	// The negatives lane is a SIMILARITY lane like every other one. It used to search
-	// with a nil vector, which the pgvector adapter does not reject: it scores every row
-	// identically and orders by last_accessed_at, so the three most recently touched
-	// failures entered every planner prompt whatever the task was. Scored against the
-	// situation and floored like the procedure lane, for the same reason — an unrelated
-	// failure is a fabricated analogy, and a prompt padded with one is worse than a lane
-	// that returns nothing.
-	//
-	// Best-effort, as before: a failure here costs enrichment, never the plan.
-	negatives := w.recallLane(ctx, taskQuery, domain.DocTypeNegativeEdge, 3, laneGlobal)
-
-	enrichment := domain.LTMEnrichment{Facts: facts, Negatives: negatives}
+	// The negatives lane (negative_edge failure records) was removed with ENG-1645:
+	// nothing writes those records since ENG-1595 (owner decision 2026-11-14).
+	enrichment := domain.LTMEnrichment{Facts: facts}
 	// The ADR-0049 D11 precedent lane (scene transitions) was removed 2026-11-05 with
 	// scenes (decisions/scenes-cancelled.md).
 	// ADR-0094 D5: stored routines for this situation.

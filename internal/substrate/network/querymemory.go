@@ -113,19 +113,18 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		return &pb.MemoryResponse{Results: []*pb.MemoryResult{}}, nil
 	}
 
-	// ADR-0049 D4: x-lane="actions" routes to the "what did I do" lane (action
-	// records); anything else is the default fact lane ("what do I know"). The
-	// "scenes" and "precedents" lanes were removed 2026-11-05 with scenes
-	// (decisions/scenes-cancelled.md): an old client that still sends them gets the
-	// default fact lane.
+	// x-lane="procedures" is the ADR-0094 D5 lane; anything else is the default
+	// fact lane ("what do I know"). Removed lanes fall to the fact lane, as an old
+	// client that still sends them expects an answer: "scenes" and "precedents"
+	// (2026-11-05, decisions/scenes-cancelled.md) and "actions" (ENG-1645 — the
+	// ADR-0049 D4 action records it read are no longer written since ENG-1595; the
+	// SDK's recall_actions now returns [] without calling the kernel).
 	var results []domain.SearchResult
 	lane := ""
 	if md, ok := metadata.FromIncomingContext(ctx); ok && len(md.Get("x-lane")) > 0 {
 		lane = md.Get("x-lane")[0]
 	}
 	switch lane {
-	case "actions":
-		results, err = s.MemorySearcher.SearchActions(ctx, req.GetQuery(), callerID)
 	case "procedures":
 		// ADR-0094 D5: stored routines ("how has this gone here?").
 		results, err = s.MemorySearcher.SearchProcedures(ctx, req.GetQuery(), callerID)
