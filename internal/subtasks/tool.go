@@ -698,15 +698,19 @@ func truncate(s string, n int) string {
 	return string(r[:n])
 }
 
-// untrustedOpen/Close wrap a summary from a subtask that read the web: the parent
-// sees it as data (the chat agent's data-tag treatment). A closing tag inside
-// the text is neutralised so it cannot end the region early.
-const (
-	untrustedOpen  = "<untrusted_subtask_result source=\"web\">"
-	untrustedClose = "</untrusted_subtask_result>"
-)
+// provenanceSubtaskResult is the fence channel of a summary from a subtask that
+// read the web (ENG-2219): the parent sees it inside the kernel's ONE payload
+// fence (domain.FenceUntrusted, ENG-94) — nonce-delimited, the text JSON-encoded
+// onto one line, so no closing tag or forged fence line in it can end the region
+// — with source="web" (domain.SourceWeb, what the Rule-of-Two gate reads) and the
+// subtask as its origin. A plain string, like core's domain.Provenance* values.
+const provenanceSubtaskResult = "subtask_result"
 
-var closeTag = regexp.MustCompile(`(?i)<\s*/\s*untrusted_subtask_result\s*>`)
+// fenceSubtaskSummary fences an untrusted subtask summary for the parent.
+func fenceSubtaskSummary(subtaskID, summary string) string {
+	return domain.FenceUntrusted(domain.DataProvenance{Class: provenanceSubtaskResult, Source: domain.SourceWeb,
+		Origin: "subtask:" + subtaskID}, summary)
+}
 
 // record bounds the summary, records the full answer (result_ref, kind
 // step_output) and the subtask entry (kind subtask), both derived from the
@@ -719,7 +723,7 @@ func (t *Tool) record(ctx context.Context, prov domain.LedgerProvenance, parentA
 		res.Truncated = true
 	}
 	if res.Untrusted && res.Summary != "" {
-		res.Summary = untrustedOpen + closeTag.ReplaceAllString(res.Summary, "[/untrusted_subtask_result]") + untrustedClose
+		res.Summary = fenceSubtaskSummary(binding.SubtaskID, res.Summary)
 	}
 	if t.Writer == nil {
 		return
