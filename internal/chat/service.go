@@ -408,9 +408,11 @@ func (s *TurnService) SetProgressSink(sink domain.ProgressSink) { s.progress = s
 // Best-effort by construction (ADR-0098 D5) — it cannot return an error, so a progress
 // problem can never fail the turn it describes.
 // lang is the turn's language: the line is rendered in it (domain.ProgressUpdate.Language).
-func (s *TurnService) emitProgress(ctx context.Context, conversationID string, phase domain.ProgressPhase, lang string) {
+// turnID is the user message that opened the turn (ProgressUpdate.TurnID).
+func (s *TurnService) emitProgress(ctx context.Context, conversationID, turnID string, phase domain.ProgressPhase, lang string) {
 	domain.EmitProgress(ctx, s.progress, domain.ProgressUpdate{
 		ConversationID: conversationID,
+		TurnID:         turnID,
 		Phase:          phase,
 		Language:       lang,
 	})
@@ -605,7 +607,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	// history is loaded (an "ok" in a Turkish conversation is still Turkish); the deferred
 	// emission below reads whatever it holds when the turn ends.
 	lang := s.turnLanguage(req.Text, nil)
-	s.emitProgress(ctx, req.ConversationID, domain.PhaseUnderstanding, lang)
+	s.emitProgress(ctx, req.ConversationID, userMsg.ID, domain.PhaseUnderstanding, lang)
 
 	// ADR-0098 D3, on EVERY exit path. The happy path clears itself — the reply supersedes
 	// the status line — but a turn that fails before replying delivers nothing, and an
@@ -619,6 +621,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	defer func() {
 		domain.EmitProgress(context.WithoutCancel(ctx), s.progress, domain.ProgressUpdate{
 			ConversationID: req.ConversationID,
+			TurnID:         userMsg.ID,
 			Final:          true,
 			Note:           humanFailure(turnErr, lang), // empty on success ⇒ the line is cleared
 			Language:       lang,
@@ -760,7 +763,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	}
 
 	// Everything after this point is the agent's own loop, which is where the minutes go.
-	s.emitProgress(ctx, req.ConversationID, domain.PhaseWorking, lang)
+	s.emitProgress(ctx, req.ConversationID, userMsg.ID, domain.PhaseWorking, lang)
 
 	h := s.buildHandoff(turnCtx, conv, req, history, sessionToken)
 	s.addTurnContext(h, tc)
@@ -831,7 +834,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	// dead-lettered by the delivery path rather than swallowed here.
 	// ADR-0098 D3: the answer supersedes the progress. A user must never be left looking at
 	// "working on it" after the reply has arrived.
-	s.emitProgress(ctx, req.ConversationID, domain.PhaseWriting, lang)
+	s.emitProgress(ctx, req.ConversationID, userMsg.ID, domain.PhaseWriting, lang)
 
 	// ENG-2109/ENG-2155: the reply records what the turn recalled and called and what
 	// it was given, so forgetting any of those records later redacts it.

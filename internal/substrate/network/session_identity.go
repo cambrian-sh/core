@@ -435,17 +435,25 @@ func withPresentedLease(ctx context.Context, lease domain.LeaseID) context.Conte
 // on the lease itself (a chat turn), else on its task session (a plan step a
 // chat turn ordered — the ADR-0084 D2 link). "" when neither names one.
 func (s *Server) conversationOfBinding(ctx context.Context, b domain.LeaseBinding) string {
+	conv, _ := s.turnOfBinding(ctx, b)
+	return conv
+}
+
+// turnOfBinding is conversationOfBinding plus the turn: the user message that
+// opened it (the turn lease's OriginMessageID, or the session's ADR-0084 D2 link
+// for a delegated step's lease). Either may be "".
+func (s *Server) turnOfBinding(ctx context.Context, b domain.LeaseBinding) (conversationID, turnID string) {
 	if b.ConversationID != "" {
-		return b.ConversationID
+		return b.ConversationID, b.OriginMessageID
 	}
 	if b.SessionID == "" || s.SessionMgr == nil {
-		return ""
+		return "", ""
 	}
 	ses, err := s.SessionMgr.GetSession(ctx, b.SessionID)
 	if err != nil || ses == nil {
-		return ""
+		return "", ""
 	}
-	return ses.ConversationID
+	return ses.ConversationID, ses.OriginMessageID
 }
 
 // firstMD returns the first value for key, or "".
@@ -480,9 +488,16 @@ func leaseIDOf(preferred, deprecated string) domain.LeaseID {
 // Used only to decide who should be told what is happening. A miss means no progress is
 // reported, never that work is blocked.
 func (s *Server) resolveCallerConversation(ctx context.Context) string {
+	conv, _ := s.resolveCallerTurn(ctx)
+	return conv
+}
+
+// resolveCallerTurn is resolveCallerConversation plus the turn the caller's lease
+// works for (turnOfBinding).
+func (s *Server) resolveCallerTurn(ctx context.Context) (string, string) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return ""
+		return "", ""
 	}
 	lease := domain.LeaseID(firstMD(md, leaseHeader))
 	if lease == "" {
@@ -490,7 +505,7 @@ func (s *Server) resolveCallerConversation(ctx context.Context) string {
 	}
 	binding, known := s.resolveLeaseFor(ctx, lease)
 	if !known {
-		return ""
+		return "", ""
 	}
 	// Only the chat turn's OWN lease carries a conversation. The moment that turn delegates
 	// to the planner, each step runs under a fresh step lease bound to a SessionID — so the
@@ -498,7 +513,7 @@ func (s *Server) resolveCallerConversation(ctx context.Context) string {
 	// conversation at all, and the user watching would see one static line while the system
 	// is busiest. conversationOfBinding takes the second hop through the session's ADR-0084
 	// D2 link, so this attribution is possible server-side, without an agent naming anything.
-	return s.conversationOfBinding(ctx, binding)
+	return s.turnOfBinding(ctx, binding)
 }
 
 // reportProgress tells whoever is waiting on this caller's conversation what the kernel is
@@ -507,12 +522,13 @@ func (s *Server) reportProgress(ctx context.Context, phase domain.ProgressPhase)
 	if s.Progress == nil {
 		return
 	}
-	conversationID := s.resolveCallerConversation(ctx)
+	conversationID, turnID := s.resolveCallerTurn(ctx)
 	if conversationID == "" {
 		return
 	}
 	domain.EmitProgress(ctx, s.Progress, domain.ProgressUpdate{
 		ConversationID: conversationID,
+		TurnID:         turnID, // ENG-1539: a sink drops it once that turn's Final went out
 		Phase:          phase,
 	})
 }

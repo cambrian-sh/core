@@ -52,6 +52,12 @@ func (p ProgressPhase) Valid() bool {
 // instead of twenty-six messages, and it is why nothing here carries a sequence number.
 type ProgressUpdate struct {
 	ConversationID string
+	// TurnID names the turn the snapshot describes: the id of the user message
+	// that opened it (the turn lease's OriginMessageID; a delegated step reaches it
+	// through its session's ADR-0084 link). A sink uses it to drop a non-final
+	// snapshot that arrives after its turn's Final (ENG-1539) without muting the
+	// conversation's NEXT turn. "" when unknown.
+	TurnID string
 	// Step is 1-based for display ("step 2 of 4"). Zero when there is no plan yet.
 	Step int
 	// TotalSteps is 0 while the plan is still unknown — a caller renders "working on it"

@@ -218,3 +218,41 @@ func TestProgress_TerminalClearWhenDispatchFails(t *testing.T) {
 		t.Error("a failed dispatch must still take the status line down")
 	}
 }
+
+// ENG-1539: every snapshot of a turn, the terminal clear included, names the turn
+// (the user message that opened it), and two turns carry different ids — so a sink
+// can drop a late step's snapshot of a finished turn without muting the next one.
+func TestProgress_EverySnapshotNamesItsTurn(t *testing.T) {
+	svc, _, _ := setup(t, domain.ProfileEmployee)
+	sink := &capturingSink{}
+	svc.SetProgressSink(sink)
+	ctx := context.Background()
+	if _, err := svc.Turn(ctx, TurnRequest{ConversationID: "c1", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	first := sink.got
+	sink.got = nil
+	if _, err := svc.Turn(ctx, TurnRequest{ConversationID: "c1", Text: "again"}); err != nil {
+		t.Fatal(err)
+	}
+	second := sink.got
+	turnOf := func(us []domain.ProgressUpdate) string {
+		t.Helper()
+		id := us[0].TurnID
+		if id == "" {
+			t.Fatal("a snapshot carries no turn id")
+		}
+		for _, u := range us {
+			if u.TurnID != id {
+				t.Fatalf("one turn's snapshots name different turns: %+v", us)
+			}
+		}
+		return id
+	}
+	if a, b := turnOf(first), turnOf(second); a == b {
+		t.Fatalf("two turns share the turn id %q", a)
+	}
+	if !first[len(first)-1].Final {
+		t.Fatal("the terminal clear is the last snapshot")
+	}
+}
