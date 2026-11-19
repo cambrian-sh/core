@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
@@ -758,6 +759,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	var final *domain.GenerateResponse
 	cutoff := int(float64(lc.ss.TokenLimit) * 0.9)
 	overrun := false
+	trimmed := false
 
 	for chunk := range chunks {
 		usage.Observe(chunk)
@@ -778,16 +780,26 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		}
 		g.mu.Unlock()
 
-		fullText.WriteString(chunk.Text)
 		// Estimate the WHOLE delivered text, not a sum of per-chunk estimates: the
 		// estimator is content-aware since ENG-1050 (base64/hex runs count denser),
 		// so it is not additive — short chunks never look like a run, and summing
 		// them let a base64/hex reply overrun its lease ~3x before the cut fired
 		// (ENG-2234). Delivered text is bounded by the lease, so re-estimating it per
 		// chunk stays cheap.
-		accumulated = llm.EstimateTokens(fullText.String())
+		prev := fullText.String()
+		accumulated = llm.EstimateTokens(prev + chunk.Text)
+		if accumulated > lc.ss.TokenLimit && lc.ss.TokenLimit > 0 {
+			// The chunk that crosses the cut-off must not carry the delivered text
+			// past the lease itself: one dense (base64/hex) chunk is ~12 tokens, so
+			// forwarding it whole overshot the TokenLimit (ENG-2234). Forward only the
+			// longest prefix that fits; the cut below fires on it.
+			chunk.Text = fitWithinTokens(prev, chunk.Text, lc.ss.TokenLimit)
+			accumulated = llm.EstimateTokens(prev + chunk.Text)
+			trimmed = true // nothing more fits: the lease is spent, cut here
+		}
+		fullText.WriteString(chunk.Text)
 
-		if accumulated >= cutoff && !overrun {
+		if (accumulated >= cutoff || trimmed) && !overrun {
 			overrun = true
 			chunk.IsFinal = true
 			out <- chunk
@@ -956,4 +968,26 @@ func (g *SubstrateLLMGateway) GenerateWithToolsObserved(ctx context.Context, ses
 func isToolsUnsupported(err error) bool {
 	return errors.Is(err, domain.ErrUnsupported) &&
 		strings.Contains(err.Error(), domain.ErrUnsupported.Error()+": "+domain.FieldTools)
+}
+
+// fitWithinTokens returns the longest prefix of text, cut on a UTF-8 boundary,
+// such that EstimateTokens(prev+prefix) <= limit (ENG-2234). The estimator is
+// not strictly monotonic in length (a run becomes "dense" at
+// HighEntropyMinRun), so the binary search's answer is walked down until it
+// fits.
+func fitWithinTokens(prev, text string, limit int) string {
+	fits := func(n int) bool { return llm.EstimateTokens(prev+text[:n]) <= limit }
+	lo, hi := 0, len(text)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	for lo > 0 && ((lo < len(text) && !utf8.RuneStart(text[lo])) || !fits(lo)) {
+		lo--
+	}
+	return text[:lo]
 }

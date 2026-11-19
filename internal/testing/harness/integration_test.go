@@ -21,7 +21,9 @@ import (
 func TestE2E_TokenBudgetEnforced(t *testing.T) {
 	const limit = 40
 	h := harness.New(harness.Config{StepTokenLimit: limit})
-	full := strings.Repeat("0123456789abcdef", 25) // 400 chars = 100 tokens
+	// Ordinary prose: 400 chars = 100 tokens at 4 chars/token. (A hex string is a
+	// high-entropy run since ENG-1050 and estimates denser; see the dense test.)
+	full := strings.Repeat("the cat sat ", 34)[:400]
 	h.AddResponse(full)
 
 	final, events, err := h.ExecutePlan(t.Context())
@@ -57,6 +59,37 @@ func TestE2E_TokenBudgetEnforced(t *testing.T) {
 	// (T-20261031-taskevent-budgetoverrun-is-written-by-no-kernel).
 	if !events[0].BudgetOverrun {
 		t.Fatalf("TaskEvent.BudgetOverrun must carry the gateway's Pass-1 cut, got %+v", events[0])
+	}
+}
+
+// A dense (hex/base64) reply must not overrun the lease either (ENG-2234): the
+// content-aware estimator counts a long hex run at 1.3 chars/token, so a single
+// 16-char chunk is ~12 tokens and forwarding the crossing chunk whole overshot
+// the TokenLimit. The gateway forwards only what fits; because a run shorter
+// than HighEntropyMinRun counts as ordinary text, what fits may estimate well
+// under the 90% cut-off, so this asserts the bound, the cut and the overrun flag.
+func TestE2E_TokenBudgetEnforcedOnDenseText(t *testing.T) {
+	const limit = 40
+	h := harness.New(harness.Config{StepTokenLimit: limit})
+	full := strings.Repeat("0123456789abcdef", 25) // 400 hex chars, ~308 tokens
+	h.AddResponse(full)
+
+	final, events, err := h.ExecutePlan(t.Context())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	got := string(final.Payload.Data)
+	if n := llm.EstimateTokens(got); n > limit {
+		t.Fatalf("delivered %d tokens, lease was %d: budget not enforced on dense text", n, limit)
+	}
+	if len(got) == 0 || len(got) >= len(full) {
+		t.Fatalf("dense response not truncated to a non-empty prefix: %d of %d chars", len(got), len(full))
+	}
+	if !strings.HasPrefix(full, got) {
+		t.Fatalf("delivered text is not a prefix of the response")
+	}
+	if len(events) != 1 || !events[0].BudgetOverrun {
+		t.Fatalf("the dense cut must be reported as a budget overrun: %+v", events)
 	}
 }
 
