@@ -468,3 +468,65 @@ func TestSubstrateCatalog_NilScopeDenies(t *testing.T) {
 		t.Fatalf("review inbox with nil scope: %v", err)
 	}
 }
+
+// ENG-1754: the review inbox applies the owner fence BEFORE its LIMIT. Alice's
+// candidates rank first (higher confidence); a reader who cannot see them still
+// gets a full page of the ones it can, instead of a short or empty page.
+func TestPg_ReviewCandidates_FencedCandidatesDoNotShortenThePage(t *testing.T) {
+	f := newSubstrateLeakFixture(t)
+	const ns = "ownleak-page"
+	pub := f.evidence(t, "ownleak-ev-page-pub", "ownleak-src-pub", []string{"mail"})
+	alice := f.evidence(t, "ownleak-ev-page-alice", "ownleak-src-alice", []string{"mail", "owner:alice"})
+	put := func(to string, ev domain.EvidenceID, conf float64) {
+		t.Helper()
+		if _, err := f.links.PutLink(f.ctx, domain.Link{
+			NamespaceID: ns, Family: domain.LinkFamilyIdentity,
+			FromRef: domain.EntityRef(slShared), ToRef: domain.EntityRef(to),
+			Relation: domain.RelationSameAs, State: domain.LinkStateCandidate,
+			Mechanism: domain.LinkMechanismScored, Confidence: conf,
+			EvidenceID: ev, AssertedBy: "test", Producer: "ownleak@1",
+			SourceRef: "ownleak-page-" + to, AssertedAt: f.now,
+		}); err != nil {
+			t.Fatalf("candidate %s: %v", to, err)
+		}
+	}
+	for i := range 3 {
+		put(fmt.Sprintf("ownleak/page-alice-%d", i), alice, 0.9)
+	}
+	put("ownleak/page-pub-0", pub, 0.5)
+	put("ownleak/page-pub-1", pub, 0.4)
+
+	count := func(links []domain.Link, prefix string) int {
+		n := 0
+		for _, l := range links {
+			// Either endpoint: the link store orders a symmetric pair's refs itself.
+			if p := string(domain.EntityRef(prefix)); strings.HasPrefix(string(l.FromRef), p) || strings.HasPrefix(string(l.ToRef), p) {
+				n++
+			}
+		}
+		return n
+	}
+	for _, r := range []struct {
+		name        string
+		scope       *domain.TagPredicate
+		alice, pubN int
+	}{
+		{"operator plane (ScopeSystem)", domain.ScopeSystem, 0, 2},
+		{"bob", slBob, 0, 2},
+		{"alice", slAlice, 2, 0},
+		{"maintenance", domain.ScopeMaintenance, 2, 0},
+	} {
+		page, err := f.plane.ReviewCandidates(f.ctx, ns, 2, r.scope)
+		if err != nil {
+			t.Fatalf("%s: %v", r.name, err)
+		}
+		if len(page) != 2 || count(page, "ownleak/page-alice-") != r.alice || count(page, "ownleak/page-pub-") != r.pubN {
+			t.Errorf("%s: page of 2 = %v (want %d of alice's, %d public)", r.name, page, r.alice, r.pubN)
+		}
+	}
+	// The order inside a fenced page is still the inbox order.
+	page, _ := f.plane.ReviewCandidates(f.ctx, ns, 10, domain.ScopeSystem)
+	if len(page) != 2 || countRefs(page[:1], "ownleak/page-pub-0") != 1 {
+		t.Errorf("operator inbox order: %v", page)
+	}
+}

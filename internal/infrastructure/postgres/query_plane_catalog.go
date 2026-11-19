@@ -51,12 +51,19 @@ func (p *PgQueryPlane) Catalog(scope *domain.TagPredicate) domain.SubstrateCatal
 }
 
 // ReviewCandidates is the identity plane's review inbox (contract 0098
-// ListLinkCandidates) read through the plane, so every candidate is judged on its
-// own evidence by filterLinks. The operator plane reads at domain.ScopeSystem,
+// ListLinkCandidates) read through the plane, so every candidate is judged on
+// every evidence row it rests on. The operator plane reads at domain.ScopeSystem,
 // which still applies the owner fence: a candidate proposed from someone's
 // owner:X evidence is not listed, and the inbox does not say how many were
-// withheld. The page is filled from at most `limit` candidates, so a filtered
-// page can come back short; it never comes back wider.
+// withheld.
+//
+// The fence is IN the query, before LIMIT (viaLink = sqlfence.LinkExists, the
+// SQL mirror of filterLinks), so a page holds `limit` readable candidates
+// whenever that many exist (ENG-1754, owner decision 2026-11-19 — as was done
+// for as_of). Rejected: reading `limit` candidates and walking them through
+// filterLinks — every fenced candidate ahead in candidateOrder shortened the
+// page, and a full page of fenced ones hid the readable inbox entirely.
+// Candidates on PgLinkStore stays the unfenced inbox for maintenance callers.
 func (p *PgQueryPlane) ReviewCandidates(ctx context.Context, namespace string, limit int, scope *domain.TagPredicate) ([]domain.Link, error) {
 	if scope == nil {
 		return nil, domain.ErrQueryScopeMissing
@@ -64,11 +71,20 @@ func (p *PgQueryPlane) ReviewCandidates(ctx context.Context, namespace string, l
 	if p == nil || p.links == nil {
 		return nil, nil
 	}
-	cands, err := p.links.Candidates(ctx, namespace, limit)
+	if limit <= 0 {
+		limit = defaultIdentityLimit
+	}
+	a := &sqlArgs{}
+	q := `SELECT ` + linkColumns + ` FROM links l
+		WHERE l.namespace_id=` + a.add(orDefaultNamespace(namespace)) + `::text AND ` + openCandidate +
+		a.viaLink(scope, "l") + `
+		ORDER BY ` + candidateOrder + `
+		LIMIT ` + a.add(limit) + `::int`
+	rows, err := p.pool.Query(ctx, q, a.args...)
 	if err != nil {
 		return nil, err
 	}
-	return p.filterLinks(ctx, scope, cands)
+	return collectLinks(rows)
 }
 
 type pgCatalog struct {
