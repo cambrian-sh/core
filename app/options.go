@@ -436,13 +436,6 @@ type KernelServices struct {
 	// could grant itself a surface could widen its own reach.
 	Ingresses domain.IngressResolver
 
-	// SQL is the kernel's Postgres pool, handed to plugins that own their own
-	// tables (the policy plugin's agent_scopes / policy objects). nil when no
-	// Postgres is configured — a plugin must degrade rather than panic.
-	//
-	// It is deliberately the concrete pool rather than an interface: a plugin that
-	// owns tables owns their schema and their queries, and pretending otherwise
-	// would mean re-exporting half of pgx through a seam nobody benefits from.
 	// SetProgressSink installs the ADR-0098 progress channel onto the chat lane.
 	// A plugin calls this during Build to start receiving "what is happening now"
 	// snapshots; without one the kernel's emission sites are inert.
@@ -476,6 +469,13 @@ type KernelServices struct {
 	// nil in tests and kernels built without it.
 	Approvals *domain.AddressedHub
 
+	// SQL is the kernel's Postgres pool, handed to plugins that own their own
+	// tables (the policy plugin's agent_scopes / policy objects). nil when no
+	// Postgres is configured — a plugin must degrade rather than panic.
+	//
+	// It is deliberately the concrete pool rather than an interface: a plugin that
+	// owns tables owns their schema and their queries, and pretending otherwise
+	// would mean re-exporting half of pgx through a seam nobody benefits from.
 	SQL *pgxpool.Pool
 
 	// AgentExists reports whether an agent is registered. The policy plugin needs
