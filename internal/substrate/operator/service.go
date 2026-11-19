@@ -164,6 +164,8 @@ type Service struct {
 	forget *forget.Service
 	// factStats is the fact extractor whose counters the Snapshot reports (ENG-431); nil = absent.
 	factStats FactStatsSource
+	// derivations is the derivation journal (ENG-2139); nil ⇒ its RPCs answer Unimplemented.
+	derivations DerivationJournalSource
 
 	kernelVersion   string
 	contractVersion string

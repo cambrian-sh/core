@@ -709,6 +709,13 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 		o.FactStats = k.Memory.FactExtractor
 		operatorCaps = append(operatorCaps, "facts-stats")
 	}
+	// Contract 0113 (ENG-2139): the derivation journal's backlog, counters and dead
+	// jobs, and a requeue of a dead job. Advertised only when the journal runs
+	// (execution.ingestion.derivation_journal_enabled).
+	if k.Memory != nil && k.Memory.Derivations != nil {
+		o.Derivations = k.Memory.Derivations
+		operatorCaps = append(operatorCaps, "derivation-journal")
+	}
 	operatorCaps = append(operatorCaps, "session-lifecycle")
 	// Contract 0105 (ADR-0137 S6, ENG-411 stage C): the compliance erase —
 	// PreviewForgetMemory / ForgetMemory / ListErasures / GetErasure — over the same
@@ -890,7 +897,12 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// and agent-plane IngestMemoryRequest.labels, the writer's non-classification
 	// markers (a revision's lifecycle, rev<N>, corpus/document ids) carried beside the
 	// tags; the write ceiling never filters them and access policy never reads them.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0112", operatorCaps
+	// 0113 (2026-11-19, additive; ENG-2139): the derivation journal on the operator
+	// plane - GetDerivationJournal (backlog per kind, counters, dead jobs with their
+	// last error; identifiers and counts only) and RequeueDerivationJob (command_id +
+	// reason; NotFound when no dead job of that version exists); capability
+	// "derivation-journal".
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0113", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

@@ -202,3 +202,5 @@ func (s *Service) SetWave1Reads(
 	s.embedding = embedding
 	s.classifier = classifier
 }
+
+func (s *Service) SetDerivationJournal(d DerivationJournalSource) { s.derivations = d }

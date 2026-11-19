@@ -593,3 +593,62 @@ func TestDerivationJournal_BackoffDoublesToTheCap(t *testing.T) {
 		t.Fatal("a nil journaler is a no-op")
 	}
 }
+
+func (f *fakeJournal) DeadDerivations(_ context.Context, limit int) ([]domain.DeadDerivation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.DeadDerivation
+	for _, r := range f.rows {
+		if r.dead {
+			out = append(out, domain.DeadDerivation{Key: r.job.Key(), Attempts: r.attempts, LastError: r.lastError, ChunkCount: len(r.job.ChunkIDs)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key.DocumentID < out[j].Key.DocumentID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeJournal) RequeueDerivation(_ context.Context, k domain.DerivationKey) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.rows[jkey(k.Kind, k.DocumentID)]
+	if !ok || !r.dead || r.job.ContentDigest != k.ContentDigest {
+		return false, nil
+	}
+	r.dead, r.attempts, r.next = false, 0, time.Now()
+	return true, nil
+}
+
+// ENG-2139: an operator lists dead jobs and requeues one; the next recovery pass
+// re-drives it, and a second requeue of the same version is a no-op.
+func TestDerivationJournaler_DeadJobsAndRequeue(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeJournal{rows: map[[2]string]*fakeJournalRow{}}
+	job := domain.DerivationJob{Kind: domain.DerivationFacts, DocumentID: "doc-1", ContentDigest: "v1", ChunkIDs: []string{"c1", "c2"}}
+	f.rows[jkey(job.Kind, job.DocumentID)] = &fakeJournalRow{job: job, attempts: 5, lastError: "provider 503", dead: true}
+	d := &DerivationJournaler{journal: f}
+
+	dead, err := d.DeadJobs(ctx, 10)
+	if err != nil || len(dead) != 1 || dead[0].Key != job.Key() || dead[0].LastError != "provider 503" || dead[0].ChunkCount != 2 {
+		t.Fatalf("dead jobs = %+v %v", dead, err)
+	}
+	if ok, err := d.Requeue(ctx, job.Key()); err != nil || !ok {
+		t.Fatalf("requeue: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := d.Requeue(ctx, job.Key()); ok {
+		t.Fatal("a second requeue must be a no-op")
+	}
+	if ok, _ := d.Requeue(ctx, domain.DerivationKey{Kind: job.Kind, DocumentID: "doc-1", ContentDigest: "v0"}); ok {
+		t.Fatal("another version must not be requeued")
+	}
+	b, _ := d.Backlog(ctx)
+	if b[domain.DerivationFacts].Dead != 0 || b[domain.DerivationFacts].Pending != 1 {
+		t.Fatalf("backlog after requeue = %+v", b)
+	}
+	var nilJ *DerivationJournaler
+	if jobs, _ := nilJ.DeadJobs(ctx, 1); jobs != nil {
+		t.Fatal("nil journaler lists nothing")
+	}
+}

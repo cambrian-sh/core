@@ -257,3 +257,58 @@ func TestPg_DerivationJournal_EmbedJobProgressAndStatus(t *testing.T) {
 		t.Fatalf("renewal after completion = %v, %v", live, err)
 	}
 }
+
+// ENG-2139 against a real Postgres: a job past its last attempt is listed (key,
+// attempts, last error, chunk count, never the payload), a requeue makes exactly
+// that version live and due again, and a second requeue is a no-op.
+func TestPg_DerivationJournal_DeadListAndRequeue(t *testing.T) {
+	a, _, _, ctx := newErasureStore(t)
+	const doc = "lctest-djdead"
+	clean := func() {
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM `+TableDerivationJobs+` WHERE document_id LIKE 'lctest-djdead%'`)
+	}
+	clean()
+	t.Cleanup(clean)
+	job := domain.DerivationJob{Kind: domain.DerivationKGTriplets, DocumentID: doc, ContentDigest: "dg-1",
+		ChunkIDs: []string{doc + "-c1", doc + "-c2", doc + "-c3"}, Writer: domain.AgentPrincipal("alice")}
+	if err := a.RecordDerivations(ctx, []domain.DerivationJob{job}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	dead, err := a.RescheduleDerivation(ctx, job.Key(), time.Now(), "provider 503", true, 1)
+	if err != nil || !dead {
+		t.Fatalf("job did not die: dead=%v err=%v", dead, err)
+	}
+	list, err := a.DeadDerivations(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine *domain.DeadDerivation
+	for i := range list {
+		if list[i].Key.DocumentID == doc {
+			mine = &list[i]
+		}
+	}
+	if mine == nil || mine.Key != job.Key() || mine.Attempts != 1 || mine.LastError != "provider 503" ||
+		mine.ChunkCount != 3 || mine.DeadAt.IsZero() {
+		t.Fatalf("dead job = %+v", mine)
+	}
+	if ok, err := a.RequeueDerivation(ctx, domain.DerivationKey{Kind: job.Kind, DocumentID: doc, ContentDigest: "other"}); err != nil || ok {
+		t.Fatalf("another version requeued: ok=%v err=%v", ok, err)
+	}
+	if ok, err := a.RequeueDerivation(ctx, job.Key()); err != nil || !ok {
+		t.Fatalf("requeue: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := a.RequeueDerivation(ctx, job.Key()); ok {
+		t.Fatal("a second requeue must be a no-op")
+	}
+	var attempts int
+	var deadAt *time.Time
+	var due bool
+	if err := a.pool.QueryRow(ctx, `SELECT attempts, dead_at, next_attempt_at <= now() FROM `+TableDerivationJobs+`
+		WHERE kind = $1 AND document_id = $2`, string(job.Kind), doc).Scan(&attempts, &deadAt, &due); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 || deadAt != nil || !due {
+		t.Fatalf("requeued row: attempts=%d dead_at=%v due=%v", attempts, deadAt, due)
+	}
+}

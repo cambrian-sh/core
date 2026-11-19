@@ -50,6 +50,8 @@ const (
 	OperatorConsole_ListFacts_FullMethodName                = "/cambrian.OperatorConsole/ListFacts"
 	OperatorConsole_GetFactChain_FullMethodName             = "/cambrian.OperatorConsole/GetFactChain"
 	OperatorConsole_GetFactCoverage_FullMethodName          = "/cambrian.OperatorConsole/GetFactCoverage"
+	OperatorConsole_GetDerivationJournal_FullMethodName     = "/cambrian.OperatorConsole/GetDerivationJournal"
+	OperatorConsole_RequeueDerivationJob_FullMethodName     = "/cambrian.OperatorConsole/RequeueDerivationJob"
 	OperatorConsole_PreviewForgetMemory_FullMethodName      = "/cambrian.OperatorConsole/PreviewForgetMemory"
 	OperatorConsole_ForgetMemory_FullMethodName             = "/cambrian.OperatorConsole/ForgetMemory"
 	OperatorConsole_ListErasures_FullMethodName             = "/cambrian.OperatorConsole/ListErasures"
@@ -266,6 +268,19 @@ type OperatorConsoleClient interface {
 	GetFactChain(ctx context.Context, in *GetFactChainOpRequest, opts ...grpc.CallOption) (*GetFactChainOpResponse, error)
 	// GetFactCoverage: extraction coverage of the corpus (counts only).
 	GetFactCoverage(ctx context.Context, in *GetFactCoverageOpRequest, opts ...grpc.CallOption) (*GetFactCoverageOpResponse, error)
+	// ENG-2139 (contract 0113): the derivation journal (ENG-2122) — the durable queue of
+	// fact, KG-triplet and background-embed jobs every ingest records. Capability
+	// "derivation-journal", advertised when execution.ingestion.derivation_journal_enabled.
+	// GetDerivationJournal: the backlog per kind (pending, retrying, dead, oldest) read
+	// now, the journaler's counters, and the dead jobs (past derivation_max_attempts)
+	// with their last error — identifiers and counts only, never document content.
+	// Read RPC (any authenticated role).
+	GetDerivationJournal(ctx context.Context, in *GetDerivationJournalOpRequest, opts ...grpc.CallOption) (*GetDerivationJournalOpResponse, error)
+	// RequeueDerivationJob makes one DEAD job of exactly this version live again (no
+	// attempts, due now); the journal's next recovery pass re-drives it under its
+	// source-version fence. Mutating: command_id + reason, audited. NotFound when no
+	// dead job of that version exists, so a repeated requeue changes nothing.
+	RequeueDerivationJob(ctx context.Context, in *RequeueDerivationJobOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
 	// stage C; contract 0105, capability "memory-erasure", advertised only when
 	// execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
@@ -1276,6 +1291,26 @@ func (c *operatorConsoleClient) GetFactCoverage(ctx context.Context, in *GetFact
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFactCoverageOpResponse)
 	err := c.cc.Invoke(ctx, OperatorConsole_GetFactCoverage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetDerivationJournal(ctx context.Context, in *GetDerivationJournalOpRequest, opts ...grpc.CallOption) (*GetDerivationJournalOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDerivationJournalOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetDerivationJournal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RequeueDerivationJob(ctx context.Context, in *RequeueDerivationJobOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RequeueDerivationJob_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2414,6 +2449,19 @@ type OperatorConsoleServer interface {
 	GetFactChain(context.Context, *GetFactChainOpRequest) (*GetFactChainOpResponse, error)
 	// GetFactCoverage: extraction coverage of the corpus (counts only).
 	GetFactCoverage(context.Context, *GetFactCoverageOpRequest) (*GetFactCoverageOpResponse, error)
+	// ENG-2139 (contract 0113): the derivation journal (ENG-2122) — the durable queue of
+	// fact, KG-triplet and background-embed jobs every ingest records. Capability
+	// "derivation-journal", advertised when execution.ingestion.derivation_journal_enabled.
+	// GetDerivationJournal: the backlog per kind (pending, retrying, dead, oldest) read
+	// now, the journaler's counters, and the dead jobs (past derivation_max_attempts)
+	// with their last error — identifiers and counts only, never document content.
+	// Read RPC (any authenticated role).
+	GetDerivationJournal(context.Context, *GetDerivationJournalOpRequest) (*GetDerivationJournalOpResponse, error)
+	// RequeueDerivationJob makes one DEAD job of exactly this version live again (no
+	// attempts, due now); the journal's next recovery pass re-drives it under its
+	// source-version fence. Mutating: command_id + reason, audited. NotFound when no
+	// dead job of that version exists, so a repeated requeue changes nothing.
+	RequeueDerivationJob(context.Context, *RequeueDerivationJobOpRequest) (*CommandAck, error)
 	// Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
 	// stage C; contract 0105, capability "memory-erasure", advertised only when
 	// execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
@@ -3203,6 +3251,12 @@ func (UnimplementedOperatorConsoleServer) GetFactChain(context.Context, *GetFact
 }
 func (UnimplementedOperatorConsoleServer) GetFactCoverage(context.Context, *GetFactCoverageOpRequest) (*GetFactCoverageOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFactCoverage not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetDerivationJournal(context.Context, *GetDerivationJournalOpRequest) (*GetDerivationJournalOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDerivationJournal not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RequeueDerivationJob(context.Context, *RequeueDerivationJobOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequeueDerivationJob not implemented")
 }
 func (UnimplementedOperatorConsoleServer) PreviewForgetMemory(context.Context, *PreviewForgetMemoryOpRequest) (*PreviewForgetMemoryOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PreviewForgetMemory not implemented")
@@ -4069,6 +4123,42 @@ func _OperatorConsole_GetFactCoverage_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).GetFactCoverage(ctx, req.(*GetFactCoverageOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetDerivationJournal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDerivationJournalOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetDerivationJournal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetDerivationJournal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetDerivationJournal(ctx, req.(*GetDerivationJournalOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RequeueDerivationJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequeueDerivationJobOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RequeueDerivationJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RequeueDerivationJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RequeueDerivationJob(ctx, req.(*RequeueDerivationJobOpRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -5960,6 +6050,14 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFactCoverage",
 			Handler:    _OperatorConsole_GetFactCoverage_Handler,
+		},
+		{
+			MethodName: "GetDerivationJournal",
+			Handler:    _OperatorConsole_GetDerivationJournal_Handler,
+		},
+		{
+			MethodName: "RequeueDerivationJob",
+			Handler:    _OperatorConsole_RequeueDerivationJob_Handler,
 		},
 		{
 			MethodName: "PreviewForgetMemory",

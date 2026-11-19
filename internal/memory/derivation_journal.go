@@ -675,6 +675,38 @@ type DerivationJournalStats struct {
 	Backlog map[domain.DerivationKind]domain.DerivationBacklog
 }
 
+// Backlog reads the journal's rows per kind now (ENG-2139: the operator view; Stats
+// carries the count of the last recovery pass).
+func (d *DerivationJournaler) Backlog(ctx context.Context) (map[domain.DerivationKind]domain.DerivationBacklog, error) {
+	if d == nil {
+		return nil, nil
+	}
+	return d.journal.DerivationBacklog(ctx)
+}
+
+// DeadJobs lists up to limit jobs past their last attempt (ENG-2139).
+func (d *DerivationJournaler) DeadJobs(ctx context.Context, limit int) ([]domain.DeadDerivation, error) {
+	if d == nil {
+		return nil, nil
+	}
+	return d.journal.DeadDerivations(ctx, limit)
+}
+
+// Requeue makes a dead job live again (ENG-2139): the next recovery pass claims and
+// re-drives it under its source-version fence, like any due job. false when no dead
+// job of that version exists, so a repeated requeue changes nothing.
+func (d *DerivationJournaler) Requeue(ctx context.Context, k domain.DerivationKey) (bool, error) {
+	if d == nil {
+		return false, nil
+	}
+	ok, err := d.journal.RequeueDerivation(ctx, k)
+	if err == nil && ok {
+		slog.InfoContext(ctx, "DerivationJournal: dead job requeued by an operator",
+			"kind", string(k.Kind), "document", k.DocumentID)
+	}
+	return ok, err
+}
+
 // Stats returns the counters. nil-safe.
 func (d *DerivationJournaler) Stats() DerivationJournalStats {
 	if d == nil {

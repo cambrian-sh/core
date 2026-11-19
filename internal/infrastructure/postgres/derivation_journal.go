@@ -236,6 +236,54 @@ func (p *PgVectorAdapter) DerivationBacklog(ctx context.Context) (map[domain.Der
 	return out, mapError("DerivationBacklog", rows.Err())
 }
 
+// DeadDerivations implements domain.DerivationJournal (ENG-2139): the jobs past
+// their last attempt, most recently dead first. Identifiers, counts and the last
+// error only — never the payload or staged content.
+func (p *PgVectorAdapter) DeadDerivations(ctx context.Context, limit int) ([]domain.DeadDerivation, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.pool.Query(ctx, `SELECT kind, document_id, content_digest, attempts, last_error,
+			cardinality(chunk_ids), created_at, dead_at
+		FROM `+TableDerivationJobs+` WHERE dead_at IS NOT NULL
+		ORDER BY dead_at DESC, kind, document_id LIMIT $1`, limit)
+	if err != nil {
+		return nil, mapError("DeadDerivations", err)
+	}
+	defer rows.Close()
+	var out []domain.DeadDerivation
+	for rows.Next() {
+		var (
+			d       domain.DeadDerivation
+			kind    string
+			created time.Time
+			deadAt  time.Time
+		)
+		if err := rows.Scan(&kind, &d.Key.DocumentID, &d.Key.ContentDigest, &d.Attempts, &d.LastError,
+			&d.ChunkCount, &created, &deadAt); err != nil {
+			return nil, mapError("DeadDerivations", err)
+		}
+		d.Key.Kind = domain.DerivationKind(kind)
+		d.CreatedAt, d.DeadAt = created.UTC(), deadAt.UTC()
+		out = append(out, d)
+	}
+	return out, mapError("DeadDerivations", rows.Err())
+}
+
+// RequeueDerivation implements domain.DerivationJournal (ENG-2139): the DEAD job of
+// exactly this version becomes live with no attempts and due now; false when no dead
+// job of that version exists.
+func (p *PgVectorAdapter) RequeueDerivation(ctx context.Context, k domain.DerivationKey) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `UPDATE `+TableDerivationJobs+` SET dead_at = NULL, attempts = 0,
+			next_attempt_at = now()
+		WHERE kind = $1 AND document_id = $2 AND content_digest = $3 AND dead_at IS NOT NULL`,
+		string(k.Kind), k.DocumentID, k.ContentDigest)
+	if err != nil {
+		return false, mapError("RequeueDerivation", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // RenewDerivation implements domain.DerivationJournal (ENG-2143): the progress of a
 // background embed, and its claim extended while it works. live is false when the row
 // of this version is gone (erased, or replaced by a newer ingest).

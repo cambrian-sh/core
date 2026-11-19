@@ -133,6 +133,20 @@ service OperatorConsole {
   // GetFactCoverage: extraction coverage of the corpus (counts only).
   rpc GetFactCoverage(GetFactCoverageOpRequest) returns (GetFactCoverageOpResponse);
 
+  // ENG-2139 (contract 0113): the derivation journal (ENG-2122) — the durable queue of
+  // fact, KG-triplet and background-embed jobs every ingest records. Capability
+  // "derivation-journal", advertised when execution.ingestion.derivation_journal_enabled.
+  // GetDerivationJournal: the backlog per kind (pending, retrying, dead, oldest) read
+  // now, the journaler's counters, and the dead jobs (past derivation_max_attempts)
+  // with their last error — identifiers and counts only, never document content.
+  // Read RPC (any authenticated role).
+  rpc GetDerivationJournal(GetDerivationJournalOpRequest) returns (GetDerivationJournalOpResponse);
+  // RequeueDerivationJob makes one DEAD job of exactly this version live again (no
+  // attempts, due now); the journal's next recovery pass re-drives it under its
+  // source-version fence. Mutating: command_id + reason, audited. NotFound when no
+  // dead job of that version exists, so a repeated requeue changes nothing.
+  rpc RequeueDerivationJob(RequeueDerivationJobOpRequest) returns (CommandAck);
+
   // Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
   // stage C; contract 0105, capability "memory-erasure", advertised only when
   // execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
@@ -1301,6 +1315,66 @@ message SnapshotResponse {
   // announced by the "facts-stats" capability. Per-source partial coverage is
   // GetFactCoverage (contract 0103).
   FactExtractorStatsOp fact_extractor = 8;
+}
+
+// ENG-2139 (contract 0113): the derivation journal on the wire.
+message GetDerivationJournalOpRequest {
+  // dead_limit bounds the dead jobs returned (<= 0: 100).
+  int32 dead_limit = 1;
+}
+
+message GetDerivationJournalOpResponse {
+  // kinds: one row per job kind that has rows (facts, kg_triplets, embed).
+  repeated DerivationBacklogOp kinds = 1;
+  // dead: jobs past their last attempt, most recently dead first.
+  repeated DeadDerivationOp dead = 2;
+  DerivationJournalCountersOp counters = 3;
+}
+
+// DerivationBacklogOp is one kind's journal rows read now.
+message DerivationBacklogOp {
+  string kind = 1;
+  // pending: live jobs (waiting, claimed or retrying); retrying: live jobs with at
+  // least one failed attempt; dead: jobs past their last attempt.
+  int32 pending = 2;
+  int32 retrying = 3;
+  int32 dead = 4;
+  // oldest_unix_ms: when the oldest live job was recorded (0: none).
+  int64 oldest_unix_ms = 5;
+}
+
+// DeadDerivationOp is one dead job: its key (kind, document_id, content_digest — what
+// RequeueDerivationJob names), its failures and the last error.
+message DeadDerivationOp {
+  string kind = 1;
+  string document_id = 2;
+  string content_digest = 3;
+  int32 attempts = 4;
+  string last_error = 5;
+  // chunk_count: the chunks the job still had to derive.
+  int32 chunk_count = 6;
+  int64 created_at_unix_ms = 7;
+  int64 dead_at_unix_ms = 8;
+}
+
+// DerivationJournalCountersOp is memory.DerivationJournalStats on the wire: counters
+// since the kernel started.
+message DerivationJournalCountersOp {
+  uint64 recorded = 1;
+  uint64 record_failed = 2;
+  uint64 completed = 3;
+  uint64 failed = 4;
+  uint64 deferred = 5;
+  uint64 died = 6;
+  uint64 recovered = 7;
+}
+
+message RequeueDerivationJobOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string kind = 3;
+  string document_id = 4;
+  string content_digest = 5;
 }
 
 // FactExtractorStatsOp is memory.FactExtractorStats on the wire. Counters only grow

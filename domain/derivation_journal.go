@@ -119,10 +119,30 @@ type DerivationJournal interface {
 	// row still exists: false means the document was erased or a newer version replaced
 	// the job, and the caller stops.
 	RenewDerivation(ctx context.Context, k DerivationKey, remaining []string, lease time.Duration) (live bool, err error)
+	// DeadDerivations lists up to limit jobs past their last attempt (dead), most
+	// recently dead first, for the operator (ENG-2139). Identifiers and the error
+	// only: never the job's staged content.
+	DeadDerivations(ctx context.Context, limit int) ([]DeadDerivation, error)
+	// RequeueDerivation makes the DEAD job of exactly this version live again: no
+	// attempts, due now, so the recovery loop claims it on its next pass. It
+	// reports false when no dead job of that version exists (already requeued,
+	// completed, erased or replaced), so a repeated requeue is a no-op.
+	RequeueDerivation(ctx context.Context, k DerivationKey) (bool, error)
 	// IngestStatus reads the ingest state of one stored document (ENG-2143): the
 	// background embed job of the document's current version when one exists, else
 	// searchable. found is false when no document carries the id.
 	IngestStatus(ctx context.Context, documentID string) (st IngestStatus, found bool, err error)
+}
+
+// DeadDerivation is one job past its last attempt, as the operator sees it
+// (ENG-2139): its key, how often it failed, the last error and when it died.
+type DeadDerivation struct {
+	Key        DerivationKey
+	Attempts   int
+	LastError  string
+	ChunkCount int
+	CreatedAt  time.Time
+	DeadAt     time.Time
 }
 
 // IngestState is where an ingested document stands (ENG-2143).
