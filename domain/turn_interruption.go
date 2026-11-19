@@ -26,6 +26,10 @@ const (
 	ProviderFaultSpendLimit ProviderFault = "provider_spend_limit"
 	// ProviderFaultContextOverflow: the request was larger than the model's context.
 	ProviderFaultContextOverflow ProviderFault = "context_overflow"
+	// ProviderFaultNotConfigured: no model is allocated to the step and no default model
+	// is configured — a deployment setting, not an outage (ENG-2156). Distinct from
+	// ProviderFaultUnavailable because waiting does not help; an operator must fix it.
+	ProviderFaultNotConfigured ProviderFault = "provider_not_configured"
 )
 
 // TurnInterruptReason names why a chat turn ended without a reply. It is the key of the
@@ -37,6 +41,7 @@ const (
 	TurnInterruptProviderAuth        TurnInterruptReason = "provider_auth"
 	TurnInterruptProviderBusy        TurnInterruptReason = "provider_busy"
 	TurnInterruptProviderUnavailable TurnInterruptReason = "provider_unavailable"
+	TurnInterruptNotConfigured       TurnInterruptReason = "not_configured"
 	TurnInterruptSpendLimit          TurnInterruptReason = "spend_limit"
 	TurnInterruptContextTooLarge     TurnInterruptReason = "context_too_large"
 	TurnInterruptAssistantRestarted  TurnInterruptReason = "assistant_restarted"

@@ -62,6 +62,7 @@ func TestHumanFailure_TurkishOnEveryPath(t *testing.T) {
 		status.Error(codes.Unauthenticated, "x"), status.Error(codes.ResourceExhausted, "x"),
 		status.Error(codes.Unavailable, "x"),
 		&domain.TurnInterruption{Reason: domain.TurnInterruptProviderUnavailable},
+		&domain.TurnInterruption{Reason: domain.TurnInterruptNotConfigured},
 		&domain.TurnInterruption{Reason: domain.TurnInterruptSpendLimit},
 		&domain.TurnInterruption{Reason: domain.TurnInterruptContextTooLarge},
 	}

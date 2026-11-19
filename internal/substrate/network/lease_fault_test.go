@@ -29,6 +29,7 @@ func TestClassifyProviderFault_MirrorsGatewayStatus(t *testing.T) {
 		{"500", &llm.ProviderError{Provider: "openai", Status: 500, Message: "boom"}, domain.ProviderFaultUnavailable},
 		{"reset", fmt.Errorf("openai: %w: reset", llm.ErrProviderUnreachable), domain.ProviderFaultUnavailable},
 		{"no healthy model", llm.ErrNoHealthyModel, domain.ProviderFaultUnavailable},
+		{"no model allocated", fmt.Errorf("%w for session s1 and no default model configured", ErrNoModelAllocated), domain.ProviderFaultNotConfigured},
 		{"spend ceiling", fmt.Errorf("x: %w", llm.ErrSpendCeiling), domain.ProviderFaultSpendLimit},
 		{"context overflow", &llm.ProviderError{Provider: "openai", Status: 400, Message: "x", Overflow: true}, domain.ProviderFaultContextOverflow},
 		// Not provider failures: a capability answer, a cancelled turn, a plain 400.

@@ -170,6 +170,7 @@ func TestSendTurn_InterruptedTurnIsPlainWithAClassCode(t *testing.T) {
 		{domain.TurnInterruptProviderAuth, codes.FailedPrecondition},
 		{domain.TurnInterruptProviderBusy, codes.ResourceExhausted},
 		{domain.TurnInterruptProviderUnavailable, codes.Unavailable},
+		{domain.TurnInterruptNotConfigured, codes.FailedPrecondition},
 		{domain.TurnInterruptAssistantRestarted, codes.Unavailable},
 		{domain.TurnInterruptTimeout, codes.DeadlineExceeded},
 		{domain.TurnInterruptFailed, codes.Internal},

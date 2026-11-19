@@ -23,7 +23,7 @@ import (
 // ENG-2124 end to end, through the real chat TurnService, the real LLM gateway over the
 // real llm.Provider (the readiness fault shapes, faultServer), and the real Postgres
 // conversation store: a provider credential failure, a provider 429 and a worker killed
-// mid-turn each reach the person as one plain sentence and leave an interruption marker
+// mid-turn, and a turn with no model allocated (ENG-2156) each reach the person as one plain sentence and leave an interruption marker
 // in conversation_messages; nothing raw leaks.
 //
 // The worker stands in for the SDK chat worker as it behaves before ENG-2125: it makes
@@ -42,6 +42,22 @@ func (w sdkLikeWorker) Dispatch(_ context.Context, h *domain.Handoff) (*domain.H
 	if err != nil {
 		// The SDK TraitServicer today: every failure is Internal, raw text included.
 		return nil, status.Error(codes.Internal, "INTERNAL: "+status.Convert(err).Message())
+	}
+	return &domain.Handoff{Payload: &domain.Payload{Data: []byte(resp.GetText())}}, nil
+}
+
+// relayingWorker is the SDK chat worker since ENG-2125: it relays the gateway's status
+// code with the gateway's text.
+type relayingWorker struct {
+	s   *Server
+	ctx context.Context
+}
+
+func (w relayingWorker) Dispatch(_ context.Context, h *domain.Handoff) (*domain.Handoff, error) {
+	resp, err := turn(w.s, w.ctx, domain.LeaseID(h.Context["_session_token_id"]))
+	if err != nil {
+		st := status.Convert(err)
+		return nil, status.Error(st.Code(), st.Message())
 	}
 	return &domain.Handoff{Payload: &domain.Payload{Data: []byte(resp.GetText())}}, nil
 }
@@ -93,14 +109,19 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 	}
 
 	cases := []struct {
-		name   string
-		fault  string // faultServer mode; "" with kill
-		kill   bool
-		reason domain.TurnInterruptReason
+		name  string
+		fault string // faultServer mode; "" with kill
+		kill  bool
+		// noModel: the turn's allocation names no model and no default is configured;
+		// the worker relays the gateway's Unavailable (ENG-2156).
+		noModel bool
+		reason  domain.TurnInterruptReason
+		want    corechat.MessageID // the exact sentence, when the case pins it
 	}{
 		{name: "provider_auth", fault: faultAuth, reason: domain.TurnInterruptProviderAuth},
 		{name: "provider_429", fault: fault429, reason: domain.TurnInterruptProviderBusy},
 		{name: "worker_killed", kill: true, reason: domain.TurnInterruptAssistantRestarted},
+		{name: "no_model_allocated", noModel: true, reason: domain.TurnInterruptNotConfigured, want: corechat.MsgNotConfigured},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -124,6 +145,10 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 				worker = killedWorker{t: t}
 			}
 			alloc := domain.StepAllocation{Winner: domain.AgentDefinition{ID: "llm:m1"}}
+			if c.noModel {
+				worker = relayingWorker{s: s, ctx: workerCtx}
+				alloc = domain.StepAllocation{} // no winner, and the gateway has no default model
+			}
 			svc := corechat.NewTurnService(store, worker, func(ctx context.Context, limit int, ttl time.Duration) (string, func(), error) {
 				lease, err := gw.Acquire(ctx, alloc, limit, ttl)
 				if err != nil {
@@ -143,6 +168,12 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 				t.Fatalf("reason = %q, want %q (cause: %v)", ti.Reason, c.reason, ti.Cause)
 			}
 			assertNoRawLeak(t, "the person's message", ti.Message)
+			if c.want != "" && ti.Message != corechat.Message(c.want, "en") {
+				t.Fatalf("told %q, want %q", ti.Message, corechat.Message(c.want, "en"))
+			}
+			if c.noModel && (strings.Contains(strings.ToLower(ti.Message), "allocated") || strings.Contains(strings.ToLower(ti.Message), "restarted")) {
+				t.Fatalf("told %q: raw gateway text or the restart sentence", ti.Message)
+			}
 
 			msgs, err := store.ListMessages(ctx, convID, 0, 0)
 			if err != nil {

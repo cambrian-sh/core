@@ -183,7 +183,7 @@ func gatewayStatus(err error) error {
 		return withRetryInfo(status.New(codes.Unavailable, msg), err)
 	case errors.Is(err, llm.ErrSpendCeiling):
 		return status.Error(codes.ResourceExhausted, msg)
-	case errors.Is(err, llm.ErrNoHealthyModel), strings.HasPrefix(msg, "no model allocated"):
+	case errors.Is(err, llm.ErrNoHealthyModel), errors.Is(err, ErrNoModelAllocated):
 		return status.Error(codes.Unavailable, msg)
 	case msg == "gateway_overflow":
 		return status.Error(codes.ResourceExhausted, "gateway overloaded")
@@ -196,7 +196,8 @@ func gatewayStatus(err error) error {
 
 // classifyProviderFault is the provider-failure class of a gateway error — the same
 // classes gatewayStatus answers with Unauthenticated, ResourceExhausted, Unavailable
-// and OutOfRange (ENG-1005) — recorded on the lease for the chat lane (ENG-2124).
+// and OutOfRange (ENG-1005), with a missing model told apart from an outage
+// (ENG-2156) — recorded on the lease for the chat lane (ENG-2124).
 // ProviderFaultNone for nil and for anything that is not a provider failure.
 func classifyProviderFault(err error) domain.ProviderFault {
 	if err == nil {
@@ -213,6 +214,10 @@ func classifyProviderFault(err error) domain.ProviderFault {
 		return domain.ProviderFaultAuth
 	case errors.Is(err, llm.ErrSpendCeiling):
 		return domain.ProviderFaultSpendLimit
+	case errors.Is(err, ErrNoModelAllocated):
+		// Answered Unavailable like an outage, but its own class: waiting does not
+		// help, an operator must allocate or configure a model (ENG-2156).
+		return domain.ProviderFaultNotConfigured
 	case providerStatus(err) == http.StatusTooManyRequests, err.Error() == "gateway_overflow":
 		return domain.ProviderFaultRateLimited
 	case providerStatus(err) >= 500, errors.Is(err, llm.ErrProviderUnreachable),

@@ -528,7 +528,7 @@ func (g *SubstrateLLMGateway) beginLeaseCall(ctx context.Context, sessionID doma
 		// default is configured — not a health one.
 		slog.Error("llm_gateway: no model allocated to this step and no default model configured. " +
 			"Check the agent manifest's RequiredModelCapabilities and that a matching TraitModel is registered.")
-		return nil, fmt.Errorf("no model allocated for session %s and no default model configured", sessionID)
+		return nil, fmt.Errorf("%w for session %s and no default model configured", ErrNoModelAllocated, sessionID)
 	}
 	if models == nil {
 		return nil, fmt.Errorf("llm gateway: no model source wired (SetStepModels)")
@@ -873,6 +873,13 @@ func (g *SubstrateLLMGateway) LeaseFault(leaseID domain.LeaseID) domain.Provider
 // expected to fall back to the prompt-encoded action protocol, so it must stay
 // distinguishable from a real generation error.
 var ErrToolCallingUnsupported = errors.New("tool_calling_unsupported")
+
+// ErrNoModelAllocated is a lease call with no model candidate: the step's allocation
+// names no model and no default model is configured. It is a deployment setting, not
+// an outage — the gateway answers Unavailable and records ProviderFaultNotConfigured on
+// the lease, so the chat lane tells the person an operator must fix the model settings
+// rather than that the assistant restarted (ENG-2156).
+var ErrNoModelAllocated = errors.New("no model allocated")
 
 // GenerateWithTools runs one managed C1 turn, normally with native tool-calling.
 //

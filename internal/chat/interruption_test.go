@@ -45,6 +45,7 @@ func assertPlain(t *testing.T, what, text string) {
 
 var allInterruptReasons = []domain.TurnInterruptReason{
 	domain.TurnInterruptProviderAuth, domain.TurnInterruptProviderBusy, domain.TurnInterruptProviderUnavailable,
+	domain.TurnInterruptNotConfigured,
 	domain.TurnInterruptSpendLimit, domain.TurnInterruptContextTooLarge, domain.TurnInterruptAssistantRestarted,
 	domain.TurnInterruptStalled, domain.TurnInterruptTimeout, domain.TurnInterruptCancelled,
 	domain.TurnInterruptAtCapacity, domain.TurnInterruptSessionLost, domain.TurnInterruptEmptyReply,
@@ -87,6 +88,18 @@ func TestFailureReason_Table(t *testing.T) {
 		{"ResourceExhausted relayed", status.Error(codes.ResourceExhausted, "x"), "", domain.TurnInterruptProviderBusy},
 		// A provider outage relayed as Unavailable is told apart from a dead worker by the lease.
 		{"Unavailable relayed with fault", status.Error(codes.Unavailable, "x"), domain.ProviderFaultUnavailable, domain.TurnInterruptProviderUnavailable},
+		// ENG-2156: no model allocated is answered Unavailable too; the lease fault says
+		// it is a missing setting, not a dead worker or an outage.
+		{"no model allocated relayed", status.Error(codes.Unavailable, "no model allocated for session s1 and no default model configured"), domain.ProviderFaultNotConfigured, domain.TurnInterruptNotConfigured},
+		{"no model allocated via lease", rawProvider401, domain.ProviderFaultNotConfigured, domain.TurnInterruptNotConfigured},
+		// ENG-2156: the gateway's other refusals, relayed by code.
+		{"OutOfRange relayed", status.Error(codes.OutOfRange, "prompt too large"), "", domain.TurnInterruptContextTooLarge},
+		{"PermissionDenied relayed", status.Error(codes.PermissionDenied, "lease is not valid for this caller"), "", domain.TurnInterruptSessionLost},
+		{"PermissionDenied without the word lease", status.Error(codes.PermissionDenied, "no agent identity is bound"), "", domain.TurnInterruptSessionLost},
+		{"NotFound relayed", status.Error(codes.NotFound, "session not found: x"), "", domain.TurnInterruptSessionLost},
+		// Before ENG-2125 the refusal arrives as Internal text; "lease" must be the word.
+		{"lease refusal as Internal", status.Error(codes.Internal, "INTERNAL: lease is not valid for this caller"), "", domain.TurnInterruptSessionLost},
+		{"please is not lease", status.Error(codes.Internal, "INTERNAL: please retry"), "", domain.TurnInterruptFailed},
 		// The worker died mid-turn / was gone at dispatch.
 		{"worker killed", rawWorkerKill, "", domain.TurnInterruptAssistantRestarted},
 		{"worker lost", fmt.Errorf("%w: %v", agentpool.ErrWorkerLost, rawWorkerKill), "", domain.TurnInterruptAssistantRestarted},

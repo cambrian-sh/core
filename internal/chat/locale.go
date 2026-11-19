@@ -38,6 +38,7 @@ const (
 	MsgProviderAuth        MessageID = "provider_auth"
 	MsgProviderBusy        MessageID = "provider_busy"
 	MsgProviderUnavailable MessageID = "provider_unavailable"
+	MsgNotConfigured       MessageID = "not_configured"
 	MsgSpendLimit          MessageID = "spend_limit"
 	MsgContextTooLarge     MessageID = "context_too_large"
 	MsgAssistantRestarted  MessageID = "assistant_restarted"
@@ -56,7 +57,7 @@ const (
 var allMessageIDs = []MessageID{
 	MsgTurnStalled, MsgEmptyReply, MsgTurnTimeout, MsgTurnCancelled,
 	MsgAtCapacity, MsgSessionLost, MsgGenericFail,
-	MsgProviderAuth, MsgProviderBusy, MsgProviderUnavailable, MsgSpendLimit,
+	MsgProviderAuth, MsgProviderBusy, MsgProviderUnavailable, MsgNotConfigured, MsgSpendLimit,
 	MsgContextTooLarge, MsgAssistantRestarted,
 	MsgReplyUnverified, MsgReplyUncovered, MsgReplySource,
 }
@@ -80,6 +81,7 @@ var messageCatalogue = map[string]map[MessageID]string{
 		MsgProviderAuth:        "The AI service rejected our credentials. An operator needs to check the model settings.",
 		MsgProviderBusy:        "The AI service is busy right now. Try again in a minute.",
 		MsgProviderUnavailable: "The AI service can't be reached right now. Try again in a few minutes.",
+		MsgNotConfigured:       "The AI service isn't set up for this assistant yet, so it can't answer. An operator needs to check the model settings.",
 		MsgSpendLimit:          "This conversation has reached its AI usage limit. An operator can raise it.",
 		MsgContextTooLarge:     "This conversation has grown too long for the AI model to read at once. Starting a new conversation will help.",
 		MsgAssistantRestarted:  "This turn was interrupted because the assistant restarted. Please send your message again.",
@@ -98,6 +100,7 @@ var messageCatalogue = map[string]map[MessageID]string{
 		MsgProviderAuth:        "Yapay zekâ hizmeti kimlik bilgilerimizi reddetti. Bir yöneticinin model ayarlarını kontrol etmesi gerekiyor.",
 		MsgProviderBusy:        "Yapay zekâ hizmeti şu anda yoğun. Bir dakika sonra yeniden deneyin.",
 		MsgProviderUnavailable: "Yapay zekâ hizmetine şu anda ulaşılamıyor. Birkaç dakika sonra yeniden deneyin.",
+		MsgNotConfigured:       "Yapay zekâ hizmeti bu asistan için henüz yapılandırılmadı, bu yüzden yanıt veremiyor. Bir yöneticinin model ayarlarını kontrol etmesi gerekiyor.",
 		MsgSpendLimit:          "Bu konuşma yapay zekâ kullanım sınırına ulaştı. Bir yönetici sınırı yükseltebilir.",
 		MsgContextTooLarge:     "Bu konuşma, yapay zekâ modelinin tek seferde okuyabileceğinden uzun hale geldi. Yeni bir konuşma başlatmak işe yarar.",
 		MsgAssistantRestarted:  "Asistan yeniden başlatıldığı için bu istek yarıda kaldı. Lütfen mesajınızı yeniden gönderin.",

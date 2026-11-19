@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -50,6 +51,7 @@ var interruptMessages = map[domain.TurnInterruptReason]MessageID{
 	domain.TurnInterruptProviderAuth:        MsgProviderAuth,
 	domain.TurnInterruptProviderBusy:        MsgProviderBusy,
 	domain.TurnInterruptProviderUnavailable: MsgProviderUnavailable,
+	domain.TurnInterruptNotConfigured:       MsgNotConfigured,
 	domain.TurnInterruptSpendLimit:          MsgSpendLimit,
 	domain.TurnInterruptContextTooLarge:     MsgContextTooLarge,
 	domain.TurnInterruptAssistantRestarted:  MsgAssistantRestarted,
@@ -70,6 +72,7 @@ var providerFaultReasons = map[domain.ProviderFault]domain.TurnInterruptReason{
 	domain.ProviderFaultUnavailable:     domain.TurnInterruptProviderUnavailable,
 	domain.ProviderFaultSpendLimit:      domain.TurnInterruptSpendLimit,
 	domain.ProviderFaultContextOverflow: domain.TurnInterruptContextTooLarge,
+	domain.ProviderFaultNotConfigured:   domain.TurnInterruptNotConfigured,
 }
 
 // failureMessage picks the catalogue sentence for a turn error (locale.go holds the text in
@@ -118,8 +121,9 @@ func failureReason(err error, fault domain.ProviderFault) domain.TurnInterruptRe
 	}
 	// The worker's status. Unavailable is the transport breaking under the call: the
 	// worker process died mid-turn (the readiness run's killed chat worker) and its
-	// supervisor restarts it. A provider outage the worker relays as Unavailable
-	// (ENG-2125) has a lease fault recorded and was classified above.
+	// supervisor restarts it. A provider outage or a missing model the worker relays as
+	// Unavailable (ENG-2125) has a lease fault recorded and was classified above
+	// (ENG-2156).
 	switch status.Code(err) {
 	case codes.Unavailable:
 		return domain.TurnInterruptAssistantRestarted
@@ -127,6 +131,15 @@ func failureReason(err error, fault domain.ProviderFault) domain.TurnInterruptRe
 		return domain.TurnInterruptProviderAuth
 	case codes.ResourceExhausted:
 		return domain.TurnInterruptProviderBusy
+	case codes.OutOfRange:
+		// The gateway's answer to a prompt larger than the model's context
+		// (domain.ErrContextOverflow), relayed by the worker (ENG-2156).
+		return domain.TurnInterruptContextTooLarge
+	case codes.PermissionDenied, codes.NotFound:
+		// The gateway refused the turn's lease: foreign, expired or swept
+		// (PermissionDenied "lease is not valid for this caller") or unknown
+		// (NotFound "session not found") — ENG-2156.
+		return domain.TurnInterruptSessionLost
 	case codes.DeadlineExceeded:
 		return domain.TurnInterruptTimeout
 	case codes.Canceled:
@@ -139,13 +152,18 @@ func failureReason(err error, fault domain.ProviderFault) domain.TurnInterruptRe
 	switch {
 	case strings.Contains(msg, "busy"), strings.Contains(msg, "capacity"), strings.Contains(msg, "saturated"):
 		return domain.TurnInterruptAtCapacity
-	case strings.Contains(msg, "session not found"), strings.Contains(msg, "lease"):
+	case strings.Contains(msg, "session not found"), leaseWord.MatchString(msg):
+		// A worker that reports the gateway's refusal as Internal (before ENG-2125).
 		return domain.TurnInterruptSessionLost
 	case strings.Contains(msg, "deadline"), strings.Contains(msg, "timeout"):
 		return domain.TurnInterruptTimeout
 	}
 	return domain.TurnInterruptFailed
 }
+
+// leaseWord matches "lease" as a word: a bare substring test also matched "please" and
+// "released", turning unrelated failures into a lost session (ENG-2156).
+var leaseWord = regexp.MustCompile(`\blease\b`)
 
 // interruption turns a failed turn's error into the person-facing *domain.TurnInterruption:
 // the class, its plain sentence in lang, and the raw error as the cause (logs only).

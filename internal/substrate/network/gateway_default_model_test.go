@@ -2,9 +2,13 @@ package network
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -64,5 +68,16 @@ func TestStreamChunks_EmptyAllocation_NoDefault_FailsClearly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no model allocated") {
 		t.Errorf("expected a 'no model allocated' error, got: %v", err)
+	}
+	// ENG-2156: a sentinel, answered Unavailable, and recorded on the lease as a
+	// missing setting so the chat lane does not say "the assistant restarted".
+	if !errors.Is(err, ErrNoModelAllocated) {
+		t.Errorf("error %v must wrap ErrNoModelAllocated", err)
+	}
+	if got := status.Code(gatewayStatus(err)); got != codes.Unavailable {
+		t.Errorf("gateway status = %v, want Unavailable", got)
+	}
+	if got := gw.LeaseFault("s2"); got != domain.ProviderFaultNotConfigured {
+		t.Errorf("lease fault = %q, want %q", got, domain.ProviderFaultNotConfigured)
 	}
 }

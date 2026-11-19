@@ -80,6 +80,7 @@ func mapConvError(err error) error {
 var interruptCodes = map[domain.TurnInterruptReason]codes.Code{
 	domain.TurnInterruptProviderAuth:        codes.FailedPrecondition,
 	domain.TurnInterruptSpendLimit:          codes.FailedPrecondition,
+	domain.TurnInterruptNotConfigured:       codes.FailedPrecondition, // an operator must set a model (ENG-2156)
 	domain.TurnInterruptProviderBusy:        codes.ResourceExhausted,
 	domain.TurnInterruptAtCapacity:          codes.ResourceExhausted,
 	domain.TurnInterruptProviderUnavailable: codes.Unavailable,
