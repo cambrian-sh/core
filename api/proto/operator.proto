@@ -210,6 +210,12 @@ service OperatorConsole {
   // raw store write). Idempotent on command_id (Operator-only, audited). A2.4.
   rpc IngestMemory(IngestMemoryOpRequest) returns (IngestMemoryOpResponse);
 
+  // ENG-2143 (contract 0111): where an ingested document stands (accepted -> embedding n/total ->
+  // searchable, or failed with a reason). A large upload is accepted at once and
+  // embedded in the background; the console polls this for its progress. Read RPC
+  // (any authenticated role, no command_id). found=false for an unknown id.
+  rpc GetIngestStatus(GetIngestStatusOpRequest) returns (GetIngestStatusOpResponse);
+
   // Tool-approval stream mirroring the ADR-0039 dangerous-tool approval request
   // (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
   // id-space. A2.5.
@@ -2289,6 +2295,33 @@ message IngestMemoryOpResponse {
   // classification scope (the earlier version and everything derived from it were
   // retired). 0 when the kernel keeps no version chain.
   int32 version = 5;
+  // ENG-2143: where the document stands when the call returns: "searchable" for an
+  // upload embedded with the call, "accepted" for a large one embedded in the
+  // background (GetIngestStatus reads its progress). Unset for a deduped replay.
+  IngestStatusOp status = 6;
+}
+
+// ENG-2143: the visible progress of one document's ingest (the operator-plane twin
+// of the agent plane's IngestStatus, ADR-0047 D1).
+message IngestStatusOp {
+  string document_id = 1;
+  // "accepted" | "embedding" | "searchable" | "failed".
+  string state = 2;
+  // The accepted version's chunk count and how many are embedded and stored, while
+  // the document is embedded in the background (0 otherwise).
+  int32 chunks_total = 3;
+  int32 chunks_embedded = 4;
+  // The last failure's cause: set for "failed", and while a failed attempt waits
+  // for its retry.
+  string error = 5;
+}
+
+message GetIngestStatusOpRequest {
+  string document_id = 1;
+}
+message GetIngestStatusOpResponse {
+  bool found = 1;
+  IngestStatusOp status = 2;
 }
 
 // ApprovalOp mirrors the ADR-0039 dangerous-tool ApprovalRequest (A2.5): the
@@ -3664,6 +3697,8 @@ message GetDocumentOpResponse {
   repeated string tags = 6;
   string source = 7;
   int64 created_at_unix_ms = 8;
+  // ENG-2143: the document's ingest state (unset when the kernel cannot read it).
+  IngestStatusOp ingest = 9;
 }
 
 // ── Reactive pipelines (contract 0087) ──────────────────────────────────────

@@ -84,10 +84,11 @@ func (p *PgVectorAdapter) RecordDerivations(ctx context.Context, jobs []domain.D
 		return mapError("RecordDerivations", err)
 	}
 	defer tx.Rollback(ctx)
-	q := `INSERT INTO ` + TableDerivationJobs + ` (kind, document_id, content_digest, chunk_ids, payload, claimed_at, next_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, now(), now() + make_interval(secs => $6))
+	q := `INSERT INTO ` + TableDerivationJobs + ` (kind, document_id, content_digest, chunk_ids, payload, claimed_at, next_attempt_at, staged, chunks_total)
+		VALUES ($1, $2, $3, $4, $5, now(), now() + make_interval(secs => $6), $7, $8)
 		ON CONFLICT (kind, document_id) DO UPDATE SET
 			content_digest = EXCLUDED.content_digest, chunk_ids = EXCLUDED.chunk_ids, payload = EXCLUDED.payload,
+			staged = EXCLUDED.staged, chunks_total = EXCLUDED.chunks_total,
 			attempts = 0, last_error = '', dead_at = NULL, created_at = now(),
 			claimed_at = EXCLUDED.claimed_at, next_attempt_at = EXCLUDED.next_attempt_at`
 	for _, j := range jobs {
@@ -102,7 +103,11 @@ func (p *PgVectorAdapter) RecordDerivations(ctx context.Context, jobs []domain.D
 		if ids == nil {
 			ids = []string{}
 		}
-		if _, err := tx.Exec(ctx, q, string(j.Kind), j.DocumentID, j.ContentDigest, ids, payload, lease.Seconds()); err != nil {
+		var staged any // NULL unless the job stages state (ENG-2143: embed jobs)
+		if len(j.Staged) > 0 {
+			staged = j.Staged
+		}
+		if _, err := tx.Exec(ctx, q, string(j.Kind), j.DocumentID, j.ContentDigest, ids, payload, lease.Seconds(), staged, j.ChunksTotal); err != nil {
 			return mapError("RecordDerivations", err)
 		}
 	}
@@ -172,7 +177,7 @@ func (p *PgVectorAdapter) ClaimDerivations(ctx context.Context, kind domain.Deri
 			FOR UPDATE SKIP LOCKED
 		) due
 		WHERE j.kind = due.kind AND j.document_id = due.document_id
-		RETURNING j.kind, j.document_id, j.content_digest, j.chunk_ids, j.payload, j.attempts`,
+		RETURNING j.kind, j.document_id, j.content_digest, j.chunk_ids, j.payload, j.attempts, j.staged, j.chunks_total`,
 		string(kind), since.UTC(), limit, lease.Seconds())
 	if err != nil {
 		return nil, mapError("ClaimDerivations", err)
@@ -185,7 +190,7 @@ func (p *PgVectorAdapter) ClaimDerivations(ctx context.Context, kind domain.Deri
 			k       string
 			payload []byte
 		)
-		if err := rows.Scan(&k, &j.DocumentID, &j.ContentDigest, &j.ChunkIDs, &payload, &j.Attempts); err != nil {
+		if err := rows.Scan(&k, &j.DocumentID, &j.ContentDigest, &j.ChunkIDs, &payload, &j.Attempts, &j.Staged, &j.ChunksTotal); err != nil {
 			return nil, mapError("ClaimDerivations", err)
 		}
 		j.Kind = domain.DerivationKind(k)
@@ -229,4 +234,69 @@ func (p *PgVectorAdapter) DerivationBacklog(ctx context.Context) (map[domain.Der
 		out[domain.DerivationKind(k)] = b
 	}
 	return out, mapError("DerivationBacklog", rows.Err())
+}
+
+// RenewDerivation implements domain.DerivationJournal (ENG-2143): the progress of a
+// background embed, and its claim extended while it works. live is false when the row
+// of this version is gone (erased, or replaced by a newer ingest).
+func (p *PgVectorAdapter) RenewDerivation(ctx context.Context, k domain.DerivationKey, remaining []string, lease time.Duration) (bool, error) {
+	if remaining == nil {
+		remaining = []string{}
+	}
+	tag, err := p.pool.Exec(ctx, `UPDATE `+TableDerivationJobs+` SET chunk_ids = $4,
+			claimed_at = now(), next_attempt_at = now() + make_interval(secs => $5)
+		WHERE kind = $1 AND document_id = $2 AND content_digest = $3`,
+		string(k.Kind), k.DocumentID, k.ContentDigest, remaining, lease.Seconds())
+	if err != nil {
+		return false, mapError("RenewDerivation", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// IngestStatus implements domain.DerivationJournal (ENG-2143). The embed row counts
+// only when it is of the document's current version: a row a revise left behind (its
+// worker stops at the version fence and deletes it) is not this document's state.
+func (p *PgVectorAdapter) IngestStatus(ctx context.Context, documentID string) (domain.IngestStatus, bool, error) {
+	st := domain.IngestStatus{DocumentID: documentID}
+	if documentID == "" {
+		return st, false, nil
+	}
+	var (
+		docDigest, jobDigest *string
+		remaining, total     int
+		lastError            string
+		dead, hasJob         bool
+	)
+	err := p.pool.QueryRow(ctx, `SELECT COALESCE(d.written_by, ''), d.content_digest, j.content_digest,
+			COALESCE(cardinality(j.chunk_ids), 0), COALESCE(j.chunks_total, 0), COALESCE(j.last_error, ''),
+			j.dead_at IS NOT NULL, j.document_id IS NOT NULL
+		FROM `+TableDocuments+` d
+		LEFT JOIN `+TableDerivationJobs+` j ON j.kind = $2 AND j.document_id = d.id
+		WHERE d.id = $1`, documentID, string(domain.DerivationEmbed)).
+		Scan(&st.Writer, &docDigest, &jobDigest, &remaining, &total, &lastError, &dead, &hasJob)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return st, false, nil
+	}
+	if err != nil {
+		return st, false, mapError("IngestStatus", err)
+	}
+	current := hasJob && (docDigest == nil || jobDigest == nil || *docDigest == *jobDigest)
+	switch {
+	case !current:
+		st.State = domain.IngestSearchable
+	case dead:
+		st.State, st.Error = domain.IngestFailed, lastError
+	default:
+		st.ChunksTotal, st.Error = total, lastError
+		st.ChunksEmbedded = max(total-remaining, 0)
+		st.State = domain.IngestAccepted
+		if st.ChunksEmbedded > 0 {
+			st.State = domain.IngestEmbedding
+		}
+	}
+	if st.State == domain.IngestFailed {
+		st.ChunksTotal = total
+		st.ChunksEmbedded = max(total-remaining, 0)
+	}
+	return st, true, nil
 }

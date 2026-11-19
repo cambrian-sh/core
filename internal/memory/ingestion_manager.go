@@ -51,6 +51,13 @@ type IngestionConfig struct {
 	// ErrFactsNotReady (the content IS stored; a retry is an idempotent no-op that
 	// waits again). <=0 means the 120 s default.
 	SyncFactsWaitTimeout time.Duration
+	// BackgroundEmbedMinChunks is the chunk count from which ProcessSync accepts a
+	// document and embeds it in the background (ENG-2143,
+	// execution.ingestion.background_embed_min_chunks); 0 = never. It applies only when
+	// the derivation journal runs background embeds (background_embed_enabled). Such an
+	// ingest returns before its chunks are searchable, so the sync KG and fact waits do
+	// not apply to it; a caller needing read-your-writes waits on its IngestStatus.
+	BackgroundEmbedMinChunks int
 	// LegacyDocumentIdentity derives document ids exactly as before ADR-0138
 	// (execution.ingestion.document_identity = "legacy"): no writer, Body-only digest,
 	// no grandfathering lookup. Default false (scheme v2).
@@ -204,6 +211,9 @@ func (im *IngestionManager) SetFactExtractor(e *FactExtractor) {
 func (im *IngestionManager) SetDerivationJournal(d *DerivationJournaler) {
 	if im != nil && d != nil {
 		im.derivations = d
+		// ENG-2143: the journal runs this manager's background embeds (no-op when
+		// background embedding is off).
+		d.bindEmbedder(im)
 	}
 }
 
@@ -425,7 +435,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	// involved is deterministic and a retry overwrites both. Rolling the entity
 	// back after a failed chunk write was the rejected alternative: it is one more
 	// store call against a store that just failed.
-	outcome, err := im.persistChunksTracked(ctx, doc, ident, ex, entityID, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
+	outcome, err := im.persistChunksTracked(ctx, doc, ident, ex, entityID, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts, true)
 	chunkCount := outcome.Stored
 	stored = chunkCount
 	if err != nil {
@@ -444,6 +454,17 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	im.recordUpload(ctx, doc, ident, ident.ID)
 	if report != nil {
 		report.DocumentID, report.Version, report.Replaced = ident.ID, max(outcome.Version, 1), outcome.Replaced
+	}
+	if outcome.Background {
+		// ENG-2143: accepted, not yet searchable. The written event, the KG and fact
+		// jobs follow when the background embed has stored every chunk.
+		if report != nil {
+			report.Status = domain.IngestStatus{DocumentID: ident.ID, State: domain.IngestAccepted, ChunksTotal: outcome.Total, Writer: ident.Writer}
+		}
+		return entityID, nil
+	}
+	if report != nil {
+		report.Status = domain.IngestStatus{DocumentID: ident.ID, State: domain.IngestSearchable, Writer: ident.Writer}
 	}
 	if chunkCount == 0 {
 		return entityID, nil
@@ -599,7 +620,7 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 		slog.Warn("IngestionManager: queued document refused; nothing written", "source_uri", doc.SourceURI, "err", err)
 		return
 	}
-	outcome, err = im.persistChunksTracked(dctx, doc, ident, ex, entityID, false, false) // async path: never waits for the KG or fact lane
+	outcome, err = im.persistChunksTracked(dctx, doc, ident, ex, entityID, false, false, false) // async path: never waits for the KG or fact lane
 	if err != nil {
 		slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
 		return

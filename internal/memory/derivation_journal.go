@@ -91,6 +91,20 @@ type DerivationJournaler struct {
 	stopOnce sync.Once
 	started  atomic.Bool
 
+	// ENG-2143: background embedding (derivation_embed.go). embedRun is bound by
+	// IngestionManager.SetDerivationJournal; embedSlots bounds the concurrent embed
+	// workers (EmbedWorkers), embedWG waits for them, embedCtx cancels them at Stop; wake
+	// asks the loop for a recovery pass now (an accepted document, due derivations).
+	embedRun    backgroundEmbedRunner
+	embedSlots  chan struct{}
+	embedWG     sync.WaitGroup
+	embedMu     sync.Mutex // guards embedCtx and embedCancel (set by the first embed launch)
+	embedCtx    context.Context
+	embedCancel context.CancelFunc
+	wake        chan struct{}
+
+	embedAccepted, embedDone, embedFailed, embedSlices atomic.Uint64
+
 	kgSlices, kgAdvanced atomic.Uint64
 
 	recorded, recordFailed, completed, failed, deferred, died, recovered atomic.Uint64
@@ -122,6 +136,12 @@ type DerivationJournalConfig struct {
 	// Documents take turns slice by slice, so one large ingest cannot hold the queue
 	// (ENG-2111).
 	KGSliceChunks, KGSlicesInFlight int
+	// BackgroundEmbed lets a large ingest be accepted and embedded in the background
+	// (ENG-2143, execution.ingestion.background_embed_enabled); EmbedWorkers is how many
+	// documents are embedded at once (default 2) and EmbedSliceChunks the chunks one step
+	// embeds and stores before the progress is recorded (default 128).
+	BackgroundEmbed                bool
+	EmbedWorkers, EmbedSliceChunks int
 }
 
 func (c DerivationJournalConfig) withDefaults() DerivationJournalConfig {
@@ -152,6 +172,12 @@ func (c DerivationJournalConfig) withDefaults() DerivationJournalConfig {
 	if c.KGSlicesInFlight <= 0 {
 		c.KGSlicesInFlight = 2
 	}
+	if c.EmbedWorkers <= 0 {
+		c.EmbedWorkers = 2
+	}
+	if c.EmbedSliceChunks <= 0 {
+		c.EmbedSliceChunks = 128
+	}
 	return c
 }
 
@@ -161,11 +187,16 @@ func (c DerivationJournalConfig) withDefaults() DerivationJournalConfig {
 // there is nothing to journal or nowhere to journal it, and a nil journaler is a no-op
 // everywhere. kernel.NewMemoryStack is the only production caller.
 func NewDerivationJournaler(journal domain.DerivationJournal, reader domain.VectorReader, facts *FactExtractor, kg *ChunkTripletsBatcher, cfg DerivationJournalConfig) *DerivationJournaler {
-	if journal == nil || reader == nil || (facts == nil && kg == nil) {
+	// ENG-2143: with background embedding on, the journal also carries embed jobs, so it
+	// exists without a fact extractor or a batcher.
+	if journal == nil || reader == nil || (facts == nil && kg == nil && !cfg.BackgroundEmbed) {
 		return nil
 	}
+	cfg = cfg.withDefaults()
 	return &DerivationJournaler{
-		journal: journal, reader: reader, facts: facts, kg: kg, cfg: cfg.withDefaults(),
+		embedSlots: make(chan struct{}, cfg.EmbedWorkers),
+		wake:       make(chan struct{}, 1),
+		journal:    journal, reader: reader, facts: facts, kg: kg, cfg: cfg,
 		since:    time.Now(),
 		inflight: map[domain.DerivationKey]struct{}{},
 		feeds:    map[domain.DerivationKey]*kgFeed{},
@@ -469,11 +500,16 @@ func (d *DerivationJournaler) Stop() {
 		}
 	})
 	<-d.doneCh
+	// ENG-2143: the loop no longer starts embed workers; stop the running ones (each
+	// leaves its row, with its progress, for the next process) and wait for them.
+	d.cancelEmbeds()
+	d.embedWG.Wait()
 	d.releaseWaitingFeeds()
 }
 
 func (d *DerivationJournaler) loop(ctx context.Context) {
 	defer close(d.doneCh)
+	defer d.cancelEmbeds() // a cancelled kernel context stops the embed workers too
 	t := time.NewTicker(d.cfg.RecoveryInterval)
 	defer t.Stop()
 	d.RecoverOnce(ctx)
@@ -487,6 +523,8 @@ func (d *DerivationJournaler) loop(ctx context.Context) {
 			d.RecoverOnce(ctx)
 		case <-d.kick:
 			d.pump() // ENG-2111: the next slices, as room frees
+		case <-d.wake:
+			d.RecoverOnce(ctx) // ENG-2143: an accepted document or due derivations
 		}
 	}
 }
@@ -505,6 +543,7 @@ func (d *DerivationJournaler) RecoverOnce(ctx context.Context) int {
 	if d.kg != nil {
 		n += d.recoverKind(ctx, domain.DerivationKGTriplets)
 	}
+	n += d.recoverEmbed(ctx)
 	if b, err := d.journal.DerivationBacklog(ctx); err == nil {
 		d.backlog.Store(&b)
 		if n > 0 {
@@ -628,6 +667,10 @@ type DerivationJournalStats struct {
 	Recorded, RecordFailed, Completed, Failed, Deferred, Died, Recovered uint64
 	// KGSlices KG slices fed to the batcher; KGAdvanced KG progress writes (ENG-2111).
 	KGSlices, KGAdvanced uint64
+	// EmbedAccepted documents accepted for background embedding; EmbedDone and
+	// EmbedFailed background embeds finished or failed an attempt; EmbedSlices slices
+	// stored (ENG-2143).
+	EmbedAccepted, EmbedDone, EmbedFailed, EmbedSlices uint64
 	// Backlog is the journal's rows per kind at the last recovery pass.
 	Backlog map[domain.DerivationKind]domain.DerivationBacklog
 }
@@ -641,6 +684,8 @@ func (d *DerivationJournaler) Stats() DerivationJournalStats {
 		Recorded: d.recorded.Load(), RecordFailed: d.recordFailed.Load(), Completed: d.completed.Load(),
 		Failed: d.failed.Load(), Deferred: d.deferred.Load(), Died: d.died.Load(), Recovered: d.recovered.Load(),
 		KGSlices: d.kgSlices.Load(), KGAdvanced: d.kgAdvanced.Load(),
+		EmbedAccepted: d.embedAccepted.Load(), EmbedDone: d.embedDone.Load(), EmbedFailed: d.embedFailed.Load(),
+		EmbedSlices: d.embedSlices.Load(),
 	}
 	if b := d.backlog.Load(); b != nil {
 		st.Backlog = *b

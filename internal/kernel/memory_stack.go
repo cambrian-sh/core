@@ -358,9 +358,13 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 	if derivations != nil {
 		slog.Info("ENG-2122: derivation journal ENABLED (fact and KG triplet jobs survive restarts and failures)",
 			"facts", factExtractor != nil, "kg_triplets", chunkTripletsBatcher != nil,
-			"recovery_interval_ms", execCfg.Ingestion.DerivationRecoveryIntervalMs)
+			"recovery_interval_ms", execCfg.Ingestion.DerivationRecoveryIntervalMs,
+			"background_embed", execCfg.Ingestion.BackgroundEmbedEnabled, "background_embed_min_chunks", backgroundEmbedMinChunks(execCfg.Ingestion))
 	} else if !execCfg.Ingestion.DerivationJournalEnabled {
 		slog.Warn("ENG-2122: execution.ingestion.derivation_journal_enabled=false: fact and KG triplet jobs are queued in memory only; a restart or an LLM failure loses them")
+		if execCfg.Ingestion.BackgroundEmbedEnabled {
+			slog.Warn("ENG-2143: background_embed_enabled needs derivation_journal_enabled; every ingest embeds with the call")
+		}
 	}
 	// NOTE: the legacy single-directory DirectoryWatcher (ADR-0028/0031) was removed
 	// from the boot path — it delivered file events to a NoOpSignalReceiver (dead
@@ -585,6 +589,9 @@ func derivationJournalConfigFrom(c config.IngestionConfig) memory.DerivationJour
 		Lease:            ms(c.DerivationLeaseMs),
 		KGSliceChunks:    c.DerivationKGSliceChunks,
 		KGSlicesInFlight: c.DerivationKGSlicesInFlight,
+		BackgroundEmbed:  c.BackgroundEmbedEnabled,
+		EmbedWorkers:     c.BackgroundEmbedWorkers,
+		EmbedSliceChunks: c.BackgroundEmbedSliceChunks,
 	}
 }
 
@@ -629,5 +636,20 @@ func ingestionConfigFrom(c config.IngestionConfig) memory.IngestionConfig {
 		SyncFactsWaitTimeout: time.Duration(c.SyncIngestFactsWaitTimeoutMs) * time.Millisecond,
 		// ADR-0138 D2: the document-id scheme ("" reads as v2).
 		LegacyDocumentIdentity: c.DocumentIdentity == config.DocumentIdentityLegacy,
+		// ENG-2143: the chunk count from which an ingest is embedded in the background
+		// (0 in the operator file = the default 256; disabled = never).
+		BackgroundEmbedMinChunks: backgroundEmbedMinChunks(c),
 	}
+}
+
+// backgroundEmbedMinChunks is execution.ingestion.background_embed_min_chunks with its
+// default, or 0 (never) when background embedding is off (ENG-2143).
+func backgroundEmbedMinChunks(c config.IngestionConfig) int {
+	if !c.BackgroundEmbedEnabled {
+		return 0
+	}
+	if c.BackgroundEmbedMinChunks <= 0 {
+		return 256
+	}
+	return c.BackgroundEmbedMinChunks
 }

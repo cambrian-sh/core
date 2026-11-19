@@ -18,7 +18,7 @@ import (
 func (im *IngestionManager) persistChunks(ctx context.Context, doc domain.ExternalDocument, chunks []domain.Chunk,
 	entityID string, trackKG bool) (persistOutcome, error) {
 	ident := im.resolveDocumentID(ctx, doc)
-	return im.persistChunksTracked(ctx, doc, ident, im.extractStructure(ctx, doc, ident.ID, chunks), entityID, trackKG, false)
+	return im.persistChunksTracked(ctx, doc, ident, im.extractStructure(ctx, doc, ident.ID, chunks), entityID, trackKG, false, false)
 }
 
 // T-20261103-binary-uploads-with-a-tag-or-session-collapse (RED before ADR-0138): two

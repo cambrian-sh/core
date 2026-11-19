@@ -31,6 +31,7 @@ const (
 	Orchestrator_GetArtifact_FullMethodName            = "/cambrian.Orchestrator/GetArtifact"
 	Orchestrator_ListStepArtifacts_FullMethodName      = "/cambrian.Orchestrator/ListStepArtifacts"
 	Orchestrator_IngestMemory_FullMethodName           = "/cambrian.Orchestrator/IngestMemory"
+	Orchestrator_GetIngestStatus_FullMethodName        = "/cambrian.Orchestrator/GetIngestStatus"
 	Orchestrator_ExecuteTool_FullMethodName            = "/cambrian.Orchestrator/ExecuteTool"
 	Orchestrator_ListTools_FullMethodName              = "/cambrian.Orchestrator/ListTools"
 	Orchestrator_ListSkills_FullMethodName             = "/cambrian.Orchestrator/ListSkills"
@@ -102,6 +103,12 @@ type OrchestratorClient interface {
 	// memory.remember() write-back. The kernel DERIVES classification from the
 	// agent's DefaultWriteTags (ADR-0035 C2); req.tags is a narrow-only hint.
 	IngestMemory(ctx context.Context, in *IngestMemoryRequest, opts ...grpc.CallOption) (*IngestMemoryResponse, error)
+	// ENG-2143: where an ingested document stands. A large document is accepted at
+	// once and embedded in the background; this reads its progress (accepted ->
+	// embedding n/total -> searchable, or failed with a reason). Only the document's
+	// writer may read it; any other caller, and an unknown id, get NOT_FOUND. A
+	// caller needing read-your-writes polls until the state is searchable.
+	GetIngestStatus(ctx context.Context, in *GetIngestStatusRequest, opts ...grpc.CallOption) (*IngestStatus, error)
 	// ADR-0039: kernel-owned tool registry. A cognitive agent invokes a granted
 	// system tool with LLM-marshalled args; the kernel authorizes (grant +
 	// resource policy + data scope + approval) and runs it in a confined process.
@@ -365,6 +372,16 @@ func (c *orchestratorClient) IngestMemory(ctx context.Context, in *IngestMemoryR
 	return out, nil
 }
 
+func (c *orchestratorClient) GetIngestStatus(ctx context.Context, in *GetIngestStatusRequest, opts ...grpc.CallOption) (*IngestStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IngestStatus)
+	err := c.cc.Invoke(ctx, Orchestrator_GetIngestStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *orchestratorClient) ExecuteTool(ctx context.Context, in *ExecuteToolRequest, opts ...grpc.CallOption) (*ExecuteToolResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ExecuteToolResponse)
@@ -617,6 +634,12 @@ type OrchestratorServer interface {
 	// memory.remember() write-back. The kernel DERIVES classification from the
 	// agent's DefaultWriteTags (ADR-0035 C2); req.tags is a narrow-only hint.
 	IngestMemory(context.Context, *IngestMemoryRequest) (*IngestMemoryResponse, error)
+	// ENG-2143: where an ingested document stands. A large document is accepted at
+	// once and embedded in the background; this reads its progress (accepted ->
+	// embedding n/total -> searchable, or failed with a reason). Only the document's
+	// writer may read it; any other caller, and an unknown id, get NOT_FOUND. A
+	// caller needing read-your-writes polls until the state is searchable.
+	GetIngestStatus(context.Context, *GetIngestStatusRequest) (*IngestStatus, error)
 	// ADR-0039: kernel-owned tool registry. A cognitive agent invokes a granted
 	// system tool with LLM-marshalled args; the kernel authorizes (grant +
 	// resource policy + data scope + approval) and runs it in a confined process.
@@ -783,6 +806,9 @@ func (UnimplementedOrchestratorServer) ListStepArtifacts(context.Context, *ListS
 }
 func (UnimplementedOrchestratorServer) IngestMemory(context.Context, *IngestMemoryRequest) (*IngestMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IngestMemory not implemented")
+}
+func (UnimplementedOrchestratorServer) GetIngestStatus(context.Context, *GetIngestStatusRequest) (*IngestStatus, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetIngestStatus not implemented")
 }
 func (UnimplementedOrchestratorServer) ExecuteTool(context.Context, *ExecuteToolRequest) (*ExecuteToolResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExecuteTool not implemented")
@@ -1056,6 +1082,24 @@ func _Orchestrator_IngestMemory_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OrchestratorServer).IngestMemory(ctx, req.(*IngestMemoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_GetIngestStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetIngestStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).GetIngestStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_GetIngestStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).GetIngestStatus(ctx, req.(*GetIngestStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1430,6 +1474,10 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IngestMemory",
 			Handler:    _Orchestrator_IngestMemory_Handler,
+		},
+		{
+			MethodName: "GetIngestStatus",
+			Handler:    _Orchestrator_GetIngestStatus_Handler,
 		},
 		{
 			MethodName: "ExecuteTool",

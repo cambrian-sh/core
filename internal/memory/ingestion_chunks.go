@@ -53,11 +53,18 @@ type persistOutcome struct {
 	// when the caller asked to track the fact lane (ProcessSync with
 	// execution.ingestion.sync_ingest_wait_for_facts) and an extractor is wired.
 	FactsWait *FactsWait
+	// Background is true when the document was ACCEPTED for background embedding
+	// (ENG-2143): nothing of its chunks is stored yet, Total of them are staged in the
+	// derivation journal, and Stored is 0.
+	Background bool
+	Total      int
 }
 
 // persistChunksTracked stores one document under its resolved identity (ADR-0138 D1.4:
 // resolved once by the caller, resolveDocumentID). trackFacts tracks the fact lane for
-// a sync ingest (ADR-0136 D4); the async batch path passes false.
+// a sync ingest (ADR-0136 D4); the async batch path passes false. allowBackground lets
+// a large document be accepted and embedded in the background (ENG-2143; ProcessSync
+// only — the batch lane has no caller waiting).
 func (im *IngestionManager) persistChunksTracked(
 	ctx context.Context,
 	doc domain.ExternalDocument,
@@ -66,6 +73,7 @@ func (im *IngestionManager) persistChunksTracked(
 	entityID string,
 	trackKG bool,
 	trackFacts bool,
+	allowBackground bool,
 ) (persistOutcome, error) {
 	var outcome persistOutcome
 	if im.agent == nil || im.agent.Manager == nil || im.agent.Manager.Store == nil {
@@ -128,6 +136,7 @@ func (im *IngestionManager) persistChunksTracked(
 		}
 	}
 
+	docRowStored := false // ENG-2143: a background embed needs the row its status reads
 	if im.documentStore != nil {
 		t := time.Now()
 		stored, derr := im.documentStore.SaveDocument(ctx, domain.SourceDocument{
@@ -155,6 +164,7 @@ func (im *IngestionManager) persistChunksTracked(
 			// split-brain this ADR removed at the schema level and would have quietly
 			// reintroduced one layer up.
 			doc.Tags = stored
+			docRowStored = true
 		}
 	}
 
@@ -199,6 +209,34 @@ func (im *IngestionManager) persistChunksTracked(
 		ids[i] = externalChunkID(documentID, i)
 	}
 	clock.Since(StagePrepare, tPrep)
+	// ENG-2143: a large document is accepted here and embedded in the background.
+	if allowBackground && docRowStored && im.backgroundEmbedEligible(len(chunks)) {
+		prepared := make([]*domain.Document, len(chunks))
+		for i, chunk := range chunks {
+			prepared[i] = &domain.Document{
+				ID: ids[i], DocumentType: domain.DocTypeMnemonicFact, Text: chunk.Body,
+				ActivationStrength: externalActivation(doc.Importance),
+				Metadata:           withChunkSpeaker(chunkMetadata(doc, chunks, chunk, documentID, ids, i, entityID), speakers[i]),
+				CreatedAt:          ingestedAt,
+				EventStamp:         stamps[i],
+			}
+		}
+		var structure *embedStructure
+		if structuredDoc != nil && im.structureStore != nil {
+			secs, st, edges := BuildStructureGraph(structuredDoc, documentID, ids, structuredReps)
+			if len(secs) > 0 || len(st) > 0 {
+				structure = &embedStructure{Sections: secs, Stamps: st, Edges: edges}
+			}
+		}
+		src := domain.SourceMetaOf(doc, ingestedAt, domain.PrincipalFromContext(ctx).ID)
+		if err := im.acceptBackground(ctx, doc, ident, entityID, src, prepared, structure); err == nil {
+			outcome.Background, outcome.Total = true, len(chunks)
+			return outcome, nil
+		} else {
+			slog.WarnContext(ctx, "IngestionManager: background embedding unavailable for this document; embedding it with the call",
+				"doc", documentID, "chunks", len(chunks), "err", err)
+		}
+	}
 	tEmbed := time.Now()
 	vectors, err := im.embedChunkBodies(ctx, doc, chunks)
 	clock.Since(StageEmbed, tEmbed)
@@ -347,6 +385,12 @@ func (im *IngestionManager) persistChunksTracked(
 // leaves-as-chunks, ids align exactly to sd.OrderedLeaves(). Best-effort.
 func (im *IngestionManager) persistStructure(ctx context.Context, sd *StructuredDocument, documentID string, ids []string, reps []StructNode) {
 	sections, stamps, edges := BuildStructureGraph(sd, documentID, ids, reps)
+	im.persistStructureRows(ctx, documentID, sections, stamps, edges, sd.Backend)
+}
+
+// persistStructureRows persists an assembled structure graph (ENG-2143: a background
+// embed persists the rows it staged at acceptance). Best-effort.
+func (im *IngestionManager) persistStructureRows(ctx context.Context, documentID string, sections []SectionRow, stamps []ChunkStamp, edges []StructuralEdge, backend string) {
 	if len(sections) == 0 && len(stamps) == 0 {
 		return // flat document, no hierarchy to persist
 	}
@@ -361,7 +405,7 @@ func (im *IngestionManager) persistStructure(ctx context.Context, sd *Structured
 		slog.WarnContext(ctx, "IngestionManager: StampChunks failed", "doc", documentID, "err", err)
 	}
 	slog.InfoContext(ctx, "IngestionManager: structure graph built", "doc", documentID,
-		"sections", len(sections), "stamped_chunks", len(stamps), "edges", len(edges), "backend", sd.Backend)
+		"sections", len(sections), "stamped_chunks", len(stamps), "edges", len(edges), "backend", backend)
 }
 
 func (im *IngestionManager) embedChunkBodies(ctx context.Context, doc domain.ExternalDocument, chunks []domain.Chunk) ([][]float32, error) {

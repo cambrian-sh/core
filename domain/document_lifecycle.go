@@ -124,6 +124,10 @@ type IngestOutcome struct {
 	Version int
 	// Replaced is true when this ingest retired a stored version.
 	Replaced bool
+	// Status is where the document stands when the call returns (ENG-2143): searchable
+	// for an ingest whose chunks were stored with the call, accepted for a large one
+	// whose chunks are embedded in the background (IngestStatus reads its progress).
+	Status IngestStatus
 }
 
 type ingestOutcomeKey struct{}

@@ -92,3 +92,37 @@ func TestDerivationJournalConfigFrom_Threads(t *testing.T) {
 		t.Fatalf("defaults = %+v", d)
 	}
 }
+
+// ENG-2143: every background_embed_* key reaches its consumer (AGENTS.md §3.4): the
+// switch and the worker / slice sizes the derivation journal, the chunk threshold the
+// ingestion manager (0 = never when the switch is off). Defaults per the owner decision.
+func TestBackgroundEmbedConfig_Threads(t *testing.T) {
+	c := config.IngestionConfig{BackgroundEmbedEnabled: true, BackgroundEmbedMinChunks: 40,
+		BackgroundEmbedSliceChunks: 16, BackgroundEmbedWorkers: 3}
+	if got := derivationJournalConfigFrom(c); !got.BackgroundEmbed || got.EmbedSliceChunks != 16 || got.EmbedWorkers != 3 {
+		t.Fatalf("derivationJournalConfigFrom = %+v", got)
+	}
+	if got := ingestionConfigFrom(c); got.BackgroundEmbedMinChunks != 40 {
+		t.Fatalf("ingestionConfigFrom min chunks = %d, want 40", got.BackgroundEmbedMinChunks)
+	}
+	c.BackgroundEmbedMinChunks = 0
+	if got := ingestionConfigFrom(c); got.BackgroundEmbedMinChunks != 256 {
+		t.Fatalf("min chunks 0 = %d, want the default 256", got.BackgroundEmbedMinChunks)
+	}
+	c.BackgroundEmbedEnabled = false
+	if got := ingestionConfigFrom(c); got.BackgroundEmbedMinChunks != 0 {
+		t.Fatalf("disabled: min chunks = %d, want 0 (never)", got.BackgroundEmbedMinChunks)
+	}
+	if got := derivationJournalConfigFrom(c); got.BackgroundEmbed {
+		t.Fatal("disabled: the journal must not run background embeds")
+	}
+	if d := config.DefaultConfig().Execution.Ingestion; !d.BackgroundEmbedEnabled || d.BackgroundEmbedMinChunks != 256 ||
+		d.BackgroundEmbedSliceChunks != 128 || d.BackgroundEmbedWorkers != 2 {
+		t.Fatalf("defaults = %+v", d)
+	}
+	bad := config.DefaultConfig()
+	bad.Execution.Ingestion.BackgroundEmbedWorkers = -1
+	if err := bad.Execution.Validate(); err == nil {
+		t.Fatal("a negative background_embed_workers must be refused")
+	}
+}

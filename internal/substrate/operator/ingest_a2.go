@@ -302,6 +302,12 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	if _, err := s.recordAndEmit(ctx, entry); err != nil {
 		return nil, err
 	}
+	// ENG-2143: where the upload stands (accepted for a large one embedded in the
+	// background; GetIngestStatus reads its progress).
+	st := ingestStatusOp(outcome.Status)
+	if st == nil && outcome.DuplicateOf != "" {
+		st = s.ingestStatusOf(ctx, outcome.DuplicateOf)
+	}
 	return &pb.IngestMemoryOpResponse{CommandId: req.GetCommandId(), Deduped: false, DocId: docID,
-		DuplicateOf: outcome.DuplicateOf, Version: int32(outcome.Version)}, nil
+		DuplicateOf: outcome.DuplicateOf, Version: int32(outcome.Version), Status: st}, nil
 }

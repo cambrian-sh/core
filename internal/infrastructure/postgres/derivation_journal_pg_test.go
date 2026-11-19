@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -176,4 +177,83 @@ func TestPg_DerivationJournal_Lifecycle(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = a.pool.Exec(context.Background(), `DELETE FROM memory_erasures WHERE principal = 'lctest-djop'`)
 	})
+}
+
+// ENG-2143 against a real Postgres: an embed job stages its chunks and total, renews
+// its progress and claim, reports a gone row, and IngestStatus reads accepted →
+// embedding → failed / searchable for the document's current version only.
+func TestPg_DerivationJournal_EmbedJobProgressAndStatus(t *testing.T) {
+	a, _, _, ctx := newErasureStore(t)
+	const doc = "lctest-djembed"
+	clean := func() {
+		c := context.Background()
+		_, _ = a.pool.Exec(c, `DELETE FROM `+TableDerivationJobs+` WHERE document_id = $1`, doc)
+		_, _ = a.pool.Exec(c, `DELETE FROM `+TableDocuments+` WHERE id = $1`, doc)
+	}
+	clean()
+	t.Cleanup(clean)
+
+	if _, found, err := a.IngestStatus(ctx, doc); err != nil || found {
+		t.Fatalf("unknown document: found=%v err=%v", found, err)
+	}
+	if _, err := a.SaveDocument(ctx, domain.SourceDocument{ID: doc, Title: "t", SourceType: "file_drop", Text: "body",
+		WrittenBy: "alice", ContentDigest: "dg-1"}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	if st, found, err := a.IngestStatus(ctx, doc); err != nil || !found || st.State != domain.IngestSearchable || st.Writer != "alice" {
+		t.Fatalf("a document without an embed job = %+v found=%v err=%v; want searchable, writer alice", st, found, err)
+	}
+	ids := []string{doc + "-chunk-1", doc + "-chunk-2", doc + "-chunk-3"}
+	job := domain.DerivationJob{Kind: domain.DerivationEmbed, DocumentID: doc, ContentDigest: "dg-1", ChunkIDs: ids,
+		Writer: domain.AgentPrincipal("alice"), Staged: []byte(`{"chunks":[{"id":"x","text":"y"}]}`), ChunksTotal: 3}
+	if err := a.RecordDerivations(ctx, []domain.DerivationJob{job}, 0); err != nil {
+		t.Fatalf("RecordDerivations: %v", err)
+	}
+	if st, _, _ := a.IngestStatus(ctx, doc); st.State != domain.IngestAccepted || st.ChunksTotal != 3 || st.ChunksEmbedded != 0 {
+		t.Fatalf("accepted = %+v", st)
+	}
+	got, err := a.ClaimDerivations(ctx, domain.DerivationEmbed, time.Now().Add(-time.Hour), 5, time.Minute)
+	if err != nil || len(got) != 1 || got[0].ChunksTotal != 3 || string(got[0].Staged) == "" || len(got[0].ChunkIDs) != 3 {
+		t.Fatalf("claim of a due embed job = %+v, %v", got, err)
+	}
+	var staged map[string]any
+	if err := json.Unmarshal(got[0].Staged, &staged); err != nil || staged["chunks"] == nil {
+		t.Fatalf("staged state did not round-trip: %s (%v)", got[0].Staged, err)
+	}
+	live, err := a.RenewDerivation(ctx, job.Key(), ids[1:], time.Hour)
+	if err != nil || !live {
+		t.Fatalf("RenewDerivation = %v, %v", live, err)
+	}
+	if st, _, _ := a.IngestStatus(ctx, doc); st.State != domain.IngestEmbedding || st.ChunksEmbedded != 1 {
+		t.Fatalf("embedding = %+v", st)
+	}
+	var due bool
+	if err := a.pool.QueryRow(ctx, `SELECT next_attempt_at > now() + interval '50 minutes' FROM `+TableDerivationJobs+` WHERE document_id = $1`, doc).Scan(&due); err != nil || !due {
+		t.Fatalf("renewal must extend the claim: %v %v", due, err)
+	}
+	// Another version's key renews nothing and reports the row gone.
+	if live, err := a.RenewDerivation(ctx, domain.DerivationKey{Kind: domain.DerivationEmbed, DocumentID: doc, ContentDigest: "dg-0"}, nil, time.Hour); err != nil || live {
+		t.Fatalf("renewal of another version = %v, %v; want not live", live, err)
+	}
+	// A dead job reads failed with its reason.
+	if dead, err := a.RescheduleDerivation(ctx, job.Key(), time.Now(), "embedding returned no vector", true, 1); err != nil || !dead {
+		t.Fatalf("RescheduleDerivation = %v, %v", dead, err)
+	}
+	if st, _, _ := a.IngestStatus(ctx, doc); st.State != domain.IngestFailed || st.Error != "embedding returned no vector" {
+		t.Fatalf("failed = %+v", st)
+	}
+	// A revise moved the document to another version: the old job is not its state.
+	if _, err := a.pool.Exec(ctx, `UPDATE `+TableDocuments+` SET content_digest = 'dg-2' WHERE id = $1`, doc); err != nil {
+		t.Fatal(err)
+	}
+	if st, _, _ := a.IngestStatus(ctx, doc); st.State != domain.IngestSearchable {
+		t.Fatalf("status with a superseded job = %+v, want searchable", st)
+	}
+	// Completion deletes the row; renewal then reports it gone.
+	if err := a.CompleteDerivation(ctx, job.Key()); err != nil {
+		t.Fatal(err)
+	}
+	if live, err := a.RenewDerivation(ctx, job.Key(), nil, time.Hour); err != nil || live {
+		t.Fatalf("renewal after completion = %v, %v", live, err)
+	}
 }

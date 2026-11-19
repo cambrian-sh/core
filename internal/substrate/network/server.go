@@ -260,6 +260,10 @@ type Server struct {
 	// the one that existed produced an un-chunked row with different metadata keys,
 	// invisible to ListDocuments, and could not fire anyway.
 	IngestionProcessor IngestionProcessor
+	// IngestStatus reads where an ingested document stands (ENG-2143: GetIngestStatus
+	// and the IngestMemory response). Satisfied by *memory.IngestionManager. nil →
+	// GetIngestStatus Unimplemented.
+	IngestStatus IngestStatusReader
 
 	// ADR-0039: kernel-owned tool registry + executor. nil → ExecuteTool returns
 	// Unimplemented (default: no tools).

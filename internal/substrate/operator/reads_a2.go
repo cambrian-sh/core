@@ -632,6 +632,13 @@ func (s *Service) GetDocument(ctx context.Context, req *pb.GetDocumentOpRequest)
 		DocumentType: doc.DocumentType,
 		Source:       metaString(doc.Metadata, "source"),
 	}
+	// ENG-2143: the document view shows the ingest state (an entity row names its
+	// document in metadata.document_id).
+	documentID := metaString(doc.Metadata, "document_id")
+	if documentID == "" {
+		documentID = doc.ID
+	}
+	resp.Ingest = s.ingestStatusOf(ctx, documentID)
 	if tags, ok := doc.Metadata["tags"].([]any); ok {
 		for _, t := range tags {
 			if s, ok := t.(string); ok {

@@ -136,6 +136,41 @@ func (f *fakeJournal) DerivationBacklog(context.Context) (map[domain.DerivationK
 	return out, nil
 }
 
+func (f *fakeJournal) RenewDerivation(_ context.Context, k domain.DerivationKey, remaining []string, lease time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.rows[jkey(k.Kind, k.DocumentID)]
+	if !ok || r.job.ContentDigest != k.ContentDigest {
+		return false, nil
+	}
+	r.job.ChunkIDs = append([]string(nil), remaining...)
+	r.claimedAt, r.next = time.Now(), time.Now().Add(lease)
+	f.advances++
+	return true, nil
+}
+
+// IngestStatus mirrors the adapter for an embed row (there is no documents table here:
+// a document without an embed row reads searchable).
+func (f *fakeJournal) IngestStatus(_ context.Context, documentID string) (domain.IngestStatus, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := domain.IngestStatus{DocumentID: documentID, State: domain.IngestSearchable}
+	r, ok := f.rows[jkey(domain.DerivationEmbed, documentID)]
+	if !ok {
+		return st, true, nil
+	}
+	st.ChunksTotal, st.ChunksEmbedded, st.Error = r.job.ChunksTotal, r.job.ChunksTotal-len(r.job.ChunkIDs), r.lastError
+	switch {
+	case r.dead:
+		st.State = domain.IngestFailed
+	case st.ChunksEmbedded > 0:
+		st.State = domain.IngestEmbedding
+	default:
+		st.State = domain.IngestAccepted
+	}
+	return st, true, nil
+}
+
 func (f *fakeJournal) row(kind domain.DerivationKind, doc string) (fakeJournalRow, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -74,6 +74,10 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// through one code path with one scope model — the alternative is two
 	// answers to "can this principal read this document", differing by caller.
 	o.DocumentGetter = k.DocReader
+	// ENG-2143: the ingest progress read (GetIngestStatus, IngestMemory, GetDocument).
+	if k.Server.IngestStatus != nil {
+		o.IngestStatus = k.Server.IngestStatus
+	}
 	// ADR-0081: the answer lane is only meaningful when the agentic retrieval
 	// loop is wired (it synthesizes over multi-hop evidence). Gate on the same
 	// flag; the "memory-answer" capability is advertised iff this is set.
@@ -540,6 +544,12 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	if o.HasDocumentLister() {
 		operatorCaps = append(operatorCaps, "document-listing")
 	}
+	// ingest-status (contract 0111, ENG-2143): a large upload is accepted and embedded in
+	// the background; GetIngestStatus (and the status on IngestMemory / GetDocument)
+	// shows its progress. Advertised only when the reader is wired.
+	if o.IngestStatus != nil {
+		operatorCaps = append(operatorCaps, "ingest-status")
+	}
 	// upload-replace (contract 0100, ADR-0138 Amendment B1): uploads are keyed by
 	// name (replace / exact-duplicate no-op) and ListDocuments answers the
 	// upload_name lookup. Advertised only when the lookup is wired (identity v2 +
@@ -871,7 +881,11 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// (a person's whole personal notes, history included), ErasureCandidateOp.note_text
 	// (the line a memory-notes candidate erases), ErasureReceiptOp.redacted_messages;
 	// agent plane ErasureSelector.memory_note_ids and ErasureReceipt.redacted_messages.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0110", operatorCaps
+	// 0111 (2026-11-19, additive; ENG-2143): background embedding of large ingests -
+	// GetIngestStatus + IngestStatusOp, IngestMemoryOpResponse.status and
+	// GetDocumentOpResponse.ingest ("ingest-status" capability); agent plane
+	// GetIngestStatus + IngestStatus and IngestMemoryResponse.document_id / status.
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0111", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

@@ -346,6 +346,7 @@ func (b *kernelBuild) buildServer() error {
 	// answers selected by a queue-size setting.
 	if mem.IngestionManager != nil {
 		cambrianServer.IngestionProcessor = mem.IngestionManager
+		cambrianServer.IngestStatus = mem.IngestionManager // ENG-2143
 		// ADR-0104 D3: bind the plugin ingestor HERE, where the processor actually
 		// becomes non-nil — not merely after the server is constructed. Binding at
 		// construction captured a nil and every drift message logged

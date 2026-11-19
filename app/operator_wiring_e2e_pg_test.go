@@ -69,6 +69,7 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("memory", k.Memory.QueryService)
 	add("documents", k.Documents)
 	add("docGetter", k.DocReader)
+	add("ingestStatus", k.Server.IngestStatus) // ENG-2143
 	add("answerer", when(cfg.Retrieval.AgenticRetrievalEnabled, k.Memory.QueryService))
 	add("toolRunner", k.Server.ToolExecutor)
 	addType("ingestor", operator.MemoryIngestorFunc(func(context.Context, operator.IngestRequest) (string, error) { return "", nil }))
@@ -123,7 +124,7 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("forget", k.Server.Forgetter)
 	add("logs", when(k.Logs != nil, k.Logs))
 	add("kernelVersion", KernelVersion)
-	add("contractVersion", "0110")
+	add("contractVersion", "0111")
 	add("plugins", pluginHandshake(k.PluginStatuses))
 	addType("sessionOps", operator.SessionOpsFuncs{})
 	addType("planSubmitter", when(k.SessionMgr != nil && k.Server != nil, planSubmitter{}))
@@ -209,6 +210,9 @@ func TestPg_ComposeOperatorWiresEverySeamAsBefore(t *testing.T) {
 	}
 	if !caps["document-listing"] {
 		t.Error("document-listing missing although the document lister is wired")
+	}
+	if !caps["ingest-status"] {
+		t.Error("ingest-status missing although the ingest status reader is wired (ENG-2143)")
 	}
 
 	// A kernel whose composition loses a required seam does not boot.

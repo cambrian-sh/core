@@ -162,6 +162,7 @@ ConversationOwner: network.MemoryNotesPrincipalFunc
 ConversationProfile: func(context.Context, domain.LeaseBinding) domain.ConversationProfile
 PrivateByDefault: true
 IngestionProcessor: *memory.IngestionManager
+IngestStatus: *memory.IngestionManager
 ToolExecutor: *domain.ToolExecutor
 ApprovalHub: *domain.AddressedHub
 EventBus: *domain.InMemoryEventBus

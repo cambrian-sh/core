@@ -143,6 +143,10 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		// organ the pipeline reaches) go back as the "cambrian-llm-usage" trailer,
 		// counted by the ADR-0131 SpendMeter (llmusage.Trailer).
 		ictx, sendLLMUsage := llmusage.WithTally(ictx)
+		// ENG-2143: the ingest reports the stored document and where it stands (accepted
+		// for a large document embedded in the background).
+		outcome := &domain.IngestOutcome{}
+		ictx = domain.WithIngestOutcome(ictx, outcome)
 		started := time.Now()
 		entityID, err := s.IngestionProcessor.ProcessSync(ictx, doc)
 		_ = grpc.SetTrailer(ctx, metadata.Pairs(IngestTimingTrailer, memory.FormatStageClock(clock, time.Since(started)))) // best-effort diagnostic; fails only outside a gRPC call (tests)
@@ -174,7 +178,15 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 				return nil, status.Error(codes.Internal, "ingestion manager: "+err.Error())
 			}
 		}
-		return &pb.IngestMemoryResponse{DocId: entityID}, nil
+		documentID := outcome.DocumentID
+		if outcome.DuplicateOf != "" {
+			documentID = outcome.DuplicateOf
+		}
+		resp := &pb.IngestMemoryResponse{DocId: entityID, DocumentId: documentID, Status: ingestStatusPB(outcome.Status)}
+		if resp.Status == nil {
+			resp.Status = s.readIngestStatus(ctx, documentID)
+		}
+		return resp, nil
 	}
 	// EVERYTHING ingested goes through the chunker. There is no second way in.
 	//
@@ -292,4 +304,60 @@ func firstLine(s string, max int) string {
 		return s[:max]
 	}
 	return s
+}
+
+// IngestStatusReader reads where an ingested document stands (ENG-2143). Satisfied by
+// *memory.IngestionManager.
+type IngestStatusReader interface {
+	IngestStatus(ctx context.Context, documentID string) (domain.IngestStatus, bool, error)
+}
+
+// GetIngestStatus implements the ENG-2143 read on the agent plane: the progress of a
+// document accepted for background embedding (accepted → embedding n/total →
+// searchable, or failed with a reason). Only the document's writer of record may read
+// it: any other caller gets NOT_FOUND, exactly as for an unknown id, so the read
+// discloses nothing about another principal's documents (fail closed on a caller
+// with no agent identity).
+func (s *Server) GetIngestStatus(ctx context.Context, req *pb.GetIngestStatusRequest) (*pb.IngestStatus, error) {
+	if s.IngestStatus == nil {
+		return nil, status.Error(codes.Unimplemented, "ingest status not configured")
+	}
+	if req.GetDocumentId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "document_id is required")
+	}
+	caller := callerAgentID(ctx)
+	if caller == "" {
+		return nil, status.Error(codes.PermissionDenied, "unknown principal: no agent identity on the call")
+	}
+	st, found, err := s.IngestStatus.IngestStatus(ctx, req.GetDocumentId())
+	if err != nil {
+		return nil, status.Error(codes.Internal, "ingest status: "+err.Error())
+	}
+	if !found || st.Writer != caller {
+		return nil, status.Error(codes.NotFound, "no such document of this caller: "+req.GetDocumentId())
+	}
+	return ingestStatusPB(st), nil
+}
+
+// readIngestStatus is the status for an IngestMemory response the ingest did not
+// report (a duplicate upload); nil when unreadable.
+func (s *Server) readIngestStatus(ctx context.Context, documentID string) *pb.IngestStatus {
+	if s.IngestStatus == nil || documentID == "" {
+		return nil
+	}
+	st, found, err := s.IngestStatus.IngestStatus(ctx, documentID)
+	if err != nil || !found {
+		return nil
+	}
+	return ingestStatusPB(st)
+}
+
+func ingestStatusPB(st domain.IngestStatus) *pb.IngestStatus {
+	if st.State == "" {
+		return nil
+	}
+	return &pb.IngestStatus{
+		DocumentId: st.DocumentID, State: string(st.State),
+		ChunksTotal: int32(st.ChunksTotal), ChunksEmbedded: int32(st.ChunksEmbedded), Error: st.Error,
+	}
 }

@@ -63,6 +63,7 @@ const (
 	OperatorConsole_SetToolPolicy_FullMethodName            = "/cambrian.OperatorConsole/SetToolPolicy"
 	OperatorConsole_ExecuteTool_FullMethodName              = "/cambrian.OperatorConsole/ExecuteTool"
 	OperatorConsole_IngestMemory_FullMethodName             = "/cambrian.OperatorConsole/IngestMemory"
+	OperatorConsole_GetIngestStatus_FullMethodName          = "/cambrian.OperatorConsole/GetIngestStatus"
 	OperatorConsole_WatchToolApprovals_FullMethodName       = "/cambrian.OperatorConsole/WatchToolApprovals"
 	OperatorConsole_WatchMyApprovals_FullMethodName         = "/cambrian.OperatorConsole/WatchMyApprovals"
 	OperatorConsole_ListApprovals_FullMethodName            = "/cambrian.OperatorConsole/ListApprovals"
@@ -330,6 +331,11 @@ type OperatorConsoleClient interface {
 	// Memory ingest through the kernel ingest path (operator as Author; never a
 	// raw store write). Idempotent on command_id (Operator-only, audited). A2.4.
 	IngestMemory(ctx context.Context, in *IngestMemoryOpRequest, opts ...grpc.CallOption) (*IngestMemoryOpResponse, error)
+	// ENG-2143 (contract 0111): where an ingested document stands (accepted -> embedding n/total ->
+	// searchable, or failed with a reason). A large upload is accepted at once and
+	// embedded in the background; the console polls this for its progress. Read RPC
+	// (any authenticated role, no command_id). found=false for an unknown id.
+	GetIngestStatus(ctx context.Context, in *GetIngestStatusOpRequest, opts ...grpc.CallOption) (*GetIngestStatusOpResponse, error)
 	// Tool-approval stream mirroring the ADR-0039 dangerous-tool approval request
 	// (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
 	// id-space. A2.5.
@@ -1406,6 +1412,16 @@ func (c *operatorConsoleClient) IngestMemory(ctx context.Context, in *IngestMemo
 	return out, nil
 }
 
+func (c *operatorConsoleClient) GetIngestStatus(ctx context.Context, in *GetIngestStatusOpRequest, opts ...grpc.CallOption) (*GetIngestStatusOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetIngestStatusOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetIngestStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) WatchToolApprovals(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalOp], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &OperatorConsole_ServiceDesc.Streams[1], OperatorConsole_WatchToolApprovals_FullMethodName, cOpts...)
@@ -2463,6 +2479,11 @@ type OperatorConsoleServer interface {
 	// Memory ingest through the kernel ingest path (operator as Author; never a
 	// raw store write). Idempotent on command_id (Operator-only, audited). A2.4.
 	IngestMemory(context.Context, *IngestMemoryOpRequest) (*IngestMemoryOpResponse, error)
+	// ENG-2143 (contract 0111): where an ingested document stands (accepted -> embedding n/total ->
+	// searchable, or failed with a reason). A large upload is accepted at once and
+	// embedded in the background; the console polls this for its progress. Read RPC
+	// (any authenticated role, no command_id). found=false for an unknown id.
+	GetIngestStatus(context.Context, *GetIngestStatusOpRequest) (*GetIngestStatusOpResponse, error)
 	// Tool-approval stream mirroring the ADR-0039 dangerous-tool approval request
 	// (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
 	// id-space. A2.5.
@@ -3221,6 +3242,9 @@ func (UnimplementedOperatorConsoleServer) ExecuteTool(context.Context, *ExecuteT
 }
 func (UnimplementedOperatorConsoleServer) IngestMemory(context.Context, *IngestMemoryOpRequest) (*IngestMemoryOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IngestMemory not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetIngestStatus(context.Context, *GetIngestStatusOpRequest) (*GetIngestStatusOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetIngestStatus not implemented")
 }
 func (UnimplementedOperatorConsoleServer) WatchToolApprovals(*SubscribeRequest, grpc.ServerStreamingServer[ApprovalOp]) error {
 	return status.Error(codes.Unimplemented, "method WatchToolApprovals not implemented")
@@ -4279,6 +4303,24 @@ func _OperatorConsole_IngestMemory_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).IngestMemory(ctx, req.(*IngestMemoryOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetIngestStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetIngestStatusOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetIngestStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetIngestStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetIngestStatus(ctx, req.(*GetIngestStatusOpRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -5970,6 +6012,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IngestMemory",
 			Handler:    _OperatorConsole_IngestMemory_Handler,
+		},
+		{
+			MethodName: "GetIngestStatus",
+			Handler:    _OperatorConsole_GetIngestStatus_Handler,
 		},
 		{
 			MethodName: "ListApprovals",

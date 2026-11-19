@@ -67,6 +67,9 @@ type Service struct {
 	answerer   MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
 	toolRunner ToolRunner
 	ingestor   MemoryIngestor
+	// ingestStatus reads a document's ingest progress (ENG-2143). nil ⇒ GetIngestStatus
+	// Unimplemented and no status on IngestMemory / GetDocument.
+	ingestStatus IngestStatusReader
 	// uploads answers the ADR-0138 B1.3 replace-by-name lookup (ListDocuments
 	// upload_name). nil ⇒ that lookup is Unimplemented and "upload-replace" is withheld.
 	uploads UploadMatcher

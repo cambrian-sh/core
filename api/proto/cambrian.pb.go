@@ -4121,8 +4121,15 @@ func (x *MemoryPart) GetSpeaker() string {
 }
 
 type IngestMemoryResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DocId         string                 `protobuf:"bytes,1,opt,name=doc_id,json=docId,proto3" json:"doc_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// doc_id is the source-doc entity id ("source_doc:<uri>").
+	DocId string `protobuf:"bytes,1,opt,name=doc_id,json=docId,proto3" json:"doc_id,omitempty"`
+	// ENG-2143: the stored document's id (documents.id), the key GetIngestStatus reads.
+	DocumentId string `protobuf:"bytes,2,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	// ENG-2143: where the document stands when the call returns: "searchable" for a
+	// document embedded with the call, "accepted" for a large one embedded in the
+	// background (execution.ingestion.background_embed_min_chunks).
+	Status        *IngestStatus `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4164,6 +4171,146 @@ func (x *IngestMemoryResponse) GetDocId() string {
 	return ""
 }
 
+func (x *IngestMemoryResponse) GetDocumentId() string {
+	if x != nil {
+		return x.DocumentId
+	}
+	return ""
+}
+
+func (x *IngestMemoryResponse) GetStatus() *IngestStatus {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+// ENG-2143: the visible progress of one document's ingest.
+type IngestStatus struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	DocumentId string                 `protobuf:"bytes,1,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	// "accepted" | "embedding" | "searchable" | "failed".
+	State string `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	// The accepted version's chunk count and how many are embedded and stored, while
+	// the document is embedded in the background (0 otherwise).
+	ChunksTotal    int32 `protobuf:"varint,3,opt,name=chunks_total,json=chunksTotal,proto3" json:"chunks_total,omitempty"`
+	ChunksEmbedded int32 `protobuf:"varint,4,opt,name=chunks_embedded,json=chunksEmbedded,proto3" json:"chunks_embedded,omitempty"`
+	// The last failure's cause: set for "failed", and while a failed attempt waits
+	// for its retry.
+	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IngestStatus) Reset() {
+	*x = IngestStatus{}
+	mi := &file_cambrian_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IngestStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IngestStatus) ProtoMessage() {}
+
+func (x *IngestStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_cambrian_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IngestStatus.ProtoReflect.Descriptor instead.
+func (*IngestStatus) Descriptor() ([]byte, []int) {
+	return file_cambrian_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *IngestStatus) GetDocumentId() string {
+	if x != nil {
+		return x.DocumentId
+	}
+	return ""
+}
+
+func (x *IngestStatus) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *IngestStatus) GetChunksTotal() int32 {
+	if x != nil {
+		return x.ChunksTotal
+	}
+	return 0
+}
+
+func (x *IngestStatus) GetChunksEmbedded() int32 {
+	if x != nil {
+		return x.ChunksEmbedded
+	}
+	return 0
+}
+
+func (x *IngestStatus) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+type GetIngestStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DocumentId    string                 `protobuf:"bytes,1,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetIngestStatusRequest) Reset() {
+	*x = GetIngestStatusRequest{}
+	mi := &file_cambrian_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetIngestStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetIngestStatusRequest) ProtoMessage() {}
+
+func (x *GetIngestStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cambrian_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetIngestStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetIngestStatusRequest) Descriptor() ([]byte, []int) {
+	return file_cambrian_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *GetIngestStatusRequest) GetDocumentId() string {
+	if x != nil {
+		return x.DocumentId
+	}
+	return ""
+}
+
 // ADR-0034 / REQ-SDK-007c artifact messages.
 type UploadArtifactRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -4179,7 +4326,7 @@ type UploadArtifactRequest struct {
 
 func (x *UploadArtifactRequest) Reset() {
 	*x = UploadArtifactRequest{}
-	mi := &file_cambrian_proto_msgTypes[46]
+	mi := &file_cambrian_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4191,7 +4338,7 @@ func (x *UploadArtifactRequest) String() string {
 func (*UploadArtifactRequest) ProtoMessage() {}
 
 func (x *UploadArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[46]
+	mi := &file_cambrian_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4204,7 +4351,7 @@ func (x *UploadArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadArtifactRequest.ProtoReflect.Descriptor instead.
 func (*UploadArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{46}
+	return file_cambrian_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *UploadArtifactRequest) GetContent() []byte {
@@ -4259,7 +4406,7 @@ type UploadArtifactResponse struct {
 
 func (x *UploadArtifactResponse) Reset() {
 	*x = UploadArtifactResponse{}
-	mi := &file_cambrian_proto_msgTypes[47]
+	mi := &file_cambrian_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4271,7 +4418,7 @@ func (x *UploadArtifactResponse) String() string {
 func (*UploadArtifactResponse) ProtoMessage() {}
 
 func (x *UploadArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[47]
+	mi := &file_cambrian_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4284,7 +4431,7 @@ func (x *UploadArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadArtifactResponse.ProtoReflect.Descriptor instead.
 func (*UploadArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{47}
+	return file_cambrian_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *UploadArtifactResponse) GetHash() string {
@@ -4310,7 +4457,7 @@ type GetArtifactRequest struct {
 
 func (x *GetArtifactRequest) Reset() {
 	*x = GetArtifactRequest{}
-	mi := &file_cambrian_proto_msgTypes[48]
+	mi := &file_cambrian_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4322,7 +4469,7 @@ func (x *GetArtifactRequest) String() string {
 func (*GetArtifactRequest) ProtoMessage() {}
 
 func (x *GetArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[48]
+	mi := &file_cambrian_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4335,7 +4482,7 @@ func (x *GetArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactRequest.ProtoReflect.Descriptor instead.
 func (*GetArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{48}
+	return file_cambrian_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *GetArtifactRequest) GetHash() string {
@@ -4357,7 +4504,7 @@ type GetArtifactResponse struct {
 
 func (x *GetArtifactResponse) Reset() {
 	*x = GetArtifactResponse{}
-	mi := &file_cambrian_proto_msgTypes[49]
+	mi := &file_cambrian_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4369,7 +4516,7 @@ func (x *GetArtifactResponse) String() string {
 func (*GetArtifactResponse) ProtoMessage() {}
 
 func (x *GetArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[49]
+	mi := &file_cambrian_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4382,7 +4529,7 @@ func (x *GetArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetArtifactResponse.ProtoReflect.Descriptor instead.
 func (*GetArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{49}
+	return file_cambrian_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *GetArtifactResponse) GetContent() []byte {
@@ -4423,7 +4570,7 @@ type ListStepArtifactsRequest struct {
 
 func (x *ListStepArtifactsRequest) Reset() {
 	*x = ListStepArtifactsRequest{}
-	mi := &file_cambrian_proto_msgTypes[50]
+	mi := &file_cambrian_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4435,7 +4582,7 @@ func (x *ListStepArtifactsRequest) String() string {
 func (*ListStepArtifactsRequest) ProtoMessage() {}
 
 func (x *ListStepArtifactsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[50]
+	mi := &file_cambrian_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4448,7 +4595,7 @@ func (x *ListStepArtifactsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStepArtifactsRequest.ProtoReflect.Descriptor instead.
 func (*ListStepArtifactsRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{50}
+	return file_cambrian_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *ListStepArtifactsRequest) GetSessionId() string {
@@ -4478,7 +4625,7 @@ type ArtifactMeta struct {
 
 func (x *ArtifactMeta) Reset() {
 	*x = ArtifactMeta{}
-	mi := &file_cambrian_proto_msgTypes[51]
+	mi := &file_cambrian_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4490,7 +4637,7 @@ func (x *ArtifactMeta) String() string {
 func (*ArtifactMeta) ProtoMessage() {}
 
 func (x *ArtifactMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[51]
+	mi := &file_cambrian_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4503,7 +4650,7 @@ func (x *ArtifactMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactMeta.ProtoReflect.Descriptor instead.
 func (*ArtifactMeta) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{51}
+	return file_cambrian_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ArtifactMeta) GetHash() string {
@@ -4550,7 +4697,7 @@ type ListStepArtifactsResponse struct {
 
 func (x *ListStepArtifactsResponse) Reset() {
 	*x = ListStepArtifactsResponse{}
-	mi := &file_cambrian_proto_msgTypes[52]
+	mi := &file_cambrian_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4562,7 +4709,7 @@ func (x *ListStepArtifactsResponse) String() string {
 func (*ListStepArtifactsResponse) ProtoMessage() {}
 
 func (x *ListStepArtifactsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[52]
+	mi := &file_cambrian_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4575,7 +4722,7 @@ func (x *ListStepArtifactsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStepArtifactsResponse.ProtoReflect.Descriptor instead.
 func (*ListStepArtifactsResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{52}
+	return file_cambrian_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ListStepArtifactsResponse) GetArtifacts() []*ArtifactMeta {
@@ -4595,7 +4742,7 @@ type ContextNodeRequest struct {
 
 func (x *ContextNodeRequest) Reset() {
 	*x = ContextNodeRequest{}
-	mi := &file_cambrian_proto_msgTypes[53]
+	mi := &file_cambrian_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4607,7 +4754,7 @@ func (x *ContextNodeRequest) String() string {
 func (*ContextNodeRequest) ProtoMessage() {}
 
 func (x *ContextNodeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[53]
+	mi := &file_cambrian_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4620,7 +4767,7 @@ func (x *ContextNodeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextNodeRequest.ProtoReflect.Descriptor instead.
 func (*ContextNodeRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{53}
+	return file_cambrian_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ContextNodeRequest) GetCid() string {
@@ -4644,7 +4791,7 @@ type ContextNodeResponse struct {
 
 func (x *ContextNodeResponse) Reset() {
 	*x = ContextNodeResponse{}
-	mi := &file_cambrian_proto_msgTypes[54]
+	mi := &file_cambrian_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4656,7 +4803,7 @@ func (x *ContextNodeResponse) String() string {
 func (*ContextNodeResponse) ProtoMessage() {}
 
 func (x *ContextNodeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[54]
+	mi := &file_cambrian_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4669,7 +4816,7 @@ func (x *ContextNodeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextNodeResponse.ProtoReflect.Descriptor instead.
 func (*ContextNodeResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{54}
+	return file_cambrian_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ContextNodeResponse) GetCid() string {
@@ -4710,7 +4857,7 @@ type PutContextNodeRequest struct {
 
 func (x *PutContextNodeRequest) Reset() {
 	*x = PutContextNodeRequest{}
-	mi := &file_cambrian_proto_msgTypes[55]
+	mi := &file_cambrian_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4722,7 +4869,7 @@ func (x *PutContextNodeRequest) String() string {
 func (*PutContextNodeRequest) ProtoMessage() {}
 
 func (x *PutContextNodeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[55]
+	mi := &file_cambrian_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4735,7 +4882,7 @@ func (x *PutContextNodeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutContextNodeRequest.ProtoReflect.Descriptor instead.
 func (*PutContextNodeRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{55}
+	return file_cambrian_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *PutContextNodeRequest) GetData() []byte {
@@ -4761,7 +4908,7 @@ type PutContextNodeResponse struct {
 
 func (x *PutContextNodeResponse) Reset() {
 	*x = PutContextNodeResponse{}
-	mi := &file_cambrian_proto_msgTypes[56]
+	mi := &file_cambrian_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4773,7 +4920,7 @@ func (x *PutContextNodeResponse) String() string {
 func (*PutContextNodeResponse) ProtoMessage() {}
 
 func (x *PutContextNodeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[56]
+	mi := &file_cambrian_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4786,7 +4933,7 @@ func (x *PutContextNodeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutContextNodeResponse.ProtoReflect.Descriptor instead.
 func (*PutContextNodeResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{56}
+	return file_cambrian_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *PutContextNodeResponse) GetCid() string {
@@ -4807,7 +4954,7 @@ type StatusUpdate struct {
 
 func (x *StatusUpdate) Reset() {
 	*x = StatusUpdate{}
-	mi := &file_cambrian_proto_msgTypes[57]
+	mi := &file_cambrian_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4819,7 +4966,7 @@ func (x *StatusUpdate) String() string {
 func (*StatusUpdate) ProtoMessage() {}
 
 func (x *StatusUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[57]
+	mi := &file_cambrian_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4832,7 +4979,7 @@ func (x *StatusUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusUpdate.ProtoReflect.Descriptor instead.
 func (*StatusUpdate) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{57}
+	return file_cambrian_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *StatusUpdate) GetStatus() string {
@@ -4860,7 +5007,7 @@ type ThoughtChunk struct {
 
 func (x *ThoughtChunk) Reset() {
 	*x = ThoughtChunk{}
-	mi := &file_cambrian_proto_msgTypes[58]
+	mi := &file_cambrian_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4872,7 +5019,7 @@ func (x *ThoughtChunk) String() string {
 func (*ThoughtChunk) ProtoMessage() {}
 
 func (x *ThoughtChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[58]
+	mi := &file_cambrian_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4885,7 +5032,7 @@ func (x *ThoughtChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThoughtChunk.ProtoReflect.Descriptor instead.
 func (*ThoughtChunk) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{58}
+	return file_cambrian_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ThoughtChunk) GetText() string {
@@ -4915,7 +5062,7 @@ type AgentLog struct {
 
 func (x *AgentLog) Reset() {
 	*x = AgentLog{}
-	mi := &file_cambrian_proto_msgTypes[59]
+	mi := &file_cambrian_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4927,7 +5074,7 @@ func (x *AgentLog) String() string {
 func (*AgentLog) ProtoMessage() {}
 
 func (x *AgentLog) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[59]
+	mi := &file_cambrian_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4940,7 +5087,7 @@ func (x *AgentLog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentLog.ProtoReflect.Descriptor instead.
 func (*AgentLog) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{59}
+	return file_cambrian_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *AgentLog) GetTimestamp() string {
@@ -4985,7 +5132,7 @@ type InterventionRequest struct {
 
 func (x *InterventionRequest) Reset() {
 	*x = InterventionRequest{}
-	mi := &file_cambrian_proto_msgTypes[60]
+	mi := &file_cambrian_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4997,7 +5144,7 @@ func (x *InterventionRequest) String() string {
 func (*InterventionRequest) ProtoMessage() {}
 
 func (x *InterventionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[60]
+	mi := &file_cambrian_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5010,7 +5157,7 @@ func (x *InterventionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InterventionRequest.ProtoReflect.Descriptor instead.
 func (*InterventionRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{60}
+	return file_cambrian_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *InterventionRequest) GetStepIndex() int32 {
@@ -5054,7 +5201,7 @@ type PlanStep struct {
 
 func (x *PlanStep) Reset() {
 	*x = PlanStep{}
-	mi := &file_cambrian_proto_msgTypes[61]
+	mi := &file_cambrian_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5066,7 +5213,7 @@ func (x *PlanStep) String() string {
 func (*PlanStep) ProtoMessage() {}
 
 func (x *PlanStep) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[61]
+	mi := &file_cambrian_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5079,7 +5226,7 @@ func (x *PlanStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanStep.ProtoReflect.Descriptor instead.
 func (*PlanStep) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{61}
+	return file_cambrian_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *PlanStep) GetIndex() int32 {
@@ -5121,7 +5268,7 @@ type PlanTopology struct {
 
 func (x *PlanTopology) Reset() {
 	*x = PlanTopology{}
-	mi := &file_cambrian_proto_msgTypes[62]
+	mi := &file_cambrian_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5133,7 +5280,7 @@ func (x *PlanTopology) String() string {
 func (*PlanTopology) ProtoMessage() {}
 
 func (x *PlanTopology) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[62]
+	mi := &file_cambrian_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5146,7 +5293,7 @@ func (x *PlanTopology) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanTopology.ProtoReflect.Descriptor instead.
 func (*PlanTopology) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{62}
+	return file_cambrian_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *PlanTopology) GetSteps() []*PlanStep {
@@ -5175,7 +5322,7 @@ type StepCacheHit struct {
 
 func (x *StepCacheHit) Reset() {
 	*x = StepCacheHit{}
-	mi := &file_cambrian_proto_msgTypes[63]
+	mi := &file_cambrian_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5187,7 +5334,7 @@ func (x *StepCacheHit) String() string {
 func (*StepCacheHit) ProtoMessage() {}
 
 func (x *StepCacheHit) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[63]
+	mi := &file_cambrian_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5200,7 +5347,7 @@ func (x *StepCacheHit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepCacheHit.ProtoReflect.Descriptor instead.
 func (*StepCacheHit) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{63}
+	return file_cambrian_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *StepCacheHit) GetStepIndex() int32 {
@@ -5236,7 +5383,7 @@ type SymbiosisEvent struct {
 
 func (x *SymbiosisEvent) Reset() {
 	*x = SymbiosisEvent{}
-	mi := &file_cambrian_proto_msgTypes[64]
+	mi := &file_cambrian_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5248,7 +5395,7 @@ func (x *SymbiosisEvent) String() string {
 func (*SymbiosisEvent) ProtoMessage() {}
 
 func (x *SymbiosisEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[64]
+	mi := &file_cambrian_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5261,7 +5408,7 @@ func (x *SymbiosisEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SymbiosisEvent.ProtoReflect.Descriptor instead.
 func (*SymbiosisEvent) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{64}
+	return file_cambrian_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *SymbiosisEvent) GetPayload() isSymbiosisEvent_Payload {
@@ -5378,7 +5525,7 @@ type ProposalRequest struct {
 
 func (x *ProposalRequest) Reset() {
 	*x = ProposalRequest{}
-	mi := &file_cambrian_proto_msgTypes[65]
+	mi := &file_cambrian_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5390,7 +5537,7 @@ func (x *ProposalRequest) String() string {
 func (*ProposalRequest) ProtoMessage() {}
 
 func (x *ProposalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[65]
+	mi := &file_cambrian_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5403,7 +5550,7 @@ func (x *ProposalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposalRequest.ProtoReflect.Descriptor instead.
 func (*ProposalRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{65}
+	return file_cambrian_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *ProposalRequest) GetTaskId() string {
@@ -5454,7 +5601,7 @@ type ProposalResponse struct {
 
 func (x *ProposalResponse) Reset() {
 	*x = ProposalResponse{}
-	mi := &file_cambrian_proto_msgTypes[66]
+	mi := &file_cambrian_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5466,7 +5613,7 @@ func (x *ProposalResponse) String() string {
 func (*ProposalResponse) ProtoMessage() {}
 
 func (x *ProposalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[66]
+	mi := &file_cambrian_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5479,7 +5626,7 @@ func (x *ProposalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposalResponse.ProtoReflect.Descriptor instead.
 func (*ProposalResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{66}
+	return file_cambrian_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *ProposalResponse) GetConfidence() float32 {
@@ -5529,7 +5676,7 @@ type AuctionTask struct {
 
 func (x *AuctionTask) Reset() {
 	*x = AuctionTask{}
-	mi := &file_cambrian_proto_msgTypes[67]
+	mi := &file_cambrian_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5541,7 +5688,7 @@ func (x *AuctionTask) String() string {
 func (*AuctionTask) ProtoMessage() {}
 
 func (x *AuctionTask) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[67]
+	mi := &file_cambrian_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5554,7 +5701,7 @@ func (x *AuctionTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuctionTask.ProtoReflect.Descriptor instead.
 func (*AuctionTask) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{67}
+	return file_cambrian_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *AuctionTask) GetId() string {
@@ -5593,7 +5740,7 @@ type AgentProposal struct {
 
 func (x *AgentProposal) Reset() {
 	*x = AgentProposal{}
-	mi := &file_cambrian_proto_msgTypes[68]
+	mi := &file_cambrian_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5605,7 +5752,7 @@ func (x *AgentProposal) String() string {
 func (*AgentProposal) ProtoMessage() {}
 
 func (x *AgentProposal) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[68]
+	mi := &file_cambrian_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5618,7 +5765,7 @@ func (x *AgentProposal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentProposal.ProtoReflect.Descriptor instead.
 func (*AgentProposal) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{68}
+	return file_cambrian_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *AgentProposal) GetAgentId() string {
@@ -5677,7 +5824,7 @@ type VerifyRequest struct {
 
 func (x *VerifyRequest) Reset() {
 	*x = VerifyRequest{}
-	mi := &file_cambrian_proto_msgTypes[69]
+	mi := &file_cambrian_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5689,7 +5836,7 @@ func (x *VerifyRequest) String() string {
 func (*VerifyRequest) ProtoMessage() {}
 
 func (x *VerifyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[69]
+	mi := &file_cambrian_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5702,7 +5849,7 @@ func (x *VerifyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyRequest.ProtoReflect.Descriptor instead.
 func (*VerifyRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{69}
+	return file_cambrian_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *VerifyRequest) GetTaskId() string {
@@ -5751,7 +5898,7 @@ type VerifyResponse struct {
 
 func (x *VerifyResponse) Reset() {
 	*x = VerifyResponse{}
-	mi := &file_cambrian_proto_msgTypes[70]
+	mi := &file_cambrian_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5763,7 +5910,7 @@ func (x *VerifyResponse) String() string {
 func (*VerifyResponse) ProtoMessage() {}
 
 func (x *VerifyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[70]
+	mi := &file_cambrian_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5776,7 +5923,7 @@ func (x *VerifyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyResponse.ProtoReflect.Descriptor instead.
 func (*VerifyResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{70}
+	return file_cambrian_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *VerifyResponse) GetQualityScore() float32 {
@@ -5820,7 +5967,7 @@ type MemoryRequest struct {
 
 func (x *MemoryRequest) Reset() {
 	*x = MemoryRequest{}
-	mi := &file_cambrian_proto_msgTypes[71]
+	mi := &file_cambrian_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5832,7 +5979,7 @@ func (x *MemoryRequest) String() string {
 func (*MemoryRequest) ProtoMessage() {}
 
 func (x *MemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[71]
+	mi := &file_cambrian_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5845,7 +5992,7 @@ func (x *MemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryRequest.ProtoReflect.Descriptor instead.
 func (*MemoryRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{71}
+	return file_cambrian_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *MemoryRequest) GetQuery() string {
@@ -5904,7 +6051,7 @@ type MemoryResult struct {
 
 func (x *MemoryResult) Reset() {
 	*x = MemoryResult{}
-	mi := &file_cambrian_proto_msgTypes[72]
+	mi := &file_cambrian_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5916,7 +6063,7 @@ func (x *MemoryResult) String() string {
 func (*MemoryResult) ProtoMessage() {}
 
 func (x *MemoryResult) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[72]
+	mi := &file_cambrian_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5929,7 +6076,7 @@ func (x *MemoryResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryResult.ProtoReflect.Descriptor instead.
 func (*MemoryResult) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{72}
+	return file_cambrian_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *MemoryResult) GetText() string {
@@ -6000,7 +6147,7 @@ type MemoryResponse struct {
 
 func (x *MemoryResponse) Reset() {
 	*x = MemoryResponse{}
-	mi := &file_cambrian_proto_msgTypes[73]
+	mi := &file_cambrian_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6012,7 +6159,7 @@ func (x *MemoryResponse) String() string {
 func (*MemoryResponse) ProtoMessage() {}
 
 func (x *MemoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[73]
+	mi := &file_cambrian_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6025,7 +6172,7 @@ func (x *MemoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryResponse.ProtoReflect.Descriptor instead.
 func (*MemoryResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{73}
+	return file_cambrian_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *MemoryResponse) GetResults() []*MemoryResult {
@@ -6083,7 +6230,7 @@ type GenerateStreamRequest struct {
 
 func (x *GenerateStreamRequest) Reset() {
 	*x = GenerateStreamRequest{}
-	mi := &file_cambrian_proto_msgTypes[74]
+	mi := &file_cambrian_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6095,7 +6242,7 @@ func (x *GenerateStreamRequest) String() string {
 func (*GenerateStreamRequest) ProtoMessage() {}
 
 func (x *GenerateStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[74]
+	mi := &file_cambrian_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6108,7 +6255,7 @@ func (x *GenerateStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateStreamRequest.ProtoReflect.Descriptor instead.
 func (*GenerateStreamRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{74}
+	return file_cambrian_proto_rawDescGZIP(), []int{76}
 }
 
 // Deprecated: Marked as deprecated in cambrian.proto.
@@ -6189,7 +6336,7 @@ type GenerateOptions struct {
 
 func (x *GenerateOptions) Reset() {
 	*x = GenerateOptions{}
-	mi := &file_cambrian_proto_msgTypes[75]
+	mi := &file_cambrian_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6201,7 +6348,7 @@ func (x *GenerateOptions) String() string {
 func (*GenerateOptions) ProtoMessage() {}
 
 func (x *GenerateOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[75]
+	mi := &file_cambrian_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6214,7 +6361,7 @@ func (x *GenerateOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateOptions.ProtoReflect.Descriptor instead.
 func (*GenerateOptions) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{75}
+	return file_cambrian_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *GenerateOptions) GetMaxTokens() int32 {
@@ -6258,7 +6405,7 @@ type SystemBlock struct {
 
 func (x *SystemBlock) Reset() {
 	*x = SystemBlock{}
-	mi := &file_cambrian_proto_msgTypes[76]
+	mi := &file_cambrian_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6270,7 +6417,7 @@ func (x *SystemBlock) String() string {
 func (*SystemBlock) ProtoMessage() {}
 
 func (x *SystemBlock) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[76]
+	mi := &file_cambrian_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6283,7 +6430,7 @@ func (x *SystemBlock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemBlock.ProtoReflect.Descriptor instead.
 func (*SystemBlock) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{76}
+	return file_cambrian_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *SystemBlock) GetText() string {
@@ -6317,7 +6464,7 @@ type ResponseSchema struct {
 
 func (x *ResponseSchema) Reset() {
 	*x = ResponseSchema{}
-	mi := &file_cambrian_proto_msgTypes[77]
+	mi := &file_cambrian_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6329,7 +6476,7 @@ func (x *ResponseSchema) String() string {
 func (*ResponseSchema) ProtoMessage() {}
 
 func (x *ResponseSchema) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[77]
+	mi := &file_cambrian_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6342,7 +6489,7 @@ func (x *ResponseSchema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseSchema.ProtoReflect.Descriptor instead.
 func (*ResponseSchema) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{77}
+	return file_cambrian_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *ResponseSchema) GetName() string {
@@ -6386,7 +6533,7 @@ type GenerateUsage struct {
 
 func (x *GenerateUsage) Reset() {
 	*x = GenerateUsage{}
-	mi := &file_cambrian_proto_msgTypes[78]
+	mi := &file_cambrian_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6398,7 +6545,7 @@ func (x *GenerateUsage) String() string {
 func (*GenerateUsage) ProtoMessage() {}
 
 func (x *GenerateUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[78]
+	mi := &file_cambrian_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6411,7 +6558,7 @@ func (x *GenerateUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateUsage.ProtoReflect.Descriptor instead.
 func (*GenerateUsage) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{78}
+	return file_cambrian_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *GenerateUsage) GetInputTokens() int32 {
@@ -6471,7 +6618,7 @@ type ToolDefinitionProto struct {
 
 func (x *ToolDefinitionProto) Reset() {
 	*x = ToolDefinitionProto{}
-	mi := &file_cambrian_proto_msgTypes[79]
+	mi := &file_cambrian_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6483,7 +6630,7 @@ func (x *ToolDefinitionProto) String() string {
 func (*ToolDefinitionProto) ProtoMessage() {}
 
 func (x *ToolDefinitionProto) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[79]
+	mi := &file_cambrian_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6496,7 +6643,7 @@ func (x *ToolDefinitionProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolDefinitionProto.ProtoReflect.Descriptor instead.
 func (*ToolDefinitionProto) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{79}
+	return file_cambrian_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *ToolDefinitionProto) GetName() string {
@@ -6536,7 +6683,7 @@ type ModelToolCallProto struct {
 
 func (x *ModelToolCallProto) Reset() {
 	*x = ModelToolCallProto{}
-	mi := &file_cambrian_proto_msgTypes[80]
+	mi := &file_cambrian_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6548,7 +6695,7 @@ func (x *ModelToolCallProto) String() string {
 func (*ModelToolCallProto) ProtoMessage() {}
 
 func (x *ModelToolCallProto) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[80]
+	mi := &file_cambrian_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6561,7 +6708,7 @@ func (x *ModelToolCallProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelToolCallProto.ProtoReflect.Descriptor instead.
 func (*ModelToolCallProto) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{80}
+	return file_cambrian_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *ModelToolCallProto) GetId() string {
@@ -6608,7 +6755,7 @@ type ModelMessageProto struct {
 
 func (x *ModelMessageProto) Reset() {
 	*x = ModelMessageProto{}
-	mi := &file_cambrian_proto_msgTypes[81]
+	mi := &file_cambrian_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6620,7 +6767,7 @@ func (x *ModelMessageProto) String() string {
 func (*ModelMessageProto) ProtoMessage() {}
 
 func (x *ModelMessageProto) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[81]
+	mi := &file_cambrian_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6633,7 +6780,7 @@ func (x *ModelMessageProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelMessageProto.ProtoReflect.Descriptor instead.
 func (*ModelMessageProto) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{81}
+	return file_cambrian_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *ModelMessageProto) GetRole() string {
@@ -6689,7 +6836,7 @@ type GenerateWithToolsRequest struct {
 
 func (x *GenerateWithToolsRequest) Reset() {
 	*x = GenerateWithToolsRequest{}
-	mi := &file_cambrian_proto_msgTypes[82]
+	mi := &file_cambrian_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6701,7 +6848,7 @@ func (x *GenerateWithToolsRequest) String() string {
 func (*GenerateWithToolsRequest) ProtoMessage() {}
 
 func (x *GenerateWithToolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[82]
+	mi := &file_cambrian_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6714,7 +6861,7 @@ func (x *GenerateWithToolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateWithToolsRequest.ProtoReflect.Descriptor instead.
 func (*GenerateWithToolsRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{82}
+	return file_cambrian_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *GenerateWithToolsRequest) GetLeaseId() string {
@@ -6801,7 +6948,7 @@ type GenerateWithToolsResponse struct {
 
 func (x *GenerateWithToolsResponse) Reset() {
 	*x = GenerateWithToolsResponse{}
-	mi := &file_cambrian_proto_msgTypes[83]
+	mi := &file_cambrian_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6813,7 +6960,7 @@ func (x *GenerateWithToolsResponse) String() string {
 func (*GenerateWithToolsResponse) ProtoMessage() {}
 
 func (x *GenerateWithToolsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[83]
+	mi := &file_cambrian_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6826,7 +6973,7 @@ func (x *GenerateWithToolsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateWithToolsResponse.ProtoReflect.Descriptor instead.
 func (*GenerateWithToolsResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{83}
+	return file_cambrian_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *GenerateWithToolsResponse) GetText() string {
@@ -6899,7 +7046,7 @@ type GenerateChunk struct {
 
 func (x *GenerateChunk) Reset() {
 	*x = GenerateChunk{}
-	mi := &file_cambrian_proto_msgTypes[84]
+	mi := &file_cambrian_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6911,7 +7058,7 @@ func (x *GenerateChunk) String() string {
 func (*GenerateChunk) ProtoMessage() {}
 
 func (x *GenerateChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[84]
+	mi := &file_cambrian_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6924,7 +7071,7 @@ func (x *GenerateChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateChunk.ProtoReflect.Descriptor instead.
 func (*GenerateChunk) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{84}
+	return file_cambrian_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *GenerateChunk) GetText() string {
@@ -7036,7 +7183,7 @@ type SpawnSubagentRequest struct {
 
 func (x *SpawnSubagentRequest) Reset() {
 	*x = SpawnSubagentRequest{}
-	mi := &file_cambrian_proto_msgTypes[85]
+	mi := &file_cambrian_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7048,7 +7195,7 @@ func (x *SpawnSubagentRequest) String() string {
 func (*SpawnSubagentRequest) ProtoMessage() {}
 
 func (x *SpawnSubagentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[85]
+	mi := &file_cambrian_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7061,7 +7208,7 @@ func (x *SpawnSubagentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnSubagentRequest.ProtoReflect.Descriptor instead.
 func (*SpawnSubagentRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{85}
+	return file_cambrian_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *SpawnSubagentRequest) GetLeaseId() string {
@@ -7186,7 +7333,7 @@ type SpawnSubagentResponse struct {
 
 func (x *SpawnSubagentResponse) Reset() {
 	*x = SpawnSubagentResponse{}
-	mi := &file_cambrian_proto_msgTypes[86]
+	mi := &file_cambrian_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7198,7 +7345,7 @@ func (x *SpawnSubagentResponse) String() string {
 func (*SpawnSubagentResponse) ProtoMessage() {}
 
 func (x *SpawnSubagentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[86]
+	mi := &file_cambrian_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7211,7 +7358,7 @@ func (x *SpawnSubagentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnSubagentResponse.ProtoReflect.Descriptor instead.
 func (*SpawnSubagentResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{86}
+	return file_cambrian_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *SpawnSubagentResponse) GetStatus() SubagentStatus {
@@ -7295,7 +7442,7 @@ type GetMemoryNotesRequest struct {
 
 func (x *GetMemoryNotesRequest) Reset() {
 	*x = GetMemoryNotesRequest{}
-	mi := &file_cambrian_proto_msgTypes[87]
+	mi := &file_cambrian_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7307,7 +7454,7 @@ func (x *GetMemoryNotesRequest) String() string {
 func (*GetMemoryNotesRequest) ProtoMessage() {}
 
 func (x *GetMemoryNotesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[87]
+	mi := &file_cambrian_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7320,7 +7467,7 @@ func (x *GetMemoryNotesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMemoryNotesRequest.ProtoReflect.Descriptor instead.
 func (*GetMemoryNotesRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{87}
+	return file_cambrian_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *GetMemoryNotesRequest) GetLeaseId() string {
@@ -7354,7 +7501,7 @@ type MemoryNotesDocument struct {
 
 func (x *MemoryNotesDocument) Reset() {
 	*x = MemoryNotesDocument{}
-	mi := &file_cambrian_proto_msgTypes[88]
+	mi := &file_cambrian_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7366,7 +7513,7 @@ func (x *MemoryNotesDocument) String() string {
 func (*MemoryNotesDocument) ProtoMessage() {}
 
 func (x *MemoryNotesDocument) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[88]
+	mi := &file_cambrian_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7379,7 +7526,7 @@ func (x *MemoryNotesDocument) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryNotesDocument.ProtoReflect.Descriptor instead.
 func (*MemoryNotesDocument) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{88}
+	return file_cambrian_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *MemoryNotesDocument) GetScope() MemoryNotesScope {
@@ -7453,7 +7600,7 @@ type GetMemoryNotesResponse struct {
 
 func (x *GetMemoryNotesResponse) Reset() {
 	*x = GetMemoryNotesResponse{}
-	mi := &file_cambrian_proto_msgTypes[89]
+	mi := &file_cambrian_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7465,7 +7612,7 @@ func (x *GetMemoryNotesResponse) String() string {
 func (*GetMemoryNotesResponse) ProtoMessage() {}
 
 func (x *GetMemoryNotesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[89]
+	mi := &file_cambrian_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7478,7 +7625,7 @@ func (x *GetMemoryNotesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMemoryNotesResponse.ProtoReflect.Descriptor instead.
 func (*GetMemoryNotesResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{89}
+	return file_cambrian_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *GetMemoryNotesResponse) GetDocuments() []*MemoryNotesDocument {
@@ -7521,7 +7668,7 @@ type ProposeMemoryNoteRequest struct {
 
 func (x *ProposeMemoryNoteRequest) Reset() {
 	*x = ProposeMemoryNoteRequest{}
-	mi := &file_cambrian_proto_msgTypes[90]
+	mi := &file_cambrian_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7533,7 +7680,7 @@ func (x *ProposeMemoryNoteRequest) String() string {
 func (*ProposeMemoryNoteRequest) ProtoMessage() {}
 
 func (x *ProposeMemoryNoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[90]
+	mi := &file_cambrian_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7546,7 +7693,7 @@ func (x *ProposeMemoryNoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposeMemoryNoteRequest.ProtoReflect.Descriptor instead.
 func (*ProposeMemoryNoteRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{90}
+	return file_cambrian_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *ProposeMemoryNoteRequest) GetLeaseId() string {
@@ -7614,7 +7761,7 @@ type ProposeMemoryNoteResponse struct {
 
 func (x *ProposeMemoryNoteResponse) Reset() {
 	*x = ProposeMemoryNoteResponse{}
-	mi := &file_cambrian_proto_msgTypes[91]
+	mi := &file_cambrian_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7626,7 +7773,7 @@ func (x *ProposeMemoryNoteResponse) String() string {
 func (*ProposeMemoryNoteResponse) ProtoMessage() {}
 
 func (x *ProposeMemoryNoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[91]
+	mi := &file_cambrian_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7639,7 +7786,7 @@ func (x *ProposeMemoryNoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposeMemoryNoteResponse.ProtoReflect.Descriptor instead.
 func (*ProposeMemoryNoteResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{91}
+	return file_cambrian_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *ProposeMemoryNoteResponse) GetAccepted() bool {
@@ -7707,7 +7854,7 @@ type ProposeSkillRequest struct {
 
 func (x *ProposeSkillRequest) Reset() {
 	*x = ProposeSkillRequest{}
-	mi := &file_cambrian_proto_msgTypes[92]
+	mi := &file_cambrian_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7719,7 +7866,7 @@ func (x *ProposeSkillRequest) String() string {
 func (*ProposeSkillRequest) ProtoMessage() {}
 
 func (x *ProposeSkillRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[92]
+	mi := &file_cambrian_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7732,7 +7879,7 @@ func (x *ProposeSkillRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposeSkillRequest.ProtoReflect.Descriptor instead.
 func (*ProposeSkillRequest) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{92}
+	return file_cambrian_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *ProposeSkillRequest) GetLeaseId() string {
@@ -7792,7 +7939,7 @@ type ProposeSkillResponse struct {
 
 func (x *ProposeSkillResponse) Reset() {
 	*x = ProposeSkillResponse{}
-	mi := &file_cambrian_proto_msgTypes[93]
+	mi := &file_cambrian_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7804,7 +7951,7 @@ func (x *ProposeSkillResponse) String() string {
 func (*ProposeSkillResponse) ProtoMessage() {}
 
 func (x *ProposeSkillResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cambrian_proto_msgTypes[93]
+	mi := &file_cambrian_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7817,7 +7964,7 @@ func (x *ProposeSkillResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposeSkillResponse.ProtoReflect.Descriptor instead.
 func (*ProposeSkillResponse) Descriptor() ([]byte, []int) {
-	return file_cambrian_proto_rawDescGZIP(), []int{93}
+	return file_cambrian_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *ProposeSkillResponse) GetAccepted() bool {
@@ -8156,9 +8303,22 @@ const file_cambrian_proto_rawDesc = "" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12;\n" +
 	"\voccurred_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12\x18\n" +
-	"\aspeaker\x18\x03 \x01(\tR\aspeaker\"-\n" +
+	"\aspeaker\x18\x03 \x01(\tR\aspeaker\"~\n" +
 	"\x14IngestMemoryResponse\x12\x15\n" +
-	"\x06doc_id\x18\x01 \x01(\tR\x05docId\"\xd1\x01\n" +
+	"\x06doc_id\x18\x01 \x01(\tR\x05docId\x12\x1f\n" +
+	"\vdocument_id\x18\x02 \x01(\tR\n" +
+	"documentId\x12.\n" +
+	"\x06status\x18\x03 \x01(\v2\x16.cambrian.IngestStatusR\x06status\"\xa7\x01\n" +
+	"\fIngestStatus\x12\x1f\n" +
+	"\vdocument_id\x18\x01 \x01(\tR\n" +
+	"documentId\x12\x14\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x12!\n" +
+	"\fchunks_total\x18\x03 \x01(\x05R\vchunksTotal\x12'\n" +
+	"\x0fchunks_embedded\x18\x04 \x01(\x05R\x0echunksEmbedded\x12\x14\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\"9\n" +
+	"\x16GetIngestStatusRequest\x12\x1f\n" +
+	"\vdocument_id\x18\x01 \x01(\tR\n" +
+	"documentId\"\xd1\x01\n" +
 	"\x15UploadArtifactRequest\x12\x18\n" +
 	"\acontent\x18\x01 \x01(\fR\acontent\x12!\n" +
 	"\fcontent_type\x18\x02 \x01(\tR\vcontentType\x12\x1d\n" +
@@ -8525,7 +8685,7 @@ const file_cambrian_proto_rawDesc = "" +
 	"\x1fSKILL_PROPOSAL_REJECTION_LOCKED\x10\x03\x12+\n" +
 	"'SKILL_PROPOSAL_REJECTION_SCAN_DANGEROUS\x10\x04\x12\"\n" +
 	"\x1eSKILL_PROPOSAL_REJECTION_QUOTA\x10\x05\x12#\n" +
-	"\x1fSKILL_PROPOSAL_REJECTION_DENIED\x10\x062\xe6\x13\n" +
+	"\x1fSKILL_PROPOSAL_REJECTION_DENIED\x10\x062\xb3\x14\n" +
 	"\fOrchestrator\x12/\n" +
 	"\aExecute\x12\x11.cambrian.Handoff\x1a\x11.cambrian.Handoff\x12A\n" +
 	"\x0fRequestProposal\x12\x15.cambrian.AuctionTask\x1a\x17.cambrian.AgentProposal\x12@\n" +
@@ -8538,7 +8698,8 @@ const file_cambrian_proto_rawDesc = "" +
 	"\x0eUploadArtifact\x12\x1f.cambrian.UploadArtifactRequest\x1a .cambrian.UploadArtifactResponse\x12J\n" +
 	"\vGetArtifact\x12\x1c.cambrian.GetArtifactRequest\x1a\x1d.cambrian.GetArtifactResponse\x12\\\n" +
 	"\x11ListStepArtifacts\x12\".cambrian.ListStepArtifactsRequest\x1a#.cambrian.ListStepArtifactsResponse\x12M\n" +
-	"\fIngestMemory\x12\x1d.cambrian.IngestMemoryRequest\x1a\x1e.cambrian.IngestMemoryResponse\x12J\n" +
+	"\fIngestMemory\x12\x1d.cambrian.IngestMemoryRequest\x1a\x1e.cambrian.IngestMemoryResponse\x12K\n" +
+	"\x0fGetIngestStatus\x12 .cambrian.GetIngestStatusRequest\x1a\x16.cambrian.IngestStatus\x12J\n" +
 	"\vExecuteTool\x12\x1c.cambrian.ExecuteToolRequest\x1a\x1d.cambrian.ExecuteToolResponse\x12D\n" +
 	"\tListTools\x12\x1a.cambrian.ListToolsRequest\x1a\x1b.cambrian.ListToolsResponse\x12G\n" +
 	"\n" +
@@ -8577,7 +8738,7 @@ func file_cambrian_proto_rawDescGZIP() []byte {
 }
 
 var file_cambrian_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
-var file_cambrian_proto_msgTypes = make([]protoimpl.MessageInfo, 98)
+var file_cambrian_proto_msgTypes = make([]protoimpl.MessageInfo, 100)
 var file_cambrian_proto_goTypes = []any{
 	(ScheduledTaskRejection)(0),           // 0: cambrian.ScheduledTaskRejection
 	(ScheduledTaskAction)(0),              // 1: cambrian.ScheduledTaskAction
@@ -8637,79 +8798,81 @@ var file_cambrian_proto_goTypes = []any{
 	(*IngestMemoryRequest)(nil),           // 55: cambrian.IngestMemoryRequest
 	(*MemoryPart)(nil),                    // 56: cambrian.MemoryPart
 	(*IngestMemoryResponse)(nil),          // 57: cambrian.IngestMemoryResponse
-	(*UploadArtifactRequest)(nil),         // 58: cambrian.UploadArtifactRequest
-	(*UploadArtifactResponse)(nil),        // 59: cambrian.UploadArtifactResponse
-	(*GetArtifactRequest)(nil),            // 60: cambrian.GetArtifactRequest
-	(*GetArtifactResponse)(nil),           // 61: cambrian.GetArtifactResponse
-	(*ListStepArtifactsRequest)(nil),      // 62: cambrian.ListStepArtifactsRequest
-	(*ArtifactMeta)(nil),                  // 63: cambrian.ArtifactMeta
-	(*ListStepArtifactsResponse)(nil),     // 64: cambrian.ListStepArtifactsResponse
-	(*ContextNodeRequest)(nil),            // 65: cambrian.ContextNodeRequest
-	(*ContextNodeResponse)(nil),           // 66: cambrian.ContextNodeResponse
-	(*PutContextNodeRequest)(nil),         // 67: cambrian.PutContextNodeRequest
-	(*PutContextNodeResponse)(nil),        // 68: cambrian.PutContextNodeResponse
-	(*StatusUpdate)(nil),                  // 69: cambrian.StatusUpdate
-	(*ThoughtChunk)(nil),                  // 70: cambrian.ThoughtChunk
-	(*AgentLog)(nil),                      // 71: cambrian.AgentLog
-	(*InterventionRequest)(nil),           // 72: cambrian.InterventionRequest
-	(*PlanStep)(nil),                      // 73: cambrian.PlanStep
-	(*PlanTopology)(nil),                  // 74: cambrian.PlanTopology
-	(*StepCacheHit)(nil),                  // 75: cambrian.StepCacheHit
-	(*SymbiosisEvent)(nil),                // 76: cambrian.SymbiosisEvent
-	(*ProposalRequest)(nil),               // 77: cambrian.ProposalRequest
-	(*ProposalResponse)(nil),              // 78: cambrian.ProposalResponse
-	(*AuctionTask)(nil),                   // 79: cambrian.AuctionTask
-	(*AgentProposal)(nil),                 // 80: cambrian.AgentProposal
-	(*VerifyRequest)(nil),                 // 81: cambrian.VerifyRequest
-	(*VerifyResponse)(nil),                // 82: cambrian.VerifyResponse
-	(*MemoryRequest)(nil),                 // 83: cambrian.MemoryRequest
-	(*MemoryResult)(nil),                  // 84: cambrian.MemoryResult
-	(*MemoryResponse)(nil),                // 85: cambrian.MemoryResponse
-	(*GenerateStreamRequest)(nil),         // 86: cambrian.GenerateStreamRequest
-	(*GenerateOptions)(nil),               // 87: cambrian.GenerateOptions
-	(*SystemBlock)(nil),                   // 88: cambrian.SystemBlock
-	(*ResponseSchema)(nil),                // 89: cambrian.ResponseSchema
-	(*GenerateUsage)(nil),                 // 90: cambrian.GenerateUsage
-	(*ToolDefinitionProto)(nil),           // 91: cambrian.ToolDefinitionProto
-	(*ModelToolCallProto)(nil),            // 92: cambrian.ModelToolCallProto
-	(*ModelMessageProto)(nil),             // 93: cambrian.ModelMessageProto
-	(*GenerateWithToolsRequest)(nil),      // 94: cambrian.GenerateWithToolsRequest
-	(*GenerateWithToolsResponse)(nil),     // 95: cambrian.GenerateWithToolsResponse
-	(*GenerateChunk)(nil),                 // 96: cambrian.GenerateChunk
-	(*SpawnSubagentRequest)(nil),          // 97: cambrian.SpawnSubagentRequest
-	(*SpawnSubagentResponse)(nil),         // 98: cambrian.SpawnSubagentResponse
-	(*GetMemoryNotesRequest)(nil),         // 99: cambrian.GetMemoryNotesRequest
-	(*MemoryNotesDocument)(nil),           // 100: cambrian.MemoryNotesDocument
-	(*GetMemoryNotesResponse)(nil),        // 101: cambrian.GetMemoryNotesResponse
-	(*ProposeMemoryNoteRequest)(nil),      // 102: cambrian.ProposeMemoryNoteRequest
-	(*ProposeMemoryNoteResponse)(nil),     // 103: cambrian.ProposeMemoryNoteResponse
-	(*ProposeSkillRequest)(nil),           // 104: cambrian.ProposeSkillRequest
-	(*ProposeSkillResponse)(nil),          // 105: cambrian.ProposeSkillResponse
-	nil,                                   // 106: cambrian.Object.MetadataEntry
-	nil,                                   // 107: cambrian.Handoff.MetadataEntry
-	nil,                                   // 108: cambrian.ErasureReceipt.CountsEntry
-	nil,                                   // 109: cambrian.ProposalResponse.MetadataEntry
-	(*timestamppb.Timestamp)(nil),         // 110: google.protobuf.Timestamp
+	(*IngestStatus)(nil),                  // 58: cambrian.IngestStatus
+	(*GetIngestStatusRequest)(nil),        // 59: cambrian.GetIngestStatusRequest
+	(*UploadArtifactRequest)(nil),         // 60: cambrian.UploadArtifactRequest
+	(*UploadArtifactResponse)(nil),        // 61: cambrian.UploadArtifactResponse
+	(*GetArtifactRequest)(nil),            // 62: cambrian.GetArtifactRequest
+	(*GetArtifactResponse)(nil),           // 63: cambrian.GetArtifactResponse
+	(*ListStepArtifactsRequest)(nil),      // 64: cambrian.ListStepArtifactsRequest
+	(*ArtifactMeta)(nil),                  // 65: cambrian.ArtifactMeta
+	(*ListStepArtifactsResponse)(nil),     // 66: cambrian.ListStepArtifactsResponse
+	(*ContextNodeRequest)(nil),            // 67: cambrian.ContextNodeRequest
+	(*ContextNodeResponse)(nil),           // 68: cambrian.ContextNodeResponse
+	(*PutContextNodeRequest)(nil),         // 69: cambrian.PutContextNodeRequest
+	(*PutContextNodeResponse)(nil),        // 70: cambrian.PutContextNodeResponse
+	(*StatusUpdate)(nil),                  // 71: cambrian.StatusUpdate
+	(*ThoughtChunk)(nil),                  // 72: cambrian.ThoughtChunk
+	(*AgentLog)(nil),                      // 73: cambrian.AgentLog
+	(*InterventionRequest)(nil),           // 74: cambrian.InterventionRequest
+	(*PlanStep)(nil),                      // 75: cambrian.PlanStep
+	(*PlanTopology)(nil),                  // 76: cambrian.PlanTopology
+	(*StepCacheHit)(nil),                  // 77: cambrian.StepCacheHit
+	(*SymbiosisEvent)(nil),                // 78: cambrian.SymbiosisEvent
+	(*ProposalRequest)(nil),               // 79: cambrian.ProposalRequest
+	(*ProposalResponse)(nil),              // 80: cambrian.ProposalResponse
+	(*AuctionTask)(nil),                   // 81: cambrian.AuctionTask
+	(*AgentProposal)(nil),                 // 82: cambrian.AgentProposal
+	(*VerifyRequest)(nil),                 // 83: cambrian.VerifyRequest
+	(*VerifyResponse)(nil),                // 84: cambrian.VerifyResponse
+	(*MemoryRequest)(nil),                 // 85: cambrian.MemoryRequest
+	(*MemoryResult)(nil),                  // 86: cambrian.MemoryResult
+	(*MemoryResponse)(nil),                // 87: cambrian.MemoryResponse
+	(*GenerateStreamRequest)(nil),         // 88: cambrian.GenerateStreamRequest
+	(*GenerateOptions)(nil),               // 89: cambrian.GenerateOptions
+	(*SystemBlock)(nil),                   // 90: cambrian.SystemBlock
+	(*ResponseSchema)(nil),                // 91: cambrian.ResponseSchema
+	(*GenerateUsage)(nil),                 // 92: cambrian.GenerateUsage
+	(*ToolDefinitionProto)(nil),           // 93: cambrian.ToolDefinitionProto
+	(*ModelToolCallProto)(nil),            // 94: cambrian.ModelToolCallProto
+	(*ModelMessageProto)(nil),             // 95: cambrian.ModelMessageProto
+	(*GenerateWithToolsRequest)(nil),      // 96: cambrian.GenerateWithToolsRequest
+	(*GenerateWithToolsResponse)(nil),     // 97: cambrian.GenerateWithToolsResponse
+	(*GenerateChunk)(nil),                 // 98: cambrian.GenerateChunk
+	(*SpawnSubagentRequest)(nil),          // 99: cambrian.SpawnSubagentRequest
+	(*SpawnSubagentResponse)(nil),         // 100: cambrian.SpawnSubagentResponse
+	(*GetMemoryNotesRequest)(nil),         // 101: cambrian.GetMemoryNotesRequest
+	(*MemoryNotesDocument)(nil),           // 102: cambrian.MemoryNotesDocument
+	(*GetMemoryNotesResponse)(nil),        // 103: cambrian.GetMemoryNotesResponse
+	(*ProposeMemoryNoteRequest)(nil),      // 104: cambrian.ProposeMemoryNoteRequest
+	(*ProposeMemoryNoteResponse)(nil),     // 105: cambrian.ProposeMemoryNoteResponse
+	(*ProposeSkillRequest)(nil),           // 106: cambrian.ProposeSkillRequest
+	(*ProposeSkillResponse)(nil),          // 107: cambrian.ProposeSkillResponse
+	nil,                                   // 108: cambrian.Object.MetadataEntry
+	nil,                                   // 109: cambrian.Handoff.MetadataEntry
+	nil,                                   // 110: cambrian.ErasureReceipt.CountsEntry
+	nil,                                   // 111: cambrian.ProposalResponse.MetadataEntry
+	(*timestamppb.Timestamp)(nil),         // 112: google.protobuf.Timestamp
 }
 var file_cambrian_proto_depIdxs = []int32{
-	106, // 0: cambrian.Object.metadata:type_name -> cambrian.Object.MetadataEntry
+	108, // 0: cambrian.Object.metadata:type_name -> cambrian.Object.MetadataEntry
 	12,  // 1: cambrian.Handoff.payload:type_name -> cambrian.Object
 	13,  // 2: cambrian.Handoff.working_memory:type_name -> cambrian.ContextRef
-	107, // 3: cambrian.Handoff.metadata:type_name -> cambrian.Handoff.MetadataEntry
-	110, // 4: cambrian.ErasureReceipt.erased_at:type_name -> google.protobuf.Timestamp
-	110, // 5: cambrian.ErasureReceipt.async_deadline:type_name -> google.protobuf.Timestamp
-	108, // 6: cambrian.ErasureReceipt.counts:type_name -> cambrian.ErasureReceipt.CountsEntry
+	109, // 3: cambrian.Handoff.metadata:type_name -> cambrian.Handoff.MetadataEntry
+	112, // 4: cambrian.ErasureReceipt.erased_at:type_name -> google.protobuf.Timestamp
+	112, // 5: cambrian.ErasureReceipt.async_deadline:type_name -> google.protobuf.Timestamp
+	110, // 6: cambrian.ErasureReceipt.counts:type_name -> cambrian.ErasureReceipt.CountsEntry
 	15,  // 7: cambrian.PreviewForgetRequest.selector:type_name -> cambrian.ErasureSelector
 	16,  // 8: cambrian.PreviewForgetResponse.candidates:type_name -> cambrian.ErasureCandidate
-	110, // 9: cambrian.PreviewForgetResponse.expires_at:type_name -> google.protobuf.Timestamp
+	112, // 9: cambrian.PreviewForgetResponse.expires_at:type_name -> google.protobuf.Timestamp
 	15,  // 10: cambrian.ForgetRequest.selector:type_name -> cambrian.ErasureSelector
 	17,  // 11: cambrian.ForgetResponse.receipt:type_name -> cambrian.ErasureReceipt
 	17,  // 12: cambrian.ListMyErasuresResponse.receipts:type_name -> cambrian.ErasureReceipt
 	25,  // 13: cambrian.ProposeOntologyChangeResponse.changes:type_name -> cambrian.OntologyDraftChange
-	110, // 14: cambrian.KnowledgeValue.date:type_name -> google.protobuf.Timestamp
+	112, // 14: cambrian.KnowledgeValue.date:type_name -> google.protobuf.Timestamp
 	27,  // 15: cambrian.ProposedKnowledgeItem.values:type_name -> cambrian.KnowledgeValue
-	110, // 16: cambrian.ProposedKnowledgeItem.valid_from:type_name -> google.protobuf.Timestamp
-	110, // 17: cambrian.ProposedKnowledgeItem.valid_to:type_name -> google.protobuf.Timestamp
+	112, // 16: cambrian.ProposedKnowledgeItem.valid_from:type_name -> google.protobuf.Timestamp
+	112, // 17: cambrian.ProposedKnowledgeItem.valid_to:type_name -> google.protobuf.Timestamp
 	28,  // 18: cambrian.ProposeKnowledgeRequest.item:type_name -> cambrian.ProposedKnowledgeItem
 	29,  // 19: cambrian.ProposeKnowledgeRequest.link:type_name -> cambrian.ProposedKnowledgeLink
 	34,  // 20: cambrian.ProposeScheduledTaskResponse.task:type_name -> cambrian.ScheduledTask
@@ -8719,128 +8882,131 @@ var file_cambrian_proto_depIdxs = []int32{
 	2,   // 24: cambrian.StepOutputChunk.kind:type_name -> cambrian.StepOutputKind
 	44,  // 25: cambrian.ListToolsResponse.tools:type_name -> cambrian.ToolDescriptor
 	47,  // 26: cambrian.ListSkillsResponse.skills:type_name -> cambrian.SkillDescriptor
-	110, // 27: cambrian.IngestMemoryRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	112, // 27: cambrian.IngestMemoryRequest.occurred_at:type_name -> google.protobuf.Timestamp
 	56,  // 28: cambrian.IngestMemoryRequest.parts:type_name -> cambrian.MemoryPart
-	110, // 29: cambrian.MemoryPart.occurred_at:type_name -> google.protobuf.Timestamp
-	63,  // 30: cambrian.ListStepArtifactsResponse.artifacts:type_name -> cambrian.ArtifactMeta
-	3,   // 31: cambrian.InterventionRequest.step_type:type_name -> cambrian.StepType
-	73,  // 32: cambrian.PlanTopology.steps:type_name -> cambrian.PlanStep
-	69,  // 33: cambrian.SymbiosisEvent.status_update:type_name -> cambrian.StatusUpdate
-	70,  // 34: cambrian.SymbiosisEvent.thought_chunk:type_name -> cambrian.ThoughtChunk
-	71,  // 35: cambrian.SymbiosisEvent.agent_log:type_name -> cambrian.AgentLog
-	72,  // 36: cambrian.SymbiosisEvent.intervention_request:type_name -> cambrian.InterventionRequest
-	74,  // 37: cambrian.SymbiosisEvent.plan_topology:type_name -> cambrian.PlanTopology
-	75,  // 38: cambrian.SymbiosisEvent.step_cache_hit:type_name -> cambrian.StepCacheHit
-	110, // 39: cambrian.ProposalRequest.deadline:type_name -> google.protobuf.Timestamp
-	109, // 40: cambrian.ProposalResponse.metadata:type_name -> cambrian.ProposalResponse.MetadataEntry
-	110, // 41: cambrian.MemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
-	110, // 42: cambrian.MemoryRequest.event_after:type_name -> google.protobuf.Timestamp
-	110, // 43: cambrian.MemoryRequest.event_before:type_name -> google.protobuf.Timestamp
-	110, // 44: cambrian.MemoryResult.event_time:type_name -> google.protobuf.Timestamp
-	110, // 45: cambrian.MemoryResult.event_time_end:type_name -> google.protobuf.Timestamp
-	84,  // 46: cambrian.MemoryResponse.results:type_name -> cambrian.MemoryResult
-	87,  // 47: cambrian.GenerateStreamRequest.options:type_name -> cambrian.GenerateOptions
-	88,  // 48: cambrian.GenerateStreamRequest.system:type_name -> cambrian.SystemBlock
-	93,  // 49: cambrian.GenerateStreamRequest.messages:type_name -> cambrian.ModelMessageProto
-	89,  // 50: cambrian.GenerateStreamRequest.response_schema:type_name -> cambrian.ResponseSchema
-	4,   // 51: cambrian.GenerateStreamRequest.cache_ttl:type_name -> cambrian.CacheTTL
-	92,  // 52: cambrian.ModelMessageProto.tool_calls:type_name -> cambrian.ModelToolCallProto
-	87,  // 53: cambrian.GenerateWithToolsRequest.options:type_name -> cambrian.GenerateOptions
-	91,  // 54: cambrian.GenerateWithToolsRequest.tools:type_name -> cambrian.ToolDefinitionProto
-	93,  // 55: cambrian.GenerateWithToolsRequest.messages:type_name -> cambrian.ModelMessageProto
-	88,  // 56: cambrian.GenerateWithToolsRequest.system:type_name -> cambrian.SystemBlock
-	89,  // 57: cambrian.GenerateWithToolsRequest.response_schema:type_name -> cambrian.ResponseSchema
-	4,   // 58: cambrian.GenerateWithToolsRequest.cache_ttl:type_name -> cambrian.CacheTTL
-	92,  // 59: cambrian.GenerateWithToolsResponse.tool_calls:type_name -> cambrian.ModelToolCallProto
-	90,  // 60: cambrian.GenerateWithToolsResponse.usage:type_name -> cambrian.GenerateUsage
-	90,  // 61: cambrian.GenerateChunk.usage:type_name -> cambrian.GenerateUsage
-	5,   // 62: cambrian.SpawnSubagentRequest.mode:type_name -> cambrian.SubagentMode
-	89,  // 63: cambrian.SpawnSubagentRequest.output_schema:type_name -> cambrian.ResponseSchema
-	13,  // 64: cambrian.SpawnSubagentRequest.context_refs:type_name -> cambrian.ContextRef
-	6,   // 65: cambrian.SpawnSubagentResponse.status:type_name -> cambrian.SubagentStatus
-	7,   // 66: cambrian.SpawnSubagentResponse.exit_reason:type_name -> cambrian.SubagentExitReason
-	90,  // 67: cambrian.SpawnSubagentResponse.usage:type_name -> cambrian.GenerateUsage
-	8,   // 68: cambrian.MemoryNotesDocument.scope:type_name -> cambrian.MemoryNotesScope
-	110, // 69: cambrian.MemoryNotesDocument.updated_at:type_name -> google.protobuf.Timestamp
-	100, // 70: cambrian.GetMemoryNotesResponse.documents:type_name -> cambrian.MemoryNotesDocument
-	110, // 71: cambrian.GetMemoryNotesResponse.snapshot_at:type_name -> google.protobuf.Timestamp
-	8,   // 72: cambrian.ProposeMemoryNoteRequest.scope:type_name -> cambrian.MemoryNotesScope
-	9,   // 73: cambrian.ProposeMemoryNoteRequest.op:type_name -> cambrian.MemoryNoteOp
-	10,  // 74: cambrian.ProposeMemoryNoteResponse.rejection:type_name -> cambrian.MemoryNoteRejection
-	11,  // 75: cambrian.ProposeSkillResponse.rejection:type_name -> cambrian.SkillProposalRejection
-	14,  // 76: cambrian.Orchestrator.Execute:input_type -> cambrian.Handoff
-	79,  // 77: cambrian.Orchestrator.RequestProposal:input_type -> cambrian.AuctionTask
-	83,  // 78: cambrian.Orchestrator.QueryMemory:input_type -> cambrian.MemoryRequest
-	14,  // 79: cambrian.Orchestrator.SignalStream:input_type -> cambrian.Handoff
-	86,  // 80: cambrian.Orchestrator.GenerateViaModelStream:input_type -> cambrian.GenerateStreamRequest
-	94,  // 81: cambrian.Orchestrator.GenerateWithTools:input_type -> cambrian.GenerateWithToolsRequest
-	65,  // 82: cambrian.Orchestrator.GetContextNode:input_type -> cambrian.ContextNodeRequest
-	67,  // 83: cambrian.Orchestrator.PutContextNode:input_type -> cambrian.PutContextNodeRequest
-	58,  // 84: cambrian.Orchestrator.UploadArtifact:input_type -> cambrian.UploadArtifactRequest
-	60,  // 85: cambrian.Orchestrator.GetArtifact:input_type -> cambrian.GetArtifactRequest
-	62,  // 86: cambrian.Orchestrator.ListStepArtifacts:input_type -> cambrian.ListStepArtifactsRequest
-	55,  // 87: cambrian.Orchestrator.IngestMemory:input_type -> cambrian.IngestMemoryRequest
-	41,  // 88: cambrian.Orchestrator.ExecuteTool:input_type -> cambrian.ExecuteToolRequest
-	43,  // 89: cambrian.Orchestrator.ListTools:input_type -> cambrian.ListToolsRequest
-	46,  // 90: cambrian.Orchestrator.ListSkills:input_type -> cambrian.ListSkillsRequest
-	49,  // 91: cambrian.Orchestrator.Embed:input_type -> cambrian.EmbedRequest
-	51,  // 92: cambrian.Orchestrator.WatchApprovals:input_type -> cambrian.WatchApprovalsRequest
-	53,  // 93: cambrian.Orchestrator.SubmitApprovalDecision:input_type -> cambrian.ApprovalDecisionRequest
-	97,  // 94: cambrian.Orchestrator.SpawnSubagent:input_type -> cambrian.SpawnSubagentRequest
-	99,  // 95: cambrian.Orchestrator.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesRequest
-	102, // 96: cambrian.Orchestrator.ProposeMemoryNote:input_type -> cambrian.ProposeMemoryNoteRequest
-	104, // 97: cambrian.Orchestrator.ProposeSkill:input_type -> cambrian.ProposeSkillRequest
-	39,  // 98: cambrian.Orchestrator.EmitStepOutput:input_type -> cambrian.StepOutputChunk
-	32,  // 99: cambrian.Orchestrator.ProposeScheduledTask:input_type -> cambrian.ProposeScheduledTaskRequest
-	35,  // 100: cambrian.Orchestrator.ListScheduledTasks:input_type -> cambrian.ListScheduledTasksRequest
-	37,  // 101: cambrian.Orchestrator.ManageScheduledTask:input_type -> cambrian.ManageScheduledTaskRequest
-	30,  // 102: cambrian.Orchestrator.ProposeKnowledge:input_type -> cambrian.ProposeKnowledgeRequest
-	24,  // 103: cambrian.Orchestrator.ProposeOntologyChange:input_type -> cambrian.ProposeOntologyChangeRequest
-	18,  // 104: cambrian.Orchestrator.PreviewForget:input_type -> cambrian.PreviewForgetRequest
-	20,  // 105: cambrian.Orchestrator.Forget:input_type -> cambrian.ForgetRequest
-	22,  // 106: cambrian.Orchestrator.ListMyErasures:input_type -> cambrian.ListMyErasuresRequest
-	77,  // 107: cambrian.AgentService.RequestProposal:input_type -> cambrian.ProposalRequest
-	14,  // 108: cambrian.AgentService.Execute:input_type -> cambrian.Handoff
-	81,  // 109: cambrian.AgentService.VerifyOutput:input_type -> cambrian.VerifyRequest
-	14,  // 110: cambrian.Orchestrator.Execute:output_type -> cambrian.Handoff
-	80,  // 111: cambrian.Orchestrator.RequestProposal:output_type -> cambrian.AgentProposal
-	85,  // 112: cambrian.Orchestrator.QueryMemory:output_type -> cambrian.MemoryResponse
-	76,  // 113: cambrian.Orchestrator.SignalStream:output_type -> cambrian.SymbiosisEvent
-	96,  // 114: cambrian.Orchestrator.GenerateViaModelStream:output_type -> cambrian.GenerateChunk
-	95,  // 115: cambrian.Orchestrator.GenerateWithTools:output_type -> cambrian.GenerateWithToolsResponse
-	66,  // 116: cambrian.Orchestrator.GetContextNode:output_type -> cambrian.ContextNodeResponse
-	68,  // 117: cambrian.Orchestrator.PutContextNode:output_type -> cambrian.PutContextNodeResponse
-	59,  // 118: cambrian.Orchestrator.UploadArtifact:output_type -> cambrian.UploadArtifactResponse
-	61,  // 119: cambrian.Orchestrator.GetArtifact:output_type -> cambrian.GetArtifactResponse
-	64,  // 120: cambrian.Orchestrator.ListStepArtifacts:output_type -> cambrian.ListStepArtifactsResponse
-	57,  // 121: cambrian.Orchestrator.IngestMemory:output_type -> cambrian.IngestMemoryResponse
-	42,  // 122: cambrian.Orchestrator.ExecuteTool:output_type -> cambrian.ExecuteToolResponse
-	45,  // 123: cambrian.Orchestrator.ListTools:output_type -> cambrian.ListToolsResponse
-	48,  // 124: cambrian.Orchestrator.ListSkills:output_type -> cambrian.ListSkillsResponse
-	50,  // 125: cambrian.Orchestrator.Embed:output_type -> cambrian.EmbedResponse
-	52,  // 126: cambrian.Orchestrator.WatchApprovals:output_type -> cambrian.ApprovalRequest
-	54,  // 127: cambrian.Orchestrator.SubmitApprovalDecision:output_type -> cambrian.ApprovalDecisionResponse
-	98,  // 128: cambrian.Orchestrator.SpawnSubagent:output_type -> cambrian.SpawnSubagentResponse
-	101, // 129: cambrian.Orchestrator.GetMemoryNotes:output_type -> cambrian.GetMemoryNotesResponse
-	103, // 130: cambrian.Orchestrator.ProposeMemoryNote:output_type -> cambrian.ProposeMemoryNoteResponse
-	105, // 131: cambrian.Orchestrator.ProposeSkill:output_type -> cambrian.ProposeSkillResponse
-	40,  // 132: cambrian.Orchestrator.EmitStepOutput:output_type -> cambrian.EmitStepOutputAck
-	33,  // 133: cambrian.Orchestrator.ProposeScheduledTask:output_type -> cambrian.ProposeScheduledTaskResponse
-	36,  // 134: cambrian.Orchestrator.ListScheduledTasks:output_type -> cambrian.ListScheduledTasksResponse
-	38,  // 135: cambrian.Orchestrator.ManageScheduledTask:output_type -> cambrian.ManageScheduledTaskResponse
-	31,  // 136: cambrian.Orchestrator.ProposeKnowledge:output_type -> cambrian.ProposeKnowledgeResponse
-	26,  // 137: cambrian.Orchestrator.ProposeOntologyChange:output_type -> cambrian.ProposeOntologyChangeResponse
-	19,  // 138: cambrian.Orchestrator.PreviewForget:output_type -> cambrian.PreviewForgetResponse
-	21,  // 139: cambrian.Orchestrator.Forget:output_type -> cambrian.ForgetResponse
-	23,  // 140: cambrian.Orchestrator.ListMyErasures:output_type -> cambrian.ListMyErasuresResponse
-	78,  // 141: cambrian.AgentService.RequestProposal:output_type -> cambrian.ProposalResponse
-	14,  // 142: cambrian.AgentService.Execute:output_type -> cambrian.Handoff
-	82,  // 143: cambrian.AgentService.VerifyOutput:output_type -> cambrian.VerifyResponse
-	110, // [110:144] is the sub-list for method output_type
-	76,  // [76:110] is the sub-list for method input_type
-	76,  // [76:76] is the sub-list for extension type_name
-	76,  // [76:76] is the sub-list for extension extendee
-	0,   // [0:76] is the sub-list for field type_name
+	112, // 29: cambrian.MemoryPart.occurred_at:type_name -> google.protobuf.Timestamp
+	58,  // 30: cambrian.IngestMemoryResponse.status:type_name -> cambrian.IngestStatus
+	65,  // 31: cambrian.ListStepArtifactsResponse.artifacts:type_name -> cambrian.ArtifactMeta
+	3,   // 32: cambrian.InterventionRequest.step_type:type_name -> cambrian.StepType
+	75,  // 33: cambrian.PlanTopology.steps:type_name -> cambrian.PlanStep
+	71,  // 34: cambrian.SymbiosisEvent.status_update:type_name -> cambrian.StatusUpdate
+	72,  // 35: cambrian.SymbiosisEvent.thought_chunk:type_name -> cambrian.ThoughtChunk
+	73,  // 36: cambrian.SymbiosisEvent.agent_log:type_name -> cambrian.AgentLog
+	74,  // 37: cambrian.SymbiosisEvent.intervention_request:type_name -> cambrian.InterventionRequest
+	76,  // 38: cambrian.SymbiosisEvent.plan_topology:type_name -> cambrian.PlanTopology
+	77,  // 39: cambrian.SymbiosisEvent.step_cache_hit:type_name -> cambrian.StepCacheHit
+	112, // 40: cambrian.ProposalRequest.deadline:type_name -> google.protobuf.Timestamp
+	111, // 41: cambrian.ProposalResponse.metadata:type_name -> cambrian.ProposalResponse.MetadataEntry
+	112, // 42: cambrian.MemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
+	112, // 43: cambrian.MemoryRequest.event_after:type_name -> google.protobuf.Timestamp
+	112, // 44: cambrian.MemoryRequest.event_before:type_name -> google.protobuf.Timestamp
+	112, // 45: cambrian.MemoryResult.event_time:type_name -> google.protobuf.Timestamp
+	112, // 46: cambrian.MemoryResult.event_time_end:type_name -> google.protobuf.Timestamp
+	86,  // 47: cambrian.MemoryResponse.results:type_name -> cambrian.MemoryResult
+	89,  // 48: cambrian.GenerateStreamRequest.options:type_name -> cambrian.GenerateOptions
+	90,  // 49: cambrian.GenerateStreamRequest.system:type_name -> cambrian.SystemBlock
+	95,  // 50: cambrian.GenerateStreamRequest.messages:type_name -> cambrian.ModelMessageProto
+	91,  // 51: cambrian.GenerateStreamRequest.response_schema:type_name -> cambrian.ResponseSchema
+	4,   // 52: cambrian.GenerateStreamRequest.cache_ttl:type_name -> cambrian.CacheTTL
+	94,  // 53: cambrian.ModelMessageProto.tool_calls:type_name -> cambrian.ModelToolCallProto
+	89,  // 54: cambrian.GenerateWithToolsRequest.options:type_name -> cambrian.GenerateOptions
+	93,  // 55: cambrian.GenerateWithToolsRequest.tools:type_name -> cambrian.ToolDefinitionProto
+	95,  // 56: cambrian.GenerateWithToolsRequest.messages:type_name -> cambrian.ModelMessageProto
+	90,  // 57: cambrian.GenerateWithToolsRequest.system:type_name -> cambrian.SystemBlock
+	91,  // 58: cambrian.GenerateWithToolsRequest.response_schema:type_name -> cambrian.ResponseSchema
+	4,   // 59: cambrian.GenerateWithToolsRequest.cache_ttl:type_name -> cambrian.CacheTTL
+	94,  // 60: cambrian.GenerateWithToolsResponse.tool_calls:type_name -> cambrian.ModelToolCallProto
+	92,  // 61: cambrian.GenerateWithToolsResponse.usage:type_name -> cambrian.GenerateUsage
+	92,  // 62: cambrian.GenerateChunk.usage:type_name -> cambrian.GenerateUsage
+	5,   // 63: cambrian.SpawnSubagentRequest.mode:type_name -> cambrian.SubagentMode
+	91,  // 64: cambrian.SpawnSubagentRequest.output_schema:type_name -> cambrian.ResponseSchema
+	13,  // 65: cambrian.SpawnSubagentRequest.context_refs:type_name -> cambrian.ContextRef
+	6,   // 66: cambrian.SpawnSubagentResponse.status:type_name -> cambrian.SubagentStatus
+	7,   // 67: cambrian.SpawnSubagentResponse.exit_reason:type_name -> cambrian.SubagentExitReason
+	92,  // 68: cambrian.SpawnSubagentResponse.usage:type_name -> cambrian.GenerateUsage
+	8,   // 69: cambrian.MemoryNotesDocument.scope:type_name -> cambrian.MemoryNotesScope
+	112, // 70: cambrian.MemoryNotesDocument.updated_at:type_name -> google.protobuf.Timestamp
+	102, // 71: cambrian.GetMemoryNotesResponse.documents:type_name -> cambrian.MemoryNotesDocument
+	112, // 72: cambrian.GetMemoryNotesResponse.snapshot_at:type_name -> google.protobuf.Timestamp
+	8,   // 73: cambrian.ProposeMemoryNoteRequest.scope:type_name -> cambrian.MemoryNotesScope
+	9,   // 74: cambrian.ProposeMemoryNoteRequest.op:type_name -> cambrian.MemoryNoteOp
+	10,  // 75: cambrian.ProposeMemoryNoteResponse.rejection:type_name -> cambrian.MemoryNoteRejection
+	11,  // 76: cambrian.ProposeSkillResponse.rejection:type_name -> cambrian.SkillProposalRejection
+	14,  // 77: cambrian.Orchestrator.Execute:input_type -> cambrian.Handoff
+	81,  // 78: cambrian.Orchestrator.RequestProposal:input_type -> cambrian.AuctionTask
+	85,  // 79: cambrian.Orchestrator.QueryMemory:input_type -> cambrian.MemoryRequest
+	14,  // 80: cambrian.Orchestrator.SignalStream:input_type -> cambrian.Handoff
+	88,  // 81: cambrian.Orchestrator.GenerateViaModelStream:input_type -> cambrian.GenerateStreamRequest
+	96,  // 82: cambrian.Orchestrator.GenerateWithTools:input_type -> cambrian.GenerateWithToolsRequest
+	67,  // 83: cambrian.Orchestrator.GetContextNode:input_type -> cambrian.ContextNodeRequest
+	69,  // 84: cambrian.Orchestrator.PutContextNode:input_type -> cambrian.PutContextNodeRequest
+	60,  // 85: cambrian.Orchestrator.UploadArtifact:input_type -> cambrian.UploadArtifactRequest
+	62,  // 86: cambrian.Orchestrator.GetArtifact:input_type -> cambrian.GetArtifactRequest
+	64,  // 87: cambrian.Orchestrator.ListStepArtifacts:input_type -> cambrian.ListStepArtifactsRequest
+	55,  // 88: cambrian.Orchestrator.IngestMemory:input_type -> cambrian.IngestMemoryRequest
+	59,  // 89: cambrian.Orchestrator.GetIngestStatus:input_type -> cambrian.GetIngestStatusRequest
+	41,  // 90: cambrian.Orchestrator.ExecuteTool:input_type -> cambrian.ExecuteToolRequest
+	43,  // 91: cambrian.Orchestrator.ListTools:input_type -> cambrian.ListToolsRequest
+	46,  // 92: cambrian.Orchestrator.ListSkills:input_type -> cambrian.ListSkillsRequest
+	49,  // 93: cambrian.Orchestrator.Embed:input_type -> cambrian.EmbedRequest
+	51,  // 94: cambrian.Orchestrator.WatchApprovals:input_type -> cambrian.WatchApprovalsRequest
+	53,  // 95: cambrian.Orchestrator.SubmitApprovalDecision:input_type -> cambrian.ApprovalDecisionRequest
+	99,  // 96: cambrian.Orchestrator.SpawnSubagent:input_type -> cambrian.SpawnSubagentRequest
+	101, // 97: cambrian.Orchestrator.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesRequest
+	104, // 98: cambrian.Orchestrator.ProposeMemoryNote:input_type -> cambrian.ProposeMemoryNoteRequest
+	106, // 99: cambrian.Orchestrator.ProposeSkill:input_type -> cambrian.ProposeSkillRequest
+	39,  // 100: cambrian.Orchestrator.EmitStepOutput:input_type -> cambrian.StepOutputChunk
+	32,  // 101: cambrian.Orchestrator.ProposeScheduledTask:input_type -> cambrian.ProposeScheduledTaskRequest
+	35,  // 102: cambrian.Orchestrator.ListScheduledTasks:input_type -> cambrian.ListScheduledTasksRequest
+	37,  // 103: cambrian.Orchestrator.ManageScheduledTask:input_type -> cambrian.ManageScheduledTaskRequest
+	30,  // 104: cambrian.Orchestrator.ProposeKnowledge:input_type -> cambrian.ProposeKnowledgeRequest
+	24,  // 105: cambrian.Orchestrator.ProposeOntologyChange:input_type -> cambrian.ProposeOntologyChangeRequest
+	18,  // 106: cambrian.Orchestrator.PreviewForget:input_type -> cambrian.PreviewForgetRequest
+	20,  // 107: cambrian.Orchestrator.Forget:input_type -> cambrian.ForgetRequest
+	22,  // 108: cambrian.Orchestrator.ListMyErasures:input_type -> cambrian.ListMyErasuresRequest
+	79,  // 109: cambrian.AgentService.RequestProposal:input_type -> cambrian.ProposalRequest
+	14,  // 110: cambrian.AgentService.Execute:input_type -> cambrian.Handoff
+	83,  // 111: cambrian.AgentService.VerifyOutput:input_type -> cambrian.VerifyRequest
+	14,  // 112: cambrian.Orchestrator.Execute:output_type -> cambrian.Handoff
+	82,  // 113: cambrian.Orchestrator.RequestProposal:output_type -> cambrian.AgentProposal
+	87,  // 114: cambrian.Orchestrator.QueryMemory:output_type -> cambrian.MemoryResponse
+	78,  // 115: cambrian.Orchestrator.SignalStream:output_type -> cambrian.SymbiosisEvent
+	98,  // 116: cambrian.Orchestrator.GenerateViaModelStream:output_type -> cambrian.GenerateChunk
+	97,  // 117: cambrian.Orchestrator.GenerateWithTools:output_type -> cambrian.GenerateWithToolsResponse
+	68,  // 118: cambrian.Orchestrator.GetContextNode:output_type -> cambrian.ContextNodeResponse
+	70,  // 119: cambrian.Orchestrator.PutContextNode:output_type -> cambrian.PutContextNodeResponse
+	61,  // 120: cambrian.Orchestrator.UploadArtifact:output_type -> cambrian.UploadArtifactResponse
+	63,  // 121: cambrian.Orchestrator.GetArtifact:output_type -> cambrian.GetArtifactResponse
+	66,  // 122: cambrian.Orchestrator.ListStepArtifacts:output_type -> cambrian.ListStepArtifactsResponse
+	57,  // 123: cambrian.Orchestrator.IngestMemory:output_type -> cambrian.IngestMemoryResponse
+	58,  // 124: cambrian.Orchestrator.GetIngestStatus:output_type -> cambrian.IngestStatus
+	42,  // 125: cambrian.Orchestrator.ExecuteTool:output_type -> cambrian.ExecuteToolResponse
+	45,  // 126: cambrian.Orchestrator.ListTools:output_type -> cambrian.ListToolsResponse
+	48,  // 127: cambrian.Orchestrator.ListSkills:output_type -> cambrian.ListSkillsResponse
+	50,  // 128: cambrian.Orchestrator.Embed:output_type -> cambrian.EmbedResponse
+	52,  // 129: cambrian.Orchestrator.WatchApprovals:output_type -> cambrian.ApprovalRequest
+	54,  // 130: cambrian.Orchestrator.SubmitApprovalDecision:output_type -> cambrian.ApprovalDecisionResponse
+	100, // 131: cambrian.Orchestrator.SpawnSubagent:output_type -> cambrian.SpawnSubagentResponse
+	103, // 132: cambrian.Orchestrator.GetMemoryNotes:output_type -> cambrian.GetMemoryNotesResponse
+	105, // 133: cambrian.Orchestrator.ProposeMemoryNote:output_type -> cambrian.ProposeMemoryNoteResponse
+	107, // 134: cambrian.Orchestrator.ProposeSkill:output_type -> cambrian.ProposeSkillResponse
+	40,  // 135: cambrian.Orchestrator.EmitStepOutput:output_type -> cambrian.EmitStepOutputAck
+	33,  // 136: cambrian.Orchestrator.ProposeScheduledTask:output_type -> cambrian.ProposeScheduledTaskResponse
+	36,  // 137: cambrian.Orchestrator.ListScheduledTasks:output_type -> cambrian.ListScheduledTasksResponse
+	38,  // 138: cambrian.Orchestrator.ManageScheduledTask:output_type -> cambrian.ManageScheduledTaskResponse
+	31,  // 139: cambrian.Orchestrator.ProposeKnowledge:output_type -> cambrian.ProposeKnowledgeResponse
+	26,  // 140: cambrian.Orchestrator.ProposeOntologyChange:output_type -> cambrian.ProposeOntologyChangeResponse
+	19,  // 141: cambrian.Orchestrator.PreviewForget:output_type -> cambrian.PreviewForgetResponse
+	21,  // 142: cambrian.Orchestrator.Forget:output_type -> cambrian.ForgetResponse
+	23,  // 143: cambrian.Orchestrator.ListMyErasures:output_type -> cambrian.ListMyErasuresResponse
+	80,  // 144: cambrian.AgentService.RequestProposal:output_type -> cambrian.ProposalResponse
+	14,  // 145: cambrian.AgentService.Execute:output_type -> cambrian.Handoff
+	84,  // 146: cambrian.AgentService.VerifyOutput:output_type -> cambrian.VerifyResponse
+	112, // [112:147] is the sub-list for method output_type
+	77,  // [77:112] is the sub-list for method input_type
+	77,  // [77:77] is the sub-list for extension type_name
+	77,  // [77:77] is the sub-list for extension extendee
+	0,   // [0:77] is the sub-list for field type_name
 }
 
 func init() { file_cambrian_proto_init() }
@@ -8852,7 +9018,7 @@ func file_cambrian_proto_init() {
 		(*ProposeKnowledgeRequest_Item)(nil),
 		(*ProposeKnowledgeRequest_Link)(nil),
 	}
-	file_cambrian_proto_msgTypes[64].OneofWrappers = []any{
+	file_cambrian_proto_msgTypes[66].OneofWrappers = []any{
 		(*SymbiosisEvent_StatusUpdate)(nil),
 		(*SymbiosisEvent_ThoughtChunk)(nil),
 		(*SymbiosisEvent_AgentLog)(nil),
@@ -8860,14 +9026,14 @@ func file_cambrian_proto_init() {
 		(*SymbiosisEvent_PlanTopology)(nil),
 		(*SymbiosisEvent_StepCacheHit)(nil),
 	}
-	file_cambrian_proto_msgTypes[75].OneofWrappers = []any{}
+	file_cambrian_proto_msgTypes[77].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cambrian_proto_rawDesc), len(file_cambrian_proto_rawDesc)),
 			NumEnums:      12,
-			NumMessages:   98,
+			NumMessages:   100,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

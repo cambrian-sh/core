@@ -109,6 +109,13 @@ service Orchestrator {
   // agent's DefaultWriteTags (ADR-0035 C2); req.tags is a narrow-only hint.
   rpc IngestMemory(IngestMemoryRequest) returns (IngestMemoryResponse);
 
+  // ENG-2143: where an ingested document stands. A large document is accepted at
+  // once and embedded in the background; this reads its progress (accepted ->
+  // embedding n/total -> searchable, or failed with a reason). Only the document's
+  // writer may read it; any other caller, and an unknown id, get NOT_FOUND. A
+  // caller needing read-your-writes polls until the state is searchable.
+  rpc GetIngestStatus(GetIngestStatusRequest) returns (IngestStatus);
+
   // ADR-0039: kernel-owned tool registry. A cognitive agent invokes a granted
   // system tool with LLM-marshalled args; the kernel authorizes (grant +
   // resource policy + data scope + approval) and runs it in a confined process.
@@ -712,7 +719,32 @@ message MemoryPart {
   string speaker = 3;
 }
 message IngestMemoryResponse {
+  // doc_id is the source-doc entity id ("source_doc:<uri>").
   string doc_id = 1;
+  // ENG-2143: the stored document's id (documents.id), the key GetIngestStatus reads.
+  string document_id = 2;
+  // ENG-2143: where the document stands when the call returns: "searchable" for a
+  // document embedded with the call, "accepted" for a large one embedded in the
+  // background (execution.ingestion.background_embed_min_chunks).
+  IngestStatus status = 3;
+}
+
+// ENG-2143: the visible progress of one document's ingest.
+message IngestStatus {
+  string document_id = 1;
+  // "accepted" | "embedding" | "searchable" | "failed".
+  string state = 2;
+  // The accepted version's chunk count and how many are embedded and stored, while
+  // the document is embedded in the background (0 otherwise).
+  int32 chunks_total = 3;
+  int32 chunks_embedded = 4;
+  // The last failure's cause: set for "failed", and while a failed attempt waits
+  // for its retry.
+  string error = 5;
+}
+
+message GetIngestStatusRequest {
+  string document_id = 1;
 }
 
 // ADR-0034 / REQ-SDK-007c artifact messages.

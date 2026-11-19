@@ -40,6 +40,9 @@ func TestPg_KGFeed_HugeIngestDoesNotStarveOrDropOtherDocuments(t *testing.T) {
 	cfg.Execution.Ingestion.EdgeExtractionMaxIdleMs = 20
 	cfg.Execution.Ingestion.KgTripletsMaxRequeues = 0
 	cfg.Execution.Ingestion.DerivationKGSliceChunks = 8
+	// ENG-2111 is about the KG feed of a document whose chunks are stored with the call; a
+	// document this size would otherwise be embedded in the background (ENG-2143).
+	cfg.Execution.Ingestion.BackgroundEmbedEnabled = false
 	cfg.Execution.Retrieval.HebbianEnabled = false
 	if d := cfg.Execution.Ingestion; !d.DerivationJournalEnabled || d.DerivationKGSlicesInFlight != 2 {
 		t.Fatalf("journal on with 2 slices in flight by default; got %+v", d)

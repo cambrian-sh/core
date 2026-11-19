@@ -1449,6 +1449,22 @@ type IngestionConfig struct {
 	// 2; 0 means the default.
 	DerivationKGSliceChunks    int `json:"derivation_kg_slice_chunks,omitempty"`
 	DerivationKGSlicesInFlight int `json:"derivation_kg_slices_in_flight,omitempty"`
+	// BackgroundEmbedEnabled lets a large ingest return before its chunks are embedded
+	// (ENG-2143, owner decision 2026-11-19): a document of at least
+	// BackgroundEmbedMinChunks chunks is ACCEPTED — evidence, document row and entity
+	// written, chunks staged in the derivation journal — and the call returns its id with
+	// state "accepted"; the journal embeds and stores the chunks in the background,
+	// BackgroundEmbedSliceChunks at a time with the progress recorded after each slice
+	// (so a restart resumes), at most BackgroundEmbedWorkers documents at once. Progress
+	// (accepted → embedding n/total → searchable, or failed) is on the ingest response
+	// and the GetIngestStatus reads of both planes. Smaller documents stay synchronous.
+	// Needs derivation_journal_enabled. The sync_ingest_wait_for_kg / _facts waits do
+	// not apply to an accepted document; a caller needing read-your-writes waits on its
+	// status. Defaults true, 256, 128 and 2; 0 means the default for the numbers.
+	BackgroundEmbedEnabled     bool `json:"background_embed_enabled"`
+	BackgroundEmbedMinChunks   int  `json:"background_embed_min_chunks,omitempty"`
+	BackgroundEmbedSliceChunks int  `json:"background_embed_slice_chunks,omitempty"`
+	BackgroundEmbedWorkers     int  `json:"background_embed_workers,omitempty"`
 }
 
 // DefaultStepTimeoutFloorMs is the default of plan.step_timeout_floor_ms.
@@ -3585,6 +3601,10 @@ func DefaultConfig() *Config {
 				DerivationLeaseMs:            600000,
 				DerivationKGSliceChunks:      256,
 				DerivationKGSlicesInFlight:   2,
+				BackgroundEmbedEnabled:       true,
+				BackgroundEmbedMinChunks:     256,
+				BackgroundEmbedSliceChunks:   128,
+				BackgroundEmbedWorkers:       2,
 				// Drop OCR/layout junk only from Docling output; chat and other text
 				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
 				StructureJunkFilterBackends: []string{"docling"},
@@ -4615,6 +4635,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		{"derivation_lease_ms", c.Ingestion.DerivationLeaseMs},
 		{"derivation_kg_slice_chunks", c.Ingestion.DerivationKGSliceChunks},
 		{"derivation_kg_slices_in_flight", c.Ingestion.DerivationKGSlicesInFlight},
+		{"background_embed_min_chunks", c.Ingestion.BackgroundEmbedMinChunks},
+		{"background_embed_slice_chunks", c.Ingestion.BackgroundEmbedSliceChunks},
+		{"background_embed_workers", c.Ingestion.BackgroundEmbedWorkers},
 		{"source_kind_max_chars", c.Ingestion.SourceKindMaxChars},
 		{"source_title_max_chars", c.Ingestion.SourceTitleMaxChars},
 		{"source_author_max_chars", c.Ingestion.SourceAuthorMaxChars},

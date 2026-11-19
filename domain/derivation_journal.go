@@ -25,6 +25,10 @@ const (
 	// DerivationKGTriplets is ADR-0053 per-chunk triplet extraction
 	// (memory.ChunkTripletsBatcher).
 	DerivationKGTriplets DerivationKind = "kg_triplets"
+	// DerivationEmbed is the background embedding of an accepted large document
+	// (ENG-2143): its staged chunks are embedded and saved slice by slice after the
+	// ingest returned. Its completion records the document's fact and KG jobs.
+	DerivationEmbed DerivationKind = "embed"
 )
 
 // DerivationJob is one journaled derivation of one stored document. It holds
@@ -53,6 +57,13 @@ type DerivationJob struct {
 	Source SourceMeta
 	// Attempts is the failed extraction attempts so far (set by the journal on read).
 	Attempts int
+	// Staged is the opaque state an embed job resumes from (ENG-2143): the accepted
+	// document's prepared chunks and structure rows, encoded by internal/memory. Set on
+	// DerivationEmbed jobs only. Unlike the other kinds it holds document content, so
+	// erasure deletes it with the document's rows. ChunksTotal is the chunk count of the
+	// accepted version: progress is ChunksTotal - len(ChunkIDs) of ChunksTotal.
+	Staged      []byte
+	ChunksTotal int
 }
 
 // DerivationKey names one journaled job version.
@@ -102,4 +113,49 @@ type DerivationJournal interface {
 	ClaimDerivations(ctx context.Context, kind DerivationKind, since time.Time, limit int, lease time.Duration) ([]DerivationJob, error)
 	// DerivationBacklog counts the journal's rows per kind.
 	DerivationBacklog(ctx context.Context) (map[DerivationKind]DerivationBacklog, error)
+	// RenewDerivation records the progress of the job of exactly this version (its
+	// chunk ids become remaining) and extends its claim until now+lease (ENG-2143: a
+	// background embed holds its row for as long as it works). It reports whether that
+	// row still exists: false means the document was erased or a newer version replaced
+	// the job, and the caller stops.
+	RenewDerivation(ctx context.Context, k DerivationKey, remaining []string, lease time.Duration) (live bool, err error)
+	// IngestStatus reads the ingest state of one stored document (ENG-2143): the
+	// background embed job of the document's current version when one exists, else
+	// searchable. found is false when no document carries the id.
+	IngestStatus(ctx context.Context, documentID string) (st IngestStatus, found bool, err error)
+}
+
+// IngestState is where an ingested document stands (ENG-2143).
+type IngestState string
+
+const (
+	// IngestAccepted: the document is stored (evidence, document row) and its chunks
+	// are staged for background embedding; not yet searchable.
+	IngestAccepted IngestState = "accepted"
+	// IngestEmbedding: background embedding has stored part of the chunks.
+	IngestEmbedding IngestState = "embedding"
+	// IngestSearchable: every chunk is embedded and stored.
+	IngestSearchable IngestState = "searchable"
+	// IngestFailed: background embedding failed its last allowed attempt; Error says why.
+	IngestFailed IngestState = "failed"
+)
+
+// IngestStatus is the visible progress of one document's ingest (ENG-2143).
+type IngestStatus struct {
+	DocumentID string
+	State      IngestState
+	// ChunksTotal and ChunksEmbedded count the accepted version's chunks while it is
+	// embedded in the background (both 0 for a document whose chunks were stored with
+	// the call, and once the background work finished).
+	ChunksTotal, ChunksEmbedded int
+	// Error is the last failure's cause (set for failed, and for a job retrying).
+	Error string
+	// Writer is the document's writer of record (documents.written_by), for an
+	// agent-plane read only the writer may make.
+	Writer string
+}
+
+// Terminal reports whether the state no longer changes on its own.
+func (s IngestStatus) Terminal() bool {
+	return s.State == IngestSearchable || s.State == IngestFailed
 }

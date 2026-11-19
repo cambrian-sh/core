@@ -94,6 +94,9 @@ type Options struct {
 	Documents memory.DocumentLister
 	// DocumentGetter is the keyed document read (GetDocument, contract 0086).
 	DocumentGetter memory.DocumentGetter
+	// IngestStatus reads a document's ingest progress (ENG-2143: GetIngestStatus, the
+	// IngestMemory response and GetDocument). nil leaves them without it.
+	IngestStatus IngestStatusReader
 	// MemoryAnswerer is the ADR-0081 answer lane ("memory-answer").
 	MemoryAnswerer MemoryAnswerer
 	// UploadMatcher answers the ADR-0138 B1.3 replace-by-name lookup ("upload-replace").
@@ -204,6 +207,7 @@ func New(d Deps, o Options) (*Service, error) {
 	s.sharer = o.Sharer
 	s.documents = o.Documents
 	s.docGetter = o.DocumentGetter
+	s.ingestStatus = o.IngestStatus
 	s.answerer = o.MemoryAnswerer
 	s.uploads = o.UploadMatcher
 	if o.EventTimeFutureTolerance != nil {
