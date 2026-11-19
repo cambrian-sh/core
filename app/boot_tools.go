@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -408,12 +407,6 @@ func (b *kernelBuild) buildToolExecutor() error {
 		PreviewChars:    cfg.Execution.Content.Preview(),
 		PageBytes:       cfg.Execution.Content.Page(),
 		Overlay:         domain.NewRunGrantOverlay(), // ADR-0046 D6: skill-conferred run-scoped grants
-		// Files a confined tool writes become run-ledger artifact entries (the
-		// ToolExecutor's Ledger, set by wireLedger; classified at write by the
-		// ledger writer, retrievable via GetArtifact — ADR-0157 D5.2) AND are
-		// materialized to data/outputs so a requested file lands on disk —
-		// instead of living only as a GC-eligible content-store CID.
-		ArtifactOutputDir: filepath.Join(cfg.Storage.DataDir, "outputs"),
 		// ADR-0049 D1: mutations become action records. (The ADR-0048 D6 read-output
 		// promotion and its 200-byte floor were deleted 2026-11-05 with the tier-2 judge.)
 		ToolOutput: mem.Agent,

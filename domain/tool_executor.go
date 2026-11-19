@@ -264,13 +264,6 @@ type ToolExecutor struct {
 	// D6). nil ⇒ no skill-conferred grants. Consulted in grantFor after the static
 	// grants; dangerous tools still require approval regardless of how granted.
 	Overlay *RunGrantOverlay
-	// Artifact promotion (the durable home for files a confined tool writes). The
-	// handler offloads jail files to the GC'd ContentStore and surfaces them in the
-	// result "_artifacts"; without promotion they are unretrievable and eventually
-	// evicted. Each is recorded as a run-ledger artifact entry through Ledger
-	// (ADR-0157 D5.2: the ledger is the one artifact registry; retrievable via
-	// GetArtifact by its ledger id, classified at write) and materialized to disk.
-	ArtifactOutputDir string // "" ⇒ no on-disk materialization
 	// ToolOutput receives every non-denied tool output (ADR-0049 D1: a mutation
 	// becomes an action record). nil ⇒ nothing is recorded.
 	ToolOutput ToolOutputRecorder
@@ -1004,10 +997,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		_ = e.Budget.Reconcile(holdID, pricing.Reconcile(0, false))
 	}
 
-	// Promote any files the tool wrote (the "_artifacts" the confined handler swept
-	// into the GC'd ContentStore) into the durable artifact system + disk, BEFORE
-	// the result is (maybe) offloaded and ResultJSON nil'd below.
-	e.persistArtifacts(ctx, req, result)
+	// (The "_artifacts" promotion of files a confined tool.py handler swept into
+	// the ContentStore went with that handler — ENG-1421, ENG-2241. A result's
+	// "_artifacts" key is not read: an MCP server must not be able to name a
+	// content-store CID and have the kernel copy it into a run ledger or to disk.)
 	// A staged call's output files become artifact ledger entries derived from
 	// its inputs; the result gains a note naming them (staged_inputs.go).
 	var stagedRecorded map[string]string

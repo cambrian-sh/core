@@ -211,7 +211,6 @@ freeQueryOpen: false
 RestrictedTools: nil
 ceiling: *domain.ProfileToolCeiling
 Overlay: *domain.RunGrantOverlay
-ArtifactOutputDir: string(set)
 ToolOutput: *memory.Agent
 Hooks: *domain.HookChain
 History: *domain.ActionHistory

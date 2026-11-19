@@ -7247,9 +7247,10 @@ type ToolOp struct {
 	// to it, and policy checks both.
 	Effects []string `protobuf:"bytes,9,rep,name=effects,proto3" json:"effects,omitempty"`
 	// effects_inferred marks a tool whose effects were DERIVED from its other
-	// manifest fields rather than declared. It is the migration checklist: an
-	// operator flips execution.tool_effects_strict once this is false everywhere,
-	// after which an unclassified tool cannot register at all.
+	// manifest fields rather than declared (ADR-0086): an inferred effect is a
+	// guess the kernel made, worth checking. (The strict mode that refused
+	// undeclared tools, execution.tool_effects_strict, governed only the deleted
+	// native tool.py discovery and is retired — ENG-1421.)
 	EffectsInferred bool `protobuf:"varint,10,opt,name=effects_inferred,json=effectsInferred,proto3" json:"effects_inferred,omitempty"`
 	// ── Contract 0074: the detail fields contract 0057 removed ──────────────
 	//

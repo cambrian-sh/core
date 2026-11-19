@@ -7,9 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
 )
 
 // kernelTool returns the kernel tool named name, or nil.
@@ -141,88 +138,4 @@ func (e *ToolExecutor) previewChars() int {
 		return e.PreviewChars
 	}
 	return 600
-}
-
-// artifactRef mirrors the "_artifacts" entries a handler may inject: the
-// jail-relative path, the GC'd-ContentStore CID, and the byte size. (Their one
-// producer, the native tool.py ProcessHandler, was deleted with ENG-1421.)
-type artifactRef struct {
-	Path  string `json:"path"`
-	CID   string `json:"cid"`
-	Bytes int    `json:"bytes"`
-}
-
-// persistArtifacts moves a tool's swept files from the ephemeral (GC-eligible)
-// ContentStore into the DURABLE artifact registry — a kind=artifact run-ledger
-// entry each, classified at write by the ledger writer and retrievable via
-// GetArtifact by its ledger id (ADR-0157 D5.2) — and materializes them to the
-// operator output dir so a requested file actually lands on disk. Best-effort and
-// nil-safe: a missing dependency or a per-file error degrades with a WARN (the
-// tool call already succeeded); it never fails the call. A system call records
-// nothing (no principal's run to attribute it to), as for every ledger write.
-func (e *ToolExecutor) persistArtifacts(ctx context.Context, req ToolCallRequest, result []byte) {
-	record := e.Ledger != nil && !req.System
-	if e.ContentStore == nil || (!record && e.ArtifactOutputDir == "") {
-		return
-	}
-	var obj map[string]json.RawMessage
-	if json.Unmarshal(result, &obj) != nil || obj["_artifacts"] == nil {
-		return
-	}
-	var refs []artifactRef
-	if json.Unmarshal(obj["_artifacts"], &refs) != nil {
-		return
-	}
-	for _, r := range refs {
-		node, err := e.ContentStore.Get(ctx, CID(r.CID))
-		if err != nil || node == nil {
-			slog.Warn("tool artifact promote: content fetch failed", "tool", req.ToolName, "cid", r.CID, "err", err)
-			continue
-		}
-		if record {
-			pathArg, _ := json.Marshal(map[string]string{"path": r.Path})
-			if _, lerr := e.Ledger.Record(ctx, LedgerRecord{
-				Kind: LedgerArtifact, Provenance: LedgerProvenanceFromContext(ctx),
-				ToolName: req.ToolName, ArgsJSON: pathArg, Writer: AgentPrincipal(req.AgentID),
-				InstanceID: AgentInstanceFromContext(ctx), ContentType: contentTypeFor(r.Path), Body: node.Data,
-			}); lerr != nil {
-				slog.Warn("ADR-0157: tool artifact not recorded to the ledger", "tool", req.ToolName, "path", r.Path, "err", lerr)
-			}
-		}
-		// Materialize to the operator output dir so the user gets the actual file.
-		if e.ArtifactOutputDir != "" {
-			e.materialize(req.ToolName, r.Path, node.Data)
-		}
-	}
-}
-
-// materialize writes one artifact to the operator output dir. The jail-relative
-// path is root-anchored and cleaned so a malicious "../" cannot escape the dir.
-func (e *ToolExecutor) materialize(toolName, rel string, data []byte) {
-	clean := filepath.Clean("/" + filepath.ToSlash(rel)) // strip any leading ../, anchor at root
-	dest := filepath.Join(e.ArtifactOutputDir, filepath.FromSlash(clean))
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		slog.Warn("tool artifact materialize: mkdir failed", "tool", toolName, "dest", dest, "err", err)
-		return
-	}
-	if err := os.WriteFile(dest, data, 0o644); err != nil {
-		slog.Warn("tool artifact materialize: write failed", "tool", toolName, "dest", dest, "err", err)
-		return
-	}
-	slog.Info("tool artifact materialized", "tool", toolName, "path", rel, "dest", dest)
-}
-
-// contentTypeFor infers a coarse MIME type from a file extension for the artifact
-// metadata record; unknown extensions default to octet-stream.
-func contentTypeFor(path string) string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".txt", ".md", ".log", ".csv":
-		return "text/plain; charset=utf-8"
-	case ".json":
-		return "application/json"
-	case ".html", ".htm":
-		return "text/html; charset=utf-8"
-	default:
-		return "application/octet-stream"
-	}
 }

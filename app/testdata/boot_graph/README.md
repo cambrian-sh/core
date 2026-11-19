@@ -14,6 +14,9 @@ to a landed change is a wiring regression, not a golden to regenerate.
 
 History of golden updates:
 
+- ENG-2241: `- ArtifactOutputDir: string(set)` (ToolExecutor, both goldens): the
+  "_artifacts" promotion to the run ledger and data/outputs went with the native
+  tool.py handler, its only producer (finishing ENG-1421).
 - ENG-1421: `Handler: *proc.ProcessHandler` -> `Handler: nil` (ToolExecutor, both
   goldens): the native tools/*tool.py process handler was deleted with its
   discovery; tools come only from MCP (and kernel tools / local: steps keep their
