@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/tokenest"
 )
 
 // ADR-0150 D3: in the single-agent lane (execution.lane.default single_agent) the
@@ -100,7 +101,7 @@ func (s *TurnService) keptUserMessages(ctx context.Context, conv *domain.Convers
 		if m.Seq > throughSeq || m.Role != domain.MessageRoleUser {
 			continue
 		}
-		cost := estimateTokens(m.Content) + messageOverheadTokens
+		cost := tokenest.Estimate(m.Content) + messageOverheadTokens
 		if used+cost > budget {
 			break
 		}

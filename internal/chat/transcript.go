@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/tokenest"
 )
 
 // The D2.1 transcript budget: with execution.chat.transcript_budget_tokens set,
@@ -16,20 +17,6 @@ import (
 // line break in the rendered transcript.
 const messageOverheadTokens = 4
 
-// estimateTokens is the kernel's usual rough count (the spend meter's len/4
-// fallback): budgeting needs a stable, cheap estimate, not a tokenizer. Bytes,
-// not runes, so a Turkish text is over- rather than under-counted.
-func estimateTokens(s string) int {
-	if s == "" {
-		return 0
-	}
-	n := len(s) / 4
-	if n == 0 {
-		n = 1
-	}
-	return n
-}
-
 // budgetWindow splits msgs (oldest first) into the overflow that does not fit
 // budget and the newest window that does. The newest message is always kept,
 // whatever its size: a turn without the message it answers has no context.
@@ -37,7 +24,7 @@ func budgetWindow(msgs []domain.Message, budget int) (overflow, window []domain.
 	used := 0
 	k := len(msgs)
 	for i := len(msgs) - 1; i >= 0; i-- {
-		cost := estimateTokens(msgs[i].Content) + messageOverheadTokens
+		cost := tokenest.Estimate(msgs[i].Content) + messageOverheadTokens
 		if used+cost > budget && i < len(msgs)-1 {
 			break
 		}
