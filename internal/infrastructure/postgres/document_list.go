@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -71,7 +72,26 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f domain.DocumentFi
 		// label widen the scope rather than narrow it.
 		filters = append(filters, "d.tags @> "+placeholder(f.Tags))
 	}
-	if f.IDPrefix != "" {
+	entity := domain.IsSourceDocEntityID(f.IDPrefix)
+	switch {
+	case entity:
+		// ENG-2184 (owner decision 2026-11-19): a source-doc ENTITY id resolves to the
+		// document row(s) it stands for — one per writer of the same source — through
+		// the links the ingest itself wrote: the entity row's own document_id (the
+		// latest writer's row), every chunk stamped with the entity
+		// (metadata.source_doc_entity_id, GIN-indexed containment), and an embed job
+		// still staging one (derivation_jobs.staged.doc.entity_id, a document accepted
+		// for background embedding whose chunks are not written yet). The scope /
+		// owner-fence filters above still apply: a reader resolves only rows it may
+		// read. No id is re-derived from the URI.
+		e := placeholder(f.IDPrefix)
+		stamp, _ := json.Marshal(map[string]string{"source_doc_entity_id": f.IDPrefix})
+		ej := placeholder(string(stamp))
+		filters = append(filters, `d.id IN (
+			SELECT c.document_id FROM `+TableChunks+` c WHERE c.id = `+e+` AND c.document_id IS NOT NULL
+			UNION SELECT c.document_id FROM `+TableChunks+` c WHERE c.metadata @> `+ej+`::jsonb AND c.document_id IS NOT NULL
+			UNION SELECT j.document_id FROM `+TableDerivationJobs+` j WHERE j.kind = 'embed' AND j.staged->'doc'->>'entity_id' = `+e+`)`)
+	case f.IDPrefix != "":
 		// ESCAPE is explicit because document ids routinely contain '_', which LIKE
 		// reads as "any single character" — without it a prefix filter silently
 		// matches more than the operator asked for.
@@ -95,7 +115,13 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f domain.DocumentFi
 	// The cursor narrows the PAGE only, never the count: the total describes the
 	// whole matching set, which is what makes "422 of 1163" mean anything.
 	pageWhere := where()
-	if f.Cursor != "" {
+	order := "d.id"
+	if entity {
+		// An entity's rows (one per writer — a handful) come newest first: the most
+		// recently written row is the entity's answer where one is wanted
+		// (GetIngestStatus, the console's document view). One page, no cursor.
+		order = "d.updated_at DESC, d.id"
+	} else if f.Cursor != "" {
 		pageWhere = where("d.id > " + placeholder(f.Cursor))
 	}
 	// Over-fetch one row: it is the evidence that another page exists.
@@ -105,7 +131,7 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f domain.DocumentFi
 		`SELECT d.id, d.title, d.source_type, d.tags, d.created_at,
 		        (SELECT count(*) FROM `+TableChunks+` c WHERE c.document_id = d.id)
 		 FROM `+TableDocuments+` d`+pageWhere+`
-		 ORDER BY d.id
+		 ORDER BY `+order+`
 		 LIMIT `+rowLimit, args...)
 	if err != nil {
 		return nil, "", 0, mapError("ListDocuments", err)
@@ -130,7 +156,9 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f domain.DocumentFi
 	next := ""
 	if len(out) > limit {
 		out = out[:limit]
-		next = out[len(out)-1].ID
+		if !entity {
+			next = out[len(out)-1].ID
+		}
 	}
 	return out, next, total, nil
 }

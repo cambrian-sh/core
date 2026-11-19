@@ -732,7 +732,7 @@ func (im *IngestionManager) waitForFacts(ctx context.Context, clock *domain.Stag
 // It is computed, not looked up, so persistChunks can stamp it on every chunk
 // BEFORE the entity row exists (see ProcessSync for why that order matters).
 func sourceDocEntityID(doc domain.ExternalDocument) string {
-	return "source_doc:" + doc.SourceURI
+	return domain.SourceDocEntityPrefix + doc.SourceURI
 }
 
 // mintSourceDoc writes the source-doc entity (and its CAS body). It returns the

@@ -45,6 +45,20 @@ type SourceDocument struct {
 // definition that both the ingest path and the write chokepoints read.
 const SourceDocumentMarker = "source_document"
 
+// SourceDocEntityPrefix opens a document's SOURCE-DOC ENTITY id: "source_doc:" + the
+// ingest's SourceURI (memory.sourceDocEntityID). It is the id an ingest hands back
+// (IngestMemoryOpResponse.doc_id) and every MemoryWrittenOp carries, while the document
+// ROW is keyed by its ADR-0138 id ("<uri>#w=<writer>", an upload's rule-U id). One
+// entity can stand for several rows — one per writer of the same source — so the
+// kernel resolves an entity id to its rows (ENG-2184); a client never re-derives a row
+// id from it.
+const SourceDocEntityPrefix = "source_doc:"
+
+// IsSourceDocEntityID reports whether id is a source-doc entity id.
+func IsSourceDocEntityID(id string) bool {
+	return len(id) > len(SourceDocEntityPrefix) && id[:len(SourceDocEntityPrefix)] == SourceDocEntityPrefix
+}
+
 // ClassificationHint strips the IDENTITY terms out of a caller's tag list, leaving
 // only the terms that are candidate CLASSIFICATIONS (ADR-0099).
 //
