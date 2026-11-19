@@ -222,6 +222,14 @@ type RuleOfTwoPolicy struct {
 	// counts as send) include one is gated; a tool with no effects is gated.
 	// Required.
 	GatedEffects []ToolEffect
+	// KernelWriteEffects declares the effect classes of each dedicated kernel
+	// write call that is not a registered tool — the agent-plane verbs
+	// (propose_memory_note, schedule_task, propose_skill, propose_knowledge, …)
+	// that reach their own RPC instead of ToolExecutor.Execute (ENG-2247, owner
+	// decision 2026-11-19: gate every write call too). A verb the map does not
+	// name is treated like a tool with no declared effects: gated on every gated
+	// effect (fail closed).
+	KernelWriteEffects map[string][]ToolEffect
 }
 
 // ErrRuleOfTwoPolicy reports an invalid gate configuration.
@@ -234,6 +242,7 @@ type RuleOfTwoGate struct {
 	untrusted map[SourceClass]bool
 	sensitive map[string]bool
 	gated     []ToolEffect
+	verbs     map[string][]ToolEffect
 }
 
 // NewRuleOfTwoGate validates the policy and builds the gate over tracker.
@@ -265,7 +274,35 @@ func NewRuleOfTwoGate(p RuleOfTwoPolicy, tracker *ProvenanceTracker) (*RuleOfTwo
 		}
 	}
 	g.gated = ExpandEffects(p.GatedEffects)
+	g.verbs = map[string][]ToolEffect{}
+	for verb, effects := range p.KernelWriteEffects {
+		verb = strings.TrimSpace(verb)
+		if verb == "" {
+			return nil, fmt.Errorf("%w: kernel_write_effects names an empty verb", ErrRuleOfTwoPolicy)
+		}
+		if len(effects) == 0 {
+			return nil, fmt.Errorf("%w: kernel_write_effects[%s] declares no effect class", ErrRuleOfTwoPolicy, verb)
+		}
+		for _, e := range effects {
+			if !ValidToolEffect(e) {
+				return nil, fmt.Errorf("%w: kernel_write_effects[%s]: unknown effect class %q", ErrRuleOfTwoPolicy, verb, e)
+			}
+		}
+		g.verbs[verb] = append([]ToolEffect(nil), effects...)
+	}
 	return g, nil
+}
+
+// KernelWriteTool is the gate's view of a dedicated kernel write call: a
+// SystemTool named after the verb carrying the effects the policy declares for
+// it, so Check decides it by the one rule a tool call is decided by. A verb with
+// no declaration carries no effects, which Check gates on everything (fail closed).
+func (g *RuleOfTwoGate) KernelWriteTool(verb string) SystemTool {
+	t := SystemTool{Name: verb}
+	if g != nil {
+		t.Effects = append([]ToolEffect(nil), g.verbs[verb]...)
+	}
+	return t
 }
 
 // Observe records that the scope consumed content of class, from records or a

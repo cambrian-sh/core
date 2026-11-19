@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"google.golang.org/grpc/codes"
@@ -121,6 +122,13 @@ func (s *Server) ProposeMemoryNote(ctx context.Context, req *pb.ProposeMemoryNot
 		op = memorynotes.OpRemoveSection
 	default:
 		return nil, status.Error(codes.InvalidArgument, "op is required")
+	}
+	// ENG-2247: a note write from a session that read untrusted content asks the
+	// person first (the Rule of Two); declined, nothing is written.
+	if why, ok := s.gateKernelWrite(ctx, req.GetLeaseId(), "propose_memory_note",
+		fmt.Sprintf("%s %s notes [%s]: %s", req.GetOp().String(), scope, req.GetSection(), previewText(req.GetContent(), 160)),
+		map[string]any{"scope": string(scope), "op": req.GetOp().String(), "section": req.GetSection(), "content": req.GetContent()}); !ok {
+		return &pb.ProposeMemoryNoteResponse{Accepted: false, Detail: why}, nil
 	}
 	res, err := s.MemoryNotes.Propose(ctx, p, memorynotes.Proposal{
 		Scope: scope, Op: op, Section: req.GetSection(), Content: req.GetContent(),

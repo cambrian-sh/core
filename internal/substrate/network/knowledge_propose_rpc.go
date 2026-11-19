@@ -43,6 +43,13 @@ func (s *Server) ProposeKnowledge(ctx context.Context, req *pb.ProposeKnowledgeR
 		return nil, err
 	}
 	agentID := by.ID
+	// ENG-2247: the Rule of Two on a knowledge proposal (item or link) from a
+	// tainted session; declined, nothing is proposed.
+	if why, ok := s.gateKernelWrite(ctx, req.GetLeaseId(), "propose_knowledge",
+		"propose knowledge: "+previewText(req.GetItem().String()+req.GetLink().String(), 200),
+		map[string]any{"client_ref": req.GetClientRef(), "request_commit": req.GetRequestCommit(), "reason": req.GetReason()}); !ok {
+		return &pb.ProposeKnowledgeResponse{Accepted: false, Detail: why}, nil
+	}
 	// What the agent writes for a conversation's owner is that owner's (ADR-0142 D12).
 	if s.ConversationOwner != nil {
 		if owner := s.ConversationOwner(ctx, b); owner != "" {

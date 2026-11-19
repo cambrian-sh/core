@@ -23,5 +23,9 @@ func ruleOfTwoGate(cfg config.RuleOfTwoConfig) (*domain.RuleOfTwoGate, error) {
 		UntrustedSources: cfg.Sources(),
 		SensitiveTags:    cfg.SensitiveTags,
 		GatedEffects:     cfg.Effects(),
+		// ENG-2247: the dedicated kernel write calls (memory notes, schedules,
+		// skill/knowledge/ontology proposals, forget, agent ingest) are decided
+		// by this same gate, each under its configured effects.
+		KernelWriteEffects: cfg.VerbEffects(),
 	}, domain.NewProvenanceTracker(ttl, nil))
 }

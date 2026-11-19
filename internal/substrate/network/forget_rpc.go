@@ -98,6 +98,13 @@ func (s *Server) Forget(ctx context.Context, req *pb.ForgetRequest) (*pb.ForgetR
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// ENG-2247: an erasure is a write; from a tainted session it asks the person
+	// first (the Rule of Two). A lease-less call is not a session's (see
+	// kernel_write_gate.go).
+	if why, ok := s.gateKernelWrite(ctx, "", "forget", forgetPreview(req),
+		map[string]any{"preview_token": req.GetPreviewToken(), "reason_code": req.GetReasonCode()}); !ok {
+		return nil, status.Error(codes.PermissionDenied, why)
+	}
 	rec, err := s.Forgetter.Forget(ctx, forget.Request{
 		PreviewToken: req.GetPreviewToken(), Selector: selectorFromPB(req.GetSelector()), Reason: reason,
 	})

@@ -101,10 +101,15 @@ func (s *Server) ProposeScheduledTask(ctx context.Context, req *pb.ProposeSchedu
 		}, nil
 	}
 	defer release()
+	// ENG-2247: the proposal raises its own approval; from a session the Rule of
+	// Two stops it carries the "Rule of Two:" notice, so the person sees why
+	// without being asked twice.
+	notice := s.ruleOfTwoNotice(ctx, req.GetLeaseId(), "schedule_task", "schedule "+req.GetTitle(),
+		map[string]any{"title": req.GetTitle(), "goal": req.GetGoal(), "cron": req.GetCron(), "rrule": req.GetRrule()})
 	out, err := s.ScheduledTasks.Propose(ctx, scheduledtask.Proposal{
 		OwnerID: owner, AgentID: agentID, Title: req.GetTitle(), Goal: req.GetGoal(),
 		Cron: req.GetCron(), RRule: req.GetRrule(), Timezone: req.GetTimezone(),
-		RunAgent: req.GetAgentId(), Delivery: req.GetDelivery(),
+		RunAgent: req.GetAgentId(), Delivery: req.GetDelivery(), Notice: notice,
 	})
 	if err != nil && errors.Is(context.Cause(ctx), ErrTurnEnded) {
 		// The chat turn that asked ended while the approval was pending: the hub
@@ -160,6 +165,13 @@ func (s *Server) ManageScheduledTask(ctx context.Context, req *pb.ManageSchedule
 	}
 	if req.GetId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	// ENG-2247: pausing, resuming or deleting a recurring task is a write; from a
+	// tainted session it asks the person first (the Rule of Two).
+	if why, ok := s.gateKernelWrite(ctx, req.GetLeaseId(), "manage_scheduled_task",
+		req.GetAction().String()+" scheduled task "+req.GetId(),
+		map[string]any{"id": req.GetId(), "action": req.GetAction().String()}); !ok {
+		return &pb.ManageScheduledTaskResponse{Detail: why}, nil
 	}
 	switch req.GetAction() {
 	case pb.ScheduledTaskAction_SCHEDULED_TASK_ACTION_PAUSE:

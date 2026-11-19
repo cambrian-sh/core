@@ -62,7 +62,11 @@ Legend:
     default on, ENG-531): when the session has read untrusted content (by default web, tool,
     other-agent or ingested — any tool answer or memory recall counts) and holds sensitive
     access (`sensitive_tags`; empty means every session), the call goes to approval with a
-    notice naming what tainted the session. R+ER reads are not gated.
+    notice naming what tainted the session. R+ER reads are not gated. The same gate decides
+    the agents' dedicated kernel write calls that are not tools (ENG-2247): propose_memory_note,
+    manage_scheduled_task, propose_skill, propose_knowledge, propose_ontology_change, forget and a
+    lease-bound ingest_memory ask the person first; schedule_task adds the notice to its own
+    approval. Each verb's effects are `rule_of_two.kernel_write_effects` (default `write`).
   - **D**: dangerous, so operator approval is required.
   - **FC**: fail-closed. There is no default policy, so every unlisted tool is D with
     read+write+egress.

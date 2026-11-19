@@ -37,6 +37,15 @@ func TestRuleOfTwo_DefaultsOnOperatorCanNarrowAndInvalidIsRefused(t *testing.T) 
 	if r := cfg.Execution.Tools.RuleOfTwo; len(r.UntrustedSources) != 1 || r.SensitiveTags[0] != "pii" || len(r.GatedEffects) == 0 {
 		t.Errorf("narrowing not honoured (gated effects keep the default): %+v", r)
 	}
+	// ENG-2247: a file layer merges per verb over the default kernel_write_effects.
+	cfg, err = load(t, `{"schema_version":4,`+base+`,"execution":{"tools":{"rule_of_two":{"kernel_write_effects":{"propose_skill":["read"]}}}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := cfg.Execution.Tools.RuleOfTwo.KernelWriteEffects; len(k["propose_skill"]) != 1 || k["propose_skill"][0] != "read" ||
+		len(k["propose_memory_note"]) != 1 || k["propose_memory_note"][0] != "write" {
+		t.Errorf("per-verb merge: %v", k)
+	}
 	cfg, err = load(t, `{"schema_version":4,`+base+`,"execution":{"tools":{"rule_of_two":{"enabled":false}}}}`)
 	if err != nil || cfg.Execution.Tools.RuleOfTwo.Enabled {
 		t.Errorf("explicit enabled=false not honoured: %v", err)
@@ -46,6 +55,13 @@ func TestRuleOfTwo_DefaultsOnOperatorCanNarrowAndInvalidIsRefused(t *testing.T) 
 		"unknown effect": func(r *config.RuleOfTwoConfig) { r.GatedEffects = []string{"delete"} },
 		"no sources":     func(r *config.RuleOfTwoConfig) { r.UntrustedSources = nil },
 		"no effects":     func(r *config.RuleOfTwoConfig) { r.GatedEffects = nil },
+		// ENG-2247: a kernel write verb must declare known effect classes.
+		"verb unknown effect": func(r *config.RuleOfTwoConfig) {
+			r.KernelWriteEffects = map[string][]string{"propose_memory_note": {"delete"}}
+		},
+		"verb no effect": func(r *config.RuleOfTwoConfig) {
+			r.KernelWriteEffects = map[string][]string{"propose_memory_note": {}}
+		},
 	} {
 		bad := config.DefaultConfig()
 		mut(&bad.Execution.Tools.RuleOfTwo)

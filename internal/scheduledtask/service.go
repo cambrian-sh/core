@@ -55,6 +55,10 @@ type Proposal struct {
 	// per-task agent choice).
 	RunAgent string `json:"run_agent,omitempty"`
 	Delivery string `json:"delivery,omitempty"`
+	// Notice is a kernel-written notice the approver is shown on the proposal's
+	// approval (the duplicate_notice channel): the Rule-of-Two notice when the
+	// proposing session read untrusted content (ENG-2247). Never from the agent.
+	Notice string `json:"-"`
 }
 
 // Outcome is a proposal's result. Created=false always carries a Rejection.
@@ -183,6 +187,9 @@ func (s *Service) Propose(ctx context.Context, p Proposal) (Outcome, error) {
 		// (T-20261118-a-sync-approval-orphaned-by-a-kernel-restart): the
 		// proposal as validated, owned by the lease's person.
 		Intent: proposalIntent(p),
+		// ENG-2247: the Rule-of-Two notice, when the proposing session read
+		// untrusted content — the reason the person should look twice.
+		DuplicateNotice: p.Notice,
 	})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("scheduledtask: approval: %w", err)

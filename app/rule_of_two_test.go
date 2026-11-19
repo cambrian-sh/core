@@ -15,6 +15,14 @@ func TestRuleOfTwoGate_BuiltFromConfig(t *testing.T) {
 	if err != nil || g == nil {
 		t.Fatalf("default config must build the gate: %v", err)
 	}
+	// ENG-2247: the default kernel_write_effects reach the gate — every write
+	// verb the agents use is decided as a write.
+	for _, verb := range []string{"propose_memory_note", "schedule_task", "manage_scheduled_task", "propose_skill",
+		"propose_knowledge", "propose_ontology_change", "forget", "ingest_memory"} {
+		if tool := g.KernelWriteTool(verb); len(tool.Effects) != 1 || tool.Effects[0] != "write" {
+			t.Errorf("%s: effects %v, want [write] from the default config", verb, tool.Effects)
+		}
+	}
 	cfg.Enabled = false
 	if g, err := ruleOfTwoGate(cfg); err != nil || g != nil {
 		t.Fatalf("enabled=false must build no gate: %v %v", g, err)

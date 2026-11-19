@@ -78,6 +78,12 @@ func (s *Server) ProposeSkill(ctx context.Context, req *pb.ProposeSkillRequest) 
 	if s.MemoryNotesPrincipal != nil {
 		principal = s.MemoryNotesPrincipal(ctx, binding)
 	}
+	// ENG-2247: the Rule of Two on a skill proposal (a write) from a tainted session.
+	if why, ok := s.gateKernelWrite(ctx, string(lease), "propose_skill",
+		"propose skill "+req.GetName()+": "+previewText(req.GetRationale(), 160),
+		map[string]any{"name": req.GetName(), "rationale": req.GetRationale(), "base_version": req.GetBaseVersion()}); !ok {
+		return deny(why), nil
+	}
 	res, err := s.SkillLifecycle.Propose(ctx, lifecycle.ProposeInput{
 		Name: req.GetName(), SkillMD: req.GetSkillMd(), Rationale: req.GetRationale(),
 		EvidenceCIDs: req.GetEvidenceCids(), BaseVersion: req.GetBaseVersion(),

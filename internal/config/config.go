@@ -1831,6 +1831,15 @@ type RuleOfTwoConfig struct {
 	// TaintTTLMinutes is how long a session's taint lives after the last content
 	// it consumed (0 ⇒ 1440).
 	TaintTTLMinutes int `json:"taint_ttl_minutes,omitempty"`
+	// KernelWriteEffects declares the effect classes of each dedicated kernel
+	// write call that is not a registered tool (ENG-2247, owner decision
+	// 2026-11-19: gate every write call too). Key: the agent-facing verb
+	// (propose_memory_note, schedule_task, manage_scheduled_task, propose_skill,
+	// propose_knowledge, propose_ontology_change, forget, ingest_memory); value:
+	// its ADR-0086 effect classes. A file layer merges per verb over the
+	// defaults. A verb the map does not name is gated on every gated effect
+	// (fail closed); declaring a verb ["read"] takes it out of the gate.
+	KernelWriteEffects map[string][]string `json:"kernel_write_effects,omitempty"`
 }
 
 // Sources returns UntrustedSources as domain source classes.
@@ -1838,6 +1847,19 @@ func (c RuleOfTwoConfig) Sources() []domain.SourceClass {
 	out := make([]domain.SourceClass, 0, len(c.UntrustedSources))
 	for _, s := range c.UntrustedSources {
 		out = append(out, domain.SourceClass(strings.TrimSpace(s)))
+	}
+	return out
+}
+
+// VerbEffects returns KernelWriteEffects as domain effect classes.
+func (c RuleOfTwoConfig) VerbEffects() map[string][]domain.ToolEffect {
+	out := make(map[string][]domain.ToolEffect, len(c.KernelWriteEffects))
+	for verb, effects := range c.KernelWriteEffects {
+		es := make([]domain.ToolEffect, 0, len(effects))
+		for _, e := range effects {
+			es = append(es, domain.ToolEffect(strings.TrimSpace(e)))
+		}
+		out[strings.TrimSpace(verb)] = es
 	}
 	return out
 }
@@ -3880,6 +3902,19 @@ func DefaultConfig() *Config {
 					UntrustedSources: []string{"web", "tool", "other-agent", "ingested"},
 					GatedEffects:     []string{"write", "egress_send", "spend", "admin"},
 					TaintTTLMinutes:  1440,
+					// ENG-2247 (owner decision 2026-11-19): every dedicated
+					// kernel write call the agents use declares its effect here
+					// and is consulted by the same gate.
+					KernelWriteEffects: map[string][]string{
+						"propose_memory_note":     {"write"},
+						"schedule_task":           {"write"},
+						"manage_scheduled_task":   {"write"},
+						"propose_skill":           {"write"},
+						"propose_knowledge":       {"write"},
+						"propose_ontology_change": {"write"},
+						"forget":                  {"write"},
+						"ingest_memory":           {"write"},
+					},
 				},
 				// ADR-0145 D4 calculation tools, on by default (owner decision
 				// 2026-11-15, ENG-897; no prior A/B/A).
@@ -4656,6 +4691,19 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		for _, e := range r.Effects() {
 			if !domain.ValidToolEffect(e) {
 				errs = append(errs, fmt.Sprintf("tools.rule_of_two.gated_effects: unknown effect class %q", e))
+			}
+		}
+		for verb, effects := range r.VerbEffects() {
+			if verb == "" {
+				errs = append(errs, "tools.rule_of_two.kernel_write_effects names an empty verb")
+			}
+			if len(effects) == 0 {
+				errs = append(errs, fmt.Sprintf("tools.rule_of_two.kernel_write_effects[%s] must declare at least one effect class", verb))
+			}
+			for _, e := range effects {
+				if !domain.ValidToolEffect(e) {
+					errs = append(errs, fmt.Sprintf("tools.rule_of_two.kernel_write_effects[%s]: unknown effect class %q", verb, e))
+				}
 			}
 		}
 	}

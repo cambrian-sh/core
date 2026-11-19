@@ -77,6 +77,15 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		}
 	}
 
+	// ENG-2247: a session's own ingest is a write; from a tainted session it asks
+	// the person first (the Rule of Two). A connector's lease-less ingest is not a
+	// session's write and is not asked (kernel_write_gate.go).
+	if why, ok := s.gateKernelWrite(ctx, "", "ingest_memory",
+		"ingest into memory: "+previewText(req.GetText(), 200),
+		map[string]any{"source": req.GetSource(), "tags": req.GetTags()}); !ok {
+		return nil, status.Error(codes.PermissionDenied, why)
+	}
+
 	// ADR-0134 D1 (contract 0099): resolve the event time BEFORE any work, so a
 	// malformed time is the caller's INVALID_ARGUMENT and never a half-done ingest.
 	et, err := s.resolveIngestEventTime(req)

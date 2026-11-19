@@ -44,6 +44,12 @@ func (s *Server) ProposeOntologyChange(ctx context.Context, req *pb.ProposeOntol
 	if err != nil {
 		return &pb.ProposeOntologyChangeResponse{Accepted: false, Detail: err.Error()}, nil
 	}
+	// ENG-2247: the Rule of Two on an ontology change proposal from a tainted session.
+	if why, ok := s.gateKernelWrite(ctx, req.GetLeaseId(), "propose_ontology_change",
+		"propose ontology change: "+previewText(req.GetChangeJson(), 200),
+		map[string]any{"namespace": req.GetNamespace(), "change": req.GetChangeJson(), "reason": req.GetReason()}); !ok {
+		return &pb.ProposeOntologyChangeResponse{Accepted: false, Detail: why}, nil
+	}
 	res, err := s.OntologyDrafts.Propose(ctx, by, forPerson, ontology.DraftProposal{
 		Namespace: req.GetNamespace(), Change: change, Reason: req.GetReason(), ClientRef: req.GetClientRef()})
 	if err != nil && !errors.Is(err, domain.ErrOntologyDraftRefused) {
