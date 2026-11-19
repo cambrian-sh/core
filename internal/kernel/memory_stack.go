@@ -169,6 +169,11 @@ func NewMemoryStack(backend MemoryBackend, gen domain.Generator, embed domain.Em
 	// (owner decision, ENG-1595), and execution.memory.experience_surprise_floor that
 	// gated the failure record was retired with them (internal/config retiredConfigKeys).
 	memoryAgent.RecordOutcomes = execCfg.Memory.ExperienceRecordsEnabled
+	// ENG-1535: the decay deletes a chunk with the fact items keyed into it.
+	memoryAgent.Chunks = facts.Chunks
+	if facts.Chunks == nil {
+		slog.Warn("memory decay: no chunk retirer; fact items derived from a decayed chunk stay behind")
+	}
 	memoryAgent.ProcedureDeprecateBelow = execCfg.Procedure.ProcedureDeprecateBelow
 	// backend.Experience is the raw adapter on purpose (ADR-0095 D1): the episode parent
 	// row is a kernel-owned write of a row the kernel itself stamps, not a
@@ -550,6 +555,11 @@ type FactSubstrate struct {
 	// transaction as its chunks. nil = ids are derived with no lookup and nothing is
 	// retired (logged by NewMemoryStack).
 	Documents domain.DocumentLifecycleStore
+	// Chunks deletes single chunks with the memory_fact items keyed into them
+	// (postgres.PgDocumentLifecycle.RetireChunks, ENG-1535): the nightly decay's
+	// delete. nil = the decay deletes through the vector store and fact items
+	// derived from a decayed chunk stay behind (logged by NewMemoryStack).
+	Chunks domain.ChunkRetirer
 }
 
 // FactsGeneratorModel names the model behind the "facts" system role for the ADR-0136

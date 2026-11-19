@@ -1484,9 +1484,10 @@ func (p *PgVectorAdapter) DeleteBatch(ctx context.Context, ids []string) error {
 // (T-20261103-deleting-a-chunk-leaves-its-chunk-triplets-and).
 //
 // memory_fact items derived from the chunk are NOT erased here: their erasure belongs to
-// the knowledge store (EraseItemsTx), which this adapter does not hold. They keep
-// pointing at a chunk that no longer exists, so the fact lane's by-id source fetch drops
-// them; see the ticket for the follow-up.
+// the knowledge store (EraseItemsTx), which this adapter does not hold. A caller that
+// must take them too deletes through PgDocumentLifecycle.RetireChunks (domain.ChunkRetirer),
+// which runs this same delete and the fact erasure in one transaction — the nightly
+// decay does (ENG-1535).
 var chunkSideDataDeletes = []string{
 	`DELETE FROM chunk_triplets WHERE chunk_id = ANY($1)`,
 	`DELETE FROM chunk_pagerank WHERE chunk_id = ANY($1)`,
@@ -1502,24 +1503,39 @@ func (p *PgVectorAdapter) deleteIDs(ctx context.Context, op string, ids []string
 		return mapError(op, err)
 	}
 	defer tx.Rollback(ctx)
-	for _, sql := range chunkSideDataDeletes {
-		if _, err := tx.Exec(ctx, sql, ids); err != nil {
-			return mapError(op, err)
-		}
-	}
-	for _, table := range idLookupTables {
-		sql, args, err := dialect.Delete(table).Where(goqu.Ex{"id": ids}).ToSQL()
-		if err != nil {
-			return mapError(op, err)
-		}
-		if _, err := tx.Exec(ctx, sql, args...); err != nil {
-			return mapError(op, err)
-		}
+	if _, err := deleteIDsTx(ctx, tx, ids); err != nil {
+		return mapError(op, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return mapError(op, err)
 	}
 	return nil
+}
+
+// deleteIDsTx is deleteIDs' body in the caller's transaction (shared with
+// PgDocumentLifecycle.RetireChunks): the chunk side data, then the ids from every
+// id-lookup table. Returns the number of chunk rows deleted.
+func deleteIDsTx(ctx context.Context, tx pgx.Tx, ids []string) (int, error) {
+	for _, sql := range chunkSideDataDeletes {
+		if _, err := tx.Exec(ctx, sql, ids); err != nil {
+			return 0, err
+		}
+	}
+	chunks := 0
+	for _, table := range idLookupTables {
+		sql, args, err := dialect.Delete(table).Where(goqu.Ex{"id": ids}).ToSQL()
+		if err != nil {
+			return 0, err
+		}
+		tag, err := tx.Exec(ctx, sql, args...)
+		if err != nil {
+			return 0, err
+		}
+		if table == TableChunks {
+			chunks = int(tag.RowsAffected())
+		}
+	}
+	return chunks, nil
 }
 
 // ListIDsByType returns the IDs of every document of the given document_type.

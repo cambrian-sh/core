@@ -27,6 +27,11 @@ type Agent struct {
 	// false, so an Agent built without config records nothing.
 	RecordOutcomes bool
 
+	// Chunks deletes a decayed chunk together with the memory_fact items keyed
+	// into it, in one transaction (domain.ChunkRetirer, ENG-1535). nil ⇒ the decay
+	// deletes through Manager.Store and those items stay behind.
+	Chunks domain.ChunkRetirer
+
 	// ExperienceStore persists the episode row of a plan (ADR-0095 D1). May be nil →
 	// no episode is recorded.
 	ExperienceStore domain.ExperienceStore

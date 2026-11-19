@@ -89,6 +89,8 @@ func (b *kernelBuild) buildSubstrate() error {
 		// ADR-0138: document identity checks and the version chain, over the same pool;
 		// its retirement erases fact items through this knowledge store in one transaction.
 		Documents: docLifecycle,
+		// ENG-1535: the nightly decay deletes a chunk with its fact items.
+		Chunks: docLifecycle,
 	}
 
 	b.ontologies, b.onto, b.substrate, b.knowledgeStore = ontologies, onto, substrate, knowledgeStore

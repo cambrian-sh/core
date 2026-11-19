@@ -368,3 +368,50 @@ func nonNil(s []string) []string {
 	}
 	return s
 }
+
+var _ domain.ChunkRetirer = (*PgDocumentLifecycle)(nil)
+
+// RetireChunks implements domain.ChunkRetirer (ENG-1535): the by-id twin of the
+// document cascade (retireDocumentsTx). In one transaction it erases the memory_fact
+// items keyed into the chunks — selected by their source_chunk value, in every
+// namespace that has any, through the substrate's own EraseItemsTx (assessments,
+// resolutions, sentinels, re-derivation) and while the chunks still exist — then
+// deletes the chunks with their KG triplets, PageRank and edges exactly as
+// PgVectorAdapter.Delete does (deleteIDsTx). Extraction markers are per document and
+// stay: the document itself is not retired.
+func (l *PgDocumentLifecycle) RetireChunks(ctx context.Context, chunkIDs []string) (domain.DocumentCascadeCounts, error) {
+	counts := domain.DocumentCascadeCounts{}
+	if len(chunkIDs) == 0 {
+		return counts, nil
+	}
+	tx, err := l.k.pool.Begin(ctx)
+	if err != nil {
+		return nil, mapError("RetireChunks", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	namespaces, err := collectIDs(ctx, tx, `SELECT DISTINCT ki.namespace_id FROM knowledge_items ki
+		WHERE ki.kind = $2 AND EXISTS (SELECT 1 FROM statement_values sv WHERE sv.item_id = ki.id
+		  AND sv.predicate = $3 AND sv.value_text = ANY($1))`,
+		chunkIDs, domain.KindMemoryFact, domain.FactPredSourceChunk)
+	if err != nil {
+		return nil, fmt.Errorf("chunk retirement: fact namespaces: %w", err)
+	}
+	sort.Strings(namespaces)
+	sel := domain.KnowledgeErasure{ValuePredicate: domain.FactPredSourceChunk, ValueTexts: chunkIDs}
+	for _, ns := range namespaces {
+		n, err := l.k.EraseItemsTx(ctx, tx, ns, domain.KindMemoryFact, sel)
+		if err != nil {
+			return nil, fmt.Errorf("chunk retirement: erase fact items (%s): %w", ns, err)
+		}
+		counts[cascadeFactItems] += n
+	}
+	n, err := deleteIDsTx(ctx, tx, chunkIDs)
+	if err != nil {
+		return nil, mapError("RetireChunks", err)
+	}
+	counts[cascadeChunks] = n
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapError("RetireChunks", err)
+	}
+	return counts, nil
+}

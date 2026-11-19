@@ -142,3 +142,13 @@ func IngestOutcomeFrom(ctx context.Context) *IngestOutcome {
 	out, _ := ctx.Value(ingestOutcomeKey{}).(*IngestOutcome)
 	return out
 }
+
+// ChunkRetirer deletes individual chunks together with everything derived from
+// them (ENG-1535): the memory_fact items keyed into them (through the knowledge
+// store's one erasure), their KG triplets, PageRank and edges, in ONE
+// transaction. The nightly loner decay (memory.Agent) deletes through it; a
+// plain VectorStore.Delete cannot reach the fact items, so they outlived their
+// chunk. Implemented by postgres.PgDocumentLifecycle.
+type ChunkRetirer interface {
+	RetireChunks(ctx context.Context, chunkIDs []string) (DocumentCascadeCounts, error)
+}

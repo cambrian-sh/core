@@ -105,6 +105,15 @@ func (a *Agent) decayLoner(ctx context.Context, doc domain.Document, processedID
 			return
 		}
 
+		if a.Chunks != nil {
+			// ENG-1535: the chunk and the fact items keyed into it go together.
+			if _, err := a.Chunks.RetireChunks(ctx, []string{doc.ID}); err != nil {
+				slog.Warn("MemoryWorker: decay delete failed", "doc_id", doc.ID, "err", err)
+				return
+			}
+			*deletedCount++
+			return
+		}
 		if err := a.Manager.Store.Delete(ctx, doc.ID); err == nil {
 			*deletedCount++
 		}
