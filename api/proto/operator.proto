@@ -2704,6 +2704,10 @@ message WatchDeadLetterOp {
   string signal_stream_id = 6;
   string signal_raw_text = 7;
   int64 failed_at_unix_ms = 8;
+  // retryable (contract 0116, ENG-1654): RetryWatchDeadLetter can replay this
+  // entry — a failed delivery (shed at a full queue or budget, or refused by the
+  // runtime), on a kernel with a retrier. An expired signal is delete-only.
+  bool retryable = 9;
 }
 
 // REACT-05 / ADR-0071: watch observability.

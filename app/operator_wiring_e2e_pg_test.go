@@ -127,12 +127,13 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("forget", k.Server.Forgetter)
 	add("logs", when(k.Logs != nil, k.Logs))
 	add("kernelVersion", KernelVersion)
-	add("contractVersion", "0115")
+	add("contractVersion", "0116")
 	add("plugins", pluginHandshake(k.PluginStatuses))
 	addType("sessionOps", operator.SessionOpsFuncs{})
 	addType("planSubmitter", when(k.SessionMgr != nil && k.Server != nil, planSubmitter{}))
 	addType("convOps", when(k.ChatTurns != nil && k.Conversations != nil, &conversationOps{}))
-	add("deadletterRetry", nil) // never wired in core
+	// ENG-1654: the late-bound retrier holder a plugin fills (RegisterDeadLetterRetrier).
+	add("deadletterRetry", when(k.DeadLetterRetrier != nil, k.DeadLetterRetrier))
 	return w
 }
 

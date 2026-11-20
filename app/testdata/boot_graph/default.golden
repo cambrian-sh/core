@@ -38,6 +38,7 @@ ChatTurns: *chat.TurnService
 PrincipalDirectory: *identity.PgRegistry
 PrincipalSchedules: nil
 StreamRegistry: *app.streamRegistryHolder
+DeadLetterRetrier: *app.deadLetterRetrierHolder
 Principals: *identity.PgRegistry
 Authenticator: *identity.Chain
 SessionMgr: *session.SessionManager
@@ -292,6 +293,7 @@ RegisterIngressPipelineRetirer: nil
 RegisterTurnRouter: func(domain.TurnRouter)
 RegisterPrincipalSchedules: func(domain.PrincipalSchedules)
 RegisterStreamRegistry: func(domain.StreamRegistry)
+RegisterDeadLetterRetrier: func(domain.WatchDeadLetterRetrier)
 RunOwnedTurn: func(context.Context, domain.OwnedTurn) (domain.Message, error)
 RegisterPrincipalDirectory: func(domain.PrincipalDirectory)
 IngressTraffic: *postgres.PgConversationStore

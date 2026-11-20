@@ -398,6 +398,14 @@ type KernelServices struct {
 	// registered ⇒ every watch reports "unknown" / refcount -1, as before.
 	RegisterStreamRegistry func(domain.StreamRegistry)
 
+	// RegisterDeadLetterRetrier contributes the replay behind OperatorConsole
+	// RetryWatchDeadLetter (ENG-1654, owner decision 2026-11-20 option C): the
+	// premium reactive engine re-submits a FAILED-DELIVERY dead letter to its watch
+	// under the recorded idempotency key; expired signals stay delete-only.
+	// Replace-one. Nothing registered ⇒ RetryWatchDeadLetter is Unimplemented and no
+	// entry is listed as retryable.
+	RegisterDeadLetterRetrier func(domain.WatchDeadLetterRetrier)
+
 	// RunOwnedTurn runs ONE chat turn for a principal, in a conversation that
 	// principal owns (created if absent, refused if someone else holds it). The run
 	// principal is therefore the owner (ADR-0139 D14): their notes, per-user

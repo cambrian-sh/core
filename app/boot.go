@@ -115,6 +115,7 @@ type kernelBuild struct {
 	progressOut        *progressDelivererHolder
 	principalSchedules *principalSchedulesHolder
 	streamRegistry     *streamRegistryHolder
+	deadLetterRetrier  *deadLetterRetrierHolder
 	principalDirectory *principalDirectoryHolder
 	ownedTurns         *ownedTurnRunner
 	credSeams          *credentialSeams
@@ -298,6 +299,7 @@ func (b *kernelBuild) kernel(lis net.Listener) *Kernel {
 		PrincipalDirectory:  principalDirectoryOrRegistry(principalDirectory.get(), idStores.registry),
 		PrincipalSchedules:  principalSchedules.get(),
 		StreamRegistry:      streamRegistry,
+		DeadLetterRetrier:   b.deadLetterRetrier,
 		Principals:          idStores.registry,
 		Authenticator:       authenticator,
 		PluginStatuses:      composed.statuses, // ADR-0082 D9 (empty in OSS)

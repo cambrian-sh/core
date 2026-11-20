@@ -174,6 +174,9 @@ type Kernel struct {
 	// registers (RegisterStreamRegistry); a late-bound holder, never nil — until
 	// a plugin registers it answers "unknown" / -1, as an unwired kernel did.
 	StreamRegistry domain.StreamRegistry
+	// DeadLetterRetrier replays a failed-delivery dead letter (ENG-1654); a
+	// late-bound holder a plugin fills through RegisterDeadLetterRetrier.
+	DeadLetterRetrier *deadLetterRetrierHolder
 	// Principals is the principal registry (ADR-0142 D3) and Authenticator the
 	// one bearer resolver of the operator plane and the HTTP admin routes (D1).
 	Principals    domain.PrincipalRegistry

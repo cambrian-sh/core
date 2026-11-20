@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -32,6 +33,46 @@ type WatchDeadLetterReader interface {
 // decorator beside the reader.
 type WatchDeadLetterDeleter interface {
 	DeleteDeadLetter(ctx context.Context, id string) (found bool, err error)
+}
+
+// WatchDeadLetterRetrier replays one dead letter (OperatorConsole
+// RetryWatchDeadLetter, ENG-1654, owner decision 2026-11-20 option C): only a
+// failed-delivery entry (Retryable), re-submitted to ITS watch under the
+// idempotency key recorded with it (REACT-01), so a replay of something that in
+// fact already ran is absorbed rather than fired twice; the entry is removed once
+// the replay is handed over. Satisfied by the premium reactive engine and
+// registered through KernelServices.RegisterDeadLetterRetrier; nil in OSS.
+type WatchDeadLetterRetrier interface {
+	RetryDeadLetter(ctx context.Context, deadLetterID string) error
+}
+
+// Errors a WatchDeadLetterRetrier answers with; the operator plane maps them.
+var (
+	// ErrDeadLetterNotFound: no dead letter with that id (never recorded, deleted,
+	// or already retried).
+	ErrDeadLetterNotFound = errors.New("dead letter not found")
+	// ErrDeadLetterNotRetryable: the entry is an expired signal (Retryable false):
+	// delete-only.
+	ErrDeadLetterNotRetryable = errors.New("dead letter is not retryable")
+	// ErrDeadLetterWatchGone: the entry's watch no longer exists or is paused, so
+	// there is nothing to replay it into.
+	ErrDeadLetterWatchGone = errors.New("dead letter's watch is gone or inactive")
+	// ErrDeadLetterRetryUnavailable: this kernel has no retrier registered.
+	ErrDeadLetterRetryUnavailable = errors.New("replaying a dead letter is not available on this kernel")
+)
+
+// DeadLetterReasonExpired is the reason of a journal signal that outlived its TTL
+// before it could run (premium ReactiveEngine.replay). It is the one reason a
+// dead letter is NOT retryable: what it would do was decided against a world that
+// has moved on (owner decision 2026-11-20, ENG-1654 option C).
+const DeadLetterReasonExpired = "expired_before_replay"
+
+// Retryable reports whether the dead letter is a FAILED DELIVERY — a signal shed
+// at a full queue or an exhausted budget, or a firing the runtime refused — that
+// an operator may replay. An expired signal is delete-only. The one definition:
+// the operator plane's list and the premium retrier both read it.
+func (d ReactiveDeadLetter) Retryable() bool {
+	return d.Reason != DeadLetterReasonExpired
 }
 
 // ReactiveDeadLetter records a reactive action that could not be delivered — an

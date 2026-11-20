@@ -11763,8 +11763,12 @@ type WatchDeadLetterOp struct {
 	SignalStreamId string                 `protobuf:"bytes,6,opt,name=signal_stream_id,json=signalStreamId,proto3" json:"signal_stream_id,omitempty"`
 	SignalRawText  string                 `protobuf:"bytes,7,opt,name=signal_raw_text,json=signalRawText,proto3" json:"signal_raw_text,omitempty"`
 	FailedAtUnixMs int64                  `protobuf:"varint,8,opt,name=failed_at_unix_ms,json=failedAtUnixMs,proto3" json:"failed_at_unix_ms,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// retryable (contract 0116, ENG-1654): RetryWatchDeadLetter can replay this
+	// entry — a failed delivery (shed at a full queue or budget, or refused by the
+	// runtime), on a kernel with a retrier. An expired signal is delete-only.
+	Retryable     bool `protobuf:"varint,9,opt,name=retryable,proto3" json:"retryable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WatchDeadLetterOp) Reset() {
@@ -11851,6 +11855,13 @@ func (x *WatchDeadLetterOp) GetFailedAtUnixMs() int64 {
 		return x.FailedAtUnixMs
 	}
 	return 0
+}
+
+func (x *WatchDeadLetterOp) GetRetryable() bool {
+	if x != nil {
+		return x.Retryable
+	}
+	return false
 }
 
 // REACT-05 / ADR-0071: watch observability.
@@ -27797,7 +27808,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x1dListWatchDeadLettersOpRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\"W\n" +
 	"\x1eListWatchDeadLettersOpResponse\x125\n" +
-	"\aentries\x18\x01 \x03(\v2\x1b.cambrian.WatchDeadLetterOpR\aentries\"\x86\x02\n" +
+	"\aentries\x18\x01 \x03(\v2\x1b.cambrian.WatchDeadLetterOpR\aentries\"\xa4\x02\n" +
 	"\x11WatchDeadLetterOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bwatch_id\x18\x02 \x01(\tR\awatchId\x12\x1f\n" +
@@ -27807,7 +27818,8 @@ const file_operator_proto_rawDesc = "" +
 	"\x06reason\x18\x05 \x01(\tR\x06reason\x12(\n" +
 	"\x10signal_stream_id\x18\x06 \x01(\tR\x0esignalStreamId\x12&\n" +
 	"\x0fsignal_raw_text\x18\a \x01(\tR\rsignalRawText\x12)\n" +
-	"\x11failed_at_unix_ms\x18\b \x01(\x03R\x0efailedAtUnixMs\"\x1a\n" +
+	"\x11failed_at_unix_ms\x18\b \x01(\x03R\x0efailedAtUnixMs\x12\x1c\n" +
+	"\tretryable\x18\t \x01(\bR\tretryable\"\x1a\n" +
 	"\x18GetWatchMetricsOpRequest\"O\n" +
 	"\x19GetWatchMetricsOpResponse\x122\n" +
 	"\ametrics\x18\x01 \x03(\v2\x18.cambrian.WatchMetricsOpR\ametrics\"\xdc\x02\n" +

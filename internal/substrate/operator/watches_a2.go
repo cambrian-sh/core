@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -84,6 +85,7 @@ func (s *Service) ListWatchDeadLetters(ctx context.Context, req *pb.ListWatchDea
 		return nil, status.Errorf(codes.Internal, "list dead-letters: %v", err)
 	}
 	out := make([]*pb.WatchDeadLetterOp, 0, len(entries))
+	canRetry := retryAvailable(s.deadletterRetry)
 	for _, e := range entries {
 		out = append(out, &pb.WatchDeadLetterOp{
 			Id:             e.ID,
@@ -94,6 +96,9 @@ func (s *Service) ListWatchDeadLetters(ctx context.Context, req *pb.ListWatchDea
 			SignalStreamId: e.Signal.StreamID,
 			SignalRawText:  e.Signal.RawText,
 			FailedAtUnixMs: e.FailedAt.UnixMilli(),
+			// ENG-1654: retryable only when a replay can work — a failed delivery,
+			// on a kernel with a retrier registered.
+			Retryable: canRetry && e.Retryable(),
 		})
 	}
 	return &pb.ListWatchDeadLettersOpResponse{Entries: out}, nil
@@ -360,10 +365,18 @@ func anyMapToString(m map[string]any) map[string]string {
 // WatchDeadLetterReader because reading the queue is safe on any build and
 // replaying is not — an OSS kernel that could list entries must not thereby be
 // able to fire them.
-type DeadLetterRetrier interface {
-	// RetryDeadLetter replays one entry under the idempotency key recorded with
-	// it (REACT-01), so a repeated call is a no-op rather than a second fire.
-	RetryDeadLetter(ctx context.Context, deadLetterID string) error
+type DeadLetterRetrier = domain.WatchDeadLetterRetrier
+
+// retryAvailable reports whether r can actually replay: a late-bound holder says
+// so (RetryAvailable); any other non-nil retrier can.
+func retryAvailable(r DeadLetterRetrier) bool {
+	if r == nil {
+		return false
+	}
+	if a, ok := r.(interface{ RetryAvailable() bool }); ok {
+		return a.RetryAvailable()
+	}
+	return true
 }
 
 // RetryWatchDeadLetter replays one dead letter. Mutating: command_id + reason,
@@ -382,7 +395,25 @@ func (s *Service) RetryWatchDeadLetter(ctx context.Context, req *pb.RetryWatchDe
 	}
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
 		"retry_watch_dead_letter", "watch_dead_letter", req.GetDeadLetterId(), req.GetDeadLetterId(),
-		func() error { return s.deadletterRetry.RetryDeadLetter(ctx, req.GetDeadLetterId()) })
+		func() error { return retryStatus(s.deadletterRetry.RetryDeadLetter(ctx, req.GetDeadLetterId())) })
+}
+
+// retryStatus maps a retrier's answer to the RPC's status (ENG-1654).
+func retryStatus(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, domain.ErrDeadLetterRetryUnavailable):
+		return status.Error(codes.Unimplemented, "replaying a dead letter is a premium capability")
+	case errors.Is(err, domain.ErrDeadLetterNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, domain.ErrDeadLetterNotRetryable):
+		return status.Error(codes.FailedPrecondition, "this dead letter is an expired signal: it can be deleted, not retried")
+	case errors.Is(err, domain.ErrDeadLetterWatchGone):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	default:
+		return status.Errorf(codes.Unavailable, "retry: %v", err)
+	}
 }
 
 // DeleteWatchDeadLetter removes one dead letter an operator has dealt with

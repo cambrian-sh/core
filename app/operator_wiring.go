@@ -689,6 +689,13 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 			operatorCaps = append(operatorCaps, "watch-deadletter-delete")
 		}
 	}
+	// ENG-1654: RetryWatchDeadLetter replays through the retrier a plugin
+	// registers (late-bound: plugins Build after this). Unregistered, the holder
+	// answers ErrDeadLetterRetryUnavailable (Unimplemented) and the list marks no
+	// entry retryable — so the console offers Retry exactly when it can work.
+	if k.DeadLetterRetrier != nil {
+		o.DeadLetterRetrier = k.DeadLetterRetrier
+	}
 	// Contract 0074 watch liveness (T-20261101-contract-0074-watch-liveness-is-never-wired):
 	// ListWatches reads each watch's source-stream state through the registry a
 	// plugin registered. Fire history and the plane budget have no provider yet.
@@ -902,6 +909,10 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// last error; identifiers and counts only) and RequeueDerivationJob (command_id +
 	// reason; NotFound when no dead job of that version exists); capability
 	// "derivation-journal".
+	// 0116 (2026-11-20, additive; ENG-1654): WatchDeadLetterOp.retryable - the kernel
+	// says which dead letters RetryWatchDeadLetter can replay (a failed delivery, with a
+	// retrier registered); expired signals are delete-only. RetryWatchDeadLetter is
+	// served through a plugin-registered retrier (KernelServices.RegisterDeadLetterRetrier).
 	// 0114 (2026-11-20, additive; ENG-1545): MCPServerSpecOp.allow_private_network
 	// (optional: absent keeps the stored opt-in, present decides) on SaveMCPServer /
 	// TestMCPServer, and MCPServerOp.allow_private_network on ListMCPServers - the
@@ -911,7 +922,7 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// ask for an EXISTING candidate to be committed, for the lease's run principal;
 	// the candidate must be readable by the agent and the person. Operator plane
 	// unchanged.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0115", operatorCaps
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0116", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

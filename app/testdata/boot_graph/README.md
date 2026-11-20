@@ -45,3 +45,6 @@ History of golden updates:
 - ENG-2135: `+ serving` (Kernel) and `+ Serving` (KernelServices) — the "kernel is
   serving" signal closed right before GRPC.Serve, which plugins' boot-time daemon
   spawns wait on through `KernelServices.AwaitSpawnReady`.
+- ENG-1654: `+ DeadLetterRetrier` (Kernel, the late-bound `deadLetterRetrierHolder`) and
+  `+ RegisterDeadLetterRetrier` (KernelServices) — the premium reactive engine registers the
+  replay behind RetryWatchDeadLetter (failed deliveries only).

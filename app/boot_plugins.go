@@ -51,6 +51,7 @@ func (b *kernelBuild) buildPluginSeams() error {
 	// owned-turn runner once the chat lane exists.
 	principalSchedules := &principalSchedulesHolder{}
 	streamRegistry := &streamRegistryHolder{}
+	deadLetterRetrier := &deadLetterRetrierHolder{}
 	principalDirectory := &principalDirectoryHolder{}
 	ownedTurns := &ownedTurnRunner{}
 	// ADR-0141: the credential provider's late-bound seams. Created here, before
@@ -160,6 +161,7 @@ func (b *kernelBuild) buildPluginSeams() error {
 	b.lifecycles = lifecycles
 	b.signalRcv, b.progressSink, b.progressOut = signalRcv, progressSink, progressOut
 	b.principalSchedules, b.streamRegistry, b.principalDirectory = principalSchedules, streamRegistry, principalDirectory
+	b.deadLetterRetrier = deadLetterRetrier
 	b.ownedTurns, b.credSeams, b.memIngestor, b.docReader = ownedTurns, credSeams, memIngestor, docReader
 	b.evIngestor, b.evStore, b.eventStore, b.entityStore = evIngestor, evStore, eventStore, entityStore
 	b.linkStore, b.identityScans, b.queryPlane, b.workerConsent = linkStore, identityScans, queryPlane, workerConsent
@@ -244,6 +246,7 @@ func (b *kernelBuild) buildKernelServices() {
 		RegisterTurnRouter:            func(r domain.TurnRouter) { turnRouters.Store(&r) },
 		RegisterPrincipalSchedules:    principalSchedules.set,
 		RegisterStreamRegistry:        streamRegistry.set,
+		RegisterDeadLetterRetrier:     b.deadLetterRetrier.set,
 		RegisterPrincipalDirectory:    principalDirectory.set,
 		RunOwnedTurn:                  ownedTurns.run,
 		RegisterAgent: func(def domain.AgentDefinition) error {
