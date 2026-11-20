@@ -53,3 +53,6 @@ History of golden updates:
 - ENG-2011: `KernelTools len=10` -> `len=11` and `+ request_python_package *pypackages.Tool`
   (both goldens), the ADR-0157 D7.9 runtime package request tool wired by
   `wirePythonPackageTool` when the per-agent package service exists.
+- ENG-2012: `+ PythonPackages` (Kernel, the `pypackages.Admin` operator seam of the sandbox Python
+  lifecycle, contract 0119) and the `python-env-gc` lifecycle (ADR-0157 D7.12: the env root's GC,
+  run once the env is ready and after each generation switch or instance release).

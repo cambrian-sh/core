@@ -777,6 +777,20 @@ service OperatorConsole {
   // ("confirm" it arrived, or "resend" once). Capability "delivery-intents".
   rpc ListDeliveryIntents(ListDeliveryIntentsOpRequest) returns (ListDeliveryIntentsOpResponse);
   rpc ResolveDeliveryIntent(ResolveDeliveryIntentOpRequest) returns (CommandAck);
+  // Contract 0119 (ENG-2012, ADR-0157 D7.10/D7.12 stage P5): the sandbox Python
+  // lifecycle. ListPythonPackages lists the per-agent package records with their
+  // audit trail, the env's generations with sizes and the last GC run
+  // (operator-only: it shows the kernel's install layout). RemovePythonPackage
+  // takes a runtime-requested package out of an agent's layer (a new generation;
+  // a profile-declared package is refused, change the profile).
+  // RetryPythonPackageInstall re-runs an agent's package check now (retries an
+  // install that failed after approval, applies a profile edit). PrunePythonEnv
+  // runs one GC pass. Mutations: command_id + reason, audited. Capability
+  // "python-packages".
+  rpc ListPythonPackages(ListPythonPackagesOpRequest) returns (ListPythonPackagesOpResponse);
+  rpc RemovePythonPackage(RemovePythonPackageOpRequest) returns (PythonPackageCommandAck);
+  rpc RetryPythonPackageInstall(RetryPythonPackageInstallOpRequest) returns (PythonPackageCommandAck);
+  rpc PrunePythonEnv(PrunePythonEnvOpRequest) returns (PrunePythonEnvOpResponse);
 
   // DeleteWatchDeadLetter removes one dead letter an operator has dealt with
   // (ENG-472). A dead letter embeds the full signal, personal content included;
@@ -2744,6 +2758,135 @@ message ResolveDeliveryIntentOpRequest {
   // same txn id; sent → confirmed, a permanent refusal → failed, else it stays
   // ambiguous and the error is returned).
   string action = 4;
+}
+
+// Contract 0119 (ENG-2012): one audit row of a python package record.
+message PythonPackageEventOp {
+  int64 seq = 1;
+  // requested | approved | denied | expired | installed | reinstalled |
+  // install_failed | removed
+  string action = 2;
+  string actor = 3;
+  string detail = 4;
+  // The layer generation an install or removal produced ("" = none).
+  string generation = 5;
+  int64 at_unix_ms = 6;
+}
+
+// One (agent, package, version, lock) approval record (ADR-0157 D7.8.4).
+message PythonPackageOp {
+  string id = 1;
+  string target = 2;
+  string name = 3;
+  string version = 4;
+  repeated string extras = 5;
+  // pending | approved | denied | expired | removed
+  string state = 6;
+  string lock_sha256 = 7;
+  string base_generation = 8;
+  // The approval hub item (the card).
+  string approval_id = 9;
+  // "profile:<agent>" (declared) or "agent:<agent>" (request_python_package).
+  string requested_by = 10;
+  int64 requested_at_unix_ms = 11;
+  string decided_by = 12;
+  int64 decided_at_unix_ms = 13;
+  string detail = 14;
+  // Every distribution of the lock as name==version.
+  repeated string distributions = 15;
+  // The agent's profile declares this package (removal goes through the profile).
+  bool declared = 16;
+  // The agent asked for it at runtime.
+  bool runtime = 17;
+  repeated PythonPackageEventOp events = 18;
+}
+
+message PythonBaseGenerationOp {
+  string dir = 1;
+  bool current = 2;
+  bool healthy = 3;
+  int64 built_at_unix_ms = 4;
+  string source = 5;
+  int64 bytes = 6;
+}
+
+message PythonLayerGenerationOp {
+  string agent = 1;
+  string dir = 2;
+  // The base generation it was built on.
+  string base = 3;
+  bool healthy = 4;
+  int64 built_at_unix_ms = 5;
+  repeated string distributions = 6;
+  int64 bytes = 7;
+  // The layer the agent's last package check handed it.
+  bool current = 8;
+}
+
+message PythonGcItemOp {
+  // base | layer | download | installer
+  string kind = 1;
+  string path = 2;
+  string agent = 3;
+  int64 bytes = 4;
+  string reason = 5;
+}
+
+message PythonGcReportOp {
+  repeated PythonGcItemOp removed = 1;
+  int64 freed_bytes = 2;
+  repeated string errors = 3;
+  int64 at_unix_ms = 4;
+  int32 kept = 5;
+}
+
+message ListPythonPackagesOpRequest {
+  // One agent's records and layers; "" = every agent.
+  string target = 1;
+}
+
+message ListPythonPackagesOpResponse {
+  repeated PythonPackageOp packages = 1;
+  repeated PythonBaseGenerationOp bases = 2;
+  repeated PythonLayerGenerationOp layers = 3;
+  // The env root and its sizes (D7.12: a per-root size on the operator plane).
+  string root = 4;
+  int64 total_bytes = 5;
+  int64 cache_bytes = 6;
+  int64 downloads_bytes = 7;
+  PythonGcReportOp last_gc = 8;
+}
+
+message RemovePythonPackageOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string target = 3;
+  string name = 4;
+}
+
+message RetryPythonPackageInstallOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string target = 3;
+}
+
+// A package command's ack with the agent's resulting layer generation ("" =
+// no layer, or a deduped replay).
+message PythonPackageCommandAck {
+  string command_id = 1;
+  bool deduped = 2;
+  string generation = 3;
+}
+
+message PrunePythonEnvOpRequest {
+  string command_id = 1;
+  string reason = 2;
+}
+
+message PrunePythonEnvOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  PythonGcReportOp report = 3;
 }
 
 message WatchDeadLetterOp {

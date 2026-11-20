@@ -122,6 +122,27 @@ func (m *memStore) ForPackage(_ context.Context, name, version string) ([]domain
 	return m.filter(func(r domain.PythonPackageApproval) bool { return r.Name == n && r.Version == version }), nil
 }
 
+func (m *memStore) List(_ context.Context) ([]domain.PythonPackageApproval, error) {
+	return m.filter(func(domain.PythonPackageApproval) bool { return true }), nil
+}
+
+func (m *memStore) Remove(_ context.Context, id, by, detail, generation string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.recs[id]
+	if !ok {
+		return domain.ErrPythonPackageNotFound
+	}
+	if r.State != domain.PythonPackageApproved {
+		return fmt.Errorf("python package %s is %s, not approved", id, r.State)
+	}
+	r.State, r.DecidedBy, r.DecidedAt, r.Detail = domain.PythonPackageRemoved, by, at, detail
+	m.recs[id] = r
+	m.appendLocked(domain.PythonPackageEvent{ApprovalID: id, Target: r.Target, Name: r.Name, Version: r.Version,
+		Action: domain.PythonPackageActionRemoved, Actor: by, Detail: detail, Generation: generation, At: at})
+	return nil
+}
+
 func (m *memStore) AppendEvent(_ context.Context, e domain.PythonPackageEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

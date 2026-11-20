@@ -30,7 +30,7 @@ ExtraServices: nil
 AgentGRPCServices: nil
 OperatorMethodRoles: nil
 LoginObserver: nil
-Lifecycles: []app.Lifecycle len=10
+Lifecycles: []app.Lifecycle len=11
 PluginCapabilities: nil
 PluginStatuses: []app.PluginStatus len=1
 Conversations: *postgres.PgConversationStore
@@ -40,6 +40,7 @@ PrincipalSchedules: nil
 StreamRegistry: *app.streamRegistryHolder
 DeadLetterRetrier: *app.deadLetterRetrierHolder
 DeliveryIntents: *ingress.DeliveryService
+PythonPackages: *pypackages.Admin
 Principals: *identity.PgRegistry
 Authenticator: *identity.Chain
 SessionMgr: *session.SessionManager
@@ -239,6 +240,7 @@ erasure-worker start=true stop=true
 daemon-heartbeat-watch start=true stop=true
 approval-hub start=true stop=true
 python-packages start=true stop=true
+python-env-gc start=true stop=true
 ontology-drafts start=true stop=true
 delivery-redrive start=true stop=true
 chat-interrupted-turns start=true stop=true

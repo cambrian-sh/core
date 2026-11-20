@@ -181,6 +181,11 @@ type Kernel struct {
 	// DeliveryIntents is the ADR-0090 D8.1 delivery service with its journal, which
 	// the operator plane lists and resolves (ENG-1657); nil without the chat lane.
 	DeliveryIntents *ingress.DeliveryService
+	// PythonPackages is the operator seam of the sandbox Python lifecycle
+	// (ADR-0157 D7.10/D7.12, P5): list packages and generations, remove a
+	// runtime package, retry an agent's install, prune the env; nil when the
+	// managed env or the package service is unavailable.
+	PythonPackages operator.PythonPackageAdmin
 	// Principals is the principal registry (ADR-0142 D3) and Authenticator the
 	// one bearer resolver of the operator plane and the HTTP admin routes (D1).
 	Principals    domain.PrincipalRegistry

@@ -19,8 +19,8 @@ import (
 //
 // The Python version and every digest are in the kernel's embedded pin table
 // (internal/pyenv/pins.json), never here. P1 (ENG-2007) adds the keys the env
-// builder reads; P3 (ENG-2009) adds approval_ttl_hours; request_wait_seconds
-// and gc arrive with the stages that read them (P4-P5), so no key is parsed
+// builder reads; P3 (ENG-2009) adds approval_ttl_hours; P4 request_wait_seconds
+// and P5 (ENG-2012) gc arrive with the stages that read them, so no key is parsed
 // without a consumer (AGENTS.md §3.4). allow_sdists is not added: wheels only
 // is fixed, because a source build would run arbitrary code in the kernel
 // (A1-Q7).
@@ -60,7 +60,33 @@ type AgentPythonConfig struct {
 	// the call never blocks a turn longer; the card stays open and an approval
 	// after the window applies to the agent's later runs. 0 ⇒ 60; at most 600.
 	RequestWaitSeconds int `json:"request_wait_seconds,omitempty"`
+	// GC is the env root's garbage collection (ADR-0157 D7.12, P5): it runs at
+	// boot and after each generation switch. nil ⇒ the defaults
+	// (keep_previous 1, prune_cache false).
+	GC *AgentPythonGCConfig `json:"gc,omitempty"`
 }
+
+// AgentPythonGCConfig is execution.agents.python.gc.
+type AgentPythonGCConfig struct {
+	// KeepPrevious is how many previous base generations GC keeps for rollback
+	// besides the current one and every one a live instance runs on. nil ⇒ 1.
+	KeepPrevious *int `json:"keep_previous,omitempty"`
+	// PruneCache also prunes the installer's wheel cache (the pinned uv's own
+	// `cache prune`: unreferenced entries only). Off by default: the cache holds
+	// the wheels approved locks need for an offline reinstall.
+	PruneCache bool `json:"prune_cache,omitempty"`
+}
+
+// GCKeepPrevious is gc.keep_previous (nil ⇒ 1).
+func (c AgentPythonConfig) GCKeepPrevious() int {
+	if c.GC == nil || c.GC.KeepPrevious == nil {
+		return 1
+	}
+	return *c.GC.KeepPrevious
+}
+
+// GCPruneCache is gc.prune_cache.
+func (c AgentPythonConfig) GCPruneCache() bool { return c.GC != nil && c.GC.PruneCache }
 
 // RequestWait is request_wait_seconds as a duration (0 ⇒ 60 s).
 func (c AgentPythonConfig) RequestWait() time.Duration {
@@ -113,6 +139,9 @@ func (c AgentPythonConfig) validate() []string {
 	}
 	if c.RequestWaitSeconds < 0 || c.RequestWaitSeconds > 600 {
 		errs = append(errs, fmt.Sprintf("execution.agents.python.request_wait_seconds must be 0 (default 60) to 600 (got %d)", c.RequestWaitSeconds))
+	}
+	if k := c.GCKeepPrevious(); k < 0 || k > 10 {
+		errs = append(errs, fmt.Sprintf("execution.agents.python.gc.keep_previous must be 0 to 10 (got %d)", k))
 	}
 	if c.Offline && len(c.Wheelhouse) == 0 {
 		errs = append(errs, "execution.agents.python.offline requires execution.agents.python.wheelhouse: offline wheels come only from a local wheelhouse")

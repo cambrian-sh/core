@@ -68,18 +68,32 @@ func (im *InstanceManager) ensurePythonLayer(ctx context.Context, def *domain.Ag
 	return err
 }
 
-// pythonLayerEnv is the environment that loads the agent's layer: nothing
-// when it has none, else PYTHONPATH=<layer>/boot, whose sitecustomize adds the
-// layer's site-packages after the base's own directories (pyenv.Layer).
-func (im *InstanceManager) pythonLayerEnv(def *domain.AgentDefinition, pi pyenv.Interpreter) ([]string, error) {
+// currentPythonLayer is the layer the agent launches with on this base
+// generation (zero Layer when it has none or no layer service is set).
+func (im *InstanceManager) currentPythonLayer(def *domain.AgentDefinition, pi pyenv.Interpreter) (pyenv.Layer, error) {
 	if im.pythonLayers == nil {
-		return nil, nil
+		return pyenv.Layer{}, nil
 	}
-	l, err := im.pythonLayers.Current(def.ID, pi)
-	if err != nil || l.Dir == "" {
+	return im.pythonLayers.Current(def.ID, pi)
+}
+
+// layerEnvOf is the environment that loads a layer: nothing when there is
+// none, else PYTHONPATH=<layer>/boot, whose sitecustomize adds the layer's
+// site-packages after the base's own directories (pyenv.Layer).
+func layerEnvOf(l pyenv.Layer) []string {
+	if l.Dir == "" {
+		return nil
+	}
+	return []string{"PYTHONPATH=" + l.Boot}
+}
+
+// pythonLayerEnv is layerEnvOf(the agent's current layer).
+func (im *InstanceManager) pythonLayerEnv(def *domain.AgentDefinition, pi pyenv.Interpreter) ([]string, error) {
+	l, err := im.currentPythonLayer(def, pi)
+	if err != nil {
 		return nil, err
 	}
-	return []string{"PYTHONPATH=" + l.Boot}, nil
+	return layerEnvOf(l), nil
 }
 
 // pythonLayerBind is the agent's layer as a sandbox bind: read-only, private to

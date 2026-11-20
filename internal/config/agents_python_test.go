@@ -1,6 +1,7 @@
 package config
 
 import (
+	stdjson "encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,29 @@ func TestAgentPythonRequestWait(t *testing.T) {
 		errs := AgentPythonConfig{RequestWaitSeconds: v}.validate()
 		if len(errs) == 0 || !strings.Contains(strings.Join(errs, ";"), "request_wait_seconds") {
 			t.Fatalf("request_wait_seconds %d must be refused: %v", v, errs)
+		}
+	}
+}
+
+// ADR-0157 D7.12 (P5): gc defaults to keep_previous 1 and no cache pruning; a
+// set value is read from JSON (0 included); outside 0..10 is refused.
+func TestAgentPythonGC(t *testing.T) {
+	def := DefaultConfig().Execution.Agents.Python
+	if def.GCKeepPrevious() != 1 || def.GCPruneCache() {
+		t.Fatalf("defaults: keep_previous %d prune_cache %v", def.GCKeepPrevious(), def.GCPruneCache())
+	}
+	var c AgentPythonConfig
+	if err := stdjson.Unmarshal([]byte(`{"gc":{"keep_previous":0,"prune_cache":true}}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.GCKeepPrevious() != 0 || !c.GCPruneCache() {
+		t.Fatalf("parsed: keep_previous %d prune_cache %v", c.GCKeepPrevious(), c.GCPruneCache())
+	}
+	for _, v := range []int{-1, 11} {
+		v := v
+		errs := AgentPythonConfig{GC: &AgentPythonGCConfig{KeepPrevious: &v}}.validate()
+		if len(errs) == 0 || !strings.Contains(strings.Join(errs, ";"), "gc.keep_previous") {
+			t.Fatalf("keep_previous %d must be refused: %v", v, errs)
 		}
 	}
 }

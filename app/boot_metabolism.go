@@ -198,6 +198,16 @@ func (b *kernelBuild) buildApprovalsAndSessions() error {
 	if pyPackages != nil {
 		meta.Manager.SetPythonLayers(pyPackages)
 	}
+	// ADR-0157 D7.12 (P5): GC of the env root keeps the current base, every
+	// generation a live instance runs on and gc.keep_previous previous bases;
+	// the operator plane lists, removes, retries and prunes through pyAdmin.
+	pyGC, pyAdmin := wirePythonGC(cfg.Execution.Agents.Python, pyEnv, pyPackages, pythonGCDeps{
+		inUse: meta.Manager.PythonGenerationsInUse, agents: reg,
+	})
+	if pyGC != nil {
+		meta.Manager.SetPythonGenerationRelease(pyGC.Trigger)
+		pyPackages.SetOnLayerChangeAlso(pyGC.Trigger)
+	}
 	planExec := &kernelPlanExecutor{}
 	watcher := supwatcher.New(
 		meta.Manager,
@@ -240,6 +250,7 @@ func (b *kernelBuild) buildApprovalsAndSessions() error {
 	// session manager is handed to the plugin, not to the query path.
 
 	b.toolApproval, b.pyPackages, b.planExec, b.watcher = toolApproval, pyPackages, planExec, watcher
+	b.pyGC, b.pyAdmin = pyGC, pyAdmin
 	b.pgSessions, b.sessionMgr = pgSessions, sessionMgr
 	return nil
 }

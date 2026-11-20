@@ -276,6 +276,10 @@ var operatorOnlyReads = map[string]bool{
 	// The live agent processes and their OS pids (ENG-1634): the deployment's
 	// process layout, not a member's business.
 	"ListAgentInstances": true,
+	// The sandbox Python's package records, generations and env root paths
+	// (contract 0119, ENG-2012): the kernel's install layout, like the process
+	// layout above.
+	"ListPythonPackages": true,
 }
 
 // selfServiceMethods are the OperatorConsole methods open to every authenticated

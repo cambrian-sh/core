@@ -188,6 +188,9 @@ func (s *Service) SetDeadLetterRetrier(r DeadLetterRetrier) { s.deadletterRetry 
 // SetDeliveryIntents sets the delivery-intent source (ENG-1657).
 func (s *Service) SetDeliveryIntents(d DeliveryIntentSource) { s.deliveryIntents = d }
 
+// SetPythonPackages sets the sandbox Python lifecycle seam (ENG-2012).
+func (s *Service) SetPythonPackages(p PythonPackageAdmin) { s.pythonPackages = p }
+
 func (s *Service) SetWatchLiveness(streams domain.StreamRegistry, fires domain.WatchFireReader, budget domain.ReactiveBudgetReader) {
 	s.streams = streams
 	s.watchFires = fires

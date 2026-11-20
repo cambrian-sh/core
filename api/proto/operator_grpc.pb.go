@@ -19,141 +19,145 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	OperatorConsole_Login_FullMethodName                    = "/cambrian.OperatorConsole/Login"
-	OperatorConsole_DescribeAuth_FullMethodName             = "/cambrian.OperatorConsole/DescribeAuth"
-	OperatorConsole_Logout_FullMethodName                   = "/cambrian.OperatorConsole/Logout"
-	OperatorConsole_WhoAmI_FullMethodName                   = "/cambrian.OperatorConsole/WhoAmI"
-	OperatorConsole_StreamEvents_FullMethodName             = "/cambrian.OperatorConsole/StreamEvents"
-	OperatorConsole_Snapshot_FullMethodName                 = "/cambrian.OperatorConsole/Snapshot"
-	OperatorConsole_SetToolGrant_FullMethodName             = "/cambrian.OperatorConsole/SetToolGrant"
-	OperatorConsole_QueryAudit_FullMethodName               = "/cambrian.OperatorConsole/QueryAudit"
-	OperatorConsole_ResolveHITL_FullMethodName              = "/cambrian.OperatorConsole/ResolveHITL"
-	OperatorConsole_PauseSession_FullMethodName             = "/cambrian.OperatorConsole/PauseSession"
-	OperatorConsole_ResumeSession_FullMethodName            = "/cambrian.OperatorConsole/ResumeSession"
-	OperatorConsole_CloseSession_FullMethodName             = "/cambrian.OperatorConsole/CloseSession"
-	OperatorConsole_CancelRun_FullMethodName                = "/cambrian.OperatorConsole/CancelRun"
-	OperatorConsole_TagMemory_FullMethodName                = "/cambrian.OperatorConsole/TagMemory"
-	OperatorConsole_SetScope_FullMethodName                 = "/cambrian.OperatorConsole/SetScope"
-	OperatorConsole_RegisterSkill_FullMethodName            = "/cambrian.OperatorConsole/RegisterSkill"
-	OperatorConsole_RegisterMCP_FullMethodName              = "/cambrian.OperatorConsole/RegisterMCP"
-	OperatorConsole_TriggerConsolidation_FullMethodName     = "/cambrian.OperatorConsole/TriggerConsolidation"
-	OperatorConsole_SetRuntimeConfig_FullMethodName         = "/cambrian.OperatorConsole/SetRuntimeConfig"
-	OperatorConsole_CreateSession_FullMethodName            = "/cambrian.OperatorConsole/CreateSession"
-	OperatorConsole_SendMessage_FullMethodName              = "/cambrian.OperatorConsole/SendMessage"
-	OperatorConsole_InjectCorrection_FullMethodName         = "/cambrian.OperatorConsole/InjectCorrection"
-	OperatorConsole_OpenConversation_FullMethodName         = "/cambrian.OperatorConsole/OpenConversation"
-	OperatorConsole_SendTurn_FullMethodName                 = "/cambrian.OperatorConsole/SendTurn"
-	OperatorConsole_CloseConversation_FullMethodName        = "/cambrian.OperatorConsole/CloseConversation"
-	OperatorConsole_ListConversations_FullMethodName        = "/cambrian.OperatorConsole/ListConversations"
-	OperatorConsole_ListConversationMessages_FullMethodName = "/cambrian.OperatorConsole/ListConversationMessages"
-	OperatorConsole_ListScheduledTasks_FullMethodName       = "/cambrian.OperatorConsole/ListScheduledTasks"
-	OperatorConsole_ListFacts_FullMethodName                = "/cambrian.OperatorConsole/ListFacts"
-	OperatorConsole_GetFactChain_FullMethodName             = "/cambrian.OperatorConsole/GetFactChain"
-	OperatorConsole_GetFactCoverage_FullMethodName          = "/cambrian.OperatorConsole/GetFactCoverage"
-	OperatorConsole_GetDerivationJournal_FullMethodName     = "/cambrian.OperatorConsole/GetDerivationJournal"
-	OperatorConsole_RequeueDerivationJob_FullMethodName     = "/cambrian.OperatorConsole/RequeueDerivationJob"
-	OperatorConsole_ListAgentInstances_FullMethodName       = "/cambrian.OperatorConsole/ListAgentInstances"
-	OperatorConsole_PreviewForgetMemory_FullMethodName      = "/cambrian.OperatorConsole/PreviewForgetMemory"
-	OperatorConsole_ForgetMemory_FullMethodName             = "/cambrian.OperatorConsole/ForgetMemory"
-	OperatorConsole_ListErasures_FullMethodName             = "/cambrian.OperatorConsole/ListErasures"
-	OperatorConsole_GetErasure_FullMethodName               = "/cambrian.OperatorConsole/GetErasure"
-	OperatorConsole_ListTools_FullMethodName                = "/cambrian.OperatorConsole/ListTools"
-	OperatorConsole_ListSkills_FullMethodName               = "/cambrian.OperatorConsole/ListSkills"
-	OperatorConsole_QueryMemory_FullMethodName              = "/cambrian.OperatorConsole/QueryMemory"
-	OperatorConsole_ListDocuments_FullMethodName            = "/cambrian.OperatorConsole/ListDocuments"
-	OperatorConsole_GetDocument_FullMethodName              = "/cambrian.OperatorConsole/GetDocument"
-	OperatorConsole_AnswerMemory_FullMethodName             = "/cambrian.OperatorConsole/AnswerMemory"
-	OperatorConsole_SetToolPolicy_FullMethodName            = "/cambrian.OperatorConsole/SetToolPolicy"
-	OperatorConsole_ExecuteTool_FullMethodName              = "/cambrian.OperatorConsole/ExecuteTool"
-	OperatorConsole_IngestMemory_FullMethodName             = "/cambrian.OperatorConsole/IngestMemory"
-	OperatorConsole_GetIngestStatus_FullMethodName          = "/cambrian.OperatorConsole/GetIngestStatus"
-	OperatorConsole_WatchToolApprovals_FullMethodName       = "/cambrian.OperatorConsole/WatchToolApprovals"
-	OperatorConsole_WatchMyApprovals_FullMethodName         = "/cambrian.OperatorConsole/WatchMyApprovals"
-	OperatorConsole_ListApprovals_FullMethodName            = "/cambrian.OperatorConsole/ListApprovals"
-	OperatorConsole_AnswerApproval_FullMethodName           = "/cambrian.OperatorConsole/AnswerApproval"
-	OperatorConsole_ListStandingApprovals_FullMethodName    = "/cambrian.OperatorConsole/ListStandingApprovals"
-	OperatorConsole_RevokeStandingApproval_FullMethodName   = "/cambrian.OperatorConsole/RevokeStandingApproval"
-	OperatorConsole_ShareToTeam_FullMethodName              = "/cambrian.OperatorConsole/ShareToTeam"
-	OperatorConsole_ListWatches_FullMethodName              = "/cambrian.OperatorConsole/ListWatches"
-	OperatorConsole_RegisterWatch_FullMethodName            = "/cambrian.OperatorConsole/RegisterWatch"
-	OperatorConsole_DeleteWatch_FullMethodName              = "/cambrian.OperatorConsole/DeleteWatch"
-	OperatorConsole_SetWatchActive_FullMethodName           = "/cambrian.OperatorConsole/SetWatchActive"
-	OperatorConsole_ListWatchDeadLetters_FullMethodName     = "/cambrian.OperatorConsole/ListWatchDeadLetters"
-	OperatorConsole_ListPipelines_FullMethodName            = "/cambrian.OperatorConsole/ListPipelines"
-	OperatorConsole_DryRunPipeline_FullMethodName           = "/cambrian.OperatorConsole/DryRunPipeline"
-	OperatorConsole_GetPipeline_FullMethodName              = "/cambrian.OperatorConsole/GetPipeline"
-	OperatorConsole_ListNodeItems_FullMethodName            = "/cambrian.OperatorConsole/ListNodeItems"
-	OperatorConsole_ValidatePipeline_FullMethodName         = "/cambrian.OperatorConsole/ValidatePipeline"
-	OperatorConsole_SavePipeline_FullMethodName             = "/cambrian.OperatorConsole/SavePipeline"
-	OperatorConsole_TransitionPipeline_FullMethodName       = "/cambrian.OperatorConsole/TransitionPipeline"
-	OperatorConsole_QueryLogs_FullMethodName                = "/cambrian.OperatorConsole/QueryLogs"
-	OperatorConsole_TailLogs_FullMethodName                 = "/cambrian.OperatorConsole/TailLogs"
-	OperatorConsole_GetWatchMetrics_FullMethodName          = "/cambrian.OperatorConsole/GetWatchMetrics"
-	OperatorConsole_BacktestWatch_FullMethodName            = "/cambrian.OperatorConsole/BacktestWatch"
-	OperatorConsole_PreviewRoute_FullMethodName             = "/cambrian.OperatorConsole/PreviewRoute"
-	OperatorConsole_ExplainAccess_FullMethodName            = "/cambrian.OperatorConsole/ExplainAccess"
-	OperatorConsole_ListClassificationTags_FullMethodName   = "/cambrian.OperatorConsole/ListClassificationTags"
-	OperatorConsole_ListSessionCheckpoints_FullMethodName   = "/cambrian.OperatorConsole/ListSessionCheckpoints"
-	OperatorConsole_ListMCPServers_FullMethodName           = "/cambrian.OperatorConsole/ListMCPServers"
-	OperatorConsole_GetEmbeddingConfig_FullMethodName       = "/cambrian.OperatorConsole/GetEmbeddingConfig"
-	OperatorConsole_ClassifyInput_FullMethodName            = "/cambrian.OperatorConsole/ClassifyInput"
-	OperatorConsole_ListGenerators_FullMethodName           = "/cambrian.OperatorConsole/ListGenerators"
-	OperatorConsole_ListRoleAssignments_FullMethodName      = "/cambrian.OperatorConsole/ListRoleAssignments"
-	OperatorConsole_TestGenerator_FullMethodName            = "/cambrian.OperatorConsole/TestGenerator"
-	OperatorConsole_GetConfigSchema_FullMethodName          = "/cambrian.OperatorConsole/GetConfigSchema"
-	OperatorConsole_SetConfig_FullMethodName                = "/cambrian.OperatorConsole/SetConfig"
-	OperatorConsole_DeleteConfig_FullMethodName             = "/cambrian.OperatorConsole/DeleteConfig"
-	OperatorConsole_SetGeneratorKey_FullMethodName          = "/cambrian.OperatorConsole/SetGeneratorKey"
-	OperatorConsole_ClearGeneratorKey_FullMethodName        = "/cambrian.OperatorConsole/ClearGeneratorKey"
-	OperatorConsole_SaveGenerator_FullMethodName            = "/cambrian.OperatorConsole/SaveGenerator"
-	OperatorConsole_RemoveGenerator_FullMethodName          = "/cambrian.OperatorConsole/RemoveGenerator"
-	OperatorConsole_SetRoleAssignment_FullMethodName        = "/cambrian.OperatorConsole/SetRoleAssignment"
-	OperatorConsole_SaveMCPServer_FullMethodName            = "/cambrian.OperatorConsole/SaveMCPServer"
-	OperatorConsole_RemoveMCPServer_FullMethodName          = "/cambrian.OperatorConsole/RemoveMCPServer"
-	OperatorConsole_SetMCPServerToken_FullMethodName        = "/cambrian.OperatorConsole/SetMCPServerToken"
-	OperatorConsole_ClearMCPServerToken_FullMethodName      = "/cambrian.OperatorConsole/ClearMCPServerToken"
-	OperatorConsole_TestMCPServer_FullMethodName            = "/cambrian.OperatorConsole/TestMCPServer"
-	OperatorConsole_ConfirmLink_FullMethodName              = "/cambrian.OperatorConsole/ConfirmLink"
-	OperatorConsole_RetractLink_FullMethodName              = "/cambrian.OperatorConsole/RetractLink"
-	OperatorConsole_RetractLinksByProducer_FullMethodName   = "/cambrian.OperatorConsole/RetractLinksByProducer"
-	OperatorConsole_ListLinkCandidates_FullMethodName       = "/cambrian.OperatorConsole/ListLinkCandidates"
-	OperatorConsole_ListLinkPairs_FullMethodName            = "/cambrian.OperatorConsole/ListLinkPairs"
-	OperatorConsole_ConfirmLinkPair_FullMethodName          = "/cambrian.OperatorConsole/ConfirmLinkPair"
-	OperatorConsole_RejectLinkPair_FullMethodName           = "/cambrian.OperatorConsole/RejectLinkPair"
-	OperatorConsole_SubmitPlan_FullMethodName               = "/cambrian.OperatorConsole/SubmitPlan"
-	OperatorConsole_GetReactiveBudget_FullMethodName        = "/cambrian.OperatorConsole/GetReactiveBudget"
-	OperatorConsole_GetTokenSeries_FullMethodName           = "/cambrian.OperatorConsole/GetTokenSeries"
-	OperatorConsole_ProposePlan_FullMethodName              = "/cambrian.OperatorConsole/ProposePlan"
-	OperatorConsole_ExplainAccessBatch_FullMethodName       = "/cambrian.OperatorConsole/ExplainAccessBatch"
-	OperatorConsole_GetBlastRadiusPreview_FullMethodName    = "/cambrian.OperatorConsole/GetBlastRadiusPreview"
-	OperatorConsole_RetryWatchDeadLetter_FullMethodName     = "/cambrian.OperatorConsole/RetryWatchDeadLetter"
-	OperatorConsole_ListDeliveryIntents_FullMethodName      = "/cambrian.OperatorConsole/ListDeliveryIntents"
-	OperatorConsole_ResolveDeliveryIntent_FullMethodName    = "/cambrian.OperatorConsole/ResolveDeliveryIntent"
-	OperatorConsole_DeleteWatchDeadLetter_FullMethodName    = "/cambrian.OperatorConsole/DeleteWatchDeadLetter"
-	OperatorConsole_ListMemoryNotes_FullMethodName          = "/cambrian.OperatorConsole/ListMemoryNotes"
-	OperatorConsole_GetMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/GetMemoryNotes"
-	OperatorConsole_SetMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/SetMemoryNotes"
-	OperatorConsole_DeleteMemoryNotes_FullMethodName        = "/cambrian.OperatorConsole/DeleteMemoryNotes"
-	OperatorConsole_SetMemoryNotesBudget_FullMethodName     = "/cambrian.OperatorConsole/SetMemoryNotesBudget"
-	OperatorConsole_ListSkillProposals_FullMethodName       = "/cambrian.OperatorConsole/ListSkillProposals"
-	OperatorConsole_DecideSkillProposal_FullMethodName      = "/cambrian.OperatorConsole/DecideSkillProposal"
-	OperatorConsole_SetSkillLock_FullMethodName             = "/cambrian.OperatorConsole/SetSkillLock"
-	OperatorConsole_ListSkillLedger_FullMethodName          = "/cambrian.OperatorConsole/ListSkillLedger"
-	OperatorConsole_RollbackSkill_FullMethodName            = "/cambrian.OperatorConsole/RollbackSkill"
-	OperatorConsole_ListSkillGrants_FullMethodName          = "/cambrian.OperatorConsole/ListSkillGrants"
-	OperatorConsole_GrantSkill_FullMethodName               = "/cambrian.OperatorConsole/GrantSkill"
-	OperatorConsole_RevokeSkillGrant_FullMethodName         = "/cambrian.OperatorConsole/RevokeSkillGrant"
-	OperatorConsole_ListIntegrationCatalog_FullMethodName   = "/cambrian.OperatorConsole/ListIntegrationCatalog"
-	OperatorConsole_ListIntegrations_FullMethodName         = "/cambrian.OperatorConsole/ListIntegrations"
-	OperatorConsole_InstallIntegration_FullMethodName       = "/cambrian.OperatorConsole/InstallIntegration"
-	OperatorConsole_UpdateIntegration_FullMethodName        = "/cambrian.OperatorConsole/UpdateIntegration"
-	OperatorConsole_SetIntegrationSecret_FullMethodName     = "/cambrian.OperatorConsole/SetIntegrationSecret"
-	OperatorConsole_ClearIntegrationSecret_FullMethodName   = "/cambrian.OperatorConsole/ClearIntegrationSecret"
-	OperatorConsole_SetIntegrationEnabled_FullMethodName    = "/cambrian.OperatorConsole/SetIntegrationEnabled"
-	OperatorConsole_TestIntegration_FullMethodName          = "/cambrian.OperatorConsole/TestIntegration"
-	OperatorConsole_RemoveIntegration_FullMethodName        = "/cambrian.OperatorConsole/RemoveIntegration"
-	OperatorConsole_RevertIntegrationToFile_FullMethodName  = "/cambrian.OperatorConsole/RevertIntegrationToFile"
-	OperatorConsole_SetIntegrationTrustTier_FullMethodName  = "/cambrian.OperatorConsole/SetIntegrationTrustTier"
+	OperatorConsole_Login_FullMethodName                     = "/cambrian.OperatorConsole/Login"
+	OperatorConsole_DescribeAuth_FullMethodName              = "/cambrian.OperatorConsole/DescribeAuth"
+	OperatorConsole_Logout_FullMethodName                    = "/cambrian.OperatorConsole/Logout"
+	OperatorConsole_WhoAmI_FullMethodName                    = "/cambrian.OperatorConsole/WhoAmI"
+	OperatorConsole_StreamEvents_FullMethodName              = "/cambrian.OperatorConsole/StreamEvents"
+	OperatorConsole_Snapshot_FullMethodName                  = "/cambrian.OperatorConsole/Snapshot"
+	OperatorConsole_SetToolGrant_FullMethodName              = "/cambrian.OperatorConsole/SetToolGrant"
+	OperatorConsole_QueryAudit_FullMethodName                = "/cambrian.OperatorConsole/QueryAudit"
+	OperatorConsole_ResolveHITL_FullMethodName               = "/cambrian.OperatorConsole/ResolveHITL"
+	OperatorConsole_PauseSession_FullMethodName              = "/cambrian.OperatorConsole/PauseSession"
+	OperatorConsole_ResumeSession_FullMethodName             = "/cambrian.OperatorConsole/ResumeSession"
+	OperatorConsole_CloseSession_FullMethodName              = "/cambrian.OperatorConsole/CloseSession"
+	OperatorConsole_CancelRun_FullMethodName                 = "/cambrian.OperatorConsole/CancelRun"
+	OperatorConsole_TagMemory_FullMethodName                 = "/cambrian.OperatorConsole/TagMemory"
+	OperatorConsole_SetScope_FullMethodName                  = "/cambrian.OperatorConsole/SetScope"
+	OperatorConsole_RegisterSkill_FullMethodName             = "/cambrian.OperatorConsole/RegisterSkill"
+	OperatorConsole_RegisterMCP_FullMethodName               = "/cambrian.OperatorConsole/RegisterMCP"
+	OperatorConsole_TriggerConsolidation_FullMethodName      = "/cambrian.OperatorConsole/TriggerConsolidation"
+	OperatorConsole_SetRuntimeConfig_FullMethodName          = "/cambrian.OperatorConsole/SetRuntimeConfig"
+	OperatorConsole_CreateSession_FullMethodName             = "/cambrian.OperatorConsole/CreateSession"
+	OperatorConsole_SendMessage_FullMethodName               = "/cambrian.OperatorConsole/SendMessage"
+	OperatorConsole_InjectCorrection_FullMethodName          = "/cambrian.OperatorConsole/InjectCorrection"
+	OperatorConsole_OpenConversation_FullMethodName          = "/cambrian.OperatorConsole/OpenConversation"
+	OperatorConsole_SendTurn_FullMethodName                  = "/cambrian.OperatorConsole/SendTurn"
+	OperatorConsole_CloseConversation_FullMethodName         = "/cambrian.OperatorConsole/CloseConversation"
+	OperatorConsole_ListConversations_FullMethodName         = "/cambrian.OperatorConsole/ListConversations"
+	OperatorConsole_ListConversationMessages_FullMethodName  = "/cambrian.OperatorConsole/ListConversationMessages"
+	OperatorConsole_ListScheduledTasks_FullMethodName        = "/cambrian.OperatorConsole/ListScheduledTasks"
+	OperatorConsole_ListFacts_FullMethodName                 = "/cambrian.OperatorConsole/ListFacts"
+	OperatorConsole_GetFactChain_FullMethodName              = "/cambrian.OperatorConsole/GetFactChain"
+	OperatorConsole_GetFactCoverage_FullMethodName           = "/cambrian.OperatorConsole/GetFactCoverage"
+	OperatorConsole_GetDerivationJournal_FullMethodName      = "/cambrian.OperatorConsole/GetDerivationJournal"
+	OperatorConsole_RequeueDerivationJob_FullMethodName      = "/cambrian.OperatorConsole/RequeueDerivationJob"
+	OperatorConsole_ListAgentInstances_FullMethodName        = "/cambrian.OperatorConsole/ListAgentInstances"
+	OperatorConsole_PreviewForgetMemory_FullMethodName       = "/cambrian.OperatorConsole/PreviewForgetMemory"
+	OperatorConsole_ForgetMemory_FullMethodName              = "/cambrian.OperatorConsole/ForgetMemory"
+	OperatorConsole_ListErasures_FullMethodName              = "/cambrian.OperatorConsole/ListErasures"
+	OperatorConsole_GetErasure_FullMethodName                = "/cambrian.OperatorConsole/GetErasure"
+	OperatorConsole_ListTools_FullMethodName                 = "/cambrian.OperatorConsole/ListTools"
+	OperatorConsole_ListSkills_FullMethodName                = "/cambrian.OperatorConsole/ListSkills"
+	OperatorConsole_QueryMemory_FullMethodName               = "/cambrian.OperatorConsole/QueryMemory"
+	OperatorConsole_ListDocuments_FullMethodName             = "/cambrian.OperatorConsole/ListDocuments"
+	OperatorConsole_GetDocument_FullMethodName               = "/cambrian.OperatorConsole/GetDocument"
+	OperatorConsole_AnswerMemory_FullMethodName              = "/cambrian.OperatorConsole/AnswerMemory"
+	OperatorConsole_SetToolPolicy_FullMethodName             = "/cambrian.OperatorConsole/SetToolPolicy"
+	OperatorConsole_ExecuteTool_FullMethodName               = "/cambrian.OperatorConsole/ExecuteTool"
+	OperatorConsole_IngestMemory_FullMethodName              = "/cambrian.OperatorConsole/IngestMemory"
+	OperatorConsole_GetIngestStatus_FullMethodName           = "/cambrian.OperatorConsole/GetIngestStatus"
+	OperatorConsole_WatchToolApprovals_FullMethodName        = "/cambrian.OperatorConsole/WatchToolApprovals"
+	OperatorConsole_WatchMyApprovals_FullMethodName          = "/cambrian.OperatorConsole/WatchMyApprovals"
+	OperatorConsole_ListApprovals_FullMethodName             = "/cambrian.OperatorConsole/ListApprovals"
+	OperatorConsole_AnswerApproval_FullMethodName            = "/cambrian.OperatorConsole/AnswerApproval"
+	OperatorConsole_ListStandingApprovals_FullMethodName     = "/cambrian.OperatorConsole/ListStandingApprovals"
+	OperatorConsole_RevokeStandingApproval_FullMethodName    = "/cambrian.OperatorConsole/RevokeStandingApproval"
+	OperatorConsole_ShareToTeam_FullMethodName               = "/cambrian.OperatorConsole/ShareToTeam"
+	OperatorConsole_ListWatches_FullMethodName               = "/cambrian.OperatorConsole/ListWatches"
+	OperatorConsole_RegisterWatch_FullMethodName             = "/cambrian.OperatorConsole/RegisterWatch"
+	OperatorConsole_DeleteWatch_FullMethodName               = "/cambrian.OperatorConsole/DeleteWatch"
+	OperatorConsole_SetWatchActive_FullMethodName            = "/cambrian.OperatorConsole/SetWatchActive"
+	OperatorConsole_ListWatchDeadLetters_FullMethodName      = "/cambrian.OperatorConsole/ListWatchDeadLetters"
+	OperatorConsole_ListPipelines_FullMethodName             = "/cambrian.OperatorConsole/ListPipelines"
+	OperatorConsole_DryRunPipeline_FullMethodName            = "/cambrian.OperatorConsole/DryRunPipeline"
+	OperatorConsole_GetPipeline_FullMethodName               = "/cambrian.OperatorConsole/GetPipeline"
+	OperatorConsole_ListNodeItems_FullMethodName             = "/cambrian.OperatorConsole/ListNodeItems"
+	OperatorConsole_ValidatePipeline_FullMethodName          = "/cambrian.OperatorConsole/ValidatePipeline"
+	OperatorConsole_SavePipeline_FullMethodName              = "/cambrian.OperatorConsole/SavePipeline"
+	OperatorConsole_TransitionPipeline_FullMethodName        = "/cambrian.OperatorConsole/TransitionPipeline"
+	OperatorConsole_QueryLogs_FullMethodName                 = "/cambrian.OperatorConsole/QueryLogs"
+	OperatorConsole_TailLogs_FullMethodName                  = "/cambrian.OperatorConsole/TailLogs"
+	OperatorConsole_GetWatchMetrics_FullMethodName           = "/cambrian.OperatorConsole/GetWatchMetrics"
+	OperatorConsole_BacktestWatch_FullMethodName             = "/cambrian.OperatorConsole/BacktestWatch"
+	OperatorConsole_PreviewRoute_FullMethodName              = "/cambrian.OperatorConsole/PreviewRoute"
+	OperatorConsole_ExplainAccess_FullMethodName             = "/cambrian.OperatorConsole/ExplainAccess"
+	OperatorConsole_ListClassificationTags_FullMethodName    = "/cambrian.OperatorConsole/ListClassificationTags"
+	OperatorConsole_ListSessionCheckpoints_FullMethodName    = "/cambrian.OperatorConsole/ListSessionCheckpoints"
+	OperatorConsole_ListMCPServers_FullMethodName            = "/cambrian.OperatorConsole/ListMCPServers"
+	OperatorConsole_GetEmbeddingConfig_FullMethodName        = "/cambrian.OperatorConsole/GetEmbeddingConfig"
+	OperatorConsole_ClassifyInput_FullMethodName             = "/cambrian.OperatorConsole/ClassifyInput"
+	OperatorConsole_ListGenerators_FullMethodName            = "/cambrian.OperatorConsole/ListGenerators"
+	OperatorConsole_ListRoleAssignments_FullMethodName       = "/cambrian.OperatorConsole/ListRoleAssignments"
+	OperatorConsole_TestGenerator_FullMethodName             = "/cambrian.OperatorConsole/TestGenerator"
+	OperatorConsole_GetConfigSchema_FullMethodName           = "/cambrian.OperatorConsole/GetConfigSchema"
+	OperatorConsole_SetConfig_FullMethodName                 = "/cambrian.OperatorConsole/SetConfig"
+	OperatorConsole_DeleteConfig_FullMethodName              = "/cambrian.OperatorConsole/DeleteConfig"
+	OperatorConsole_SetGeneratorKey_FullMethodName           = "/cambrian.OperatorConsole/SetGeneratorKey"
+	OperatorConsole_ClearGeneratorKey_FullMethodName         = "/cambrian.OperatorConsole/ClearGeneratorKey"
+	OperatorConsole_SaveGenerator_FullMethodName             = "/cambrian.OperatorConsole/SaveGenerator"
+	OperatorConsole_RemoveGenerator_FullMethodName           = "/cambrian.OperatorConsole/RemoveGenerator"
+	OperatorConsole_SetRoleAssignment_FullMethodName         = "/cambrian.OperatorConsole/SetRoleAssignment"
+	OperatorConsole_SaveMCPServer_FullMethodName             = "/cambrian.OperatorConsole/SaveMCPServer"
+	OperatorConsole_RemoveMCPServer_FullMethodName           = "/cambrian.OperatorConsole/RemoveMCPServer"
+	OperatorConsole_SetMCPServerToken_FullMethodName         = "/cambrian.OperatorConsole/SetMCPServerToken"
+	OperatorConsole_ClearMCPServerToken_FullMethodName       = "/cambrian.OperatorConsole/ClearMCPServerToken"
+	OperatorConsole_TestMCPServer_FullMethodName             = "/cambrian.OperatorConsole/TestMCPServer"
+	OperatorConsole_ConfirmLink_FullMethodName               = "/cambrian.OperatorConsole/ConfirmLink"
+	OperatorConsole_RetractLink_FullMethodName               = "/cambrian.OperatorConsole/RetractLink"
+	OperatorConsole_RetractLinksByProducer_FullMethodName    = "/cambrian.OperatorConsole/RetractLinksByProducer"
+	OperatorConsole_ListLinkCandidates_FullMethodName        = "/cambrian.OperatorConsole/ListLinkCandidates"
+	OperatorConsole_ListLinkPairs_FullMethodName             = "/cambrian.OperatorConsole/ListLinkPairs"
+	OperatorConsole_ConfirmLinkPair_FullMethodName           = "/cambrian.OperatorConsole/ConfirmLinkPair"
+	OperatorConsole_RejectLinkPair_FullMethodName            = "/cambrian.OperatorConsole/RejectLinkPair"
+	OperatorConsole_SubmitPlan_FullMethodName                = "/cambrian.OperatorConsole/SubmitPlan"
+	OperatorConsole_GetReactiveBudget_FullMethodName         = "/cambrian.OperatorConsole/GetReactiveBudget"
+	OperatorConsole_GetTokenSeries_FullMethodName            = "/cambrian.OperatorConsole/GetTokenSeries"
+	OperatorConsole_ProposePlan_FullMethodName               = "/cambrian.OperatorConsole/ProposePlan"
+	OperatorConsole_ExplainAccessBatch_FullMethodName        = "/cambrian.OperatorConsole/ExplainAccessBatch"
+	OperatorConsole_GetBlastRadiusPreview_FullMethodName     = "/cambrian.OperatorConsole/GetBlastRadiusPreview"
+	OperatorConsole_RetryWatchDeadLetter_FullMethodName      = "/cambrian.OperatorConsole/RetryWatchDeadLetter"
+	OperatorConsole_ListDeliveryIntents_FullMethodName       = "/cambrian.OperatorConsole/ListDeliveryIntents"
+	OperatorConsole_ResolveDeliveryIntent_FullMethodName     = "/cambrian.OperatorConsole/ResolveDeliveryIntent"
+	OperatorConsole_ListPythonPackages_FullMethodName        = "/cambrian.OperatorConsole/ListPythonPackages"
+	OperatorConsole_RemovePythonPackage_FullMethodName       = "/cambrian.OperatorConsole/RemovePythonPackage"
+	OperatorConsole_RetryPythonPackageInstall_FullMethodName = "/cambrian.OperatorConsole/RetryPythonPackageInstall"
+	OperatorConsole_PrunePythonEnv_FullMethodName            = "/cambrian.OperatorConsole/PrunePythonEnv"
+	OperatorConsole_DeleteWatchDeadLetter_FullMethodName     = "/cambrian.OperatorConsole/DeleteWatchDeadLetter"
+	OperatorConsole_ListMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/ListMemoryNotes"
+	OperatorConsole_GetMemoryNotes_FullMethodName            = "/cambrian.OperatorConsole/GetMemoryNotes"
+	OperatorConsole_SetMemoryNotes_FullMethodName            = "/cambrian.OperatorConsole/SetMemoryNotes"
+	OperatorConsole_DeleteMemoryNotes_FullMethodName         = "/cambrian.OperatorConsole/DeleteMemoryNotes"
+	OperatorConsole_SetMemoryNotesBudget_FullMethodName      = "/cambrian.OperatorConsole/SetMemoryNotesBudget"
+	OperatorConsole_ListSkillProposals_FullMethodName        = "/cambrian.OperatorConsole/ListSkillProposals"
+	OperatorConsole_DecideSkillProposal_FullMethodName       = "/cambrian.OperatorConsole/DecideSkillProposal"
+	OperatorConsole_SetSkillLock_FullMethodName              = "/cambrian.OperatorConsole/SetSkillLock"
+	OperatorConsole_ListSkillLedger_FullMethodName           = "/cambrian.OperatorConsole/ListSkillLedger"
+	OperatorConsole_RollbackSkill_FullMethodName             = "/cambrian.OperatorConsole/RollbackSkill"
+	OperatorConsole_ListSkillGrants_FullMethodName           = "/cambrian.OperatorConsole/ListSkillGrants"
+	OperatorConsole_GrantSkill_FullMethodName                = "/cambrian.OperatorConsole/GrantSkill"
+	OperatorConsole_RevokeSkillGrant_FullMethodName          = "/cambrian.OperatorConsole/RevokeSkillGrant"
+	OperatorConsole_ListIntegrationCatalog_FullMethodName    = "/cambrian.OperatorConsole/ListIntegrationCatalog"
+	OperatorConsole_ListIntegrations_FullMethodName          = "/cambrian.OperatorConsole/ListIntegrations"
+	OperatorConsole_InstallIntegration_FullMethodName        = "/cambrian.OperatorConsole/InstallIntegration"
+	OperatorConsole_UpdateIntegration_FullMethodName         = "/cambrian.OperatorConsole/UpdateIntegration"
+	OperatorConsole_SetIntegrationSecret_FullMethodName      = "/cambrian.OperatorConsole/SetIntegrationSecret"
+	OperatorConsole_ClearIntegrationSecret_FullMethodName    = "/cambrian.OperatorConsole/ClearIntegrationSecret"
+	OperatorConsole_SetIntegrationEnabled_FullMethodName     = "/cambrian.OperatorConsole/SetIntegrationEnabled"
+	OperatorConsole_TestIntegration_FullMethodName           = "/cambrian.OperatorConsole/TestIntegration"
+	OperatorConsole_RemoveIntegration_FullMethodName         = "/cambrian.OperatorConsole/RemoveIntegration"
+	OperatorConsole_RevertIntegrationToFile_FullMethodName   = "/cambrian.OperatorConsole/RevertIntegrationToFile"
+	OperatorConsole_SetIntegrationTrustTier_FullMethodName   = "/cambrian.OperatorConsole/SetIntegrationTrustTier"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -858,6 +862,20 @@ type OperatorConsoleClient interface {
 	// ("confirm" it arrived, or "resend" once). Capability "delivery-intents".
 	ListDeliveryIntents(ctx context.Context, in *ListDeliveryIntentsOpRequest, opts ...grpc.CallOption) (*ListDeliveryIntentsOpResponse, error)
 	ResolveDeliveryIntent(ctx context.Context, in *ResolveDeliveryIntentOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// Contract 0119 (ENG-2012, ADR-0157 D7.10/D7.12 stage P5): the sandbox Python
+	// lifecycle. ListPythonPackages lists the per-agent package records with their
+	// audit trail, the env's generations with sizes and the last GC run
+	// (operator-only: it shows the kernel's install layout). RemovePythonPackage
+	// takes a runtime-requested package out of an agent's layer (a new generation;
+	// a profile-declared package is refused, change the profile).
+	// RetryPythonPackageInstall re-runs an agent's package check now (retries an
+	// install that failed after approval, applies a profile edit). PrunePythonEnv
+	// runs one GC pass. Mutations: command_id + reason, audited. Capability
+	// "python-packages".
+	ListPythonPackages(ctx context.Context, in *ListPythonPackagesOpRequest, opts ...grpc.CallOption) (*ListPythonPackagesOpResponse, error)
+	RemovePythonPackage(ctx context.Context, in *RemovePythonPackageOpRequest, opts ...grpc.CallOption) (*PythonPackageCommandAck, error)
+	RetryPythonPackageInstall(ctx context.Context, in *RetryPythonPackageInstallOpRequest, opts ...grpc.CallOption) (*PythonPackageCommandAck, error)
+	PrunePythonEnv(ctx context.Context, in *PrunePythonEnvOpRequest, opts ...grpc.CallOption) (*PrunePythonEnvOpResponse, error)
 	// DeleteWatchDeadLetter removes one dead letter an operator has dealt with
 	// (ENG-472). A dead letter embeds the full signal, personal content included;
 	// besides this delete, the premium JournalGC prunes entries older than
@@ -2129,6 +2147,46 @@ func (c *operatorConsoleClient) ResolveDeliveryIntent(ctx context.Context, in *R
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListPythonPackages(ctx context.Context, in *ListPythonPackagesOpRequest, opts ...grpc.CallOption) (*ListPythonPackagesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPythonPackagesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListPythonPackages_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RemovePythonPackage(ctx context.Context, in *RemovePythonPackageOpRequest, opts ...grpc.CallOption) (*PythonPackageCommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PythonPackageCommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RemovePythonPackage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RetryPythonPackageInstall(ctx context.Context, in *RetryPythonPackageInstallOpRequest, opts ...grpc.CallOption) (*PythonPackageCommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PythonPackageCommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RetryPythonPackageInstall_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) PrunePythonEnv(ctx context.Context, in *PrunePythonEnvOpRequest, opts ...grpc.CallOption) (*PrunePythonEnvOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrunePythonEnvOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_PrunePythonEnv_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) DeleteWatchDeadLetter(ctx context.Context, in *DeleteWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommandAck)
@@ -3081,6 +3139,20 @@ type OperatorConsoleServer interface {
 	// ("confirm" it arrived, or "resend" once). Capability "delivery-intents".
 	ListDeliveryIntents(context.Context, *ListDeliveryIntentsOpRequest) (*ListDeliveryIntentsOpResponse, error)
 	ResolveDeliveryIntent(context.Context, *ResolveDeliveryIntentOpRequest) (*CommandAck, error)
+	// Contract 0119 (ENG-2012, ADR-0157 D7.10/D7.12 stage P5): the sandbox Python
+	// lifecycle. ListPythonPackages lists the per-agent package records with their
+	// audit trail, the env's generations with sizes and the last GC run
+	// (operator-only: it shows the kernel's install layout). RemovePythonPackage
+	// takes a runtime-requested package out of an agent's layer (a new generation;
+	// a profile-declared package is refused, change the profile).
+	// RetryPythonPackageInstall re-runs an agent's package check now (retries an
+	// install that failed after approval, applies a profile edit). PrunePythonEnv
+	// runs one GC pass. Mutations: command_id + reason, audited. Capability
+	// "python-packages".
+	ListPythonPackages(context.Context, *ListPythonPackagesOpRequest) (*ListPythonPackagesOpResponse, error)
+	RemovePythonPackage(context.Context, *RemovePythonPackageOpRequest) (*PythonPackageCommandAck, error)
+	RetryPythonPackageInstall(context.Context, *RetryPythonPackageInstallOpRequest) (*PythonPackageCommandAck, error)
+	PrunePythonEnv(context.Context, *PrunePythonEnvOpRequest) (*PrunePythonEnvOpResponse, error)
 	// DeleteWatchDeadLetter removes one dead letter an operator has dealt with
 	// (ENG-472). A dead letter embeds the full signal, personal content included;
 	// besides this delete, the premium JournalGC prunes entries older than
@@ -3545,6 +3617,18 @@ func (UnimplementedOperatorConsoleServer) ListDeliveryIntents(context.Context, *
 }
 func (UnimplementedOperatorConsoleServer) ResolveDeliveryIntent(context.Context, *ResolveDeliveryIntentOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveDeliveryIntent not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListPythonPackages(context.Context, *ListPythonPackagesOpRequest) (*ListPythonPackagesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPythonPackages not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RemovePythonPackage(context.Context, *RemovePythonPackageOpRequest) (*PythonPackageCommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemovePythonPackage not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RetryPythonPackageInstall(context.Context, *RetryPythonPackageInstallOpRequest) (*PythonPackageCommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetryPythonPackageInstall not implemented")
+}
+func (UnimplementedOperatorConsoleServer) PrunePythonEnv(context.Context, *PrunePythonEnvOpRequest) (*PrunePythonEnvOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrunePythonEnv not implemented")
 }
 func (UnimplementedOperatorConsoleServer) DeleteWatchDeadLetter(context.Context, *DeleteWatchDeadLetterOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteWatchDeadLetter not implemented")
@@ -5594,6 +5678,78 @@ func _OperatorConsole_ResolveDeliveryIntent_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListPythonPackages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPythonPackagesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListPythonPackages(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListPythonPackages_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListPythonPackages(ctx, req.(*ListPythonPackagesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RemovePythonPackage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemovePythonPackageOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RemovePythonPackage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RemovePythonPackage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RemovePythonPackage(ctx, req.(*RemovePythonPackageOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RetryPythonPackageInstall_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetryPythonPackageInstallOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RetryPythonPackageInstall(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RetryPythonPackageInstall_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RetryPythonPackageInstall(ctx, req.(*RetryPythonPackageInstallOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_PrunePythonEnv_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrunePythonEnvOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).PrunePythonEnv(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_PrunePythonEnv_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).PrunePythonEnv(ctx, req.(*PrunePythonEnvOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_DeleteWatchDeadLetter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteWatchDeadLetterOpRequest)
 	if err := dec(in); err != nil {
@@ -6474,6 +6630,22 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveDeliveryIntent",
 			Handler:    _OperatorConsole_ResolveDeliveryIntent_Handler,
+		},
+		{
+			MethodName: "ListPythonPackages",
+			Handler:    _OperatorConsole_ListPythonPackages_Handler,
+		},
+		{
+			MethodName: "RemovePythonPackage",
+			Handler:    _OperatorConsole_RemovePythonPackage_Handler,
+		},
+		{
+			MethodName: "RetryPythonPackageInstall",
+			Handler:    _OperatorConsole_RetryPythonPackageInstall_Handler,
+		},
+		{
+			MethodName: "PrunePythonEnv",
+			Handler:    _OperatorConsole_PrunePythonEnv_Handler,
 		},
 		{
 			MethodName: "DeleteWatchDeadLetter",

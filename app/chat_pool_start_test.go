@@ -99,6 +99,7 @@ func (e *delayedPythonEnv) ReadyC() <-chan struct{} { return e.readyC }
 // SettledC, Builder and Stop complete pythonEnvGate, so the fake also feeds the
 // plugins' spawn gate through pythonSpawnReadinessOf (ENG-2137).
 func (e *delayedPythonEnv) SettledC() <-chan struct{} { return e.settledC }
+func (e *delayedPythonEnv) SetOnBuilt(func())         {}
 func (e *delayedPythonEnv) Builder() *pyenv.Builder   { return nil }
 func (e *delayedPythonEnv) Stop()                     {}
 

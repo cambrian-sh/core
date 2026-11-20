@@ -240,6 +240,37 @@ func (s *PgPythonPackageStore) ForPackage(ctx context.Context, name, version str
 	return s.list(ctx, `name = $1 AND version = $2`, domain.NormalizePythonName(name), version)
 }
 
+// List implements domain.PythonPackageStore.
+func (s *PgPythonPackageStore) List(ctx context.Context) ([]domain.PythonPackageApproval, error) {
+	return s.list(ctx, `TRUE`)
+}
+
+// Remove implements domain.PythonPackageStore: approved → removed, audited
+// in the same transaction (migration 0067 admits the state).
+func (s *PgPythonPackageStore) Remove(ctx context.Context, id, by, detail, generation string, at time.Time) error {
+	return s.recordTx(ctx, id, func(tx pgx.Tx) error {
+		var target, name, version, cur string
+		if err := tx.QueryRow(ctx, `SELECT target, name, version, state FROM python_package_approvals WHERE id = $1`, id).
+			Scan(&target, &name, &version, &cur); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrPythonPackageNotFound
+			}
+			return fmt.Errorf("python package: read: %w", err)
+		}
+		if cur != domain.PythonPackageApproved {
+			return fmt.Errorf("python package %s is %s, not approved: nothing to remove", id, cur)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE python_package_approvals SET state = 'removed', decided_by = $2, decided_at = $3, detail = $4 WHERE id = $1`,
+			id, by, at.UTC(), detail); err != nil {
+			return fmt.Errorf("python package: remove: %w", err)
+		}
+		return appendPythonPackageEvent(ctx, tx, domain.PythonPackageEvent{
+			ApprovalID: id, Target: target, Name: name, Version: version, Action: domain.PythonPackageActionRemoved,
+			Actor: by, Detail: detail, Generation: generation, At: at,
+		})
+	})
+}
+
 // AppendEvent implements domain.PythonPackageStore.
 func (s *PgPythonPackageStore) AppendEvent(ctx context.Context, e domain.PythonPackageEvent) error {
 	return s.recordTx(ctx, e.ApprovalID, func(tx pgx.Tx) error { return appendPythonPackageEvent(ctx, tx, e) })

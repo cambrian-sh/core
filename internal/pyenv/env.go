@@ -44,6 +44,19 @@ type Env struct {
 	// become ready by itself, and the spawn's refusal names the fix (ENG-2137).
 	settledC   chan struct{}
 	settleOnce sync.Once
+
+	// onBuilt is told a background build finished and switched current.json
+	// (the GC collector's trigger, D7.12: GC runs after each switch).
+	onBuilt func()
+}
+
+// SetOnBuilt sets the hook told when a background build switched the current
+// base generation. It is read when a build ends, so the composition root may
+// set it after Start (a build takes minutes; boot wiring takes seconds).
+func (e *Env) SetOnBuilt(fn func()) {
+	e.mu.Lock()
+	e.onBuilt = fn
+	e.mu.Unlock()
 }
 
 // NewEnv wraps a builder. buildOnBoot is execution.agents.python.build_on_boot.
@@ -115,7 +128,13 @@ func (e *Env) runBuild(ctx context.Context) {
 		st, err = b.Check(ctx)
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	onBuilt := e.onBuilt
+	defer func() {
+		e.mu.Unlock()
+		if err == nil && onBuilt != nil {
+			onBuilt()
+		}
+	}()
 	e.building = false
 	if err != nil {
 		e.buildErr = err

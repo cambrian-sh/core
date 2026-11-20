@@ -10,8 +10,10 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/pyenv"
 	"github.com/cambrian-sh/core/internal/pypackages"
 	"github.com/cambrian-sh/core/internal/sandbox"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 // wirePythonPackages builds the per-agent package layer service (ADR-0157
@@ -115,4 +117,64 @@ func wirePythonPackageTool(pc config.AgentPythonConfig, svc *pypackages.Service,
 	}
 	exec.KernelTools = append(exec.KernelTools, tool)
 	slog.Info("ADR-0157 D7.9: request_python_package offered to allowlisted Python agents", "wait", pc.RequestWait().String())
+}
+
+// pythonPackageAdminOrNil keeps a nil *Admin from becoming a non-nil
+// interface (the operator plane reports Unimplemented for a nil seam).
+func pythonPackageAdminOrNil(a *pypackages.Admin) operator.PythonPackageAdmin {
+	if a == nil {
+		return nil
+	}
+	return a
+}
+
+// pythonGCDeps is what the env's GC reads of the running kernel.
+type pythonGCDeps struct {
+	// inUse lists the base generations and layers live instances run on
+	// (agentmgr.InstanceManager.PythonGenerationsInUse).
+	inUse func() []string
+	// agents lists the registered agents (a removed agent's layers go).
+	agents domain.AgentLister
+}
+
+// wirePythonGC builds the env's garbage collector (ADR-0157 D7.12, P5) and the
+// operator plane's package seam over it. GC runs once the env is first ready
+// (at boot), after a background build switched the base generation, after an
+// agent's layer changed and after an instance that ran on a recorded
+// generation is gone — so a recycled instance's superseded layer is collected
+// right after the recycle. Returns nils when the env is unavailable on this
+// host or the package service is not built.
+func wirePythonGC(pc config.AgentPythonConfig, env pythonEnvGate, svc *pypackages.Service, deps pythonGCDeps) (*pyenv.Collector, *pypackages.Admin) {
+	b := env.Builder()
+	if b == nil || svc == nil || deps.inUse == nil {
+		return nil, nil
+	}
+	keep := func(ctx context.Context) pyenv.KeepSet {
+		layers, release := svc.GCKeep()
+		ks := pyenv.KeepSet{InUse: deps.inUse(), Layers: layers, Release: release}
+		if deps.agents != nil {
+			// A registry read error keeps every agent's layers (fail safe:
+			// GC never deletes on a guess).
+			if defs, err := deps.agents.GetAllAgents(ctx); err == nil {
+				ks.KnownAgents = make(map[string]bool, len(defs))
+				for _, d := range defs {
+					ks.KnownAgents[d.ID] = true
+				}
+			}
+		}
+		return ks
+	}
+	gc, err := pyenv.NewCollector(b, pyenv.GCPolicy{KeepPrevious: pc.GCKeepPrevious(), PruneCache: pc.GCPruneCache()}, keep, env.ReadyC())
+	if err != nil {
+		slog.Error("ADR-0157 D7.12: sandbox Python env GC not wired", "err", err)
+		return nil, nil
+	}
+	env.SetOnBuilt(gc.Trigger)
+	admin, err := pypackages.NewAdmin(svc, b, gc)
+	if err != nil {
+		slog.Error("ADR-0157 D7.12: python package operator seam not wired", "err", err)
+		return gc, nil
+	}
+	slog.Info("ADR-0157 D7.12: sandbox Python env GC wired", "keep_previous", pc.GCKeepPrevious(), "prune_cache", pc.GCPruneCache())
+	return gc, admin
 }

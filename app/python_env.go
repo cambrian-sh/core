@@ -92,6 +92,9 @@ type pythonEnvGate interface {
 	// (pyenv.Env.SettledC): with ReadyC still open it means the env will not
 	// become ready by itself (ENG-2137). nil when the env is unavailable.
 	SettledC() <-chan struct{}
+	// SetOnBuilt sets the hook told when a background build switched the
+	// current base generation (the GC collector's trigger, D7.12).
+	SetOnBuilt(func())
 	Stop()
 }
 
@@ -104,6 +107,7 @@ func (refusedPythonEnv) Stop()                     {}
 func (refusedPythonEnv) Builder() *pyenv.Builder   { return nil }
 func (refusedPythonEnv) ReadyC() <-chan struct{}   { return nil }
 func (refusedPythonEnv) SettledC() <-chan struct{} { return nil }
+func (refusedPythonEnv) SetOnBuilt(func())         {}
 
 // pythonSpawnReadinessOf is the env's half of the plugins' spawn gate
 // (KernelServices.PythonEnv, ENG-2137). A kernel with no managed env, or one

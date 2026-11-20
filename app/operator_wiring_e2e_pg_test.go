@@ -128,7 +128,7 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("forget", k.Server.Forgetter)
 	add("logs", when(k.Logs != nil, k.Logs))
 	add("kernelVersion", KernelVersion)
-	add("contractVersion", "0118")
+	add("contractVersion", "0119")
 	add("plugins", pluginHandshake(k.PluginStatuses))
 	addType("sessionOps", operator.SessionOpsFuncs{})
 	addType("planSubmitter", when(k.SessionMgr != nil && k.Server != nil, planSubmitter{}))
@@ -137,6 +137,8 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("deadletterRetry", when(k.DeadLetterRetrier != nil, k.DeadLetterRetrier))
 	// ENG-1657: the delivery service with its journal (nil without the chat lane).
 	add("deliveryIntents", when(k.DeliveryIntents != nil, k.DeliveryIntents))
+	// ENG-2012: the sandbox Python lifecycle seam (nil without the managed env).
+	add("pythonPackages", when(k.PythonPackages != nil, k.PythonPackages))
 	return w
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	"github.com/cambrian-sh/core/internal/memorynotes"
 	"github.com/cambrian-sh/core/internal/ontology"
+	"github.com/cambrian-sh/core/internal/pyenv"
 	"github.com/cambrian-sh/core/internal/pypackages"
 	"github.com/cambrian-sh/core/internal/sandbox"
 	"github.com/cambrian-sh/core/internal/sandbox/egressproxy"
@@ -104,6 +105,8 @@ type kernelBuild struct {
 	// approvals, watcher, sessions
 	toolApproval    *domain.AddressedHub
 	pyPackages      *pypackages.Service
+	pyGC            *pyenv.Collector
+	pyAdmin         *pypackages.Admin
 	planExec        *kernelPlanExecutor
 	watcher         *supwatcher.Watcher
 	pgSessions      *postgres.PgSessionStore
@@ -302,6 +305,7 @@ func (b *kernelBuild) kernel(lis net.Listener) *Kernel {
 		StreamRegistry:      streamRegistry,
 		DeadLetterRetrier:   b.deadLetterRetrier,
 		DeliveryIntents:     b.deliveryIntents,
+		PythonPackages:      pythonPackageAdminOrNil(b.pyAdmin),
 		Principals:          idStores.registry,
 		Authenticator:       authenticator,
 		PluginStatuses:      composed.statuses, // ADR-0082 D9 (empty in OSS)

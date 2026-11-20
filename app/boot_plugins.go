@@ -125,6 +125,11 @@ func (b *kernelBuild) buildPluginSeams() error {
 		// Stop waits for layer installs an approval started in the background.
 		lifecycles = append(lifecycles, Lifecycle{Name: "python-packages", Start: func(context.Context) {}, Stop: pyPackages.Stop})
 	}
+	if b.pyGC != nil {
+		// ADR-0157 D7.12: the env GC's one goroutine (boot run once the env is
+		// ready, then one run per coalesced trigger).
+		lifecycles = append(lifecycles, Lifecycle{Name: "python-env-gc", Start: b.pyGC.Start, Stop: b.pyGC.Stop})
+	}
 
 	// The knowledge proposal -> approval -> commit bridge
 	// (T-20261107-knowledge-substrate-extensions-for-case). It holds the RAW knowledge

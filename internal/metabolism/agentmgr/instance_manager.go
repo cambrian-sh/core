@@ -124,6 +124,13 @@ type InstanceManager struct {
 	// recycle is the stale-instance bookkeeping of ADR-0157 D7.10.2
 	// (stale_recycle.go). Guarded by mu; lazily made.
 	recycle staleState
+	// pyGens records the base generation and layer each live Python instance
+	// runs on (ADR-0157 D7.12, python_generations.go): GC never deletes them.
+	// Guarded by mu; lazily made.
+	pyGens map[string]pythonGeneration
+	// onPythonRelease is told when an instance that ran on a recorded
+	// generation is gone (the GC collector's trigger). Set before agents boot.
+	onPythonRelease func()
 }
 
 // SetEnvPassthrough configures the operator-declared agent env allowlist extras
@@ -311,6 +318,7 @@ func (im *InstanceManager) detachLocked(instanceID string) func() {
 	delete(im.capCleanups, instanceID)
 	delete(im.instances, instanceID)
 	im.recycle.forget(instanceID)
+	released := im.forgetPythonGenerationLocked(instanceID)
 	if inst != nil {
 		ids := im.agentIndex[inst.AgentID]
 		for i, id := range ids {
@@ -332,6 +340,9 @@ func (im *InstanceManager) detachLocked(instanceID string) func() {
 		}
 		if inst != nil && inst.SocketPath != "" {
 			_ = os.Remove(inst.SocketPath)
+		}
+		if released != nil {
+			released()
 		}
 	}
 }
@@ -436,11 +447,13 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 		cmd.Env = append(cmd.Env, im.envExtras...)
 		// ADR-0157 D7.5: the agent's own package layer, loaded by the base
 		// generation's real interpreter (no venv launcher).
-		layerEnv, err := im.pythonLayerEnv(def, pi)
+		layer, err := im.currentPythonLayer(def, pi)
 		if err != nil {
 			return nil, err
 		}
-		cmd.Env = withPythonPath(cmd.Env, layerEnv)
+		cmd.Env = withPythonPath(cmd.Env, layerEnvOf(layer))
+		// ADR-0157 D7.12: GC keeps what this instance runs on until it is gone.
+		im.recordPythonGeneration(inst.ID, pi.Home, layer.Dir)
 	case domain.RuntimeBun, domain.RuntimeNode:
 		// ADR-0125: same argv contract as Python; the interpreter comes from
 		// config or $PATH (runtimeExecutable errors with the config key named).
@@ -683,6 +696,14 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	if err != nil {
 		return nil, err
 	}
+	// ADR-0157 D7.12: buildAgentCmd recorded the Python generation this
+	// instance runs on; a boot that fails drops it again.
+	booted := false
+	defer func() {
+		if !booted {
+			im.dropPythonGeneration(inst.ID)
+		}
+	}()
 	inst.SocketPath = im.agentSocketPath(def.ID, inst.ID)
 
 	// ADR-0157 D4: a fresh per-instance token, in the environment only. It is
@@ -692,7 +713,6 @@ func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.Ag
 	if err != nil {
 		return nil, err
 	}
-	booted := false
 	defer func() {
 		if !booted {
 			im.tokens.Revoke(inst.ID)
@@ -809,6 +829,14 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	if err != nil {
 		return nil, err
 	}
+	// ADR-0157 D7.12: buildAgentCmd recorded the Python generation this
+	// instance runs on; a boot that fails drops it again.
+	booted := false
+	defer func() {
+		if !booted {
+			im.dropPythonGeneration(inst.ID)
+		}
+	}()
 	inst.SocketPath = im.agentSocketPath(def.ID, inst.ID)
 
 	// Per-daemon launch data rides argv (SEC-01); the credential does not.
@@ -827,7 +855,6 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	if err != nil {
 		return nil, err
 	}
-	booted := false
 	defer func() {
 		if !booted {
 			im.tokens.Revoke(inst.ID)

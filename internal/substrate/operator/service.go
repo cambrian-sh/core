@@ -102,6 +102,8 @@ type Service struct {
 	deadletterRetry DeadLetterRetrier
 	// deliveryIntents lists and resolves outbound delivery intents (ENG-1657).
 	deliveryIntents DeliveryIntentSource
+	// pythonPackages is the sandbox Python lifecycle (contract 0119, ENG-2012).
+	pythonPackages PythonPackageAdmin
 	// configSchema is the ADR-0101 read half of the runtime-config surface.
 	configSchema ConfigSchemaReporter
 	// configWriter / secretWriter are the ADR-0101 durable write halves. nil ⇒

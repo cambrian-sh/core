@@ -703,6 +703,12 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 		o.DeliveryIntents = k.DeliveryIntents
 		operatorCaps = append(operatorCaps, "delivery-intents")
 	}
+	// ENG-2012 (ADR-0157 D7.10/D7.12, P5): the sandbox Python lifecycle where the
+	// managed env and the package service run.
+	if k.PythonPackages != nil {
+		o.PythonPackages = k.PythonPackages
+		operatorCaps = append(operatorCaps, "python-packages")
+	}
 	// Contract 0074 watch liveness (T-20261101-contract-0074-watch-liveness-is-never-wired):
 	// ListWatches reads each watch's source-stream state through the registry a
 	// plugin registered. Fire history and the plane budget have no provider yet.
@@ -943,7 +949,12 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// failed; identifiers, state, attempts, error, text length - never the text) and
 	// ResolveDeliveryIntent (command_id + reason; "confirm" or "resend" an ambiguous
 	// intent), capability "delivery-intents".
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0118", operatorCaps
+	// 0119 (2026-11-20, additive; ENG-2012, ADR-0157 D7.10/D7.12 P5): the sandbox
+	// Python lifecycle - ListPythonPackages (operator-only: records with their audit
+	// trail, generations with sizes, last GC), RemovePythonPackage,
+	// RetryPythonPackageInstall and PrunePythonEnv (command_id + reason), capability
+	// "python-packages".
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0119", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

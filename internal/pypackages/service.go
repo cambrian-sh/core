@@ -100,6 +100,14 @@ type Service struct {
 	resolved  map[string]resolution // agent|pkg|base generation → resolution (one per process)
 
 	wg sync.WaitGroup // background installs started by approvals; Stop waits
+
+	// gcMu keeps the env's GC from deleting a layer while a package check is
+	// choosing or building one (P5): every ensureLocked holds it shared, a GC
+	// run holds it exclusively from reading the current layers to its last
+	// deletion (GCKeep).
+	gcMu sync.RWMutex
+	// alsoOnChange is a second layer-change listener (SetOnLayerChangeAlso).
+	alsoOnChange func()
 }
 
 type resolution struct {
@@ -189,13 +197,34 @@ func (s *Service) Ensure(ctx context.Context, agentID string, decl []domain.Pyth
 
 // ensureLocked is Ensure under the agent's lock.
 func (s *Service) ensureLocked(ctx context.Context, agentID string, decl []domain.PythonPackage, base pyenv.Interpreter) (pyenv.Layer, error) {
+	return s.ensureExcluding(ctx, agentID, decl, base, nil)
+}
+
+// ensureExcluding is ensureLocked with runtime-approved packages named in
+// exclude left out of the layer (an operator removal builds the layer without
+// the package before recording the removal, P5). Agent lock held.
+func (s *Service) ensureExcluding(ctx context.Context, agentID string, decl []domain.PythonPackage, base pyenv.Interpreter, exclude map[string]bool) (pyenv.Layer, error) {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
 	// P4: packages an Operator approved for this agent at runtime
 	// (request_python_package) belong to its layer like declared ones, so an
 	// approval after the tool's window applies to the agent's later runs.
 	runtime := s.runtimeApproved(ctx, agentID, base)
+	if len(exclude) > 0 {
+		kept := runtime[:0:0]
+		for _, r := range runtime {
+			if !exclude[r.Name] {
+				kept = append(kept, r)
+			}
+		}
+		runtime = kept
+	}
 	if len(decl) == 0 && len(runtime) == 0 {
 		s.setCurrent(agentID, pyenv.Layer{})
 		s.noteChange(agentID, pyenv.Layer{})
+		if s.store != nil && base.Home != "" {
+			s.auditUndeclared(ctx, agentID, base, nil, pyenv.Layer{})
+		}
 		return pyenv.Layer{}, nil
 	}
 	s.setCurrent(agentID, pyenv.Layer{}) // nothing launches on an old answer while this one is pending
@@ -261,6 +290,7 @@ func (s *Service) ensureLocked(ctx context.Context, agentID string, decl []domai
 		// Every declared package is in the base env already: no layer.
 		s.setCurrent(agentID, pyenv.Layer{})
 		s.noteChange(agentID, pyenv.Layer{})
+		s.auditUndeclared(ctx, agentID, base, declared, pyenv.Layer{})
 		return pyenv.Layer{}, nil
 	}
 	entries, err := union(approved)
@@ -271,6 +301,7 @@ func (s *Service) ensureLocked(ctx context.Context, agentID string, decl []domai
 	if l, ok := s.env.FindLayer(agentID, base, entries); ok {
 		s.setCurrent(agentID, l)
 		s.noteChange(agentID, l)
+		s.auditUndeclared(ctx, agentID, base, declared, l)
 		return l, nil
 	}
 	l, err := s.build(ctx, agentID, base, entries, declared, approved)
@@ -279,7 +310,46 @@ func (s *Service) ensureLocked(ctx context.Context, agentID string, decl []domai
 	}
 	s.setCurrent(agentID, l)
 	s.noteChange(agentID, l)
+	s.auditUndeclared(ctx, agentID, base, declared, l)
 	return l, nil
+}
+
+// auditUndeclared records the removal of every package a profile declared,
+// that was installed for the agent and that its layer no longer carries
+// because the profile stopped declaring it (D7.10.3: removing a package from
+// python_packages builds a layer without it; no approval needed, audited).
+// The record stays approved: declaring it again reinstalls it. Best-effort:
+// an audit write that fails is logged, never fatal to the spawn.
+func (s *Service) auditUndeclared(ctx context.Context, agentID string, base pyenv.Interpreter, inLayer []string, l pyenv.Layer) {
+	recs, err := s.store.ForTarget(ctx, agentID)
+	if err != nil {
+		return
+	}
+	baseGen := filepath.Base(base.Home)
+	gen := ""
+	if l.Dir != "" {
+		gen = filepath.Base(l.Dir)
+	}
+	for _, r := range recs {
+		if r.State != domain.PythonPackageApproved || IsRuntimeRequest(r) || r.BaseGeneration != baseGen || containsName(inLayer, r.Name) {
+			continue
+		}
+		evs, err := s.store.Events(ctx, r.ID)
+		if err != nil || len(evs) == 0 {
+			continue
+		}
+		switch evs[len(evs)-1].Action {
+		case domain.PythonPackageActionInstalled, domain.PythonPackageActionReinstalled:
+		default:
+			continue // never installed, or its removal is already audited
+		}
+		e := domain.PythonPackageEvent{ApprovalID: r.ID, Target: r.Target, Name: r.Name, Version: r.Version,
+			Action: domain.PythonPackageActionRemoved, Actor: "profile:" + agentID, Generation: gen, At: s.cfg.Now().UTC(),
+			Detail: "no longer declared in the agent's python_packages; its layer was rebuilt without it (declaring it again reinstalls it)"}
+		if aerr := s.store.AppendEvent(context.WithoutCancel(ctx), e); aerr != nil {
+			slog.WarnContext(ctx, "ADR-0157 D7: python package removal audit not recorded", "record", r.ID, "err", aerr)
+		}
+	}
 }
 
 // deliveredLayer is the layer dir the agent was last handed ("" none) and
@@ -303,10 +373,25 @@ func (s *Service) noteChange(agent string, now pyenv.Layer) {
 	s.mu.Lock()
 	old, known := s.delivered[agent]
 	s.delivered[agent] = dir
+	also := s.alsoOnChange
 	s.mu.Unlock()
-	if s.cfg.OnLayerChange != nil && known && old != dir {
-		s.cfg.OnLayerChange(agent)
+	if known && old != dir {
+		if s.cfg.OnLayerChange != nil {
+			s.cfg.OnLayerChange(agent)
+		}
+		if also != nil {
+			also()
+		}
 	}
+}
+
+// SetOnLayerChangeAlso adds a second listener for layer changes: the env's GC
+// collector, which exists only after this service (it reads the service's
+// current layers). Set it before agents boot.
+func (s *Service) SetOnLayerChangeAlso(fn func()) {
+	s.mu.Lock()
+	s.alsoOnChange = fn
+	s.mu.Unlock()
 }
 
 // runtimeApproved lists the agent's approved records that a runtime request
@@ -485,6 +570,10 @@ func (s *Service) act(ctx context.Context, r domain.PythonPackageApproval) (outc
 	case domain.PythonPackageApproved, domain.PythonPackageDenied:
 		return outcome{rec: r, state: r.State, card: r.ApprovalID}, nil
 	case domain.PythonPackageExpired:
+		return s.raiseFor(ctx, r, true)
+	case domain.PythonPackageRemoved:
+		// An Operator removed it (P5): asking for it again needs a fresh
+		// decision, never the approval the removal overruled.
 		return s.raiseFor(ctx, r, true)
 	}
 	if r.ApprovalID == "" {

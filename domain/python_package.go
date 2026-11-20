@@ -130,6 +130,11 @@ const (
 	PythonPackageApproved = "approved"
 	PythonPackageDenied   = "denied"
 	PythonPackageExpired  = "expired"
+	// PythonPackageRemoved: an Operator removed the package from the agent's
+	// layer (ADR-0157 D7.10.3, P5). The record no longer belongs to the
+	// layer; asking for the same package again raises a fresh card (the
+	// operator's removal outranks the earlier approval).
+	PythonPackageRemoved = "removed"
 )
 
 // Python package audit actions (python_package_events.action).
@@ -141,6 +146,11 @@ const (
 	PythonPackageActionInstalled     = "installed"
 	PythonPackageActionReinstalled   = "reinstalled"
 	PythonPackageActionInstallFailed = "install_failed"
+	// PythonPackageActionRemoved audits a removal: by an operator command
+	// (the record moves to state removed) or because the profile no longer
+	// declares the package (the record stays approved; re-declaring reinstalls
+	// it). Generation is the layer built without it ("" ⇒ no layer).
+	PythonPackageActionRemoved = "removed"
 )
 
 // PythonPackageApproval is one (target, package, version, lock) approval
@@ -213,6 +223,12 @@ type PythonPackageStore interface {
 	// ForPackage lists every target's records of one (name, version), newest
 	// first (the card's "already approved for" note, A1-Q9).
 	ForPackage(ctx context.Context, name, version string) ([]PythonPackageApproval, error)
+	// List lists every target's records, newest first (the operator plane's
+	// package view, P5).
+	List(ctx context.Context) ([]PythonPackageApproval, error)
+	// Remove moves an approved record to removed and audits it (action
+	// removed, the generation built without it) in one write (P5).
+	Remove(ctx context.Context, id, by, detail, generation string, at time.Time) error
 	// AppendEvent audits an install, reinstall or failure of a record.
 	AppendEvent(ctx context.Context, e PythonPackageEvent) error
 	// Events lists a record's audit trail, oldest first.

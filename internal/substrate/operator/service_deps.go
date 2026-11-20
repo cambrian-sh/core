@@ -115,6 +115,9 @@ type Options struct {
 	// DeliveryIntents lists and resolves the two-phase delivery journal's intents
 	// (ENG-1657; ingress.DeliveryService with a journal). nil ⇒ Unimplemented.
 	DeliveryIntents DeliveryIntentSource
+	// PythonPackages is the sandbox Python lifecycle: list, remove, retry,
+	// prune (contract 0119, ENG-2012; pypackages.Admin). nil ⇒ Unimplemented.
+	PythonPackages PythonPackageAdmin
 	// WatchMetrics / WatchBacktester are watch observability (REACT-05 / ADR-0071).
 	WatchMetrics    domain.WatchMetricsReader
 	WatchBacktester domain.WatchBacktester
@@ -228,6 +231,7 @@ func New(d Deps, o Options) (*Service, error) {
 	s.deadletters = o.DeadLetters
 	s.deadletterRetry = o.DeadLetterRetrier
 	s.deliveryIntents = o.DeliveryIntents
+	s.pythonPackages = o.PythonPackages
 	s.watchMetrics, s.watchBacktest = o.WatchMetrics, o.WatchBacktester
 	s.streams, s.watchFires, s.planeBudget = o.Streams, o.WatchFires, o.PlaneBudget
 	s.policy = o.PolicyAdmin

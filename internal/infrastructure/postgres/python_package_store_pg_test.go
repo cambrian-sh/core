@@ -126,3 +126,56 @@ func TestPg_PythonPackages_OpenDecideReopenAudit(t *testing.T) {
 		t.Fatal("python_package_events must be append-only")
 	}
 }
+
+// P5 (ENG-2012, migration 0067): an approved record moves to removed with the
+// removal audited (actor, generation) in one write; only an approved record
+// can be removed; List returns every target's records newest first.
+func TestPg_PythonPackages_RemoveAndList(t *testing.T) {
+	st, _, ctx := newPythonPackageStore(t)
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	lock := domain.PythonPackageLock{Entries: []domain.PythonLockEntry{{Name: "tinypkg", Version: "1.0.0", Hashes: []string{strings.Repeat("7", 64)}}}}
+	open := func(target string, when time.Time) domain.PythonPackageApproval {
+		rec, _, err := st.Open(ctx, domain.PythonPackageApproval{Target: target, Name: "tinypkg", Version: "1.0.0", Lock: lock,
+			BaseGeneration: "gen1", RequestedBy: "agent:" + target, RequestedAt: when}, "agent:"+target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	a := open("pgppt-rm-a", at)
+	b := open("pgppt-rm-b", at.Add(time.Minute))
+	if err := st.Remove(ctx, a.ID, "op-1", "not needed", "", at); err == nil {
+		t.Fatal("a pending record must not be removable")
+	}
+	if err := st.Decide(ctx, a.ID, domain.PythonPackageApproved, "op-1", "", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Remove(ctx, a.ID, "op-1", "not needed", "abcdef0123456789", at.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil || got.State != domain.PythonPackageRemoved || got.DecidedBy != "op-1" {
+		t.Fatalf("removed record: %+v %v", got, err)
+	}
+	evs, _ := st.Events(ctx, a.ID)
+	last := evs[len(evs)-1]
+	if last.Action != domain.PythonPackageActionRemoved || last.Generation != "abcdef0123456789" || last.Actor != "op-1" {
+		t.Fatalf("removal audit: %+v", last)
+	}
+	if err := st.Remove(ctx, "ppa-nope", "op-1", "", "", at); !errors.Is(err, domain.ErrPythonPackageNotFound) {
+		t.Fatalf("unknown record: %v", err)
+	}
+	all, err := st.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine []string
+	for _, r := range all {
+		if strings.HasPrefix(r.Target, "pgppt-rm-") {
+			mine = append(mine, r.ID)
+		}
+	}
+	if len(mine) != 2 || mine[0] != b.ID || mine[1] != a.ID {
+		t.Fatalf("List newest first: %v (a=%s b=%s)", mine, a.ID, b.ID)
+	}
+}
