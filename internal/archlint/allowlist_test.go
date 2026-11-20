@@ -37,6 +37,7 @@ var allowBackground = map[string]string{
 	// Kernel-owned work: no request exists whose ctx could ride along.
 	"app/boot_tools.go kernelBuild.buildMCPConnector #1":                              "MCP server health transitions come from the connector's own loops (ENG-1466)",
 	"internal/metabolism/agentmgr/crash_detection.go AgentManager.scheduleRestart #1": "kernel-owned daemon auto-restart after a crash (ENG-1467)",
+	"internal/metabolism/agentmgr/stale_recycle.go AgentManager.recycleDaemon #1":     "kernel-owned re-boot of a stale pool worker after a layer change, like scheduleRestart (ADR-0157 D7.10.2, ENG-2011)",
 	"internal/metabolism/agentmgr/crash_detection.go AgentManager.publishEvent #1":    "daemon lifecycle events are kernel-owned (ENG-1466)",
 	"internal/ingress/consent_bridge.go NewConsentBridge #1":                          "the bridge's own post ctx until Start hands it the kernel ctx (ENG-1467 review)",
 	"internal/ingress/consent_bridge.go ConsentBridge.post #1":                        "nil-ctx guard on a best-effort delivery path (ENG-1467 review)",

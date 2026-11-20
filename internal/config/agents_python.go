@@ -55,6 +55,19 @@ type AgentPythonConfig struct {
 	// (ADR-0157 D7.8.7, P3): it then expires fail-closed and the kernel asks
 	// again at the agent's next spawn. 0 ⇒ 72.
 	ApprovalTTLHours int `json:"approval_ttl_hours,omitempty"`
+	// RequestWaitSeconds is how long the request_python_package kernel tool waits
+	// for an Operator's answer before it returns "pending" (ADR-0157 D7.9.3, P4):
+	// the call never blocks a turn longer; the card stays open and an approval
+	// after the window applies to the agent's later runs. 0 ⇒ 60; at most 600.
+	RequestWaitSeconds int `json:"request_wait_seconds,omitempty"`
+}
+
+// RequestWait is request_wait_seconds as a duration (0 ⇒ 60 s).
+func (c AgentPythonConfig) RequestWait() time.Duration {
+	if c.RequestWaitSeconds <= 0 {
+		return 60 * time.Second
+	}
+	return time.Duration(c.RequestWaitSeconds) * time.Second
 }
 
 // ApprovalTTL is approval_ttl_hours as a duration (0 ⇒ 72 h).
@@ -97,6 +110,9 @@ func (c AgentPythonConfig) validate() []string {
 	}
 	if c.ApprovalTTLHours < 0 {
 		errs = append(errs, fmt.Sprintf("execution.agents.python.approval_ttl_hours must be 0 (default 72) or positive (got %d)", c.ApprovalTTLHours))
+	}
+	if c.RequestWaitSeconds < 0 || c.RequestWaitSeconds > 600 {
+		errs = append(errs, fmt.Sprintf("execution.agents.python.request_wait_seconds must be 0 (default 60) to 600 (got %d)", c.RequestWaitSeconds))
 	}
 	if c.Offline && len(c.Wheelhouse) == 0 {
 		errs = append(errs, "execution.agents.python.offline requires execution.agents.python.wheelhouse: offline wheels come only from a local wheelhouse")

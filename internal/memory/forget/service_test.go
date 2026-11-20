@@ -204,7 +204,7 @@ func TestForgetTool_TwoCallsAndOffer(t *testing.T) {
 	c := &clock{t: time.Unix(1000, 0)}
 	svc := newService(raw, c)
 	tool := forget.NewTool(svc, true)
-	if !tool.OfferedTo("lease") || forget.NewTool(svc, false).OfferedTo("lease") || forget.NewTool(forget.New(nil, forget.Config{}), true).OfferedTo("lease") {
+	if !tool.OfferedTo(context.Background(), "lease") || forget.NewTool(svc, false).OfferedTo(context.Background(), "lease") || forget.NewTool(forget.New(nil, forget.Config{}), true).OfferedTo(context.Background(), "lease") {
 		t.Fatal("offer must require erasure enabled and agent erase on")
 	}
 	ctx := domain.WithScope(context.Background(), &domain.TagPredicate{})

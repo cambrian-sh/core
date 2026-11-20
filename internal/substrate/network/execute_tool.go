@@ -265,7 +265,7 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 	// A describe_tool request lists them only when it names them.
 	// ADR-0150: a kernel tool offered only to some leases (run_subtasks) is listed
 	// by the caller's own lease.
-	tools = appendKernelTools(tools, s.ToolExecutor.KernelToolSpecsFor(domain.LeaseID(s.callerOverlayToken(ctx))), toolNamesFromMetadata(ctx))
+	tools = appendKernelTools(tools, s.ToolExecutor.KernelToolSpecsFor(ctx, domain.LeaseID(s.callerOverlayToken(ctx))), toolNamesFromMetadata(ctx))
 	// ADR-0045: serve Tier-1 (terse summary + arg-names-only schema) by default;
 	// Tier-2 (full description + full schema) only when x-tool-full is set (the
 	// describe_tool path). One render function (domain.ToolDisclosure) keeps the

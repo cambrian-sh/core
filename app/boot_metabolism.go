@@ -192,7 +192,9 @@ func (b *kernelBuild) buildApprovalsAndSessions() error {
 	// hub) and the kernel installed the agent's own layer. The kind handler is
 	// registered here, at boot, so a card answered after a restart still
 	// installs.
-	pyPackages := wirePythonPackages(ctx, cfg.Execution.Agents.Python, vec.Pool(), pyEnv, toolApproval, reg.GetManifest)
+	// A layer change recycles the agent's live instances when idle (D7.10.2, P4).
+	pyPackages := wirePythonPackages(ctx, cfg.Execution.Agents.Python, vec.Pool(), pyEnv, toolApproval, reg.GetManifest,
+		meta.Manager.MarkAgentStale)
 	if pyPackages != nil {
 		meta.Manager.SetPythonLayers(pyPackages)
 	}

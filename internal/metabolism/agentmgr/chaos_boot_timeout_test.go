@@ -52,6 +52,12 @@ func TestMain(m *testing.M) {
 		runProbeAgent()
 		return
 	}
+	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "execprobe" {
+		// ADR-0157 D7.10.2 e2e: an agent that serves Execute
+		// (stale_recycle_e2e_test.go).
+		runExecProbeAgent()
+		return
+	}
 	if os.Getenv("AGENTMGR_CHAOS_HELPER") == "wrkernel" {
 		// ENG-2088 e2e: a "kernel" that owns a work root and runs one
 		// sandboxed agent (agent_workroot_test.go).

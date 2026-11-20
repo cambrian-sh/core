@@ -25,7 +25,8 @@ import (
 // packages is refused naming the missing migration, because an approval that
 // would not survive a restart is not the approval D7.8 requires.
 func wirePythonPackages(ctx context.Context, pc config.AgentPythonConfig, pool *pgxpool.Pool, env pythonEnvGate,
-	hub *domain.AddressedHub, manifests func(ctx context.Context, agentID string) (*domain.AgentManifest, error)) *pypackages.Service {
+	hub *domain.AddressedHub, manifests func(ctx context.Context, agentID string) (*domain.AgentManifest, error),
+	onLayerChange func(agentID string)) *pypackages.Service {
 	b := env.Builder()
 	if b == nil {
 		slog.Warn("ADR-0157 D7: no managed Python env on this host; agents that declare python_packages will be refused")
@@ -48,9 +49,10 @@ func wirePythonPackages(ctx context.Context, pc config.AgentPythonConfig, pool *
 		prepare = sandbox.GrantAgentPrivateRead
 	}
 	svc, err := pypackages.New(store, hub, b, pypackages.Config{
-		ApprovalTTL: pc.ApprovalTTL(),
-		Prepare:     prepare,
-		Base:        env.Interpreter,
+		ApprovalTTL:   pc.ApprovalTTL(),
+		Prepare:       prepare,
+		Base:          env.Interpreter,
+		OnLayerChange: onLayerChange,
 		Declared: func(ctx context.Context, agentID string) []domain.PythonPackage {
 			m, err := manifests(ctx, agentID)
 			if err != nil || m == nil {
@@ -66,4 +68,51 @@ func wirePythonPackages(ctx context.Context, pc config.AgentPythonConfig, pool *
 	slog.Info("ADR-0157 D7: per-agent python package layers wired", "durable_approvals", store != nil,
 		"approval_ttl", pc.ApprovalTTL().String())
 	return svc
+}
+
+// leaseResolver is the gateway's lease lookup (SubstrateLLMGateway).
+type leaseResolver interface {
+	ResolveLease(domain.LeaseID) (domain.LeaseBinding, bool)
+}
+
+// wirePythonPackageTool registers request_python_package (ADR-0157 D7.9, P4)
+// as a kernel tool when the package service exists. It is offered only to
+// Python agents whose profile allowlist names it, never to a subtask worker;
+// each call raises (or reuses) the python_package card, so the Operator's
+// approval is what installs anything.
+func wirePythonPackageTool(pc config.AgentPythonConfig, svc *pypackages.Service, exec *domain.ToolExecutor,
+	gateway any, reg domain.AgentRegistry) {
+	if svc == nil || exec == nil || reg == nil {
+		return
+	}
+	lr, ok := gateway.(leaseResolver)
+	if !ok {
+		slog.Warn("ADR-0157 D7.9: request_python_package not offered: the LLM gateway resolves no leases")
+		return
+	}
+	subtasks := exec.Subtasks()
+	tool, err := pypackages.NewTool(svc, pc.RequestWait(), pypackages.ToolDeps{
+		LeaseAgent: func(l domain.LeaseID) (string, bool) {
+			b, ok := lr.ResolveLease(l)
+			return b.AgentID, ok
+		},
+		IsChild: subtasks.IsChild,
+		Agent: func(ctx context.Context, agentID string) (*domain.AgentDefinition, *domain.AgentManifest, error) {
+			def, err := reg.GetAgentByName(ctx, agentID)
+			if err != nil {
+				return nil, nil, err
+			}
+			m, err := reg.GetManifest(ctx, agentID)
+			if err != nil {
+				return def, nil, err
+			}
+			return def, m, nil
+		},
+	})
+	if err != nil {
+		slog.Error("ADR-0157 D7.9: request_python_package not wired", "err", err)
+		return
+	}
+	exec.KernelTools = append(exec.KernelTools, tool)
+	slog.Info("ADR-0157 D7.9: request_python_package offered to allowlisted Python agents", "wait", pc.RequestWait().String())
 }

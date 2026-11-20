@@ -47,7 +47,9 @@ var (
 )
 
 // OfferedTo implements domain.KernelToolOffer.
-func (t *Tool) OfferedTo(domain.LeaseID) bool { return t.svc.Enabled() && t.agentErase }
+func (t *Tool) OfferedTo(_ context.Context, _ domain.LeaseID) bool {
+	return t.svc.Enabled() && t.agentErase
+}
 
 const toolSchema = `{
   "type": "object",

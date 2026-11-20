@@ -73,6 +73,14 @@ type Config struct {
 	Base     func() (pyenv.Interpreter, error)
 	Declared func(ctx context.Context, agentID string) []domain.PythonPackage
 	Now      func() time.Time
+	// OnLayerChange is told an agent's layer changed (a new generation became its
+	// current one): the agent manager marks the agent's live instances stale and
+	// recycles each when idle, so the change is usable within one task
+	// (ADR-0157 D7.10.2, A1-Q11, P4). nil ⇒ the next natural spawn picks it up.
+	OnLayerChange func(agentID string)
+	// RequestPoll is how often Request re-reads a pending card while it waits.
+	// 0 ⇒ 500 ms.
+	RequestPoll time.Duration
 }
 
 // Service implements agentmgr.PythonLayers. Construct with New.
@@ -82,10 +90,14 @@ type Service struct {
 	env   Env
 	cfg   Config
 
-	mu       sync.Mutex
-	current  map[string]pyenv.Layer // agent → layer of its last successful Ensure ("" Dir: none)
-	agentMu  map[string]*sync.Mutex
-	resolved map[string]resolution // agent|pkg|base generation → resolution (one per process)
+	mu      sync.Mutex
+	current map[string]pyenv.Layer // agent → layer of its last successful Ensure ("" Dir: none)
+	// delivered is the layer dir each agent was last handed after a
+	// successful Ensure ("" = none); absent until the first. A different one
+	// later is a layer change (OnLayerChange).
+	delivered map[string]string
+	agentMu   map[string]*sync.Mutex
+	resolved  map[string]resolution // agent|pkg|base generation → resolution (one per process)
 
 	wg sync.WaitGroup // background installs started by approvals; Stop waits
 }
@@ -113,7 +125,7 @@ func New(store domain.PythonPackageStore, hub Hub, env Env, cfg Config) (*Servic
 		cfg.Now = time.Now
 	}
 	s := &Service{store: store, hub: hub, env: env, cfg: cfg,
-		current: map[string]pyenv.Layer{}, agentMu: map[string]*sync.Mutex{}, resolved: map[string]resolution{}}
+		current: map[string]pyenv.Layer{}, delivered: map[string]string{}, agentMu: map[string]*sync.Mutex{}, resolved: map[string]resolution{}}
 	hub.HandleKind(domain.ApprovalKindPythonPackage, s.onApproved)
 	return s, nil
 }
@@ -172,8 +184,18 @@ type outcome struct {
 func (s *Service) Ensure(ctx context.Context, agentID string, decl []domain.PythonPackage, base pyenv.Interpreter) (pyenv.Layer, error) {
 	unlock := s.lockAgent(agentID)
 	defer unlock()
-	if len(decl) == 0 {
+	return s.ensureLocked(ctx, agentID, decl, base)
+}
+
+// ensureLocked is Ensure under the agent's lock.
+func (s *Service) ensureLocked(ctx context.Context, agentID string, decl []domain.PythonPackage, base pyenv.Interpreter) (pyenv.Layer, error) {
+	// P4: packages an Operator approved for this agent at runtime
+	// (request_python_package) belong to its layer like declared ones, so an
+	// approval after the tool's window applies to the agent's later runs.
+	runtime := s.runtimeApproved(ctx, agentID, base)
+	if len(decl) == 0 && len(runtime) == 0 {
 		s.setCurrent(agentID, pyenv.Layer{})
+		s.noteChange(agentID, pyenv.Layer{})
 		return pyenv.Layer{}, nil
 	}
 	s.setCurrent(agentID, pyenv.Layer{}) // nothing launches on an old answer while this one is pending
@@ -192,7 +214,7 @@ func (s *Service) Ensure(ctx context.Context, agentID string, decl []domain.Pyth
 	}
 	var outs []outcome
 	for _, pkg := range decl {
-		o, err := s.ensurePackage(ctx, agentID, pkg, base, recs)
+		o, err := s.ensurePackage(ctx, agentID, pkg, base, recs, "profile:"+agentID, "")
 		if err != nil {
 			return pyenv.Layer{}, err
 		}
@@ -229,9 +251,16 @@ func (s *Service) Ensure(ctx context.Context, agentID string, decl []domain.Pyth
 			"waiting", waiting, "denied", denied)
 		return pyenv.Layer{}, err
 	}
+	for _, r := range runtime {
+		if !containsName(declared, r.Name) {
+			approved = append(approved, r)
+			declared = append(declared, r.Name)
+		}
+	}
 	if len(approved) == 0 {
 		// Every declared package is in the base env already: no layer.
 		s.setCurrent(agentID, pyenv.Layer{})
+		s.noteChange(agentID, pyenv.Layer{})
 		return pyenv.Layer{}, nil
 	}
 	entries, err := union(approved)
@@ -241,6 +270,7 @@ func (s *Service) Ensure(ctx context.Context, agentID string, decl []domain.Pyth
 	sort.Strings(declared)
 	if l, ok := s.env.FindLayer(agentID, base, entries); ok {
 		s.setCurrent(agentID, l)
+		s.noteChange(agentID, l)
 		return l, nil
 	}
 	l, err := s.build(ctx, agentID, base, entries, declared, approved)
@@ -248,7 +278,76 @@ func (s *Service) Ensure(ctx context.Context, agentID string, decl []domain.Pyth
 		return pyenv.Layer{}, fmt.Errorf("agent %s not started: installing its approved python packages failed: %w", agentID, err)
 	}
 	s.setCurrent(agentID, l)
+	s.noteChange(agentID, l)
 	return l, nil
+}
+
+// deliveredLayer is the layer dir the agent was last handed ("" none) and
+// whether it was handed one at all.
+func (s *Service) deliveredLayer(agent string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.delivered[agent]
+	return d, ok
+}
+
+// noteChange records the layer the agent is handed now and tells
+// OnLayerChange when it differs from the one it was handed before. The first
+// answer is not a change: no instance runs on a layer the kernel never handed
+// out.
+func (s *Service) noteChange(agent string, now pyenv.Layer) {
+	dir := ""
+	if now.Dir != "" {
+		dir = filepath.Clean(now.Dir)
+	}
+	s.mu.Lock()
+	old, known := s.delivered[agent]
+	s.delivered[agent] = dir
+	s.mu.Unlock()
+	if s.cfg.OnLayerChange != nil && known && old != dir {
+		s.cfg.OnLayerChange(agent)
+	}
+}
+
+// runtimeApproved lists the agent's approved records that a runtime request
+// opened (requested_by agent:…) on this base generation.
+func (s *Service) runtimeApproved(ctx context.Context, agentID string, base pyenv.Interpreter) []domain.PythonPackageApproval {
+	if s.store == nil || base.Home == "" {
+		return nil
+	}
+	recs, err := s.store.ForTarget(ctx, agentID)
+	if err != nil {
+		return nil // Ensure reads the store again and fails closed with the reason
+	}
+	baseGen := filepath.Base(base.Home)
+	seen := map[string]bool{}
+	var out []domain.PythonPackageApproval
+	for _, r := range recs { // newest first: the newest approved version of a name wins
+		if r.State != domain.PythonPackageApproved || r.BaseGeneration != baseGen || !IsRuntimeRequest(r) || seen[r.Name] {
+			continue
+		}
+		seen[r.Name] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// IsRuntimeRequest reports whether a record was opened by an agent's runtime
+// request (request_python_package) rather than a declaration.
+func IsRuntimeRequest(r domain.PythonPackageApproval) bool {
+	return strings.HasPrefix(r.RequestedBy, RuntimeRequester)
+}
+
+// RuntimeRequester prefixes requested_by for a runtime request.
+const RuntimeRequester = "agent:"
+
+func containsName(names []string, n string) bool {
+	for _, x := range names {
+		if x == n {
+			return true
+		}
+	}
+	return false
 }
 
 // build installs the layer and audits it on every record it contains.
@@ -315,7 +414,7 @@ func sameExtras(a, b []string) bool {
 // its lock's record looked up (an approved lock is reused even from an older
 // base generation, D7.10.4) or opened with a new card.
 func (s *Service) ensurePackage(ctx context.Context, agentID string, pkg domain.PythonPackage, base pyenv.Interpreter,
-	recs []domain.PythonPackageApproval) (outcome, error) {
+	recs []domain.PythonPackageApproval, requestedBy, rationale string) (outcome, error) {
 	baseGen := filepath.Base(base.Home)
 	name := domain.NormalizePythonName(pkg.Name)
 	for _, r := range recs { // newest first
@@ -340,8 +439,8 @@ func (s *Service) ensurePackage(ctx context.Context, agentID string, pkg domain.
 	rec, created, err := s.store.Open(ctx, domain.PythonPackageApproval{
 		ID: id, Target: agentID, Name: name, Version: pkg.Version, Extras: append([]string(nil), pkg.Extras...),
 		LockSHA256: lockSHA, Lock: res.lock, BaseGeneration: baseGen, State: domain.PythonPackagePending,
-		RequestedBy: "profile:" + agentID, RequestedAt: s.cfg.Now().UTC(),
-	}, "profile:"+agentID)
+		RequestedBy: requestedBy, RequestedAt: s.cfg.Now().UTC(), Detail: rationale,
+	}, requestedBy)
 	if err != nil {
 		return outcome{}, fmt.Errorf("agent %s not started: python package request for %s not recorded: %w", agentID, pkg.Spec(), err)
 	}
@@ -546,8 +645,12 @@ func CardPreview(r domain.PythonPackageApproval) string {
 	if len(r.Extras) > 0 {
 		spec = r.Name + "[" + strings.Join(r.Extras, ",") + "]==" + r.Version
 	}
-	return fmt.Sprintf("agent %s needs Python package %s (+%d dependencies; wheels only, hash-pinned) in its own layer; declared in its python_packages",
-		r.Target, spec, deps)
+	how := "declared in its python_packages"
+	if IsRuntimeRequest(r) {
+		how = "requested at runtime by the agent (request_python_package)"
+	}
+	return fmt.Sprintf("agent %s needs Python package %s (+%d dependencies; wheels only, hash-pinned) in its own layer; %s",
+		r.Target, spec, deps, how)
 }
 
 // CardText is the card's full content (ApprovalItem.Object, D7.8.6): what is
@@ -563,6 +666,9 @@ func CardText(r domain.PythonPackageApproval, others []domain.PythonPackageAppro
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "requested by: %s\n", r.RequestedBy)
+	if IsRuntimeRequest(r) && r.Detail != "" && r.State == domain.PythonPackagePending {
+		fmt.Fprintf(&b, "the agent's rationale (its own words, not verified): %s\n", r.Detail)
+	}
 	if r.Lock.Index != "" {
 		fmt.Fprintf(&b, "source: %s (wheels only, no source builds)\n", r.Lock.Index)
 	}

@@ -221,7 +221,7 @@ func TestE2E_PythonPackageLayerThroughOperatorApproval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		svc := wirePythonPackages(ctx, cfg.Execution.Agents.Python, pool, env, hub, manifestErr)
+		svc := wirePythonPackages(ctx, cfg.Execution.Agents.Python, pool, env, hub, manifestErr, nil)
 		if svc == nil {
 			t.Fatal("python package service not wired (is PG_TEST_DSN migrated through 0057?)")
 		}

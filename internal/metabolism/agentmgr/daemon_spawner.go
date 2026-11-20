@@ -94,6 +94,14 @@ func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string
 		m.daemons.booting[streamID] = booted
 		m.daemons.mu.Unlock()
 	}
+	return m.bootClaimedDaemon(ctx, agentID, streamID, params, booted, 1)
+}
+
+// bootClaimedDaemon boots the daemon for a stream whose boot this caller
+// claimed (booted is its marker in daemons.booting), registers it with refs
+// references and starts its crash watcher. SpawnDaemon claims with refs 1; a
+// stale recycle (stale_recycle.go) re-boots a stream with the references it had.
+func (m *AgentManager) bootClaimedDaemon(ctx context.Context, agentID, streamID string, params map[string]any, booted chan struct{}, refs int) (string, error) {
 	// endBoot releases the waiters. Called with mu held, in the same critical
 	// section that registers the stream, so a waiter never sees "neither running
 	// nor booting" between the two.
@@ -135,7 +143,7 @@ func (m *AgentManager) SpawnDaemon(ctx context.Context, agentID, streamID string
 	// Register in daemon registry.
 	m.daemons.mu.Lock()
 	m.daemons.byStream[streamID] = &daemonState{
-		refCount:   1,
+		refCount:   max(refs, 1),
 		agentID:    agentID,
 		instanceID: instanceID,
 		status:     "running",

@@ -188,7 +188,7 @@ func TestDepthAndParentRefusal(t *testing.T) {
 	}
 	tool.Registry.Bind("child", domain.SubtaskBinding{SubtaskID: "s", RootLease: "parent", ParentLease: "parent", Depth: 1,
 		AllowedEffects: tool.Cfg.AllowedEffects})
-	if tool.OfferedTo("child") || !tool.OfferedTo("parent") || tool.OfferedTo("planner-step-lease") {
+	if tool.OfferedTo(context.Background(), "child") || !tool.OfferedTo(context.Background(), "parent") || tool.OfferedTo(context.Background(), "planner-step-lease") {
 		t.Fatal("offered only to the parent below max_depth")
 	}
 	if _, _, err := call(t, tool, "child", brief("a")); err == nil || !strings.Contains(err.Error(), "cannot spawn subtasks at depth 1") {

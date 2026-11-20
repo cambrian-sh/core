@@ -50,3 +50,6 @@ History of golden updates:
   replay behind RetryWatchDeadLetter (failed deliveries only).
 - ENG-1657: `+ DeliveryIntents` (Kernel) — the ADR-0090 delivery service with its journal,
   which the operator plane lists and resolves (ListDeliveryIntents / ResolveDeliveryIntent).
+- ENG-2011: `KernelTools len=10` -> `len=11` and `+ request_python_package *pypackages.Tool`
+  (both goldens), the ADR-0157 D7.9 runtime package request tool wired by
+  `wirePythonPackageTool` when the per-agent package service exists.

@@ -202,7 +202,7 @@ func (t *Tool) Spec() domain.SystemTool {
 
 // OfferedTo lists the tool only for a registered parent or a subtask below
 // max_depth (ADR-0150 D6: a worker at the depth limit is not offered it).
-func (t *Tool) OfferedTo(lease domain.LeaseID) bool {
+func (t *Tool) OfferedTo(_ context.Context, lease domain.LeaseID) bool {
 	depth, _, ok := t.Registry.Position(lease)
 	return ok && depth < t.Cfg.MaxDepth
 }

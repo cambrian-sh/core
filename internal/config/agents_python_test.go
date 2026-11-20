@@ -96,3 +96,20 @@ func TestAgentPythonApprovalTTL(t *testing.T) {
 		t.Fatalf("a negative approval_ttl_hours must be refused: %v", errs)
 	}
 }
+
+// ADR-0157 D7.9.3 (P4): request_wait_seconds is the request_python_package
+// tool window; 0 is the 60 s default, outside 0..600 is refused.
+func TestAgentPythonRequestWait(t *testing.T) {
+	if got := DefaultConfig().Execution.Agents.Python.RequestWait(); got.Seconds() != 60 {
+		t.Fatalf("default request wait = %s, want 60s", got)
+	}
+	if got := (AgentPythonConfig{RequestWaitSeconds: 5}).RequestWait(); got.Seconds() != 5 {
+		t.Fatalf("request wait = %s, want 5s", got)
+	}
+	for _, v := range []int{-1, 601} {
+		errs := AgentPythonConfig{RequestWaitSeconds: v}.validate()
+		if len(errs) == 0 || !strings.Contains(strings.Join(errs, ";"), "request_wait_seconds") {
+			t.Fatalf("request_wait_seconds %d must be refused: %v", v, errs)
+		}
+	}
+}

@@ -20,9 +20,10 @@ type KernelTool interface {
 
 // KernelToolOffer is implemented by a kernel tool that is not on every menu: it
 // is listed only for the leases OfferedTo admits (ToolExecutor.KernelToolSpecsFor).
-// The tool still refuses a call from any other lease itself.
+// The tool still refuses a call from any other lease itself. ctx is the menu
+// request's (an offer may read the caller's registry entry, AGENTS.md §2.7).
 type KernelToolOffer interface {
-	OfferedTo(lease LeaseID) bool
+	OfferedTo(ctx context.Context, lease LeaseID) bool
 }
 
 // KernelToolCall is one invocation of a kernel tool. The principal comes from the

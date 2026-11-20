@@ -208,7 +208,29 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 	if err != nil {
 		return nil, err
 	}
-	a.noteDispatch(agent.ID, a.cachedInstance(agent.ID, client), handoff)
+	instanceID := a.cachedInstance(agent.ID, client)
+	// ADR-0157 D7.10.2: the Execute is counted so a stale instance (its Python
+	// layer changed) is recycled when idle. A retiring instance admits nothing:
+	// drop its connection and dial again (GetOrBootInstance skips it).
+	if r, ok := a.Manager.(idleRecycler); ok && instanceID != "" {
+		if !r.ExecuteBegan(instanceID) {
+			a.forgetAgentClient(agent.ID, client)
+			if client, err = a.getOrDialClient(ctx, *agent, excludeInstanceID); err != nil {
+				return nil, err
+			}
+			if instanceID = a.cachedInstance(agent.ID, client); instanceID != "" && !r.ExecuteBegan(instanceID) {
+				instanceID = ""
+			}
+		}
+		if instanceID != "" {
+			defer func(c pb.AgentServiceClient, id string) {
+				if r.ExecuteEnded(id) {
+					a.forgetAgentClient(agent.ID, c)
+				}
+			}(client, instanceID)
+		}
+	}
+	a.noteDispatch(agent.ID, instanceID, handoff)
 	protoResp, err := client.Execute(ctx, agentwire.ToProto(handoff))
 	if err != nil {
 		if status.Code(err) == codes.Unavailable {
@@ -295,6 +317,15 @@ func (a *Transport) forgetAgentClient(agentID string, client pb.AgentServiceClie
 	delete(a.agentClients, agentID)
 	delete(a.agentConns, agentID)
 	delete(a.agentInstances, agentID)
+}
+
+// idleRecycler is the optional AgentDialer surface that counts Executes per
+// instance and recycles a stale one when it is idle (agentmgr.AgentManager
+// implements it, ADR-0157 D7.10.2). ExecuteEnded true: the instance was
+// recycled; drop the cached connection to it.
+type idleRecycler interface {
+	ExecuteBegan(instanceID string) bool
+	ExecuteEnded(instanceID string) bool
 }
 
 // dispatchNoter is the optional AgentDialer surface that records which instance

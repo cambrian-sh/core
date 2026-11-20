@@ -219,7 +219,7 @@ Hooks: *domain.HookChain
 History: *domain.ActionHistory
 leaseCeiling: domain.leaseCeilings
 Ledger: *ledger.EvidenceNotifier
-KernelTools: []domain.KernelTool len=10
+KernelTools: []domain.KernelTool len=11
 argValidator: toolargs.Validator
 idempotency: nil
 ReturnLedgerRef: false
@@ -255,6 +255,7 @@ calc_aggregate calc.aggregateTool
 calc_compare calc.compareTool
 company_records *records.tool
 forget_memory *forget.Tool
+request_python_package *pypackages.Tool
 run_subtasks *subtasks.Tool
 
 ## Approval kinds with a handler

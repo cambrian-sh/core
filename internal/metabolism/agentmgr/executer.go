@@ -85,7 +85,13 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 	}
 
 	m.InstanceManager.NoteDispatch(inst.AgentID, inst.ID, handoff) // ADR-0157 D5.2 provenance
+	// ADR-0157 D7.10.2: a reused instance is counted busy for the stale-recycle
+	// (a self-booted one is released below anyway).
+	tracked := !bootedHere && m.ExecuteBegan(inst.ID)
 	protoResp, errExec := m.executeHandoff(ctx, addr, agentwire.ToProto(handoff))
+	if tracked {
+		m.ExecuteEnded(inst.ID)
+	}
 
 	if bootedHere {
 		defer m.ReleaseInstance(inst.ID)
@@ -135,6 +141,9 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 // chat worker pool (internal/agentpool) uses it to hand a conversation turn to a free pool
 // worker's stream — there are no per-conversation daemons any more. Returns an error if no daemon is registered/running for streamID.
 func (m *AgentManager) CallDaemon(ctx context.Context, streamID string, handoff *domain.Handoff) (*domain.Handoff, error) {
+	// A stale recycle (ADR-0157 D7.10.2) replaces the stream's process between
+	// turns; the next turn waits for the new one instead of reading it as lost.
+	m.awaitDaemonBoot(ctx, streamID)
 	instanceID, ok := m.DaemonInstanceID(streamID)
 	if !ok {
 		return nil, fmt.Errorf("CallDaemon: %w: no daemon registered for stream %q", domain.ErrDaemonUnavailable, streamID)
@@ -144,7 +153,11 @@ func (m *AgentManager) CallDaemon(ctx context.Context, streamID string, handoff 
 		return nil, fmt.Errorf("CallDaemon: %w: daemon instance %q for stream %q not live", domain.ErrDaemonUnavailable, instanceID, streamID)
 	}
 	m.InstanceManager.NoteDispatch(inst.AgentID, instanceID, handoff) // ADR-0157 D5.2 provenance
+	if !m.ExecuteBegan(instanceID) {
+		return nil, fmt.Errorf("CallDaemon: %w: daemon instance %q for stream %q is being recycled", domain.ErrDaemonUnavailable, instanceID, streamID)
+	}
 	protoResp, err := m.executeHandoff(ctx, "unix:"+inst.SocketPath, agentwire.ToProto(handoff))
+	m.ExecuteEnded(instanceID) // a stale worker is replaced now that it is idle (D7.10.2)
 	if err != nil {
 		return nil, err
 	}

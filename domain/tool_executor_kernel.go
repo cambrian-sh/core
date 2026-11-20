@@ -36,13 +36,13 @@ func (e *ToolExecutor) KernelToolSpecs() []SystemTool {
 // that implements KernelToolOffer is listed only when it is offered to that lease
 // (run_subtasks: the single-agent lane's agent below max depth, ADR-0150 D2/D6).
 // Hiding is only the menu; the tool refuses an unoffered caller itself.
-func (e *ToolExecutor) KernelToolSpecsFor(lease LeaseID) []SystemTool {
+func (e *ToolExecutor) KernelToolSpecsFor(ctx context.Context, lease LeaseID) []SystemTool {
 	if e == nil {
 		return nil
 	}
 	out := make([]SystemTool, 0, len(e.KernelTools))
 	for _, kt := range e.KernelTools {
-		if o, ok := kt.(KernelToolOffer); ok && !o.OfferedTo(lease) {
+		if o, ok := kt.(KernelToolOffer); ok && !o.OfferedTo(ctx, lease) {
 			continue
 		}
 		out = append(out, kt.Spec())

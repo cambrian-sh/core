@@ -121,6 +121,9 @@ type InstanceManager struct {
 	// reported records the agent ids whose ADR-0157 containment report was
 	// already logged at INFO/WARN (agent_sandbox.go reportContainment).
 	reported sync.Map
+	// recycle is the stale-instance bookkeeping of ADR-0157 D7.10.2
+	// (stale_recycle.go). Guarded by mu; lazily made.
+	recycle staleState
 }
 
 // SetEnvPassthrough configures the operator-declared agent env allowlist extras
@@ -258,7 +261,7 @@ func (im *InstanceManager) GetInstance(agentID string) (*domain.Instance, bool) 
 	im.mu.Lock()
 	defer im.mu.Unlock()
 	for _, id := range im.agentIndex[agentID] {
-		if inst, ok := im.instances[id]; ok {
+		if inst, ok := im.instances[id]; ok && !im.isRetiringLocked(id) {
 			return inst, true
 		}
 	}
@@ -307,6 +310,7 @@ func (im *InstanceManager) detachLocked(instanceID string) func() {
 	delete(im.exits, instanceID)
 	delete(im.capCleanups, instanceID)
 	delete(im.instances, instanceID)
+	im.recycle.forget(instanceID)
 	if inst != nil {
 		ids := im.agentIndex[inst.AgentID]
 		for i, id := range ids {
@@ -533,7 +537,7 @@ func (im *InstanceManager) GetOrBootInstance(ctx context.Context, def *domain.Ag
 			continue
 		}
 		inst, ok := im.instances[id]
-		if !ok {
+		if !ok || im.isRetiringLocked(id) {
 			continue
 		}
 		if inst.Mode != domain.ModeDaemon && im.exitedLocked(id) {
@@ -561,7 +565,7 @@ func (im *InstanceManager) GetOrBootInstance(ctx context.Context, def *domain.Ag
 	defer im.mu.Unlock()
 	if ids := im.agentIndex[def.ID]; len(ids) > 0 {
 		for _, id := range ids {
-			if excludeInstanceID != "" && id == excludeInstanceID {
+			if (excludeInstanceID != "" && id == excludeInstanceID) || im.isRetiringLocked(id) {
 				continue
 			}
 			return im.instances[id], nil

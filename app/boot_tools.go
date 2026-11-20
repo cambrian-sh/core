@@ -463,6 +463,10 @@ func (b *kernelBuild) buildToolExecutor() error {
 		cambrianServer.ToolExecutor.KernelTools = append(cambrianServer.ToolExecutor.KernelTools,
 			forget.NewTool(forgetSvc, cfg.Execution.Erasure.AgentEraseEnabled))
 	}
+	// ADR-0157 D7.9 (P4): the runtime package request tool, over the P3 service.
+	if cambrianServer.ToolExecutor != nil {
+		wirePythonPackageTool(cfg.Execution.Agents.Python, b.pyPackages, cambrianServer.ToolExecutor, cambrianServer.LLMGateway, reg)
+	}
 	wireStagedInputs(cfg.Execution.Tools.StagedInputs, cambrianServer)
 	// The chat front desk is told which work systems the planner's agents can reach,
 	// from the planner's own live tool menu (the one wireEffectCheck just set), so a
