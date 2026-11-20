@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/agentpool"
 )
@@ -171,5 +174,35 @@ func TestRedrive_OnlyAWorkerLossIsRedriven(t *testing.T) {
 	svc2, pool2, _ := setupRedrive(t, true, redriveStep{err: agentpool.ErrPoolBusy}, redriveStep{reply: "must not run"})
 	if _, err := turnOnce(t, svc2); err == nil || len(pool2.dispatches()) != 1 {
 		t.Fatalf("a shed turn must not be re-driven: %v (%d dispatches)", err, len(pool2.dispatches()))
+	}
+}
+
+// ENG-2266: a re-sent turn whose dispatch could not even dial the worker never
+// reached it — it is "not delivered", not a second kill: the lane re-sends again
+// (within the deadline) and the person gets the answer. Only the dial failure is
+// trusted for that; a loss that reached the worker still counts.
+func TestRedrive_AReSendThatCouldNotDialIsNotASecondKill(t *testing.T) {
+	dial := status.Error(codes.Unavailable, `connection error: desc = "transport: Error while dialing: dial unix x.sock: connect: No connection could be made"`)
+	svc, pool, _ := setupRedrive(t, true,
+		redriveStep{err: rawWorkerKill}, redriveStep{err: dial}, redriveStep{err: dial}, redriveStep{reply: "done after the replacement"})
+	msg, err := turnOnce(t, svc)
+	if err != nil || msg.Content != "done after the replacement" {
+		t.Fatalf("turn = %+v, %v; undelivered re-sends must not end the turn", msg, err)
+	}
+	if n := len(pool.dispatches()); n != 4 {
+		t.Fatalf("%d dispatches, want 4 (loss, two undelivered re-sends, the answer)", n)
+	}
+	if agentpool.NotDelivered(rawWorkerKill) || !agentpool.NotDelivered(dial) {
+		t.Fatal("only a dial failure means not delivered")
+	}
+	// The pool wraps its cause (%w): ErrWorkerLost decides nothing by itself.
+	if !agentpool.NotDelivered(fmt.Errorf("%w: %w", agentpool.ErrWorkerLost, dial)) ||
+		agentpool.NotDelivered(fmt.Errorf("%w: %w", agentpool.ErrWorkerLost, rawWorkerKill)) {
+		t.Fatal("ErrWorkerLost means not delivered only when its cause was")
+	}
+	// The daemon layer refusing before any call (the stream has no live instance).
+	refused := fmt.Errorf("CallDaemon: %w: no daemon registered for stream %q", domain.ErrDaemonUnavailable, "chat-1")
+	if !agentpool.NotDelivered(fmt.Errorf("%w: %w", agentpool.ErrWorkerLost, refused)) {
+		t.Fatal("a call the daemon layer refused never reached a worker")
 	}
 }

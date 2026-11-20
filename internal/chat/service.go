@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/agentpool"
 	"github.com/cambrian-sh/core/internal/replycheck"
 )
 
@@ -795,7 +796,10 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		defer s.turnCalls.Forget(lease)
 	}
 	var resp *domain.Handoff
-	for attempt := 1; ; attempt++ {
+	// attempt counts the dispatches that REACHED a worker; redriving is set once the
+	// turn is being re-sent after a loss (ENG-1634/ENG-2266).
+	attempt, redriving := 0, false
+	for {
 		resp, err = s.pool.Dispatch(turnCtx, h)
 		// Read while the turn's lease is still held: its release forgets the record.
 		if s.leaseFault != nil && lease != "" {
@@ -804,6 +808,17 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		if err == nil || stalled.Load() || turn.closed.Load() || timedOut.Load() || turnCtx.Err() != nil {
 			break
 		}
+		// ENG-2266: a re-sent turn that never reached a worker (the dead worker's socket
+		// could not be dialled, or the pool found it gone) is not a second loss under
+		// the turn: wait for the worker's replacement again and re-send, within the
+		// turn's deadline.
+		if redriving && agentpool.NotDelivered(err) {
+			if werr := s.awaitWorker(turnCtx, err); werr != nil {
+				break
+			}
+			continue
+		}
+		attempt++
 		redrive, end := s.afterWorkerLoss(req.ConversationID, userMsg.ID, lease, attempt, err, fault, lang)
 		if !redrive {
 			if end != nil {
@@ -811,6 +826,13 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 			}
 			break
 		}
+		// ENG-2266: the killed worker stays registered until the crash watcher sees its
+		// exit and is absent until its replacement boots; re-sending at once dials a dead
+		// socket. Wait for the replacement first, bounded by the turn's deadline.
+		if werr := s.awaitWorker(turnCtx, err); werr != nil {
+			break
+		}
+		redriving = true
 		s.emitProgress(ctx, req.ConversationID, userMsg.ID, domain.PhaseWorking, lang)
 	}
 	if err != nil {
@@ -1049,4 +1071,20 @@ func (s *TurnService) afterWorkerLoss(conversationID, turnID string, lease domai
 		"conversation", conversationID, "message", turnID, "err", err)
 	s.turnCalls.Redrive(lease)
 	return true, nil
+}
+
+// workerAwaiter is the optional half of the pool a re-drive waits on
+// (agentpool.Pool.AwaitReplacement, ENG-2266).
+type workerAwaiter interface {
+	AwaitReplacement(ctx context.Context, err error) error
+}
+
+// awaitWorker waits, bounded by ctx (the turn's deadline), until the worker the
+// failed dispatch named can serve again. A pool that cannot tell returns at once.
+func (s *TurnService) awaitWorker(ctx context.Context, err error) error {
+	w, ok := s.pool.(workerAwaiter)
+	if !ok {
+		return nil
+	}
+	return w.AwaitReplacement(ctx, err)
 }

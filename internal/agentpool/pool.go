@@ -18,9 +18,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -254,6 +258,7 @@ func (p *Pool) Dispatch(ctx context.Context, h *domain.Handoff) (*domain.Handoff
 	resp, err := p.disp.CallDaemon(ctx, stream, h)
 	if err != nil {
 		instanceID, live := p.disp.DaemonInstanceID(stream)
+		failedAt := time.Now()
 		if live && ctx.Err() != nil && p.cfg.RecoverTimeout > 0 {
 			// The caller gave up (deadline, stall cut, cancellation) while the worker is
 			// still alive — and so, being single-threaded, still busy with this turn.
@@ -272,9 +277,10 @@ func (p *Pool) Dispatch(ctx context.Context, h *domain.Handoff) (*domain.Handoff
 			} else {
 				slog.Warn("agentpool: worker was lost and has been respawned", "stream", stream)
 			}
-			return nil, fmt.Errorf("%w: %v", ErrWorkerLost, err)
+			return nil, &WorkerFailure{Stream: stream, FailedAt: failedAt,
+				Err: fmt.Errorf("%w: %w", ErrWorkerLost, err)}
 		}
-		return nil, err
+		return nil, &WorkerFailure{Stream: stream, InstanceID: instanceID, FailedAt: failedAt, Err: err}
 	}
 	return resp, nil
 }
@@ -341,4 +347,84 @@ func (p *Pool) workerReady(stream, instanceID string, abandonedAt time.Time) str
 		return "idle again"
 	}
 	return ""
+}
+
+// WorkerFailure is a Dispatch error that names the worker it failed on (ENG-2266):
+// the stream, the instance that was live on it when the call failed ("" when none
+// was), and when. Error and Unwrap are the underlying error's, so errors.Is,
+// errors.As and status.Code see exactly what they saw before.
+type WorkerFailure struct {
+	Stream     string
+	InstanceID string
+	FailedAt   time.Time
+	Err        error
+}
+
+func (f *WorkerFailure) Error() string { return f.Err.Error() }
+func (f *WorkerFailure) Unwrap() error { return f.Err }
+
+// NotDelivered reports whether a Dispatch error means the turn never reached a
+// worker (ENG-2266), so a caller re-sending a turn treats it as "not delivered yet",
+// not as a worker lost under the turn. Two causes qualify:
+//
+//   - the daemon layer refused before calling anything: the stream had no live
+//     instance (domain.ErrDaemonUnavailable, from AgentManager.CallDaemon);
+//   - the transport could not be dialled (a dead worker's socket), recognised by
+//     grpc-go's own wording for a failed dial ("Error while dialing"), the only
+//     signal the transport gives for it.
+//
+// ErrWorkerLost alone does NOT qualify: the pool returns it whenever the stream has
+// no live instance after a failed call, which is also what a worker killed mid-turn
+// looks like once the crash watcher has deregistered it; it wraps its cause (%w), and
+// the cause decides.
+func NotDelivered(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, domain.ErrDaemonUnavailable) {
+		return true
+	}
+	return status.Code(err) == codes.Unavailable && strings.Contains(err.Error(), "Error while dialing")
+}
+
+// AwaitReplacement waits, bounded by ctx, until the worker a failed Dispatch named
+// (err carries a *WorkerFailure) can serve again (ENG-2266). A worker killed under a
+// turn stays registered — "live" — until the crash watcher sees its exit, and then
+// is absent until the restart policy boots its replacement; a turn re-sent in that
+// window dials a dead socket. Ready means the stream has a live instance other than
+// the one that failed (replaced or respawned), or the same instance reported itself
+// idle by heartbeat after the failure. It is holdWorker's readiness check
+// (workerReady) without its "not heartbeat-tracked" shortcut: an abandoned worker
+// that is untracked is merely unknowable, while a worker whose transport broke is
+// dead, so only a replacement or a fresh idle heartbeat proves it can serve.
+// A nil return also covers an error that names no worker.
+func (p *Pool) AwaitReplacement(ctx context.Context, err error) error {
+	var wf *WorkerFailure
+	if !errors.As(err, &wf) || wf.Stream == "" {
+		return nil
+	}
+	tick := time.NewTicker(p.cfg.RecoverPoll)
+	defer tick.Stop()
+	for {
+		if p.replacementReady(wf) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
+}
+
+func (p *Pool) replacementReady(wf *WorkerFailure) bool {
+	current, live := p.disp.DaemonInstanceID(wf.Stream)
+	if !live {
+		return false // killed; the restart policy is bringing up its replacement
+	}
+	if current != wf.InstanceID {
+		return true // replaced (or, after ErrWorkerLost, respawned)
+	}
+	tracked, idle := p.disp.DaemonServing(wf.Stream, wf.FailedAt)
+	return tracked && idle
 }

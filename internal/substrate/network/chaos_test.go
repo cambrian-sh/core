@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -286,10 +287,11 @@ func chaosOperator(t *testing.T) (pb.OperatorConsoleClient, context.Context) {
 	return op, metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+tok)
 }
 
-// chatWorker returns the pid and instance of the chat pool's worker (the agent the
-// lane runs, CAMBRIAN_CHAOS_CHAT_AGENT, default chat_agent) on its first stream, as
-// OperatorConsole/ListAgentInstances reports it (contract 0117); pid 0 when none.
-func chatWorker(t *testing.T, op pb.OperatorConsoleClient, ctx context.Context) (pid int, instance string) {
+// chatWorkers returns the pids of every chat pool worker (the agent the lane runs,
+// CAMBRIAN_CHAOS_CHAT_AGENT, default chat_agent) as OperatorConsole/ListAgentInstances
+// reports them (contract 0117). Every one is killed, so the worker serving the turn
+// is among them whatever the pool size (ENG-2266).
+func chatWorkers(t *testing.T, op pb.OperatorConsoleClient, ctx context.Context) []int {
 	t.Helper()
 	agent := envOr("CAMBRIAN_CHAOS_CHAT_AGENT", "chat_agent")
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -298,12 +300,37 @@ func chatWorker(t *testing.T, op pb.OperatorConsoleClient, ctx context.Context) 
 	if err != nil {
 		t.Fatalf("chaos-real: ListAgentInstances: %v (a kernel at contract 0117 or later, with the chat pool on, is required)", err)
 	}
+	var pids []int
 	for _, in := range resp.GetInstances() {
 		if in.GetPid() > 0 && in.GetStreamId() != "" {
-			return int(in.GetPid()), in.GetInstanceId()
+			pids = append(pids, int(in.GetPid()))
 		}
 	}
-	return 0, ""
+	return pids
+}
+
+// awaitWorkers waits until there are at least min chat workers none of which is in
+// skip (the respawned ones), bounded by within, and returns them. A second round
+// waits for EVERY killed worker's replacement, so it kills the one the re-sent turn
+// runs on, whichever stream that is.
+func awaitWorkers(t *testing.T, op pb.OperatorConsoleClient, ctx context.Context, skip []int, min int, within time.Duration) []int {
+	t.Helper()
+	until := time.Now().Add(within)
+	for {
+		var fresh []int
+		for _, pid := range chatWorkers(t, op, ctx) {
+			if !slices.Contains(skip, pid) {
+				fresh = append(fresh, pid)
+			}
+		}
+		if len(fresh) >= min && len(fresh) > 0 {
+			return fresh
+		}
+		if time.Now().After(until) {
+			t.Fatalf("chaos-real: no live chat worker (other than %v) within %s", skip, within)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // killPid is the EXTERNAL kill: an OS signal from outside the kernel (SIGKILL on
@@ -341,20 +368,26 @@ func sendChaosTurn(op pb.OperatorConsoleClient, ctx context.Context, id string, 
 //   - Two kills (the re-drive's worker too): the turn fails loudly
 //     (assistant_restarted_twice: Unavailable, "restarted twice").
 //
-// CAMBRIAN_CHAOS_KILL_AFTER (default 300ms) is how long after sending the turn the
-// first kill lands; a turn that answered before it is reported as a FAILED scenario
-// (nothing was killed under it), never a pass.
+// Every chat pool worker is killed in a round, so the one serving the turn is hit
+// whatever the pool size; each round lands CAMBRIAN_CHAOS_KILL_AFTER (default 300ms)
+// after the turn was sent (or, in the second round, after the replacements are up).
+// A scenario waits for a live worker first (CAMBRIAN_CHAOS_RESPAWN_WITHIN, default
+// 90s): a boot takes tens of seconds (ENG-2266). A turn that answered before a kill
+// is reported as a FAILED scenario (nothing was killed under it), never a pass.
+// Run it against a FRESH kernel: it kills each chat worker three times, and a second
+// back-to-back run trips the daemon restart policy's crash-loop quarantine, after
+// which no worker comes back (that is the policy working, not this scenario failing).
 func TestChaosReal_AgentSigkill(t *testing.T) {
 	chaosKernel(t)
 	op, ctx := chaosOperator(t)
 	deadline := envDuration(t, "CAMBRIAN_CHAOS_EXECUTE_DEADLINE", 2*time.Minute)
 	killAfter := envDuration(t, "CAMBRIAN_CHAOS_KILL_AFTER", 300*time.Millisecond)
 
+	respawn := envDuration(t, "CAMBRIAN_CHAOS_RESPAWN_WITHIN", 90*time.Second)
 	run := func(t *testing.T, kills int) (*pb.SendTurnOpResponse, error, []int) {
-		pid, _ := chatWorker(t, op, ctx)
-		if pid == 0 {
-			t.Fatal("chaos-real: no chat pool worker with a pid (execution.chat.chat_pool_size must be > 0)")
-		}
+		// A live worker before anything is sent: the previous scenario's kill may still
+		// be respawning (a boot takes tens of seconds).
+		victims := awaitWorkers(t, op, ctx, nil, 1, respawn)
 		type result struct {
 			resp *pb.SendTurnOpResponse
 			err  error
@@ -365,26 +398,21 @@ func TestChaosReal_AgentSigkill(t *testing.T) {
 			resp, err := sendChaosTurn(op, ctx, id, deadline)
 			done <- result{resp, err}
 		}()
-		select {
-		case r := <-done:
-			t.Fatalf("chaos-real: the turn ended before the first kill (%v, %v); lower CAMBRIAN_CHAOS_KILL_AFTER", r.resp, r.err)
-		case <-time.After(killAfter):
-		}
-		killed := []int{pid}
-		killPid(t, pid)
-		for len(killed) < kills {
-			// Kill the respawned worker as soon as it appears: the re-drive runs on it.
-			appear := time.Now().Add(30 * time.Second)
-			for {
-				if next, _ := chatWorker(t, op, ctx); next != 0 && next != killed[len(killed)-1] {
-					killPid(t, next)
-					killed = append(killed, next)
-					break
-				}
-				if time.Now().After(appear) {
-					t.Fatal("chaos-real: the killed worker was not respawned within 30s")
-				}
-				time.Sleep(20 * time.Millisecond)
+		var killed []int
+		for round := 1; round <= kills; round++ {
+			if round > 1 {
+				// The re-drive waits for a replacement and runs on it: kill the respawned
+				// workers once they are up and the re-sent turn has reached one.
+				victims = awaitWorkers(t, op, ctx, killed, len(victims), respawn)
+			}
+			select {
+			case r := <-done:
+				t.Fatalf("chaos-real: the turn ended before kill %d (%v, %v); lower CAMBRIAN_CHAOS_KILL_AFTER", round, r.resp, r.err)
+			case <-time.After(killAfter):
+			}
+			for _, pid := range victims {
+				killPid(t, pid)
+				killed = append(killed, pid)
 			}
 		}
 		r := <-done
@@ -396,14 +424,14 @@ func TestChaosReal_AgentSigkill(t *testing.T) {
 		if err != nil || resp.GetReply() == nil {
 			t.Fatalf("the turn did not survive one worker kill: %v", err)
 		}
-		if next, _ := chatWorker(t, op, ctx); next == 0 || next == killed[0] {
-			t.Fatalf("the worker was not respawned: pid before %d, after %d", killed[0], next)
+		if fresh := awaitWorkers(t, op, ctx, killed, 1, respawn); len(fresh) == 0 {
+			t.Fatalf("the killed workers %v were not respawned", killed)
 		}
 	})
 	t.Run("two kills: the turn fails loudly", func(t *testing.T) {
 		_, err, killed := run(t, 2)
-		if len(killed) != 2 {
-			t.Fatalf("killed %v, want two workers", killed)
+		if len(killed) < 2 {
+			t.Fatalf("killed %v, want two rounds of workers", killed)
 		}
 		if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "restarted twice") {
 			t.Fatalf("after two kills: %v — want Unavailable saying the assistant restarted twice", err)
