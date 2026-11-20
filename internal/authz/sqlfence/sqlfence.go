@@ -79,8 +79,8 @@ type Shape struct {
 	// rowTags names the row's OWN classification column (ADR-0158 D2): the tags a
 	// typed row (event, observation, link, an object-table value derived from
 	// one) carries beside the classification it stands on through col. Non-empty:
-	// the fence is fence(col) AND (cardinality(rowTags) = 0 OR fence(col ||
-	// rowTags)), both with the same parties — CheckRow(E,P) AND CheckRow(E∪R,P),
+	// the fence is fence(col) AND (rowTags IS NULL OR cardinality(rowTags) = 0 OR
+	// fence(col || rowTags)), both with the same parties — CheckRow(E,P) AND CheckRow(E∪R,P),
 	// narrow-only by construction. Set it only through WithRowTags.
 	rowTags string
 }
@@ -165,7 +165,7 @@ func FenceClass(alias string) Shape {
 // WithRowTags returns s fencing a row that carries its own classification in
 // rowCol (TEXT[]) beside the classification s already reads (ADR-0158 D2):
 //
-//	visible = fence(col) AND (cardinality(rowCol) = 0 OR fence(col || rowCol))
+//	visible = fence(col) AND (rowCol IS NULL OR cardinality(rowCol) = 0 OR fence(col || rowCol))
 //
 // with both fences over the same parties column. The first conjunct is s's
 // fence exactly as before, so the result can only REMOVE rows: tags that are
@@ -173,9 +173,18 @@ func FenceClass(alias string) Shape {
 // the tag set — which is why a plain fence over (col || rowCol) would not do
 // (ADR-0158 alternative 1). The second conjunct is the same terms (Shape.terms,
 // own-rows disjunction included) over the concatenated array, so no term logic
-// is restated; for an empty row classification it is skipped by the
-// cardinality test and the fence reads exactly as today. A NULL rowCol reads
-// as empty (`x || NULL` is x in Postgres, so the second fence equals the first).
+// is restated; for a NULL or empty row classification it is skipped by the
+// first two tests and the fence reads exactly as today.
+//
+// Why `rowCol IS NULL` leads (ENG-2264, measured at 10^6 objects): a row with no
+// classification of its own stores NULL (the objects maintainer), and
+// `cardinality(NULL) = 0` is NULL, not TRUE — so without it the OR evaluated the
+// whole second fence (another owner-fence SubPlan) for every unclassified row
+// (the result was right: `x || NULL` is x). And the planner estimates `IS NULL`
+// from the column's null fraction, where `cardinality(rowCol) = 0` gets the
+// default 0.5% selectivity: that underestimate (one property fence ≈ 1%) turned a
+// LIMIT-ordered primary-key scan into an index scan plus sort, 3.8 ms → 200 ms on
+// the same table.
 //
 // TEXT[] shapes only: no jsonb-tagged table carries typed rows, and a jsonb
 // concatenation would not be a tag array. A jsonb shape panics (a programming
@@ -343,7 +352,7 @@ func (s Shape) fence(scope *domain.TagPredicate) []expr {
 	narrowed := s
 	narrowed.col = "(" + s.col + " || " + s.rowTags + ")"
 	narrowed.rowTags = ""
-	return append(out, or(leaf("cardinality("+s.rowTags+") = 0"), and(narrowed.decide(scope)...)))
+	return append(out, or(leaf(s.rowTags+" IS NULL"), leaf("cardinality("+s.rowTags+") = 0"), and(narrowed.decide(scope)...)))
 }
 
 // decide is the predicate's decision over s.col as ANDed terms: the main terms,

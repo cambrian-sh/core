@@ -139,7 +139,7 @@ func TestFence_ObjectExtraIsPerEntryAndFailsClosed(t *testing.T) {
 }
 
 // ADR-0158 D2: a row-tags shape is the base fence, unchanged and first, AND-ed
-// with the cardinality short-circuit over the same terms on the concatenation.
+// with the NULL/empty short-circuit over the same terms on the concatenation.
 func TestFence_WithRowTagsIsBaseAndNarrowed(t *testing.T) {
 	preds := []*domain.TagPredicate{
 		domain.ScopeSystem,
@@ -151,7 +151,9 @@ func TestFence_WithRowTagsIsBaseAndNarrowed(t *testing.T) {
 	for _, p := range preds {
 		base, baseArgs := Evidence("e").Expr(p, 3)
 		typed, typedArgs := Evidence("e").WithRowTags("o.classification").Expr(p, 3)
-		if !strings.HasPrefix(typed, base[:len(base)-1]+" AND (cardinality(o.classification) = 0 OR (") {
+		// ENG-2264: IS NULL leads (a row with no classification stores NULL, and
+		// cardinality(NULL) = 0 is NULL), then the empty-array test.
+		if !strings.HasPrefix(typed, base[:len(base)-1]+" AND (o.classification IS NULL OR cardinality(o.classification) = 0 OR (") {
 			t.Errorf("%+v: typed fence must start with the base fence and the short-circuit:\nbase:  %s\ntyped: %s", *p, base, typed)
 		}
 		if !strings.Contains(typed, "(e.classification || o.classification)") {
