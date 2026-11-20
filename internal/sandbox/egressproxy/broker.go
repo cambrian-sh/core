@@ -3,12 +3,15 @@ package egressproxy
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +34,18 @@ type Options struct {
 	DialTimeout time.Duration
 	// HandshakeTimeout bounds reading the CONNECT request; 0 ⇒ 30 s.
 	HandshakeTimeout time.Duration
+	// Proxy chooses the kernel's forward proxy for an admitted CONNECT target
+	// ("host:port"); a nil URL dials direct. nil ⇒ the kernel's own
+	// HTTPS_PROXY / NO_PROXY (EnvironmentProxy) — ENG-2261.
+	Proxy func(target string) (*url.URL, error)
+}
+
+// EnvironmentProxy is the production Options.Proxy: the forward proxy the
+// kernel's environment names for an https target (HTTPS_PROXY, else
+// HTTP_PROXY), nil when NO_PROXY covers it, none is set, or the target is
+// loopback (http.ProxyFromEnvironment never proxies localhost).
+func EnvironmentProxy(target string) (*url.URL, error) {
+	return http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: target}})
 }
 
 // ErrNotRunning is returned by Open and Serve before Start or after Stop.
@@ -65,6 +80,9 @@ func New(opts Options) *Broker {
 	if opts.Dial == nil {
 		d := &net.Dialer{Timeout: opts.DialTimeout}
 		opts.Dial = d.DialContext
+	}
+	if opts.Proxy == nil {
+		opts.Proxy = EnvironmentProxy
 	}
 	return &Broker{opts: opts, sessions: map[*Session]struct{}{}}
 }
@@ -243,6 +261,7 @@ func (s *Session) serveConn(ctx context.Context, c net.Conn) {
 		return
 	}
 	var addrs []net.IP
+	var blocked []string
 	if literal != nil {
 		addrs = []net.IP{literal} // an explicit literal entry is the operator's choice
 	} else {
@@ -253,7 +272,6 @@ func (s *Session) serveConn(ctx context.Context, c net.Conn) {
 			s.refuse(c, http.StatusBadGateway, req.Host, "resolve: "+lerr.Error())
 			return
 		}
-		var blocked []string
 		for _, ip := range ips {
 			if forbidden(ip.IP) {
 				blocked = append(blocked, ip.IP.String())
@@ -267,9 +285,40 @@ func (s *Session) serveConn(ctx context.Context, c net.Conn) {
 			return
 		}
 	}
+	// ENG-2261 (owner decision 2026-11-20): behind a corporate forward proxy the
+	// kernel's own environment names it, and the admitted target is reached
+	// through it with a CONNECT — after the allowlist and address checks above,
+	// as pkg/egress.NewProxiedTransport does for the kernel's own MCP calls. The
+	// proxy resolves the name itself and chooses among its answers, so EVERY
+	// answer must be permitted (the direct path dials only the permitted ones).
+	proxyURL, perr := s.b.opts.Proxy(req.Host)
+	if perr != nil {
+		s.refuse(c, http.StatusBadGateway, req.Host, "forward proxy: "+perr.Error())
+		return
+	}
 	var up net.Conn
 	var derr error
+	if proxyURL != nil {
+		if len(blocked) > 0 {
+			s.refuse(c, http.StatusForbidden, req.Host,
+				"resolves partly to loopback, link-local or unspecified addresses ("+strings.Join(blocked, ",")+
+					"), and the forward proxy would choose among them")
+			return
+		}
+		target := net.JoinHostPort(host, portStr)
+		if literal != nil {
+			target = net.JoinHostPort(literal.String(), portStr)
+		}
+		up, derr = s.dialViaProxy(ctx, proxyURL, target)
+		if derr != nil {
+			s.refuse(c, http.StatusBadGateway, req.Host, "forward proxy: "+derr.Error())
+			return
+		}
+	}
 	for _, ip := range addrs {
+		if up != nil {
+			break
+		}
 		dctx, cancel := context.WithTimeout(ctx, s.b.opts.DialTimeout)
 		// The resolved address is dialled, never the name again: the check
 		// above and the connection are about the same address.
@@ -309,6 +358,81 @@ func (s *Session) serveConn(ctx context.Context, c net.Conn) {
 	_ = up.Close()
 	_ = c.Close()
 	copies.Wait()
+}
+
+// dialViaProxy opens a tunnel to target through the forward proxy u: a plain
+// (http) or TLS (https) connection to the proxy itself — dialled without the
+// target address checks, an operator-configured proxy usually sits on the
+// private network — then CONNECT target, with Basic credentials when u
+// carries them. Anything but a 200 is an error naming the proxy's answer.
+func (s *Session) dialViaProxy(ctx context.Context, u *url.URL, target string) (net.Conn, error) {
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported proxy scheme %q (http or https)", u.Scheme)
+	}
+	dctx, cancel := context.WithTimeout(ctx, s.b.opts.DialTimeout)
+	defer cancel()
+	conn, err := s.b.opts.Dial(dctx, "tcp", proxyAddr(u))
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", proxyAddr(u), err)
+	}
+	if dl, ok := dctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+	if u.Scheme == "https" {
+		tc := tls.Client(conn, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12})
+		if err := tc.HandshakeContext(dctx); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("TLS to %s: %w", proxyAddr(u), err)
+		}
+		conn = tc
+	}
+	req := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
+	if u.User != nil {
+		pw, _ := u.User.Password()
+		req += "Proxy-Authorization: Basic " +
+			base64.StdEncoding.EncodeToString([]byte(u.User.Username()+":"+pw)) + "\r\n"
+	}
+	if _, err := io.WriteString(conn, req+"\r\n"); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("CONNECT via %s: %w", proxyAddr(u), err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("CONNECT via %s: %w", proxyAddr(u), err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%s answered CONNECT %s with %s", proxyAddr(u), target, resp.Status)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	if br.Buffered() > 0 {
+		return &bufferedConn{Conn: conn, r: br}, nil
+	}
+	return conn, nil
+}
+
+// bufferedConn reads first what the proxy's response reader already buffered.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
+
+// proxyAddr is the host:port of a proxy URL, its scheme's default port when it
+// names none.
+func proxyAddr(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 func (s *Session) refuse(c net.Conn, status int, target, why string) {

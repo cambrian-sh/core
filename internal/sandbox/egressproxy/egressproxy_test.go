@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -104,17 +105,18 @@ func (f fakeDNS) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, err
 }
 
 type rig struct {
-	broker  *Broker
-	session *Session
-	fwdAddr string
-	dialed  chan string
-	stop    func()
+	echoAddr string
+	broker   *Broker
+	session  *Session
+	fwdAddr  string
+	dialed   chan string
+	stop     func()
 }
 
 // newRig wires the whole path the sandbox uses: a forwarder listening on
 // loopback, the multiplex over an in-memory pipe pair, and a Session of a
 // started Broker whose upstream dials land on a local echo server.
-func newRig(t *testing.T, hosts []string) *rig {
+func newRig(t *testing.T, hosts []string, configure ...func(*rig, *Options)) *rig {
 	t.Helper()
 	echo, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -131,15 +133,23 @@ func newRig(t *testing.T, hosts []string) *rig {
 			go func() { _, _ = io.Copy(c, c); _ = c.Close() }()
 		}
 	}()
-	r := &rig{dialed: make(chan string, 16)}
-	r.broker = New(Options{
-		Resolver: fakeDNS{"allowed.test": {"203.0.113.10"}, "api.wild.test": {"203.0.113.11"}, "rebind.test": {"127.0.0.1"}, "meta.test": {"169.254.169.254"}},
+	r := &rig{dialed: make(chan string, 16), echoAddr: echo.Addr().String()}
+	opts := Options{
+		Resolver: fakeDNS{"allowed.test": {"203.0.113.10"}, "api.wild.test": {"203.0.113.11"}, "rebind.test": {"127.0.0.1"},
+			"meta.test": {"169.254.169.254"}, "mixed.test": {"203.0.113.12", "127.0.0.1"}},
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			r.dialed <- addr
 			var d net.Dialer
 			return d.DialContext(ctx, network, echo.Addr().String())
 		},
-	})
+		// The rigs dial direct unless a test configures a forward proxy: the
+		// developer's own HTTPS_PROXY must not change what they test.
+		Proxy: func(string) (*url.URL, error) { return nil, nil },
+	}
+	for _, c := range configure {
+		c(r, &opts)
+	}
+	r.broker = New(opts)
 	if err := r.broker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
