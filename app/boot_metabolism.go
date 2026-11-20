@@ -48,7 +48,34 @@ func (b *kernelBuild) buildMetabolism() error {
 	// meter to the Provider and the server.
 	spendMeter := llm.NewSpendMeter(cfg.Execution.Session.MaxSessionTokens, llmProvider.Ledger(), slog.Default())
 	llmGateway := subnetwork.NewLLMGateway(cfg.Execution, spendMeter)
-	meta := kernel.NewMetabolismStack(reg, embedder, mem.Reader(), mem.ProfileStore, mem.Agent, cfg, llmGateway)
+	// ADR-0130 D1 / ADR-0157 D4: each spawned agent receives ITS credential in
+	// its process environment (CAMBRIAN_AGENT_TOKEN + CAMBRIAN_AGENT_ID) — a
+	// per-instance token the InstanceManager mints at the spawn itself, so no
+	// credential source is wired here.
+	// ADR-0130 D4: and HOW to reach the plane — the bound address and, on a
+	// pure-TLS routable bind, the TLS root — resolved from the same listener
+	// policy that binds it (agent_transport.go). Without this a TLS-only
+	// routable kernel could not serve its own agents: they dialled
+	// localhost:<port> in plaintext. Resolved BEFORE the metabolism stack and
+	// handed to it, so the agent manager is built with the one dial address
+	// (ENG-2262; it used to start from "localhost:"+port and be overridden).
+	agentTr, agentTrWarn, err := agentTransport(cfg)
+	if err != nil {
+		return fmt.Errorf("ADR-0130 agent transport: %w", err)
+	}
+	if agentTrWarn != "" {
+		slog.Warn("ADR-0130: "+agentTrWarn, "tls_cert_file", cfg.Server.TLSCertFile,
+			"tls_agent_ca_file", cfg.Server.TLSAgentCAFile)
+	}
+	// ADR-0157 S2: kernel-only (network-denied) sandboxed instances reach the
+	// same gRPC plane through a unix socket in their own socket directory;
+	// served from the moment the gRPC server starts (agent_kernel_socket.go).
+	// S5: on Windows every agent in the AppContainer does (it has no loopback).
+	agentSockets := newAgentSocketServer()
+	agentTr.KernelSocket = agentSockets.Open
+	meta := kernel.NewMetabolismStack(reg, embedder, mem.Reader(), mem.ProfileStore, mem.Agent, cfg, llmGateway, agentTr)
+	slog.Info("ADR-0130: spawned agents dial the kernel", "addr", meta.Manager.InstanceManager.AgentDialAddr(),
+		"tls", agentTr.TLSCAFile != "", "server_name", agentTr.TLSServerName)
 	// ADR-0157 D7.11: the managed Python env's boot check (+ build_on_boot
 	// background build) before any agent boots; Python spawns wait on its gate.
 	pyEnv := startPythonEnv(ctx, cfg, config.ResolveBaseDir())
@@ -107,32 +134,6 @@ func (b *kernelBuild) buildMetabolism() error {
 	meta.VerificationWorker.EventBus = eventBus // ADR-0047 D3: VerifierRoundEvent → operator feed
 	// ADR-0033: crash detection publishes DaemonCrashedEvent to this bus.
 	meta.Manager.EventBus = eventBus
-	// ADR-0130 D1 / ADR-0157 D4: each spawned agent receives ITS credential in
-	// its process environment (CAMBRIAN_AGENT_TOKEN + CAMBRIAN_AGENT_ID) — a
-	// per-instance token the InstanceManager mints at the spawn itself, so no
-	// credential source is wired here.
-	// ADR-0130 D4: and HOW to reach the plane — the bound address and, on a
-	// pure-TLS routable bind, the TLS root — resolved from the same listener
-	// policy that binds it (agent_transport.go). Without this a TLS-only
-	// routable kernel could not serve its own agents: they dialled
-	// localhost:<port> in plaintext.
-	agentTr, agentTrWarn, err := agentTransport(cfg)
-	if err != nil {
-		return fmt.Errorf("ADR-0130 agent transport: %w", err)
-	}
-	if agentTrWarn != "" {
-		slog.Warn("ADR-0130: "+agentTrWarn, "tls_cert_file", cfg.Server.TLSCertFile,
-			"tls_agent_ca_file", cfg.Server.TLSAgentCAFile)
-	}
-	// ADR-0157 S2: kernel-only (network-denied) sandboxed instances reach the
-	// same gRPC plane through a unix socket in their own socket directory;
-	// served from the moment the gRPC server starts (agent_kernel_socket.go).
-	// S5: on Windows every agent in the AppContainer does (it has no loopback).
-	agentSockets := newAgentSocketServer()
-	agentTr.KernelSocket = agentSockets.Open
-	meta.Manager.InstanceManager.SetAgentTransport(agentTr)
-	slog.Info("ADR-0130: spawned agents dial the kernel", "addr", agentTr.Addr,
-		"tls", agentTr.TLSCAFile != "", "server_name", agentTr.TLSServerName)
 	// REACT-04 / ADR-0070: daemon auto-restart with backoff + flap quarantine. Disabled
 	// when daemon_restart_max_attempts is 0 (a crashed daemon then stays down).
 	if cfg.Execution.Agents.DaemonRestartMaxAttempts > 0 {

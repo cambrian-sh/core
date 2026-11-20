@@ -9,6 +9,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/kernel"
+	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/storage"
 )
 
@@ -30,7 +31,7 @@ func TestE2E_UnparsableManifestAgentNeverBoots(t *testing.T) {
 	}
 	defer store.Close()
 	reg := kernel.NewAgentRepoDecorator(store)
-	meta := kernel.NewMetabolismStack(reg, nil, nil, nil, nil, config.DefaultConfig(), nil)
+	meta := kernel.NewMetabolismStack(reg, nil, nil, nil, nil, config.DefaultConfig(), nil, agentmgr.AgentTransport{Addr: "127.0.0.1:50051"})
 
 	const id = "typo_agent"
 	write := func(manifest string) {

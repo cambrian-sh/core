@@ -75,6 +75,11 @@ type MetabolismStack struct {
 //   - leases: the substrate LLM gateway's lease lifecycle; the verification
 //     worker mints one lease per verifier call through it (ADR-0131). nil ⇒
 //     verifier calls carry no lease (tests).
+//   - agentTr: how the kernel's own spawned agents reach the agent plane — the
+//     ONE dial address (and TLS facts, kernel socket) the composition root
+//     resolved from the listener policy (app.agentTransport, ADR-0130 D4). The
+//     manager is built with it; there is no second, "localhost:"+port
+//     computation to override later (ENG-2262).
 func NewMetabolismStack(
 	reg *AgentRepoDecorator,
 	embedder domain.Embedder,
@@ -83,8 +88,10 @@ func NewMetabolismStack(
 	memoryAgent domain.MemoryAgent,
 	cfg *config.Config,
 	leases verify.LeaseGateway,
+	agentTr agentmgr.AgentTransport,
 ) *MetabolismStack {
-	manager := agentmgr.NewAgentManager(reg, "localhost:"+cfg.Server.Port, memoryAgent)
+	manager := agentmgr.NewAgentManager(reg, agentTr.Addr, memoryAgent)
+	manager.InstanceManager.SetAgentTransport(agentTr)
 	// ADR-0125: JS agent runtimes. Empty config values are fine — the instance
 	// manager falls back to $PATH lookup at spawn time.
 	manager.SetRuntimeExecutable(domain.RuntimeBun, cfg.Metabolism.BunExecutable)

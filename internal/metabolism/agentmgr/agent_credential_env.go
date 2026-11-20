@@ -112,6 +112,11 @@ func (im *InstanceManager) SetAgentTransport(t AgentTransport) {
 	im.agentUnixTLSServerName = t.UnixTLSServerName
 }
 
+// AgentDialAddr is the address every spawn is told to dial the kernel at (the
+// substrate address it was built with, or the one SetAgentTransport gave it).
+// The boot log reports it, so the logged address is the one agents get.
+func (im *InstanceManager) AgentDialAddr() string { return im.substrateAddr }
+
 // agentTransportEnv returns the TLS KEY=VALUE pairs for a spawn. Like the
 // credential, they are appended AFTER the SEC-01 allowlist (which strips
 // CAMBRIAN_* wholesale): they are the kernel telling its own agent how to
