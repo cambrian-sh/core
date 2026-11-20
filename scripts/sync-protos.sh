@@ -70,6 +70,9 @@ mappings=(
     # it by tests/test_p4plan_parity.py against this golden. Regenerate with:
     #   go test ./internal/objects/ -run TestPlan_Golden -update-plans
     "$core/internal/objects/testdata/plan.golden|$root/cambrian-benchmarks/src/cambrian_bench/objstate/testdata/plan.golden"
+    # The row-tags variants of the same plans (ADR-0158 stage 4, rowTagged all
+    # true), held to the port by the same test (ENG-1987).
+    "$core/internal/objects/testdata/plan_rowtags.golden|$root/cambrian-benchmarks/src/cambrian_bench/objstate/testdata/plan_rowtags.golden"
 )
 
 drift=0
