@@ -23,7 +23,17 @@ type fakeProposer struct {
 	prop          knowledgecommit.Proposal
 	commit        bool
 	link          knowledgecommit.LinkProposal
+	candidate     domain.KnowledgeItemID
+	reason        string
 	err           error
+}
+
+func (f *fakeProposer) RequestCommit(_ context.Context, by, forPerson domain.PrincipalRef, candidate domain.KnowledgeItemID, reason string) (domain.ApprovalItem, error) {
+	f.by, f.forPerson, f.candidate, f.reason = by, forPerson, candidate, reason
+	if f.err != nil {
+		return domain.ApprovalItem{}, f.err
+	}
+	return domain.ApprovalItem{ID: "ap-rc", State: domain.ApprovalPending, Object: string(candidate)}, nil
 }
 
 func (f *fakeProposer) Propose(_ context.Context, by, forPerson domain.PrincipalRef, p knowledgecommit.Proposal, commit bool, _ string) (knowledgecommit.Result, error) {
@@ -117,6 +127,44 @@ func TestProposeKnowledgeRPC_NilIsUnimplemented(t *testing.T) {
 	parent := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "planner"})
 	s.Knowledge = nil
 	if _, err := s.ProposeKnowledge(agentPlaneCtx("planner"), itemReq(parent)); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("nil bridge: %v", err)
+	}
+}
+
+// Orchestrator/RequestKnowledgeCommit (ENG-1768): who asks and for whom come from
+// the lease; the candidate and the reason from the request; refusals are data.
+func TestRequestKnowledgeCommitRPC_StampsTheLeaseIdentityAndRefusalsAreData(t *testing.T) {
+	t.Parallel()
+	s, gw, fp := knowledgeServer(t)
+	lease := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "planner", ConversationID: "conv-of-alice"})
+	req := &pb.RequestKnowledgeCommitRequest{LeaseId: string(lease), CandidateId: "ki_7", Reason: "confirm"}
+	resp, err := s.RequestKnowledgeCommit(agentPlaneCtx("planner"), req)
+	if err != nil || !resp.GetAccepted() || resp.GetApprovalId() != "ap-rc" || resp.GetApprovalState() != "pending" {
+		t.Fatalf("resp = %+v %v", resp, err)
+	}
+	if fp.by != domain.AgentPrincipal("planner") || fp.forPerson != domain.UserPrincipal("alice") || fp.candidate != "ki_7" || fp.reason != "confirm" {
+		t.Fatalf("call = by %v for %v candidate %q reason %q", fp.by, fp.forPerson, fp.candidate, fp.reason)
+	}
+	// A foreign lease is refused before the bridge is reached.
+	fp.by = domain.PrincipalRef{}
+	if _, err := s.RequestKnowledgeCommit(agentPlaneCtx("intruder"), req); status.Code(err) != codes.PermissionDenied || !fp.by.IsZero() {
+		t.Fatalf("foreign lease: %v (reached as %v)", err, fp.by)
+	}
+	// No candidate: a refusal, the bridge untouched.
+	if resp, err := s.RequestKnowledgeCommit(agentPlaneCtx("planner"), &pb.RequestKnowledgeCommitRequest{LeaseId: string(lease)}); err != nil || resp.GetAccepted() || !fp.by.IsZero() {
+		t.Fatalf("no candidate: %+v %v", resp, err)
+	}
+	// The bridge's named refusal (an unreadable or unknown candidate) is data.
+	fp.err = fmt.Errorf("%w: candidate \"ki_7\" is unknown or not readable by agent:planner", knowledgecommit.ErrNotProposable)
+	if resp, err := s.RequestKnowledgeCommit(agentPlaneCtx("planner"), req); err != nil || resp.GetAccepted() || !strings.Contains(resp.GetDetail(), "not readable") {
+		t.Fatalf("refusal: %+v %v", resp, err)
+	}
+	fp.err = fmt.Errorf("hub down")
+	if _, err := s.RequestKnowledgeCommit(agentPlaneCtx("planner"), req); status.Code(err) != codes.Unavailable {
+		t.Fatalf("infra failure: %v", err)
+	}
+	s.Knowledge = nil
+	if _, err := s.RequestKnowledgeCommit(agentPlaneCtx("planner"), req); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("nil bridge: %v", err)
 	}
 }

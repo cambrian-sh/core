@@ -14,6 +14,7 @@ import (
 	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/rowfence"
 )
 
 // QueryKnowledgeFunc builds the principal-resolving wrapper over the query
@@ -144,4 +145,30 @@ func MayReadEvidence(ctx context.Context, authorizer domain.Authorizer, principa
 		return true
 	}
 	return pred.AllowsRow(ev.Classification, ev.Parties)
+}
+
+// MayReadKnowledgeItem reports whether principal may read the knowledge item it,
+// by the predicate the knowledge query seam resolves for that principal
+// (readScope) and the one in-memory row test (rowfence.Readable over the item's
+// classification; a knowledge item carries no parties). A principal with no read
+// predicate, or a nil item, may read nothing.
+//
+// A request that NAMES an existing item (knowledgecommit.Service.RequestCommit,
+// ENG-1768) uses it so that nobody can raise a commit approval for a candidate
+// they could not see, nor learn which candidate ids exist.
+func MayReadKnowledgeItem(ctx context.Context, authorizer domain.Authorizer, principal domain.PrincipalRef, it *domain.KnowledgeItem, log *slog.Logger) bool {
+	if it == nil {
+		return false
+	}
+	if authorizer == nil {
+		authorizer = domain.AllowAllAuthorizer{}
+	}
+	pred, err := readScope(ctx, authorizer, principal, log, "knowledge item read")
+	if err != nil {
+		return false
+	}
+	if pred.Unfiltered() {
+		return true
+	}
+	return rowfence.Readable(pred, rowfence.Classification{Tags: it.Classification})
 }

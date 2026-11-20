@@ -28,6 +28,49 @@ import (
 type KnowledgeProposer interface {
 	Propose(ctx context.Context, by, forPerson domain.PrincipalRef, p knowledgecommit.Proposal, commit bool, reason string) (knowledgecommit.Result, error)
 	ProposeLink(ctx context.Context, by domain.PrincipalRef, p knowledgecommit.LinkProposal) (bool, error)
+	RequestCommit(ctx context.Context, by, forPerson domain.PrincipalRef, candidate domain.KnowledgeItemID, reason string) (domain.ApprovalItem, error)
+}
+
+// RequestKnowledgeCommit implements Orchestrator/RequestKnowledgeCommit (ENG-1768,
+// owner decision 2026-11-20, option A): ask for an EXISTING candidate to be
+// committed. Who asks and for whom are the lease's agent and run principal
+// (leaseProposer), exactly as for ProposeKnowledge; the same grant
+// (propose_knowledge) and the same Rule-of-Two gate apply. The candidate's
+// readability by both is checked inside knowledgecommit.Service.RequestCommit, so
+// this transport adds no second, divergent check.
+func (s *Server) RequestKnowledgeCommit(ctx context.Context, req *pb.RequestKnowledgeCommitRequest) (*pb.RequestKnowledgeCommitResponse, error) {
+	if s.Knowledge == nil {
+		return nil, status.Error(codes.Unimplemented, "knowledge proposals are not enabled on this kernel")
+	}
+	b, by, forPerson, err := s.leaseProposer(ctx, req.GetLeaseId())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireProposalVerb(ctx, by, req.GetLeaseId(), domain.VerbProposeKnowledge); err != nil {
+		return nil, err
+	}
+	if req.GetCandidateId() == "" {
+		return &pb.RequestKnowledgeCommitResponse{Accepted: false, Detail: "candidate_id is required"}, nil
+	}
+	if why, ok := s.gateKernelWrite(ctx, req.GetLeaseId(), "propose_knowledge",
+		"request a knowledge commit: "+previewText(req.GetCandidateId()+" "+req.GetReason(), 200),
+		map[string]any{"candidate_id": req.GetCandidateId(), "reason": req.GetReason()}); !ok {
+		return &pb.RequestKnowledgeCommitResponse{Accepted: false, Detail: why}, nil
+	}
+	if s.ConversationOwner != nil {
+		if owner := s.ConversationOwner(ctx, b); owner != "" {
+			ctx = domain.WithConversationOwner(ctx, owner)
+		}
+	}
+	ap, err := s.Knowledge.RequestCommit(ctx, by, forPerson, domain.KnowledgeItemID(req.GetCandidateId()), req.GetReason())
+	if refusal(err) {
+		return &pb.RequestKnowledgeCommitResponse{Accepted: false, Detail: err.Error()}, nil
+	}
+	if err != nil {
+		slog.Warn("knowledge commit request failed", "agent", by.ID, "err", err)
+		return nil, status.Error(codes.Unavailable, "knowledge commit requests are unavailable")
+	}
+	return &pb.RequestKnowledgeCommitResponse{Accepted: true, ApprovalId: ap.ID, ApprovalState: string(ap.State)}, nil
 }
 
 // ProposeKnowledge implements the RPC.

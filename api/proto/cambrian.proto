@@ -224,6 +224,18 @@ service Orchestrator {
   // resolves by designated_actor accept proposals. A refusal is an OK response with
   // accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
   rpc ProposeKnowledge(ProposeKnowledgeRequest) returns (ProposeKnowledgeResponse);
+  // Ask for an EXISTING candidate to be committed (ENG-1768; contract 0115, additive):
+  // the knowledge_commit approval ProposeKnowledge's request_commit raises for a new
+  // proposal, for a candidate that is already recorded — so an app or agent acting for
+  // a person can bring a candidate to that person (or the approver the policy routes
+  // to) for confirmation. The requester is the calling agent and the commit is for the
+  // lease's run principal (both resolved from the lease, never request fields), and
+  // the candidate must be readable by BOTH under their own read scope; an unreadable
+  // candidate answers exactly like an unknown one. The approver becomes the committed
+  // item's asserter. Same grant as ProposeKnowledge (verb propose_knowledge). A
+  // refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
+  // kernel has no knowledge bridge.
+  rpc RequestKnowledgeCommit(RequestKnowledgeCommitRequest) returns (RequestKnowledgeCommitResponse);
 
   // Ontology drafts (ADR-0149 D2; T-20261113-agent-drafted-ontology-changes-have-no-approval;
   // additive within contract 0101). An agent DRAFTS a change to a namespace's kind and
@@ -439,6 +451,23 @@ message ProposeKnowledgeResponse {
   // Set when request_commit raised an approval.
   string approval_id = 5;
   string approval_state = 6;
+}
+
+message RequestKnowledgeCommitRequest {
+  string lease_id = 1; // the step's lease (else x-lease-id)
+  // The candidate knowledge item's id (ProposeKnowledgeResponse.candidate_id, or one
+  // the caller read).
+  string candidate_id = 2;
+  // Why; shown to the approver.
+  string reason = 3;
+}
+
+message RequestKnowledgeCommitResponse {
+  bool accepted = 1;
+  // Why it was refused (named constraint), when accepted=false.
+  string detail = 2;
+  string approval_id = 3;
+  string approval_state = 4;
 }
 
 message ProposeScheduledTaskRequest {

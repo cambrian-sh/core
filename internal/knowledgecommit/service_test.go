@@ -373,3 +373,80 @@ func TestProposals_NoEvidenceStoreRefusesCitations(t *testing.T) {
 		t.Fatalf("a proposal citing no evidence was refused: %v", err)
 	}
 }
+
+// ENG-1768 (owner decision 2026-11-20): RequestCommit names an EXISTING candidate,
+// so it raises an approval only for one the requester and the person it is for
+// may both read, each under their own read predicate. An unreadable candidate
+// answers exactly as an unknown one, and nothing is raised.
+func TestRequestCommit_OnlyForACandidateBothMayRead(t *testing.T) {
+	ctx := context.Background()
+	put := func(t *testing.T, store *memStore, entity string, class []string) domain.KnowledgeItemID {
+		t.Helper()
+		id, _, err := store.PutItem(ctx, domain.KnowledgeItem{Kind: "case", EntityID: entity, AssertedBy: "agent:scout",
+			SourceRef: domain.KnowledgeProposalSourceRefPrefix + "agent:scout:" + entity, Classification: class,
+			Values: []domain.StatementValue{{Predicate: "status", Type: "text", Text: "closed"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	for _, tc := range []struct {
+		name      string
+		authz     domain.Authorizer
+		class     []string
+		by, forP  domain.PrincipalRef
+		unknownID bool
+		ok        bool
+	}{
+		{"readable candidate (OSS default)", nil, []string{"ops"}, scout, alice, false, true},
+		{"another person's private candidate (owner fence)", nil, []string{domain.OwnerTag("bob")}, scout, alice, false, false},
+		{"the person's own private candidate, requested by an app acting as that person", nil, []string{domain.OwnerTag("alice")}, alice, alice, false, true},
+		{"unknown id", nil, []string{"ops"}, scout, alice, true, false},
+		{"a tag the policy forbids", forbidAuthorizer{}, []string{"hr"}, scout, alice, false, false},
+		{"a tag the policy allows", forbidAuthorizer{}, []string{"ops"}, scout, alice, false, true},
+		{"no person: the requester alone must read it", forbidAuthorizer{}, []string{"hr"}, scout, domain.PrincipalRef{}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := domain.NewAddressedHub(domain.AddressedHubConfig{})
+			reg := testRegistry(t)
+			store := &memStore{reg: reg}
+			svc, err := New(store, reg, tc.authz, hub, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := put(t, store, "case/1", tc.class)
+			if tc.unknownID {
+				id = "ki_missing"
+			}
+			ap, err := svc.RequestCommit(ctx, tc.by, tc.forP, id, "please confirm")
+			raised, _ := hub.List(ctx, domain.ApprovalQuery{})
+			if tc.ok {
+				if err != nil || ap.ID == "" || ap.Object != string(id) || len(raised) != 1 {
+					t.Fatalf("readable candidate: ap=%+v err=%v raised=%d", ap, err, len(raised))
+				}
+				return
+			}
+			if !errors.Is(err, ErrNotProposable) {
+				t.Fatalf("err = %v, want ErrNotProposable", err)
+			}
+			want := fmt.Sprintf("candidate %q is unknown or not readable by %s", id, tc.by.String())
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("refusal %q does not read %q (unknown and unreadable must answer alike)", err, want)
+			}
+			if len(raised) != 0 {
+				t.Fatalf("a refused request raised %d approval(s)", len(raised))
+			}
+		})
+	}
+}
+
+// A request names who asks and what: neither may be empty.
+func TestRequestCommit_RefusesAnEmptyRequesterOrCandidate(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.svc.RequestCommit(context.Background(), domain.PrincipalRef{}, alice, "ki_1", ""); !errors.Is(err, ErrNotProposable) {
+		t.Fatalf("no requester: %v", err)
+	}
+	if _, err := f.svc.RequestCommit(context.Background(), scout, alice, "", ""); !errors.Is(err, ErrNotProposable) {
+		t.Fatalf("no candidate: %v", err)
+	}
+}

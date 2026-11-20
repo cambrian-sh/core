@@ -214,10 +214,42 @@ func (s *Service) Propose(ctx context.Context, by, forPerson domain.PrincipalRef
 }
 
 // RequestCommit raises a knowledge_commit approval for an existing candidate.
+//
+// The candidate must be readable (ENG-1768, owner decision 2026-11-20): by the
+// requester `by` AND, when the request is made for a person, by that person —
+// each under their OWN read predicate (authz.MayReadKnowledgeItem: the
+// Authorizer's ReadFilter, then rowfence.Readable on the item). The store read
+// below is unscoped (the bridge holds the raw store), so this check is what keeps
+// anyone from raising a commit approval for a candidate they cannot see. It lives
+// here, not in a transport, so every surface that reaches RequestCommit inherits
+// it. An unreadable candidate answers exactly as an unknown one (no existence
+// oracle).
 func (s *Service) RequestCommit(ctx context.Context, by, forPerson domain.PrincipalRef, candidate domain.KnowledgeItemID, reason string) (domain.ApprovalItem, error) {
+	if by.IsZero() {
+		return domain.ApprovalItem{}, fmt.Errorf("%w: no requester could be established", ErrNotProposable)
+	}
+	if candidate == "" {
+		return domain.ApprovalItem{}, fmt.Errorf("%w: a candidate id is required", ErrNotProposable)
+	}
+	refuse := fmt.Errorf("%w: candidate %q is unknown or not readable by %s", ErrNotProposable, candidate, by.String())
 	it, err := s.store.GetItem(ctx, candidate)
 	if err != nil {
-		return domain.ApprovalItem{}, err
+		// The store names no not-found sentinel, so every failed read answers as
+		// "unknown": fail closed, and never an existence oracle. Logged with the
+		// cause so an outage is visible to the operator.
+		s.logger.Info("knowledge commit request refused: candidate not read", "event", "knowledge_commit_request_refused",
+			"by", by.String(), "candidate", string(candidate), "err", err)
+		return domain.ApprovalItem{}, refuse
+	}
+	for _, reader := range []domain.PrincipalRef{by, forPerson} {
+		if reader.IsZero() {
+			continue
+		}
+		if !authz.MayReadKnowledgeItem(ctx, s.authz, reader, it, s.logger) {
+			s.logger.Info("knowledge commit request refused: candidate not readable", "event", "knowledge_commit_request_refused",
+				"by", by.String(), "reader", reader.String(), "candidate", string(candidate))
+			return domain.ApprovalItem{}, refuse
+		}
 	}
 	spec, err := s.designatedSpec(it.NamespaceID, it.Kind)
 	if err != nil {

@@ -38,6 +38,11 @@ func (c *countingProposer) Propose(context.Context, domain.PrincipalRef, domain.
 	return knowledgecommit.Result{CandidateID: "ki_e2e", Inserted: true}, nil
 }
 
+func (c *countingProposer) RequestCommit(context.Context, domain.PrincipalRef, domain.PrincipalRef, domain.KnowledgeItemID, string) (domain.ApprovalItem, error) {
+	c.calls++
+	return domain.ApprovalItem{ID: "ap-e2e", State: domain.ApprovalPending}, nil
+}
+
 func (c *countingProposer) ProposeLink(context.Context, domain.PrincipalRef, knowledgecommit.LinkProposal) (bool, error) {
 	c.calls++
 	return true, nil

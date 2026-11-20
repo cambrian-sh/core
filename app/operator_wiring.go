@@ -906,7 +906,12 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// (optional: absent keeps the stored opt-in, present decides) on SaveMCPServer /
 	// TestMCPServer, and MCPServerOp.allow_private_network on ListMCPServers - the
 	// ADR-0153 private-network opt-in is set from the console.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0114", operatorCaps
+	// 0115 (2026-11-20, additive; ENG-1768): agent plane
+	// Orchestrator/RequestKnowledgeCommit (+ RequestKnowledgeCommitRequest/Response) -
+	// ask for an EXISTING candidate to be committed, for the lease's run principal;
+	// the candidate must be readable by the agent and the person. Operator plane
+	// unchanged.
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0115", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

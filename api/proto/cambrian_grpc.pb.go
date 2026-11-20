@@ -47,6 +47,7 @@ const (
 	Orchestrator_ListScheduledTasks_FullMethodName     = "/cambrian.Orchestrator/ListScheduledTasks"
 	Orchestrator_ManageScheduledTask_FullMethodName    = "/cambrian.Orchestrator/ManageScheduledTask"
 	Orchestrator_ProposeKnowledge_FullMethodName       = "/cambrian.Orchestrator/ProposeKnowledge"
+	Orchestrator_RequestKnowledgeCommit_FullMethodName = "/cambrian.Orchestrator/RequestKnowledgeCommit"
 	Orchestrator_ProposeOntologyChange_FullMethodName  = "/cambrian.Orchestrator/ProposeOntologyChange"
 	Orchestrator_PreviewForget_FullMethodName          = "/cambrian.Orchestrator/PreviewForget"
 	Orchestrator_Forget_FullMethodName                 = "/cambrian.Orchestrator/Forget"
@@ -202,6 +203,18 @@ type OrchestratorClient interface {
 	// resolves by designated_actor accept proposals. A refusal is an OK response with
 	// accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
 	ProposeKnowledge(ctx context.Context, in *ProposeKnowledgeRequest, opts ...grpc.CallOption) (*ProposeKnowledgeResponse, error)
+	// Ask for an EXISTING candidate to be committed (ENG-1768; contract 0115, additive):
+	// the knowledge_commit approval ProposeKnowledge's request_commit raises for a new
+	// proposal, for a candidate that is already recorded — so an app or agent acting for
+	// a person can bring a candidate to that person (or the approver the policy routes
+	// to) for confirmation. The requester is the calling agent and the commit is for the
+	// lease's run principal (both resolved from the lease, never request fields), and
+	// the candidate must be readable by BOTH under their own read scope; an unreadable
+	// candidate answers exactly like an unknown one. The approver becomes the committed
+	// item's asserter. Same grant as ProposeKnowledge (verb propose_knowledge). A
+	// refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
+	// kernel has no knowledge bridge.
+	RequestKnowledgeCommit(ctx context.Context, in *RequestKnowledgeCommitRequest, opts ...grpc.CallOption) (*RequestKnowledgeCommitResponse, error)
 	// Ontology drafts (ADR-0149 D2; T-20261113-agent-drafted-ontology-changes-have-no-approval;
 	// additive within contract 0101). An agent DRAFTS a change to a namespace's kind and
 	// relation declarations; it can never apply one. The kernel classifies the draft with
@@ -545,6 +558,16 @@ func (c *orchestratorClient) ProposeKnowledge(ctx context.Context, in *ProposeKn
 	return out, nil
 }
 
+func (c *orchestratorClient) RequestKnowledgeCommit(ctx context.Context, in *RequestKnowledgeCommitRequest, opts ...grpc.CallOption) (*RequestKnowledgeCommitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestKnowledgeCommitResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_RequestKnowledgeCommit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *orchestratorClient) ProposeOntologyChange(ctx context.Context, in *ProposeOntologyChangeRequest, opts ...grpc.CallOption) (*ProposeOntologyChangeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ProposeOntologyChangeResponse)
@@ -734,6 +757,18 @@ type OrchestratorServer interface {
 	// resolves by designated_actor accept proposals. A refusal is an OK response with
 	// accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
 	ProposeKnowledge(context.Context, *ProposeKnowledgeRequest) (*ProposeKnowledgeResponse, error)
+	// Ask for an EXISTING candidate to be committed (ENG-1768; contract 0115, additive):
+	// the knowledge_commit approval ProposeKnowledge's request_commit raises for a new
+	// proposal, for a candidate that is already recorded — so an app or agent acting for
+	// a person can bring a candidate to that person (or the approver the policy routes
+	// to) for confirmation. The requester is the calling agent and the commit is for the
+	// lease's run principal (both resolved from the lease, never request fields), and
+	// the candidate must be readable by BOTH under their own read scope; an unreadable
+	// candidate answers exactly like an unknown one. The approver becomes the committed
+	// item's asserter. Same grant as ProposeKnowledge (verb propose_knowledge). A
+	// refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
+	// kernel has no knowledge bridge.
+	RequestKnowledgeCommit(context.Context, *RequestKnowledgeCommitRequest) (*RequestKnowledgeCommitResponse, error)
 	// Ontology drafts (ADR-0149 D2; T-20261113-agent-drafted-ontology-changes-have-no-approval;
 	// additive within contract 0101). An agent DRAFTS a change to a namespace's kind and
 	// relation declarations; it can never apply one. The kernel classifies the draft with
@@ -856,6 +891,9 @@ func (UnimplementedOrchestratorServer) ManageScheduledTask(context.Context, *Man
 }
 func (UnimplementedOrchestratorServer) ProposeKnowledge(context.Context, *ProposeKnowledgeRequest) (*ProposeKnowledgeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ProposeKnowledge not implemented")
+}
+func (UnimplementedOrchestratorServer) RequestKnowledgeCommit(context.Context, *RequestKnowledgeCommitRequest) (*RequestKnowledgeCommitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestKnowledgeCommit not implemented")
 }
 func (UnimplementedOrchestratorServer) ProposeOntologyChange(context.Context, *ProposeOntologyChangeRequest) (*ProposeOntologyChangeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ProposeOntologyChange not implemented")
@@ -1358,6 +1396,24 @@ func _Orchestrator_ProposeKnowledge_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Orchestrator_RequestKnowledgeCommit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestKnowledgeCommitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).RequestKnowledgeCommit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_RequestKnowledgeCommit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).RequestKnowledgeCommit(ctx, req.(*RequestKnowledgeCommitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Orchestrator_ProposeOntologyChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ProposeOntologyChangeRequest)
 	if err := dec(in); err != nil {
@@ -1532,6 +1588,10 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ProposeKnowledge",
 			Handler:    _Orchestrator_ProposeKnowledge_Handler,
+		},
+		{
+			MethodName: "RequestKnowledgeCommit",
+			Handler:    _Orchestrator_RequestKnowledgeCommit_Handler,
 		},
 		{
 			MethodName: "ProposeOntologyChange",

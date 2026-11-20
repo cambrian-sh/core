@@ -127,7 +127,7 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("forget", k.Server.Forgetter)
 	add("logs", when(k.Logs != nil, k.Logs))
 	add("kernelVersion", KernelVersion)
-	add("contractVersion", "0114")
+	add("contractVersion", "0115")
 	add("plugins", pluginHandshake(k.PluginStatuses))
 	addType("sessionOps", operator.SessionOpsFuncs{})
 	addType("planSubmitter", when(k.SessionMgr != nil && k.Server != nil, planSubmitter{}))
