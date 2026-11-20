@@ -141,7 +141,7 @@ func (r *restartLifecycle) shutdown() {
 func (m *AgentManager) scheduleRestart(agentID, streamID string, params map[string]any, reason string) {
 	delay, quarantine := m.RestartPolicy.Register(streamID)
 	if quarantine {
-		m.SetDaemonStatus(streamID, "quarantined")
+		m.SetDaemonStatus(streamID, daemonStatusQuarantined)
 		slog.Warn("daemon quarantined — auto-restart withdrawn",
 			"agent_id", agentID, "stream_id", streamID, "reason", reason, "attempts", m.RestartPolicy.MaxAttempts)
 		m.publishEvent(domain.DaemonQuarantinedEvent{

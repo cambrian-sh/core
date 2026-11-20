@@ -56,7 +56,12 @@ type simDaemons struct {
 	// every chat worker), each lingering and being replaced as above.
 	killAll bool
 	dials   int // dispatches that hit a dead worker's socket
-	wg      sync.WaitGroup
+	// quarantine: the restart policy quarantines a killed stream as a crash-loop
+	// instead of booting a replacement (ENG-2269), as AgentManager.scheduleRestart
+	// does past the flap limit.
+	quarantine  bool
+	quarantined map[string]bool
+	wg          sync.WaitGroup
 }
 
 func (d *simDaemons) SpawnDaemon(_ context.Context, _, stream string, _ map[string]any) (string, error) {
@@ -136,6 +141,14 @@ func (d *simDaemons) crashAndRestart(stream string, dead *simWorker) {
 	d.mu.Unlock()
 	time.Sleep(d.restartAfter)
 	d.mu.Lock()
+	if d.quarantine {
+		if d.quarantined == nil {
+			d.quarantined = map[string]bool{}
+		}
+		d.quarantined[stream] = true
+		d.mu.Unlock()
+		return
+	}
 	if _, taken := d.byStr[stream]; !taken {
 		d.boots++
 		id := fmt.Sprintf("inst-%d", d.boots)
@@ -163,6 +176,12 @@ func (d *simDaemons) DaemonInstanceID(stream string) (string, bool) {
 }
 
 func (d *simDaemons) DaemonServing(string, time.Time) (bool, bool) { return false, false }
+
+func (d *simDaemons) DaemonQuarantined(stream string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.quarantined[stream]
+}
 
 type sendHandler struct {
 	mu sync.Mutex
@@ -329,5 +348,35 @@ func TestE2E_Redrive_AllWorkersKilledThePoolOfTwoStillAnswers(t *testing.T) {
 	d.mu.Unlock()
 	if calls != 2 || !strings.HasPrefix(msg.Content, "answered by inst-") {
 		t.Fatalf("delivered calls %d, reply %q: want the killed attempt then one answer", calls, msg.Content)
+	}
+}
+
+// ENG-2269, the live failure (chaos run 5): the killed worker's stream is quarantined
+// as a crash-loop instead of being restarted. The turn waiting to re-drive on it must
+// end at once as assistant_unavailable, not wait for a replacement that will never
+// boot until the stall cut or its deadline says "stopped making progress".
+func TestE2E_Redrive_AQuarantinedWorkerEndsTheTurnAtOnce(t *testing.T) {
+	svc, d, _ := redriveLaneWith(t, 30*time.Millisecond, 20*time.Millisecond, simPlan{kill: true})
+	d.quarantine = true
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := svc.Turn(ctx, TurnRequest{ConversationID: "c1", Text: "what is on my calendar?"})
+	elapsed := time.Since(start)
+	var ti *domain.TurnInterruption
+	if !errors.As(err, &ti) || ti.Reason != domain.TurnInterruptAssistantUnavailable {
+		t.Fatalf("err = %v after %s, want assistant_unavailable", err, elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("the turn waited %s on a quarantined stream", elapsed)
+	}
+	if ti.Message != Message(MsgAssistantUnavailable, "en") {
+		t.Fatalf("message %q", ti.Message)
+	}
+	d.mu.Lock()
+	calls, boots := d.calls, d.boots
+	d.mu.Unlock()
+	if calls != 1 || boots != 1 {
+		t.Fatalf("delivered calls %d boots %d: want the killed attempt only, and no replacement", calls, boots)
 	}
 }

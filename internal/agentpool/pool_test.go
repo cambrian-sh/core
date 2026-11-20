@@ -27,11 +27,19 @@ type fakeDispatcher struct {
 	instance map[string]string
 	tracked  map[string]bool
 	idle     map[string]bool
+	// quarantined drives DaemonQuarantined (the restart policy's crash-loop state).
+	quarantined map[string]bool
 }
 
 func newFake() *fakeDispatcher {
 	return &fakeDispatcher{live: map[string]bool{}, instance: map[string]string{},
-		tracked: map[string]bool{}, idle: map[string]bool{}}
+		tracked: map[string]bool{}, idle: map[string]bool{}, quarantined: map[string]bool{}}
+}
+
+func (f *fakeDispatcher) DaemonQuarantined(streamID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.quarantined[streamID]
 }
 
 func (f *fakeDispatcher) DaemonServing(streamID string, _ time.Time) (bool, bool) {

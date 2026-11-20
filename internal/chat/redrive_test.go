@@ -206,3 +206,76 @@ func TestRedrive_AReSendThatCouldNotDialIsNotASecondKill(t *testing.T) {
 		t.Fatal("a call the daemon layer refused never reached a worker")
 	}
 }
+
+// awaitPool is a redrivePool whose AwaitReplacement answers with the next scripted
+// outcome (nil: the replacement is ready).
+type awaitPool struct {
+	*redrivePool
+	waits []error
+	n     int
+}
+
+func (p *awaitPool) AwaitReplacement(context.Context, error) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var err error
+	if p.n < len(p.waits) {
+		err = p.waits[p.n]
+	}
+	p.n++
+	return err
+}
+
+func setupAwaitRedrive(t *testing.T, waits []error, steps ...redriveStep) (*TurnService, *awaitPool) {
+	t.Helper()
+	svc, rp, _ := setupRedrive(t, true, steps...)
+	ap := &awaitPool{redrivePool: rp, waits: waits}
+	svc.pool = ap
+	return svc, ap
+}
+
+// ENG-2269 (owner decision 2026-11-20): when the wait for the killed worker's
+// replacement ends because the restart policy quarantined its stream, the turn ends
+// at once as assistant_unavailable — on the first loss and on a re-send that could
+// not dial — and is not re-sent; a wait that ends on the turn's own deadline is not
+// that reason.
+func TestRedrive_AQuarantinedWorkerEndsTheTurnAsAssistantUnavailable(t *testing.T) {
+	quarantined := fmt.Errorf("agentpool: worker %q: %w", "chat-chat_agent-0", agentpool.ErrWorkerQuarantined)
+	dial := status.Error(codes.Unavailable, `connection error: desc = "transport: Error while dialing: dial unix x.sock: connect: refused"`)
+
+	for name, tc := range map[string]struct {
+		waits      []error
+		steps      []redriveStep
+		dispatches int
+	}{
+		"first loss":                 {[]error{quarantined}, []redriveStep{{err: rawWorkerKill}, {reply: "must not run"}}, 1},
+		"re-send that did not reach": {[]error{nil, quarantined}, []redriveStep{{err: rawWorkerKill}, {err: dial}, {reply: "must not run"}}, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, pool := setupAwaitRedrive(t, tc.waits, tc.steps...)
+			_, err := turnOnce(t, svc)
+			var ti *domain.TurnInterruption
+			if !errors.As(err, &ti) || ti.Reason != domain.TurnInterruptAssistantUnavailable {
+				t.Fatalf("err = %v, want assistant_unavailable", err)
+			}
+			if ti.Message != Message(MsgAssistantUnavailable, "en") {
+				t.Fatalf("message %q, want the assistant_unavailable sentence", ti.Message)
+			}
+			assertPlain(t, "unavailable message", ti.Message)
+			if !errors.Is(err, agentpool.ErrWorkerQuarantined) {
+				t.Fatalf("the cause must keep the quarantine: %v", err)
+			}
+			if n := len(pool.dispatches()); n != tc.dispatches {
+				t.Fatalf("%d dispatches, want %d", n, tc.dispatches)
+			}
+		})
+	}
+
+	// The turn's deadline ending the wait is not a quarantine.
+	svc, _ := setupAwaitRedrive(t, []error{context.DeadlineExceeded}, redriveStep{err: rawWorkerKill})
+	_, err := turnOnce(t, svc)
+	var ti *domain.TurnInterruption
+	if errors.As(err, &ti) && ti.Reason == domain.TurnInterruptAssistantUnavailable {
+		t.Fatalf("a deadline was reported as a quarantine: %v", err)
+	}
+}

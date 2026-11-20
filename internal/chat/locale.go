@@ -46,6 +46,9 @@ const (
 	// again) re-drive.
 	MsgAssistantRestartedAfterAction MessageID = "assistant_restarted_after_action"
 	MsgAssistantRestartedTwice       MessageID = "assistant_restarted_twice"
+	// ENG-2269: the assistant crash-looped and was taken out of service until an
+	// operator acts; the turn waiting for it ended at once.
+	MsgAssistantUnavailable MessageID = "assistant_unavailable"
 	// The ADR-0145 D8 reply check's gap statements (enforce mode, after the one
 	// retry): {values} is the uncited values as written, {items} the unanswered
 	// checklist items in the person's own words.
@@ -63,6 +66,7 @@ var allMessageIDs = []MessageID{
 	MsgAtCapacity, MsgSessionLost, MsgGenericFail,
 	MsgProviderAuth, MsgProviderBusy, MsgProviderUnavailable, MsgNotConfigured, MsgSpendLimit,
 	MsgContextTooLarge, MsgAssistantRestarted, MsgAssistantRestartedAfterAction, MsgAssistantRestartedTwice,
+	MsgAssistantUnavailable,
 	MsgReplyUnverified, MsgReplyUncovered, MsgReplySource,
 }
 
@@ -91,6 +95,7 @@ var messageCatalogue = map[string]map[MessageID]string{
 		MsgAssistantRestarted:            "This turn was interrupted because the assistant restarted. Please send your message again.",
 		MsgAssistantRestartedAfterAction: "The assistant restarted after it had already started acting on this request, so I did not run it again: that could have done something twice. Please check what was done before you send it again.",
 		MsgAssistantRestartedTwice:       "The assistant restarted twice while working on this request, so I stopped trying. Please send your message again in a moment; if it keeps happening, an operator should check the assistant.",
+		MsgAssistantUnavailable:          "The assistant kept restarting, so it has been stopped until an operator checks it, and I could not finish this request. Please try again later.",
 		MsgReplyUnverified:               "Note: I could not confirm these against the records read for this request: {values}.",
 		MsgReplyUncovered:                "Not covered in this answer: {items}.",
 		MsgReplySource:                   "Source in the organisation's documents: {sources}.",
@@ -112,6 +117,7 @@ var messageCatalogue = map[string]map[MessageID]string{
 		MsgAssistantRestarted:            "Asistan yeniden başlatıldığı için bu istek yarıda kaldı. Lütfen mesajınızı yeniden gönderin.",
 		MsgAssistantRestartedAfterAction: "Asistan, bu istek üzerinde işlem yapmaya başladıktan sonra yeniden başlatıldı; bir işlemin iki kez yapılmaması için isteği yeniden çalıştırmadım. Yeniden göndermeden önce lütfen nelerin yapıldığını kontrol edin.",
 		MsgAssistantRestartedTwice:       "Asistan bu istek üzerinde çalışırken iki kez yeniden başlatıldı, bu yüzden denemeyi bıraktım. Lütfen biraz sonra mesajınızı yeniden gönderin; sorun sürerse bir yöneticinin asistanı kontrol etmesi gerekir.",
+		MsgAssistantUnavailable:          "Asistan sürekli yeniden başladığı için bir yönetici kontrol edene kadar durduruldu, bu yüzden bu isteği tamamlayamadım. Lütfen daha sonra yeniden deneyin.",
 		MsgReplyUnverified:               "Not: Şu değerleri bu istek için okunan kayıtlarla doğrulayamadım: {values}.",
 		MsgReplyUncovered:                "Bu yanıtta karşılanmayan kısımlar: {items}.",
 		MsgReplySource:                   "Kurum belgelerindeki kaynak: {sources}.",

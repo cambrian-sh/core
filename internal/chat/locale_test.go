@@ -67,6 +67,7 @@ func TestHumanFailure_TurkishOnEveryPath(t *testing.T) {
 		&domain.TurnInterruption{Reason: domain.TurnInterruptContextTooLarge},
 		&domain.TurnInterruption{Reason: domain.TurnInterruptAssistantRestartedAfterAction},
 		&domain.TurnInterruption{Reason: domain.TurnInterruptAssistantRestartedTwice},
+		&domain.TurnInterruption{Reason: domain.TurnInterruptAssistantUnavailable},
 	}
 	seen := map[string]bool{}
 	for _, err := range errs {

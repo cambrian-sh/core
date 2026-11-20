@@ -814,6 +814,9 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		// turn's deadline.
 		if redriving && agentpool.NotDelivered(err) {
 			if werr := s.awaitWorker(turnCtx, err); werr != nil {
+				if end := workerOutOfService(req.ConversationID, userMsg.ID, werr, err, lang); end != nil {
+					err = end
+				}
 				break
 			}
 			continue
@@ -830,6 +833,9 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		// exit and is absent until its replacement boots; re-sending at once dials a dead
 		// socket. Wait for the replacement first, bounded by the turn's deadline.
 		if werr := s.awaitWorker(turnCtx, err); werr != nil {
+			if end := workerOutOfService(req.ConversationID, userMsg.ID, werr, err, lang); end != nil {
+				err = end
+			}
 			break
 		}
 		redriving = true
@@ -1071,6 +1077,22 @@ func (s *TurnService) afterWorkerLoss(conversationID, turnID string, lease domai
 		"conversation", conversationID, "message", turnID, "err", err)
 	s.turnCalls.Redrive(lease)
 	return true, nil
+}
+
+// workerOutOfService turns a wait for a replacement that ended because the worker's
+// stream was quarantined as a crash-loop (agentpool.ErrWorkerQuarantined) into the
+// turn's end: no replacement will boot until an operator acts, so the turn ends at
+// once with a reason that says so, instead of waiting for the stall cut and telling
+// the person it "stopped making progress" (ENG-2269; owner decision 2026-11-20).
+// Any other wait error (the turn's own deadline) returns nil: the turn ends as before.
+func workerOutOfService(conversationID, turnID string, werr, err error, lang string) error {
+	if !errors.Is(werr, agentpool.ErrWorkerQuarantined) {
+		return nil
+	}
+	slog.Warn("chat: the turn's worker stream was quarantined as a crash-loop; ending the turn",
+		"conversation", conversationID, "message", turnID, "wait", werr, "err", err)
+	return &domain.TurnInterruption{Reason: domain.TurnInterruptAssistantUnavailable,
+		Message: Message(MsgAssistantUnavailable, lang), Cause: fmt.Errorf("%w (after: %w)", werr, err)}
 }
 
 // workerAwaiter is the optional half of the pool a re-drive waits on

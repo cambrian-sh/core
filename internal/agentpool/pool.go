@@ -44,6 +44,11 @@ type Dispatcher interface {
 	// again; tracked=false (an older SDK, liveness off) means "unknowable" and the
 	// worker goes straight back, as before.
 	DaemonServing(streamID string, since time.Time) (tracked, idle bool)
+	// DaemonQuarantined reports whether the restart policy quarantined the stream as a
+	// crash-loop (ADR-0070): auto-restart is withdrawn, so no replacement will boot
+	// until an operator acts. AwaitReplacement uses it to stop waiting at once
+	// (ENG-2269) instead of until the caller's deadline.
+	DaemonQuarantined(streamID string) bool
 }
 
 var (
@@ -56,6 +61,10 @@ var (
 	ErrWorkerLost = errors.New("agent pool worker lost before dispatch")
 	// ErrPoolNotStarted is returned by Dispatch before Start (or after Stop).
 	ErrPoolNotStarted = errors.New("agent pool not started")
+	// ErrWorkerQuarantined reports that the worker a caller waits on was quarantined
+	// by the restart policy as a crash-loop (ADR-0070): no replacement will boot by
+	// itself, so waiting longer cannot help (ENG-2269).
+	ErrWorkerQuarantined = errors.New("agent pool worker quarantined: auto-restart withdrawn")
 )
 
 // Config configures a pool.
@@ -398,6 +407,11 @@ func NotDelivered(err error) bool {
 // that is untracked is merely unknowable, while a worker whose transport broke is
 // dead, so only a replacement or a fresh idle heartbeat proves it can serve.
 // A nil return also covers an error that names no worker.
+//
+// A stream the restart policy quarantined as a crash-loop gets no replacement until
+// an operator acts, so AwaitReplacement returns ErrWorkerQuarantined at once instead
+// of waiting out ctx (ENG-2269; owner decision 2026-11-20). Readiness is checked
+// first: a stream an operator already respawned serves again.
 func (p *Pool) AwaitReplacement(ctx context.Context, err error) error {
 	var wf *WorkerFailure
 	if !errors.As(err, &wf) || wf.Stream == "" {
@@ -408,6 +422,9 @@ func (p *Pool) AwaitReplacement(ctx context.Context, err error) error {
 	for {
 		if p.replacementReady(wf) {
 			return nil
+		}
+		if p.disp.DaemonQuarantined(wf.Stream) {
+			return fmt.Errorf("agentpool: worker %q: %w", wf.Stream, ErrWorkerQuarantined)
 		}
 		select {
 		case <-ctx.Done():

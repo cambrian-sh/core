@@ -307,6 +307,18 @@ func (m *AgentManager) GetDaemonStatus(streamID string) string {
 	return ""
 }
 
+// daemonStatusQuarantined is the status scheduleRestart sets when the restart policy
+// quarantines a crash-looping stream (ADR-0070): auto-restart is withdrawn.
+const daemonStatusQuarantined = "quarantined"
+
+// DaemonQuarantined reports whether the restart policy quarantined streamID as a
+// crash-loop, so no replacement will boot until an operator acts. A respawn
+// (SpawnDaemon) registers the stream as running again. The agent pool reads it to
+// end a wait for a replacement at once (agentpool.Pool.AwaitReplacement, ENG-2269).
+func (m *AgentManager) DaemonQuarantined(streamID string) bool {
+	return m.GetDaemonStatus(streamID) == daemonStatusQuarantined
+}
+
 // ListRunningDaemons returns all instances with mode == Daemon. ADR-0033.
 func (m *AgentManager) ListRunningDaemons() []DaemonInstance {
 	m.InstanceManager.mu.Lock()

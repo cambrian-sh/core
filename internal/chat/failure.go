@@ -57,6 +57,7 @@ var interruptMessages = map[domain.TurnInterruptReason]MessageID{
 	domain.TurnInterruptAssistantRestarted:            MsgAssistantRestarted,
 	domain.TurnInterruptAssistantRestartedAfterAction: MsgAssistantRestartedAfterAction,
 	domain.TurnInterruptAssistantRestartedTwice:       MsgAssistantRestartedTwice,
+	domain.TurnInterruptAssistantUnavailable:          MsgAssistantUnavailable,
 	domain.TurnInterruptStalled:                       MsgTurnStalled,
 	domain.TurnInterruptTimeout:                       MsgTurnTimeout,
 	domain.TurnInterruptCancelled:                     MsgTurnCancelled,

@@ -87,8 +87,11 @@ var interruptCodes = map[domain.TurnInterruptReason]codes.Code{
 	domain.TurnInterruptAssistantRestarted:  codes.Unavailable,
 	// ENG-1634: not retryable by the client as is — the person must check what
 	// was done first (Aborted); a second restart is the service failing (Unavailable).
+	// ENG-2269: a quarantined (crash-looping) assistant is out of service until an
+	// operator acts (Unavailable).
 	domain.TurnInterruptAssistantRestartedAfterAction: codes.Aborted,
 	domain.TurnInterruptAssistantRestartedTwice:       codes.Unavailable,
+	domain.TurnInterruptAssistantUnavailable:          codes.Unavailable,
 	domain.TurnInterruptSessionLost:                   codes.Unavailable,
 	domain.TurnInterruptContextTooLarge:               codes.OutOfRange,
 	domain.TurnInterruptStalled:                       codes.DeadlineExceeded,

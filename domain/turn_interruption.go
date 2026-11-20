@@ -49,8 +49,12 @@ const (
 	// re-driven once, only when the killed attempt began no side-effecting call.
 	// These two end it instead: the attempt had already begun an action (a re-run
 	// could do it twice), or the re-drive's worker was killed too.
+	// ENG-2269 (owner decision 2026-11-20): assistant_unavailable ends a turn waiting
+	// to re-drive on a worker stream the restart policy quarantined as a crash-loop
+	// (no replacement boots until an operator acts), at once instead of at the stall cut.
 	TurnInterruptAssistantRestartedAfterAction TurnInterruptReason = "assistant_restarted_after_action"
 	TurnInterruptAssistantRestartedTwice       TurnInterruptReason = "assistant_restarted_twice"
+	TurnInterruptAssistantUnavailable          TurnInterruptReason = "assistant_unavailable"
 	TurnInterruptStalled                       TurnInterruptReason = "stalled"
 	TurnInterruptTimeout                       TurnInterruptReason = "timeout"
 	TurnInterruptCancelled                     TurnInterruptReason = "cancelled"

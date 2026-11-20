@@ -2,6 +2,7 @@ package agentmgr
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/agentpool"
 )
 
 // TestHelperDaemonProcess is the child process a chaos-test "daemon" runs: it sleeps
@@ -110,6 +112,22 @@ func TestChaos_DaemonKillRestartQuarantine(t *testing.T) {
 	killNth(3)
 	waitUntil(t, "quarantine event", func() bool { return bus.count(domain.EventTypeDaemonQuarantined) >= 1 })
 	waitUntil(t, "quarantined status", func() bool { return m.GetDaemonStatus("stream-1") == "quarantined" })
+
+	// ENG-2269: the real manager reports the quarantine through the agent pool's
+	// seam, and a turn waiting on the stream's replacement stops at once.
+	if !m.DaemonQuarantined("stream-1") || m.DaemonQuarantined("stream-other") {
+		t.Fatal("DaemonQuarantined must report exactly the quarantined stream")
+	}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelWait()
+	waitStart := time.Now()
+	failed := &agentpool.WorkerFailure{Stream: "stream-1", InstanceID: "inst-3", FailedAt: waitStart, Err: errors.New("killed")}
+	if err := agentpool.New(m, agentpool.Config{AgentID: "chaos-daemon", Size: 1}).AwaitReplacement(waitCtx, failed); !errors.Is(err, agentpool.ErrWorkerQuarantined) {
+		t.Fatalf("AwaitReplacement on a quarantined stream: %v, want ErrWorkerQuarantined", err)
+	}
+	if el := time.Since(waitStart); el > time.Second {
+		t.Fatalf("AwaitReplacement waited %s on a quarantined stream", el)
+	}
 
 	// Give any (wrong) 4th restart a chance to happen, then assert it did NOT.
 	time.Sleep(200 * time.Millisecond)

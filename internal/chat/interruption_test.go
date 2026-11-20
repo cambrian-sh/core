@@ -52,6 +52,8 @@ var allInterruptReasons = []domain.TurnInterruptReason{
 	domain.TurnInterruptFailed,
 	// ENG-1634: the loud ends of a killed turn the lane did not re-drive.
 	domain.TurnInterruptAssistantRestartedAfterAction, domain.TurnInterruptAssistantRestartedTwice,
+	// ENG-2269: a quarantined (crash-looping) worker stream.
+	domain.TurnInterruptAssistantUnavailable,
 }
 
 func TestInterruptMessages_EveryReasonHasASentence(t *testing.T) {
