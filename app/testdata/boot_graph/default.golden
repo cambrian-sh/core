@@ -39,6 +39,7 @@ PrincipalDirectory: *identity.PgRegistry
 PrincipalSchedules: nil
 StreamRegistry: *app.streamRegistryHolder
 DeadLetterRetrier: *app.deadLetterRetrierHolder
+DeliveryIntents: *ingress.DeliveryService
 Principals: *identity.PgRegistry
 Authenticator: *identity.Chain
 SessionMgr: *session.SessionManager

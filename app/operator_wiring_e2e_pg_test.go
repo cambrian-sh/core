@@ -128,13 +128,15 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("forget", k.Server.Forgetter)
 	add("logs", when(k.Logs != nil, k.Logs))
 	add("kernelVersion", KernelVersion)
-	add("contractVersion", "0117")
+	add("contractVersion", "0118")
 	add("plugins", pluginHandshake(k.PluginStatuses))
 	addType("sessionOps", operator.SessionOpsFuncs{})
 	addType("planSubmitter", when(k.SessionMgr != nil && k.Server != nil, planSubmitter{}))
 	addType("convOps", when(k.ChatTurns != nil && k.Conversations != nil, &conversationOps{}))
 	// ENG-1654: the late-bound retrier holder a plugin fills (RegisterDeadLetterRetrier).
 	add("deadletterRetry", when(k.DeadLetterRetrier != nil, k.DeadLetterRetrier))
+	// ENG-1657: the delivery service with its journal (nil without the chat lane).
+	add("deliveryIntents", when(k.DeliveryIntents != nil, k.DeliveryIntents))
 	return w
 }
 

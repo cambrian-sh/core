@@ -257,6 +257,96 @@ func (s *DeliveryService) dispatch(ctx context.Context, intent domain.DeliveryIn
 	}
 }
 
+// ListIntents returns the journal's intents in any of states (none ⇒ ambiguous and
+// failed: the ones a person may need to look at), least recently updated first, at
+// most limit (ENG-1657).
+func (s *DeliveryService) ListIntents(ctx context.Context, states []domain.DeliveryIntentState, limit int) ([]domain.DeliveryIntent, error) {
+	if s.journal == nil {
+		return nil, domain.ErrDeliveryJournalOff
+	}
+	if len(states) == 0 {
+		states = []domain.DeliveryIntentState{domain.DeliveryAmbiguous, domain.DeliveryFailed}
+	}
+	return s.journal.ListDeliveries(ctx, states, limit)
+}
+
+// ResolveAmbiguous settles one AMBIGUOUS intent on a person's word (ENG-1657, owner
+// decision 2026-11-20, option A). The kernel never resends an ambiguous message by
+// itself (it may already have arrived); this is the operator's way out:
+//
+//   - confirm: they checked and it arrived — ambiguous → confirmed (the text is
+//     dropped, as for every confirmed intent);
+//   - resend: send it ONCE more, re-authorising the ingress first exactly as a
+//     delivery does, under the same txn id (a far side that dedups on it sees one
+//     message): sent → confirmed; a permanent refusal → failed; anything else stays
+//     ambiguous and the error is returned, so it is never silently retried.
+func (s *DeliveryService) ResolveAmbiguous(ctx context.Context, key, action, reason string) error {
+	if s.journal == nil {
+		return domain.ErrDeliveryJournalOff
+	}
+	intents, err := s.journal.ListDeliveries(ctx, []domain.DeliveryIntentState{domain.DeliveryAmbiguous}, 0)
+	if err != nil {
+		return fmt.Errorf("delivery: list ambiguous intents: %w", err)
+	}
+	var in *domain.DeliveryIntent
+	for i := range intents {
+		if intents[i].Key == key {
+			in = &intents[i]
+			break
+		}
+	}
+	if in == nil {
+		all, lerr := s.journal.ListDeliveries(ctx, []domain.DeliveryIntentState{
+			domain.DeliveryPrepared, domain.DeliveryDispatched, domain.DeliveryConfirmed, domain.DeliveryFailed}, 0)
+		if lerr == nil {
+			for _, x := range all {
+				if x.Key == key {
+					return fmt.Errorf("%w: %s is %s", domain.ErrDeliveryIntentNotAmbiguous, key, x.State)
+				}
+			}
+		}
+		return fmt.Errorf("%w: %s", domain.ErrDeliveryIntentNotFound, key)
+	}
+	note := "operator: " + reason
+	switch action {
+	case domain.DeliveryResolveConfirm:
+		return s.journal.AdvanceDelivery(ctx, key, domain.DeliveryAmbiguous, domain.DeliveryConfirmed, note)
+	case domain.DeliveryResolveResend:
+		if s.transport == nil {
+			return errors.New("delivery: no ingress transport configured")
+		}
+		if in.Text == "" {
+			return fmt.Errorf("delivery: intent %s keeps no text to resend", key)
+		}
+		if err := s.authorise(ctx, in.Address); err != nil {
+			return err
+		}
+		sendErr := s.transport.Deliver(ctx, domain.IngressDelivery{
+			ConversationID: in.ConversationID,
+			Address:        in.Address,
+			Text:           in.Text,
+			TxnID:          in.TxnID,
+		})
+		sctx := context.WithoutCancel(ctx)
+		switch {
+		case sendErr == nil:
+			s.logger.Info("ADR-0090: ambiguous delivery resent by an operator and confirmed",
+				"conversation", in.ConversationID, "key", key)
+			return s.journal.AdvanceDelivery(sctx, key, domain.DeliveryAmbiguous, domain.DeliveryConfirmed, note+" (resent)")
+		case errors.Is(sendErr, domain.ErrDeliveryPermanent):
+			if err := s.journal.AdvanceDelivery(sctx, key, domain.DeliveryAmbiguous, domain.DeliveryFailed, sendErr.Error()); err != nil {
+				s.logger.Error("ADR-0090: a resend's permanent failure could not be recorded", "key", key, "err", err)
+			}
+			return sendErr
+		default:
+			// Still unknown: it stays ambiguous, and the person sees why.
+			return fmt.Errorf("%w: %v", domain.ErrDeliveryAmbiguous, sendErr)
+		}
+	default:
+		return fmt.Errorf("delivery: action must be %q or %q, got %q", domain.DeliveryResolveConfirm, domain.DeliveryResolveResend, action)
+	}
+}
+
 // settle moves a dispatched intent to its outcome state, logging (not returning)
 // a journal failure: the delivery outcome is what the caller needs.
 func (s *DeliveryService) settle(ctx context.Context, key string, to domain.DeliveryIntentState, cause error) {

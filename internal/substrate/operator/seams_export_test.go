@@ -185,6 +185,9 @@ func (s *Service) SetWatchObservability(m domain.WatchMetricsReader, b domain.Wa
 
 func (s *Service) SetDeadLetterRetrier(r DeadLetterRetrier) { s.deadletterRetry = r }
 
+// SetDeliveryIntents sets the delivery-intent source (ENG-1657).
+func (s *Service) SetDeliveryIntents(d DeliveryIntentSource) { s.deliveryIntents = d }
+
 func (s *Service) SetWatchLiveness(streams domain.StreamRegistry, fires domain.WatchFireReader, budget domain.ReactiveBudgetReader) {
 	s.streams = streams
 	s.watchFires = fires

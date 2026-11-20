@@ -48,3 +48,5 @@ History of golden updates:
 - ENG-1654: `+ DeadLetterRetrier` (Kernel, the late-bound `deadLetterRetrierHolder`) and
   `+ RegisterDeadLetterRetrier` (KernelServices) — the premium reactive engine registers the
   replay behind RetryWatchDeadLetter (failed deliveries only).
+- ENG-1657: `+ DeliveryIntents` (Kernel) — the ADR-0090 delivery service with its journal,
+  which the operator plane lists and resolves (ListDeliveryIntents / ResolveDeliveryIntent).

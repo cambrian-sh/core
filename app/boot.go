@@ -135,6 +135,7 @@ type kernelBuild struct {
 	// chat lane
 	chatTurns       *corechat.TurnService
 	turnDelegations *subnetwork.TurnDelegations
+	deliveryIntents *ingress.DeliveryService
 	consentBridge   *ingress.ConsentBridge
 	// agent-plane server
 	cambrianServer     *subnetwork.Server
@@ -300,6 +301,7 @@ func (b *kernelBuild) kernel(lis net.Listener) *Kernel {
 		PrincipalSchedules:  principalSchedules.get(),
 		StreamRegistry:      streamRegistry,
 		DeadLetterRetrier:   b.deadLetterRetrier,
+		DeliveryIntents:     b.deliveryIntents,
 		Principals:          idStores.registry,
 		Authenticator:       authenticator,
 		PluginStatuses:      composed.statuses, // ADR-0082 D9 (empty in OSS)

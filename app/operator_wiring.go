@@ -696,6 +696,13 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	if k.DeadLetterRetrier != nil {
 		o.DeadLetterRetrier = k.DeadLetterRetrier
 	}
+	// ENG-1657: ambiguous and failed delivery intents are listed and an ambiguous
+	// one resolved (confirm / resend) on the operator plane, where the delivery
+	// service runs with its journal (the chat lane).
+	if k.DeliveryIntents != nil {
+		o.DeliveryIntents = k.DeliveryIntents
+		operatorCaps = append(operatorCaps, "delivery-intents")
+	}
 	// Contract 0074 watch liveness (T-20261101-contract-0074-watch-liveness-is-never-wired):
 	// ListWatches reads each watch's source-stream state through the registry a
 	// plugin registered. Fire history and the plane budget have no provider yet.
@@ -932,7 +939,11 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// the live agent processes with agent, instance, stream, mode and OS pid,
 	// operator-only, capability "agent-instances"; the chaos gate's external SIGKILL
 	// finds the chat pool worker through it.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0117", operatorCaps
+	// 0118 (2026-11-20, additive; ENG-1657): ListDeliveryIntents (default ambiguous +
+	// failed; identifiers, state, attempts, error, text length - never the text) and
+	// ResolveDeliveryIntent (command_id + reason; "confirm" or "resend" an ambiguous
+	// intent), capability "delivery-intents".
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0118", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

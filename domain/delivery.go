@@ -118,6 +118,29 @@ var ErrDeliveryTransient = errors.New("delivery: transient failure, nothing was 
 // again rather than risk a duplicate; the intent stays visible as ambiguous.
 var ErrDeliveryAmbiguous = errors.New("delivery: an earlier attempt may have been delivered; not resending")
 
+// Operator resolution of a delivery intent (ENG-1657, owner decision 2026-11-20,
+// option A): an AMBIGUOUS intent — it may or may not have reached the far side, and
+// the kernel never resends one by itself — is settled by a person who checked.
+const (
+	// DeliveryResolveConfirm: the message did arrive; ambiguous → confirmed.
+	DeliveryResolveConfirm = "confirm"
+	// DeliveryResolveResend: send it once more (same txn id, so a far side that
+	// dedups on it sees one message), then settle by the outcome.
+	DeliveryResolveResend = "resend"
+)
+
+var (
+	// ErrDeliveryIntentNotFound: no intent with that key (never recorded, or pruned).
+	ErrDeliveryIntentNotFound = errors.New("delivery: no such delivery intent")
+	// ErrDeliveryIntentNotAmbiguous: only an ambiguous intent can be resolved; a
+	// confirmed or failed one is settled, a prepared or dispatched one is the
+	// redriver's.
+	ErrDeliveryIntentNotAmbiguous = errors.New("delivery: the intent is not ambiguous")
+	// ErrDeliveryJournalOff: the kernel runs delivery best-effort, with no journal
+	// to list or resolve.
+	ErrDeliveryJournalOff = errors.New("delivery: no delivery journal on this kernel")
+)
+
 // ErrDeliveryStateConflict is returned by DeliveryJournal.AdvanceDelivery when the
 // intent is not in the expected state — another attempt moved it first.
 var ErrDeliveryStateConflict = errors.New("delivery: intent is not in the expected state")

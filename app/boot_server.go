@@ -126,6 +126,8 @@ func (b *kernelBuild) buildChatLane() {
 		// after, and redriven (or marked ambiguous) after a crash. No duplicates, no
 		// silent drops.
 		deliverySvc.SetJournal(reg)
+		// ENG-1657: the operator plane lists and resolves this journal's intents.
+		b.deliveryIntents = deliverySvc
 		lifecycles = append(lifecycles, Lifecycle{
 			Name:  "delivery-redrive",
 			Start: deliverySvc.Start,

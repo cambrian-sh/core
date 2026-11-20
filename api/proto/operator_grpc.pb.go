@@ -127,6 +127,8 @@ const (
 	OperatorConsole_ExplainAccessBatch_FullMethodName       = "/cambrian.OperatorConsole/ExplainAccessBatch"
 	OperatorConsole_GetBlastRadiusPreview_FullMethodName    = "/cambrian.OperatorConsole/GetBlastRadiusPreview"
 	OperatorConsole_RetryWatchDeadLetter_FullMethodName     = "/cambrian.OperatorConsole/RetryWatchDeadLetter"
+	OperatorConsole_ListDeliveryIntents_FullMethodName      = "/cambrian.OperatorConsole/ListDeliveryIntents"
+	OperatorConsole_ResolveDeliveryIntent_FullMethodName    = "/cambrian.OperatorConsole/ResolveDeliveryIntent"
 	OperatorConsole_DeleteWatchDeadLetter_FullMethodName    = "/cambrian.OperatorConsole/DeleteWatchDeadLetter"
 	OperatorConsole_ListMemoryNotes_FullMethodName          = "/cambrian.OperatorConsole/ListMemoryNotes"
 	OperatorConsole_GetMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/GetMemoryNotes"
@@ -851,6 +853,11 @@ type OperatorConsoleClient interface {
 	// cannot double-fire. Mutating: command_id + reason, audited. Premium
 	// (capability "watch-deadletter"); OSS returns Unimplemented.
 	RetryWatchDeadLetter(ctx context.Context, in *RetryWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// Contract 0118 (ENG-1657): the two-phase delivery journal's intents (ADR-0090
+	// D8.1) — list them (default ambiguous + failed) and resolve an ambiguous one
+	// ("confirm" it arrived, or "resend" once). Capability "delivery-intents".
+	ListDeliveryIntents(ctx context.Context, in *ListDeliveryIntentsOpRequest, opts ...grpc.CallOption) (*ListDeliveryIntentsOpResponse, error)
+	ResolveDeliveryIntent(ctx context.Context, in *ResolveDeliveryIntentOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// DeleteWatchDeadLetter removes one dead letter an operator has dealt with
 	// (ENG-472). A dead letter embeds the full signal, personal content included;
 	// besides this delete, the premium JournalGC prunes entries older than
@@ -2102,6 +2109,26 @@ func (c *operatorConsoleClient) RetryWatchDeadLetter(ctx context.Context, in *Re
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListDeliveryIntents(ctx context.Context, in *ListDeliveryIntentsOpRequest, opts ...grpc.CallOption) (*ListDeliveryIntentsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDeliveryIntentsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListDeliveryIntents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ResolveDeliveryIntent(ctx context.Context, in *ResolveDeliveryIntentOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_ResolveDeliveryIntent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) DeleteWatchDeadLetter(ctx context.Context, in *DeleteWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommandAck)
@@ -3049,6 +3076,11 @@ type OperatorConsoleServer interface {
 	// cannot double-fire. Mutating: command_id + reason, audited. Premium
 	// (capability "watch-deadletter"); OSS returns Unimplemented.
 	RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error)
+	// Contract 0118 (ENG-1657): the two-phase delivery journal's intents (ADR-0090
+	// D8.1) — list them (default ambiguous + failed) and resolve an ambiguous one
+	// ("confirm" it arrived, or "resend" once). Capability "delivery-intents".
+	ListDeliveryIntents(context.Context, *ListDeliveryIntentsOpRequest) (*ListDeliveryIntentsOpResponse, error)
+	ResolveDeliveryIntent(context.Context, *ResolveDeliveryIntentOpRequest) (*CommandAck, error)
 	// DeleteWatchDeadLetter removes one dead letter an operator has dealt with
 	// (ENG-472). A dead letter embeds the full signal, personal content included;
 	// besides this delete, the premium JournalGC prunes entries older than
@@ -3507,6 +3539,12 @@ func (UnimplementedOperatorConsoleServer) GetBlastRadiusPreview(context.Context,
 }
 func (UnimplementedOperatorConsoleServer) RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetryWatchDeadLetter not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListDeliveryIntents(context.Context, *ListDeliveryIntentsOpRequest) (*ListDeliveryIntentsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDeliveryIntents not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ResolveDeliveryIntent(context.Context, *ResolveDeliveryIntentOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveDeliveryIntent not implemented")
 }
 func (UnimplementedOperatorConsoleServer) DeleteWatchDeadLetter(context.Context, *DeleteWatchDeadLetterOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteWatchDeadLetter not implemented")
@@ -5520,6 +5558,42 @@ func _OperatorConsole_RetryWatchDeadLetter_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListDeliveryIntents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDeliveryIntentsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListDeliveryIntents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListDeliveryIntents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListDeliveryIntents(ctx, req.(*ListDeliveryIntentsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ResolveDeliveryIntent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveDeliveryIntentOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ResolveDeliveryIntent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ResolveDeliveryIntent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ResolveDeliveryIntent(ctx, req.(*ResolveDeliveryIntentOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_DeleteWatchDeadLetter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteWatchDeadLetterOpRequest)
 	if err := dec(in); err != nil {
@@ -6392,6 +6466,14 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetryWatchDeadLetter",
 			Handler:    _OperatorConsole_RetryWatchDeadLetter_Handler,
+		},
+		{
+			MethodName: "ListDeliveryIntents",
+			Handler:    _OperatorConsole_ListDeliveryIntents_Handler,
+		},
+		{
+			MethodName: "ResolveDeliveryIntent",
+			Handler:    _OperatorConsole_ResolveDeliveryIntent_Handler,
 		},
 		{
 			MethodName: "DeleteWatchDeadLetter",

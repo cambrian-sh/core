@@ -21,6 +21,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/infrastructure/mcpserve"
+	"github.com/cambrian-sh/core/internal/ingress"
 	"github.com/cambrian-sh/core/internal/kernel"
 	"github.com/cambrian-sh/core/internal/ledger"
 	"github.com/cambrian-sh/core/internal/memory"
@@ -177,6 +178,9 @@ type Kernel struct {
 	// DeadLetterRetrier replays a failed-delivery dead letter (ENG-1654); a
 	// late-bound holder a plugin fills through RegisterDeadLetterRetrier.
 	DeadLetterRetrier *deadLetterRetrierHolder
+	// DeliveryIntents is the ADR-0090 D8.1 delivery service with its journal, which
+	// the operator plane lists and resolves (ENG-1657); nil without the chat lane.
+	DeliveryIntents *ingress.DeliveryService
 	// Principals is the principal registry (ADR-0142 D3) and Authenticator the
 	// one bearer resolver of the operator plane and the HTTP admin routes (D1).
 	Principals    domain.PrincipalRegistry

@@ -112,6 +112,9 @@ type Options struct {
 	DeadLetters domain.WatchDeadLetterReader
 	// DeadLetterRetrier replays from the dead-letter queue (premium-only).
 	DeadLetterRetrier DeadLetterRetrier
+	// DeliveryIntents lists and resolves the two-phase delivery journal's intents
+	// (ENG-1657; ingress.DeliveryService with a journal). nil ⇒ Unimplemented.
+	DeliveryIntents DeliveryIntentSource
 	// WatchMetrics / WatchBacktester are watch observability (REACT-05 / ADR-0071).
 	WatchMetrics    domain.WatchMetricsReader
 	WatchBacktester domain.WatchBacktester
@@ -224,6 +227,7 @@ func New(d Deps, o Options) (*Service, error) {
 	s.watches = o.WatchHandler
 	s.deadletters = o.DeadLetters
 	s.deadletterRetry = o.DeadLetterRetrier
+	s.deliveryIntents = o.DeliveryIntents
 	s.watchMetrics, s.watchBacktest = o.WatchMetrics, o.WatchBacktester
 	s.streams, s.watchFires, s.planeBudget = o.Streams, o.WatchFires, o.PlaneBudget
 	s.policy = o.PolicyAdmin

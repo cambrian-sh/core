@@ -100,6 +100,8 @@ type Service struct {
 	// deadletterRetry is premium-only: reading the dead-letter queue is safe on
 	// any build, replaying from it is not.
 	deadletterRetry DeadLetterRetrier
+	// deliveryIntents lists and resolves outbound delivery intents (ENG-1657).
+	deliveryIntents DeliveryIntentSource
 	// configSchema is the ADR-0101 read half of the runtime-config surface.
 	configSchema ConfigSchemaReporter
 	// configWriter / secretWriter are the ADR-0101 durable write halves. nil ⇒

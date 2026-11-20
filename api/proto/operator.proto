@@ -772,6 +772,11 @@ service OperatorConsole {
   // cannot double-fire. Mutating: command_id + reason, audited. Premium
   // (capability "watch-deadletter"); OSS returns Unimplemented.
   rpc RetryWatchDeadLetter(RetryWatchDeadLetterOpRequest) returns (CommandAck);
+  // Contract 0118 (ENG-1657): the two-phase delivery journal's intents (ADR-0090
+  // D8.1) — list them (default ambiguous + failed) and resolve an ambiguous one
+  // ("confirm" it arrived, or "resend" once). Capability "delivery-intents".
+  rpc ListDeliveryIntents(ListDeliveryIntentsOpRequest) returns (ListDeliveryIntentsOpResponse);
+  rpc ResolveDeliveryIntent(ResolveDeliveryIntentOpRequest) returns (CommandAck);
 
   // DeleteWatchDeadLetter removes one dead letter an operator has dealt with
   // (ENG-472). A dead letter embeds the full signal, personal content included;
@@ -2703,6 +2708,44 @@ message ListWatchDeadLettersOpRequest {
 message ListWatchDeadLettersOpResponse {
   repeated WatchDeadLetterOp entries = 1;
 }
+// Contract 0118 (ENG-1657): one outbound delivery intent. Identifiers, state,
+// attempts and the last error — never the message text, only its length.
+message DeliveryIntentOp {
+  string key = 1;
+  string conversation_id = 2;
+  string txn_id = 3;
+  string ingress_agent_id = 4;
+  string external_id = 5;
+  // prepared | dispatched | confirmed | ambiguous | failed
+  string state = 6;
+  int32 attempts = 7;
+  string error = 8;
+  int32 text_chars = 9;
+  int64 created_at_unix_ms = 10;
+  int64 updated_at_unix_ms = 11;
+}
+
+message ListDeliveryIntentsOpRequest {
+  // States to list; empty = ambiguous and failed.
+  repeated string states = 1;
+  // 0 = 100; capped at 1000.
+  int32 limit = 2;
+}
+
+message ListDeliveryIntentsOpResponse {
+  repeated DeliveryIntentOp intents = 1;
+}
+
+message ResolveDeliveryIntentOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string key = 3;
+  // "confirm" (it arrived: ambiguous → confirmed) or "resend" (send once more,
+  // same txn id; sent → confirmed, a permanent refusal → failed, else it stays
+  // ambiguous and the error is returned).
+  string action = 4;
+}
+
 message WatchDeadLetterOp {
   string id = 1;
   string watch_id = 2;
