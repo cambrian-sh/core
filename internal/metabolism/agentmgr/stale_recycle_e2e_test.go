@@ -2,6 +2,8 @@ package agentmgr
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,8 +20,11 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism"
 )
 
-// execProbe is an agent that serves Execute: it answers with its pid, after
-// sleeping the handoff's sleep_ms (so a test can hold a turn in flight).
+// execProbe is an agent that serves Execute: it answers with a token unique to
+// its process, after sleeping the handoff's sleep_ms (so a test can hold a turn
+// in flight). Not os.Getpid(): under Linux bubblewrap every agent runs in its
+// own PID namespace and is PID 2, so two processes report the same pid
+// (ENG-2276; the test was written on Windows, where pids differ).
 type execProbe struct {
 	pb.UnimplementedAgentServiceServer
 }
@@ -28,8 +33,17 @@ func (execProbe) Execute(_ context.Context, h *pb.Handoff) (*pb.Handoff, error) 
 	if ms, _ := strconv.Atoi(h.GetMetadata()["sleep_ms"]); ms > 0 {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
-	return &pb.Handoff{Metadata: map[string]string{"pid": strconv.Itoa(os.Getpid())}}, nil
+	return &pb.Handoff{Metadata: map[string]string{"pid": processToken}}, nil
 }
+
+// processToken identifies this process: random, drawn once at start.
+var processToken = func() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b)
+}()
 
 // runExecProbeAgent is the execprobe agent (TestMain, AGENTMGR_CHAOS_HELPER=execprobe).
 func runExecProbeAgent() {

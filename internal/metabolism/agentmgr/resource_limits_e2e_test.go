@@ -103,6 +103,14 @@ func TestE2E_SandboxLimitsKillTheAgentIntoTheRestartPolicy(t *testing.T) {
 			if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
 				t.Skip("no process-limit killer on " + runtime.GOOS)
 			}
+			// Linux applies the cap per process as `ulimit -d`, and the abuser is
+			// this test binary: a -race build cannot even start under 256 MiB (the
+			// race runtime's reservations fail with "runtime: out of memory"
+			// before the agent opens its socket, ENG-2276). Give it room to boot;
+			// the balloon still allocates until the limit kills it.
+			if tc.abuse == "balloon" && runtime.GOOS == "linux" && raceBuild {
+				tc.memMB = 1024
+			}
 			root := e2eRoot(t)
 			sb := NewAgentSandbox(AgentSandboxOptions{
 				WorkRoot: filepath.Join(root, "w"), KernelDir: filepath.Join(root, "kernel"),
