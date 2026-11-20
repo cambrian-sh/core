@@ -2072,6 +2072,16 @@ type ChatConfig struct {
 	// (internal/chat DefaultStallTimeout); 0 uses the default.
 	ChatStallTimeoutSeconds int `json:"chat_stall_timeout_seconds,omitempty"`
 
+	// RestartNoticeWindowSeconds bounds which turns a kernel stop cut off are also
+	// TOLD to the person through the conversation's ingress (Telegram, a chat
+	// connector) at the next boot (ENG-2146, owner decision 2026-11-20, option B):
+	// only those whose message arrived at most this long before the boot. Older ones
+	// keep only the transcript marker, so a long outage does not send a burst of stale
+	// "please send it again" notices. A console conversation has no ingress and is
+	// never sent anything. 0 uses the default (internal/chat
+	// DefaultRestartNoticeWindow, 300 s); -1 turns delivery off (transcript only).
+	RestartNoticeWindowSeconds int `json:"restart_notice_window_seconds,omitempty"`
+
 	// ChatDefaultLanguage is the language of the kernel's and the chat agent's fixed
 	// failure and fallback sentences when nothing the user wrote identifies one (a first
 	// message of "ok" or a number). The turn's language is otherwise detected from what
@@ -4729,6 +4739,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Chat.ChatStallTimeoutSeconds < 0 {
 		errs = append(errs, "chat_stall_timeout_seconds must be >= 0 (0 uses the default)")
+	}
+	if c.Chat.RestartNoticeWindowSeconds < -1 {
+		errs = append(errs, "restart_notice_window_seconds must be >= -1 (0 uses the default, -1 turns delivery off)")
 	}
 	if c.Plan.StepCacheDefaultTTLMinutes < 0 {
 		errs = append(errs, "step_cache_default_ttl_minutes must be >= 0 (0 uses the default, 60)")

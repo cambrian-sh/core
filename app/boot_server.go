@@ -100,6 +100,10 @@ func (b *kernelBuild) buildChatLane() {
 		// (T-20261107-chat-turn-timeout-is-hardcoded-at-240-s).
 		chatTurns.TurnTimeout = secondsOr(cfg.Execution.Chat.ChatTurnTimeoutSeconds, corechat.DefaultTurnTimeout)
 		chatTurns.StallTimeout = secondsOr(cfg.Execution.Chat.ChatStallTimeoutSeconds, corechat.DefaultStallTimeout)
+		// ENG-2146: which turns the last stop cut off are also told over the
+		// conversation's ingress (execution.chat.restart_notice_window_seconds; 0 =
+		// the default, -1 = transcript only).
+		chatTurns.RestartNoticeWindow = restartNoticeWindow(cfg.Execution.Chat.RestartNoticeWindowSeconds)
 		// The language of the fixed failure sentences when the user's words name none
 		// (execution.chat.chat_default_language). Not silent when unknown: the catalogue
 		// would fall back to English and the operator should know their value was not used.
@@ -444,6 +448,15 @@ func (b *kernelBuild) buildServer() error {
 
 // secondsOr converts a seconds config value to a duration, or returns def when the
 // value is not positive (the config's "0 uses the default").
+// restartNoticeWindow maps execution.chat.restart_notice_window_seconds onto
+// TurnService.RestartNoticeWindow: 0 = the package default, negative = off (0).
+func restartNoticeWindow(secs int) time.Duration {
+	if secs < 0 {
+		return 0
+	}
+	return secondsOr(secs, corechat.DefaultRestartNoticeWindow)
+}
+
 func secondsOr(secs int, def time.Duration) time.Duration {
 	if secs <= 0 {
 		return def

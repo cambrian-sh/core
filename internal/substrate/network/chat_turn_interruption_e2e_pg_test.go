@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	corechat "github.com/cambrian-sh/core/internal/chat"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/ingress"
 	"github.com/cambrian-sh/core/internal/testing/pgscratch"
 )
 
@@ -241,6 +243,97 @@ func TestPg_E2E_InterruptedChatTurnsArePlainAndMarked(t *testing.T) {
 		}
 		assertNoRawLeak(t, "the boot marker", msgs[1].Content)
 	})
+
+	// ENG-2146: the boot sweep tells a person on an ingress whose turn was cut off
+	// recently, through the real ADR-0090 delivery service, keyed by the marker id; a
+	// turn older than the window is marked in the transcript only.
+	t.Run("kernel_killed_ingress_notice", func(t *testing.T) {
+		addr := domain.DeliveryAddress{IngressAgentID: "telegram_ingress", ExternalID: "tg:777"}
+		for _, id := range []string{"conv-tg-recent", "conv-tg-stale"} {
+			if err := store.CreateConversation(ctx, domain.Conversation{
+				ID: id, OwnerID: "tg-customer", Status: domain.ConversationOpen, Profile: domain.ProfileCustomer,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.BindDelivery(ctx, id, addr); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.AppendMessage(ctx, domain.Message{ID: "u-" + id, ConversationID: id, Role: domain.MessageRoleUser, Content: "Where is my order?"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tr := &recordingTransport{}
+		delivery := ingress.NewDeliveryService(store, staticIngresses{"telegram_ingress": {
+			AgentID: "telegram_ingress", Surface: domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "telegram"}, Namespace: []string{"tg:"},
+		}}, tr)
+		svc := corechat.NewTurnService(store, killedWorker{t: t}, nil)
+		svc.SetDeliverer(delivery)
+		svc.RestartNoticeWindow = 5 * time.Minute
+
+		// A boot an hour after both messages: they are outside the 5-minute window,
+		// so both are marked in the transcript and nothing is sent.
+		if _, err := svc.MarkInterruptedTurns(ctx, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if n := tr.count(); n != 0 {
+			t.Fatalf("a boot an hour after the messages sent %d notices, want none (outside the window)", n)
+		}
+		for _, id := range []string{"conv-tg-recent", "conv-tg-stale"} {
+			msgs, _ := store.ListMessages(ctx, id, 0, 0)
+			if len(msgs) != 2 || msgs[1].Role != domain.MessageRoleInterruption {
+				t.Fatalf("%s = %+v, want the transcript marker", id, msgs)
+			}
+		}
+
+		// A fresh cut-off turn and a boot moments later: delivered once.
+		if _, err := store.AppendMessage(ctx, domain.Message{ID: "u-again", ConversationID: "conv-tg-recent", Role: domain.MessageRoleUser, Content: "Where is my order?"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.MarkInterruptedTurns(ctx, time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if tr.count() != 1 {
+			t.Fatalf("delivered %d notices, want 1", tr.count())
+		}
+		got := tr.last()
+		if got.ConversationID != "conv-tg-recent" || got.Address != addr || got.TxnID != "interrupt:u-again" || !strings.Contains(got.Text, "restarted") {
+			t.Fatalf("delivery = %+v", got)
+		}
+		assertNoRawLeak(t, "the delivered notice", got.Text)
+	})
+}
+
+// recordingTransport is the ingress side of the ADR-0090 delivery: it records what
+// the kernel asked it to send.
+type recordingTransport struct {
+	mu   sync.Mutex
+	sent []domain.IngressDelivery
+}
+
+func (r *recordingTransport) Deliver(_ context.Context, d domain.IngressDelivery) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sent = append(r.sent, d)
+	return nil
+}
+
+func (r *recordingTransport) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.sent)
+}
+
+func (r *recordingTransport) last() domain.IngressDelivery {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sent[len(r.sent)-1]
+}
+
+type staticIngresses map[string]domain.IngressRegistration
+
+func (s staticIngresses) ResolveIngress(_ context.Context, p domain.PrincipalRef) (domain.IngressRegistration, bool) {
+	r, ok := s[p.ID]
+	return r, ok
 }
 
 func assertNoRawLeak(t *testing.T, what, text string) {

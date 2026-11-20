@@ -53,6 +53,11 @@ const (
 	// complete silence is not slow work, it is stopped work — while still leaving ample
 	// room for a single long retrieval or a slow tool.
 	DefaultStallTimeout = 90 * time.Second
+	// DefaultRestartNoticeWindow is how recent a turn cut off by a kernel stop must
+	// be for the boot sweep to tell the person through the conversation's ingress
+	// (execution.chat.restart_notice_window_seconds, ENG-2146): short, so only a
+	// person who is plausibly still waiting is told.
+	DefaultRestartNoticeWindow = 300 * time.Second
 	// DefaultHistoryLimit is how many prior messages are threaded into a turn. Bounded
 	// because prompt size — and therefore cost and latency — otherwise grows without limit
 	// as a conversation lengthens.
@@ -169,6 +174,10 @@ type TurnService struct {
 	// a wedged turn holds its worker, its lease and the user's attention for the full
 	// TurnTimeout while reporting nothing — truthfully, and uselessly.
 	StallTimeout time.Duration
+	// RestartNoticeWindow: a turn the last stop cut off whose message arrived at most
+	// this long before the boot is also delivered through the conversation's ingress
+	// (MarkInterruptedTurns, ENG-2146); <= 0 delivers none (transcript only).
+	RestartNoticeWindow time.Duration
 	// PersonWaitAllowance is how much time waiting on a person (a human approval a
 	// tool call of the turn blocks on) a turn may spend on top of TurnTimeout. The
 	// composition root sets it to the longest approval window the kernel grants

@@ -268,3 +268,69 @@ func TestMarkInterruptedTurns_MarksTurnsTheLastStopCut(t *testing.T) {
 		t.Fatalf("an answered turn must not be marked: %+v", c1)
 	}
 }
+
+// ENG-2146 (owner decision 2026-11-20, option B): at boot, a turn the last stop cut off is
+// also told to the person through the conversation's ingress when its message arrived
+// within RestartNoticeWindow before the boot; older ones are marked in the transcript only;
+// a console conversation (no ingress) is not a failure; off (window 0) delivers nothing.
+func TestMarkInterruptedTurns_DeliversOnlyRecentCutOffsOverTheIngress(t *testing.T) {
+	ctx := context.Background()
+	bootAt := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	seed := func(t *testing.T) *memStore {
+		t.Helper()
+		store := newMemStore()
+		for id, age := range map[string]time.Duration{"recent": 2 * time.Minute, "stale": 3 * time.Hour} {
+			if err := store.CreateConversation(ctx, domain.Conversation{ID: "conv-" + id, OwnerID: "u1", Status: domain.ConversationOpen, Profile: domain.ProfileCustomer}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.AppendMessage(ctx, domain.Message{ID: "u-" + id, ConversationID: "conv-" + id,
+				Role: domain.MessageRoleUser, Content: "where is my order?", CreatedAt: bootAt.Add(-age)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return store
+	}
+
+	t.Run("window", func(t *testing.T) {
+		store := seed(t)
+		svc := NewTurnService(store, &fakePool{}, nil)
+		d := &recordingDeliverer{}
+		svc.SetDeliverer(d)
+		svc.RestartNoticeWindow = 10 * time.Minute
+		n, err := svc.MarkInterruptedTurns(ctx, bootAt)
+		if err != nil || n != 2 {
+			t.Fatalf("marked %d (%v), want both cut-off turns marked", n, err)
+		}
+		if d.count() != 1 {
+			t.Fatalf("delivered %d notices, want only the recent one: %+v", d.count(), d.sent)
+		}
+		got := d.sent[0]
+		if got.conv != "conv-recent" || got.txn != interruptionMarkerKey("u-recent") || got.text != messageCatalogue["en"][MsgAssistantRestarted] {
+			t.Fatalf("delivery = %+v", got)
+		}
+		// The stale turn is still marked in its transcript.
+		if msgs, _ := store.ListMessages(ctx, "conv-stale", 0, 0); len(msgs) != 2 || msgs[1].Role != domain.MessageRoleInterruption {
+			t.Fatalf("stale conversation = %+v, want the transcript marker", msgs)
+		}
+		// A second boot finds nothing unanswered and sends nothing again.
+		if n, _ := svc.MarkInterruptedTurns(ctx, bootAt); n != 0 || d.count() != 1 {
+			t.Fatalf("second sweep: marked %d, delivered %d", n, d.count())
+		}
+	})
+	t.Run("off", func(t *testing.T) {
+		svc := NewTurnService(seed(t), &fakePool{}, nil)
+		d := &recordingDeliverer{}
+		svc.SetDeliverer(d)
+		if n, _ := svc.MarkInterruptedTurns(ctx, bootAt); n != 2 || d.count() != 0 {
+			t.Fatalf("window off: marked %d, delivered %d; want 2 marked, none delivered", n, d.count())
+		}
+	})
+	t.Run("console conversation", func(t *testing.T) {
+		svc := NewTurnService(seed(t), &fakePool{}, nil)
+		svc.SetDeliverer(&recordingDeliverer{err: domain.ErrNoDeliveryAddress})
+		svc.RestartNoticeWindow = 10 * time.Minute
+		if n, err := svc.MarkInterruptedTurns(ctx, bootAt); err != nil || n != 2 {
+			t.Fatalf("no ingress: marked %d (%v)", n, err)
+		}
+	})
+}
