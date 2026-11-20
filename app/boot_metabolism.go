@@ -121,7 +121,8 @@ func (b *kernelBuild) buildMetabolism() error {
 		return fmt.Errorf("ADR-0130 agent transport: %w", err)
 	}
 	if agentTrWarn != "" {
-		slog.Warn("ADR-0130: "+agentTrWarn, "tls_cert_file", cfg.Server.TLSCertFile)
+		slog.Warn("ADR-0130: "+agentTrWarn, "tls_cert_file", cfg.Server.TLSCertFile,
+			"tls_agent_ca_file", cfg.Server.TLSAgentCAFile)
 	}
 	// ADR-0157 S2: kernel-only (network-denied) sandboxed instances reach the
 	// same gRPC plane through a unix socket in their own socket directory;

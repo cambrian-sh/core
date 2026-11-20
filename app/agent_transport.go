@@ -31,10 +31,13 @@ import (
 //   - plaintext-insecure-optin (routable, no TLS, insecure_localhost): dial the
 //     bound address; a wildcard bind is dialled on loopback, which it covers.
 //   - tls (routable bind with cert+key): dial the bound address (loopback for
-//     a wildcard bind) over TLS, injecting server.tls_cert_file as the root
-//     (CAMBRIAN_TLS_CA) — the self-signed first-deployment case ADR-0130's
-//     consequences name — and, when the certificate does not name the dialled
-//     host, a server-name override taken from the certificate itself.
+//     a wildcard bind) over TLS, injecting a root (CAMBRIAN_TLS_CA) and, when
+//     the certificate does not name the dialled host, a server-name override
+//     taken from the certificate itself. The root is server.tls_agent_ca_file
+//     when set — a CA-issued certificate's issuing root, checked at boot: the
+//     certificate must verify against it for the dialled name (ENG-299, owner
+//     decision 2026-11-19) — else server.tls_cert_file itself, the self-signed
+//     first-deployment case ADR-0130's consequences name.
 //
 // The second return value is a warning for the boot log ("" when none).
 func agentTransport(cfg *config.Config) (agentmgr.AgentTransport, string, error) {
@@ -44,7 +47,12 @@ func agentTransport(cfg *config.Config) (agentmgr.AgentTransport, string, error)
 	}
 	host := agentDialHost(cfg.Server.BindAddress)
 	t := agentmgr.AgentTransport{Addr: net.JoinHostPort(host, cfg.Server.Port)}
+	agentCA := strings.TrimSpace(cfg.Server.TLSAgentCAFile)
 	if mode != "tls" {
+		if agentCA != "" {
+			return t, "server.tls_agent_ca_file is set but unused: in transport mode " + mode +
+				" spawned agents do not dial TLS", nil
+		}
 		return t, "", nil
 	}
 	certFile := strings.TrimSpace(cfg.Server.TLSCertFile)
@@ -56,19 +64,33 @@ func agentTransport(cfg *config.Config) (agentmgr.AgentTransport, string, error)
 	if leaf.VerifyHostname(host) != nil {
 		t.TLSServerName = certServerName(leaf)
 	}
+	if agentCA != "" {
+		// The configured root must be one the agents can actually verify the
+		// kernel's certificate with, for the name they dial: refused at boot
+		// rather than discovered as every spawned agent failing its handshake.
+		dialName := t.TLSServerName
+		if dialName == "" {
+			dialName = host
+		}
+		if err := verifiesAgainst(certFile, agentCA, dialName); err != nil {
+			return agentmgr.AgentTransport{}, "", fmt.Errorf("agent transport: server.tls_agent_ca_file %s: %w", agentCA, err)
+		}
+		t.TLSCAFile = agentCA
+	}
 	// ADR-0157 S2: a kernel-only agent dials the kernel's unix socket, whose
 	// gRPC authority is "localhost"; give it a name the certificate covers.
 	if leaf.VerifyHostname("localhost") != nil {
 		t.UnixTLSServerName = certServerName(leaf)
 	}
 	warn := ""
-	if !selfSigned {
+	if !selfSigned && agentCA == "" {
 		// A CA-issued leaf is not a trust anchor: the SDK pins exactly the root
 		// it is given, so verification needs the issuing root, which the kernel
 		// has no config key for (follow-up ticket). Said at boot rather than
 		// discovered as N agents failing their handshake.
 		warn = "server.tls_cert_file is not self-signed; spawned agents are given it as their TLS root " +
-			"and may fail verification unless the file also carries the issuing root"
+			"and may fail verification unless the file also carries the issuing root — set " +
+			"server.tls_agent_ca_file to the issuing root"
 	}
 	return t, warn, nil
 }
@@ -86,6 +108,59 @@ func agentDialHost(bind string) string {
 		return "::1"
 	}
 	return b
+}
+
+// verifiesAgainst checks that the leaf of certFile (with any further
+// certificates in it as intermediates) chains to a root in caFile and is valid
+// for name — the check a spawned agent's TLS handshake will make.
+func verifiesAgainst(certFile, caFile, name string) error {
+	certs, err := readPEMCerts(certFile)
+	if err != nil {
+		return err
+	}
+	roots, err := readPEMCerts(caFile)
+	if err != nil {
+		return err
+	}
+	pool, inter := x509.NewCertPool(), x509.NewCertPool()
+	for _, c := range roots {
+		pool.AddCert(c)
+	}
+	for _, c := range certs[1:] {
+		inter.AddCert(c)
+	}
+	if _, err := certs[0].Verify(x509.VerifyOptions{Roots: pool, Intermediates: inter, DNSName: name}); err != nil {
+		return fmt.Errorf("%s does not verify against it for %q: %w", certFile, name, err)
+	}
+	return nil
+}
+
+// readPEMCerts parses every CERTIFICATE block of a PEM file; none is an error.
+func readPEMCerts(path string) ([]*x509.Certificate, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var out []*x509.Certificate
+	for {
+		var block *pem.Block
+		block, raw = pem.Decode(raw)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: no PEM certificate", path)
+	}
+	return out, nil
 }
 
 // readLeafCert parses the first certificate in a PEM file and reports whether

@@ -2964,6 +2964,16 @@ type Config struct {
 		// silent downgrade to plaintext.
 		TLSCertFile string `json:"tls_cert_file"`
 		TLSKeyFile  string `json:"tls_key_file"`
+		// TLSAgentCAFile is the PEM root (or CA bundle) the kernel's OWN spawned
+		// agents trust when they dial a pure-TLS routable listener (ADR-0130 D4;
+		// T-20261101-spawned-agents-get-server-tls-cert-file-as, ENG-299; owner decision
+		// 2026-11-19). Empty = tls_cert_file itself, right
+		// for the self-signed first deployment; a CA-issued certificate (an internal
+		// CA, Let's Encrypt) needs its issuing root here, because the agent SDK pins
+		// exactly the root it is given. Checked at boot: the certificate must verify
+		// against it for the name agents dial, or the kernel refuses to start.
+		// Unused in the loopback modes, where local agents dial plaintext.
+		TLSAgentCAFile string `json:"tls_agent_ca_file"`
 		// InsecureLocalhost permits PLAINTEXT on a non-loopback bind. Off by default:
 		// without it, binding a routable address with no TLS FAILS at boot rather
 		// than quietly serving an unencrypted operator plane to the network.
