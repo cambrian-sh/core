@@ -78,14 +78,16 @@ func notesOwnerHasText(ctx context.Context, q pgxQuerier, key memorynotes.Key, h
 }
 
 // resolveMemoryNoteOwners lists one content-free memory_notes_owner candidate per named
-// person whose personal notes still hold text (notesOwnerHasText), carrying the
+// person whose personal notes still hold text (notesOwnerHasText) or who still has
+// tool-call arguments to erase (toolArgsHeld, ENG-2254), carrying the
 // document's classification (owner fence included). Only an operator or the kernel may
 // erase one (authz.EnforcingEraser).
 func resolveMemoryNoteOwners(ctx context.Context, q pgxQuerier, owners []string) ([]domain.ErasureCandidate, error) {
 	if len(owners) == 0 {
 		return nil, nil
 	}
-	if ok, err := tableExists(ctx, q, "memory_notes"); err != nil || !ok {
+	hasNotes, err := tableExists(ctx, q, "memory_notes")
+	if err != nil {
 		return nil, err
 	}
 	hasAudit, err := tableExists(ctx, q, "operator_audit")
@@ -98,9 +100,18 @@ func resolveMemoryNoteOwners(ctx context.Context, q pgxQuerier, owners []string)
 			continue
 		}
 		key := personalNotesKey(owner)
-		ok, err := notesOwnerHasText(ctx, q, key, hasAudit)
-		if err != nil {
-			return nil, fmt.Errorf("erasure resolve: memory notes owner: %w", err)
+		ok := false
+		if hasNotes {
+			if ok, err = notesOwnerHasText(ctx, q, key, hasAudit); err != nil {
+				return nil, fmt.Errorf("erasure resolve: memory notes owner: %w", err)
+			}
+		}
+		if !ok {
+			// ENG-2254: the person's tool-call arguments are theirs to erase too,
+			// notes or no notes (erasure_tool_args.go).
+			if ok, err = toolArgsHeld(ctx, q, owner); err != nil {
+				return nil, fmt.Errorf("erasure resolve: memory notes owner: tool arguments: %w", err)
+			}
 		}
 		if !ok {
 			continue

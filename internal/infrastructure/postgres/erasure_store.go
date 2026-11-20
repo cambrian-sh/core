@@ -442,6 +442,12 @@ func (s *PgErasureStore) eraseTx(ctx context.Context, run *erasureRun, sel domai
 			return false, err
 		}
 		matched = matched || m
+		// ENG-2254: and the person's tool-call arguments (erasure_tool_args.go).
+		m, err = s.eraseToolArgsOf(ctx, run, sel.MemoryNoteOwners)
+		if err != nil {
+			return false, err
+		}
+		matched = matched || m
 	}
 	return matched, nil
 }
