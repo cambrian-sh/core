@@ -168,6 +168,19 @@ func startNative(p *Policy, spec Spec, tp TierPolicy, c Command, workdir string,
 	defer mcpAC.close()
 	if lowIL {
 		for _, dir := range lowWritable(workdir, spec) {
+			// ENG-2272: a launch on the plain low-integrity token (no
+			// container this time) must not inherit an earlier launch's
+			// AppContainer grant on the same workdir. With any AppContainer
+			// SID ACE in the workdir's DACL the low-integrity process was
+			// denied the directory itself (found live: uvx "Failed to
+			// initialize cache … os error 183" on a workdir an egress-container
+			// launch had granted), so the stale grant is revoked first; the
+			// next container launch grants it again.
+			if ac == nil && mcpAC == nil {
+				if err := revokeAppContainerACEs(dir); err != nil {
+					return fmt.Errorf("sandbox: revoke stale AppContainer grants on %s: %w", dir, err)
+				}
+			}
 			if err := labelLowIntegrity(dir); err != nil {
 				return fmt.Errorf("sandbox: label %s low-integrity: %w", dir, err)
 			}

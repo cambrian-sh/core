@@ -411,6 +411,54 @@ func hasAllowACE(dacl *windows.ACL, sid *windows.SID, mask windows.ACCESS_MASK) 
 	return false
 }
 
+// appContainerSIDPrefix opens every AppContainer (package) SID.
+const appContainerSIDPrefix = "S-1-15-2-"
+
+// revokeAppContainerACEs removes the EXPLICIT ACEs of AppContainer SIDs from
+// path's DACL (what grantOne added for an earlier container launch); the
+// ACEs its descendants inherited go with them when the DACL is re-applied.
+// A DACL holding none is left untouched (ENG-2272).
+func revokeAppContainerACEs(path string) error {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return err
+	}
+	// REVOKE_ACCESS entries applied to the DACL itself: SetEntriesInAcl drops
+	// every explicit ACE of each revoked SID and keeps the rest as they are.
+	var revoke []windows.EXPLICIT_ACCESS
+	seen := map[string]bool{}
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return err
+		}
+		if ace.Header.AceFlags&windows.INHERITED_ACE != 0 {
+			continue // re-derived from the parent when the DACL is set
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if s := sid.String(); strings.HasPrefix(s, appContainerSIDPrefix) && !seen[s] {
+			seen[s] = true
+			revoke = append(revoke, windows.EXPLICIT_ACCESS{AccessMode: windows.REVOKE_ACCESS,
+				Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
+					TrusteeValue: windows.TrusteeValueFromSID(sid)}})
+		}
+	}
+	if len(revoke) == 0 {
+		return nil
+	}
+	nd, err := windows.ACLFromEntries(revoke, dacl)
+	if err != nil {
+		return err
+	}
+	// UNPROTECTED: keep inheriting from the parent, as the workdir did.
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION, nil, nil, nd, nil)
+}
+
 func mapGeneric(m windows.ACCESS_MASK) windows.ACCESS_MASK {
 	out := m &^ (windows.GENERIC_READ | windows.GENERIC_WRITE | windows.GENERIC_EXECUTE | windows.GENERIC_ALL)
 	if m&windows.GENERIC_READ != 0 {
