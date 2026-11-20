@@ -204,3 +204,4 @@ func (s *Service) SetWave1Reads(
 }
 
 func (s *Service) SetDerivationJournal(d DerivationJournalSource) { s.derivations = d }
+func (s *Service) SetAgentInstances(a AgentInstanceSource)        { s.agentInstances = a }

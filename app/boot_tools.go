@@ -380,6 +380,10 @@ func (b *kernelBuild) buildToolExecutor() error {
 		// ENG-2232: free-query (raw SQL) tools need a grant naming them exactly,
 		// unless the operator lifted the guard.
 		FreeQueryOpen: !cfg.Execution.Tools.FreeQuery.RequireExplicitGrant,
+		// ENG-1634: the record of the side-effecting calls each chat turn begins,
+		// keyed turn-scoped in the durable action record; the chat lane reads it to
+		// re-drive a killed turn only when it began none (SetTurnCalls below).
+		TurnCalls: domain.NewTurnCalls(domain.NewDurableIdempotencyCache(idempotencyTTL, actionRecords)),
 	}))
 	toolExecutor, err := domain.NewToolExecutor(toolControls, domain.ToolExecutor{
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)
@@ -423,6 +427,11 @@ func (b *kernelBuild) buildToolExecutor() error {
 		return fmt.Errorf("tool executor: %w", err)
 	}
 	cambrianServer.ToolExecutor = toolExecutor
+	// ENG-1634: the chat lane (built before the tool plane) tracks its turns'
+	// leases in the executor's record and re-drives a killed turn from it.
+	if b.chatTurns != nil {
+		b.chatTurns.SetTurnCalls(toolExecutor.TurnCalls())
+	}
 	// ADR-0145 D1: the run ledger (execution.ledger, off by default): every tool
 	// result and step output recorded, scope-enforced, read by reference. Threaded
 	// to the executor, the server and the turn end here; nil sweeper when off.

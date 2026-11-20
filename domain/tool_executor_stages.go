@@ -209,6 +209,29 @@ func (e *ToolExecutor) writeKeyStage(ctx context.Context, c *toolCall) (ToolCall
 			c.actionKey = IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON)
 		}
 	}
+	// ENG-1634: a side-effecting call a chat turn makes on its own lease (not a
+	// subtask's, not a plan step's) is recorded as begun — the chat lane re-drives
+	// a killed turn only when its attempt began none — and keyed turn-scoped. The
+	// key is the action's identity on the wire, and a re-drive that repeats an
+	// identical call is answered from the stored result instead of running again.
+	if e.turnCalls != nil && tool.SideEffecting() && !req.System && !c.subtaskLease {
+		if _, isStep := StepCallFrom(ctx); !isStep {
+			if key, ok := e.turnCalls.Begin(req.SessionTokenID, req.ToolName, req.ArgsJSON); ok {
+				c.actionKey = key
+				sid, _ := SessionIDFromContext(ctx)
+				stored, found, finish := e.turnCalls.Idempotency().BeginAction(ctx, DurableAction{
+					Key: key, Tool: req.ToolName, Principal: RunPrincipalFromContext(ctx),
+					SessionID: sid, ArgsHash: c.argHash,
+				})
+				if found {
+					slog.Info("ENG-1634: a re-driven turn's side-effecting call answered from its stored result",
+						"tool", req.ToolName, "lease", req.SessionTokenID)
+					return stored, true, fin
+				}
+				fin = append(fin, func(out *ToolCallResponse) { finish(*out, !out.Denied && out.Error == "") })
+			}
+		}
+	}
 	// ADR-0145 D9: a side-effecting call made by a plan step has an idempotency
 	// key; a retry of the same call returns the stored result.
 	if e.idempotency != nil && tool.SideEffecting() && !req.System && !c.subtaskLease {

@@ -42,6 +42,10 @@ const (
 	MsgSpendLimit          MessageID = "spend_limit"
 	MsgContextTooLarge     MessageID = "context_too_large"
 	MsgAssistantRestarted  MessageID = "assistant_restarted"
+	// ENG-1634: the two loud ends of a killed turn the lane did not (or could not
+	// again) re-drive.
+	MsgAssistantRestartedAfterAction MessageID = "assistant_restarted_after_action"
+	MsgAssistantRestartedTwice       MessageID = "assistant_restarted_twice"
 	// The ADR-0145 D8 reply check's gap statements (enforce mode, after the one
 	// retry): {values} is the uncited values as written, {items} the unanswered
 	// checklist items in the person's own words.
@@ -58,7 +62,7 @@ var allMessageIDs = []MessageID{
 	MsgTurnStalled, MsgEmptyReply, MsgTurnTimeout, MsgTurnCancelled,
 	MsgAtCapacity, MsgSessionLost, MsgGenericFail,
 	MsgProviderAuth, MsgProviderBusy, MsgProviderUnavailable, MsgNotConfigured, MsgSpendLimit,
-	MsgContextTooLarge, MsgAssistantRestarted,
+	MsgContextTooLarge, MsgAssistantRestarted, MsgAssistantRestartedAfterAction, MsgAssistantRestartedTwice,
 	MsgReplyUnverified, MsgReplyUncovered, MsgReplySource,
 }
 
@@ -71,42 +75,46 @@ var replyCheckMessageIDs = []MessageID{MsgReplyUnverified, MsgReplyUncovered, Ms
 // byte for byte, so an English conversation sees no change.
 var messageCatalogue = map[string]map[MessageID]string{
 	"en": {
-		MsgTurnStalled:         "That request stopped making progress, so I stopped waiting on it. Worth trying again.",
-		MsgEmptyReply:          "I wasn't able to produce an answer for that one. Try rephrasing it?",
-		MsgTurnTimeout:         "That took longer than I'm allowed to spend on one message, so I stopped. A narrower request usually gets through.",
-		MsgTurnCancelled:       "That was cancelled before I finished.",
-		MsgAtCapacity:          "I'm at capacity right now. Give me a moment and try again.",
-		MsgSessionLost:         "I lost my working session part-way through that one. Trying again usually works.",
-		MsgGenericFail:         "Something went wrong on my side and I couldn't finish that one.",
-		MsgProviderAuth:        "The AI service rejected our credentials. An operator needs to check the model settings.",
-		MsgProviderBusy:        "The AI service is busy right now. Try again in a minute.",
-		MsgProviderUnavailable: "The AI service can't be reached right now. Try again in a few minutes.",
-		MsgNotConfigured:       "The AI service isn't set up for this assistant yet, so it can't answer. An operator needs to check the model settings.",
-		MsgSpendLimit:          "This conversation has reached its AI usage limit. An operator can raise it.",
-		MsgContextTooLarge:     "This conversation has grown too long for the AI model to read at once. Starting a new conversation will help.",
-		MsgAssistantRestarted:  "This turn was interrupted because the assistant restarted. Please send your message again.",
-		MsgReplyUnverified:     "Note: I could not confirm these against the records read for this request: {values}.",
-		MsgReplyUncovered:      "Not covered in this answer: {items}.",
-		MsgReplySource:         "Source in the organisation's documents: {sources}.",
+		MsgTurnStalled:                   "That request stopped making progress, so I stopped waiting on it. Worth trying again.",
+		MsgEmptyReply:                    "I wasn't able to produce an answer for that one. Try rephrasing it?",
+		MsgTurnTimeout:                   "That took longer than I'm allowed to spend on one message, so I stopped. A narrower request usually gets through.",
+		MsgTurnCancelled:                 "That was cancelled before I finished.",
+		MsgAtCapacity:                    "I'm at capacity right now. Give me a moment and try again.",
+		MsgSessionLost:                   "I lost my working session part-way through that one. Trying again usually works.",
+		MsgGenericFail:                   "Something went wrong on my side and I couldn't finish that one.",
+		MsgProviderAuth:                  "The AI service rejected our credentials. An operator needs to check the model settings.",
+		MsgProviderBusy:                  "The AI service is busy right now. Try again in a minute.",
+		MsgProviderUnavailable:           "The AI service can't be reached right now. Try again in a few minutes.",
+		MsgNotConfigured:                 "The AI service isn't set up for this assistant yet, so it can't answer. An operator needs to check the model settings.",
+		MsgSpendLimit:                    "This conversation has reached its AI usage limit. An operator can raise it.",
+		MsgContextTooLarge:               "This conversation has grown too long for the AI model to read at once. Starting a new conversation will help.",
+		MsgAssistantRestarted:            "This turn was interrupted because the assistant restarted. Please send your message again.",
+		MsgAssistantRestartedAfterAction: "The assistant restarted after it had already started acting on this request, so I did not run it again: that could have done something twice. Please check what was done before you send it again.",
+		MsgAssistantRestartedTwice:       "The assistant restarted twice while working on this request, so I stopped trying. Please send your message again in a moment; if it keeps happening, an operator should check the assistant.",
+		MsgReplyUnverified:               "Note: I could not confirm these against the records read for this request: {values}.",
+		MsgReplyUncovered:                "Not covered in this answer: {items}.",
+		MsgReplySource:                   "Source in the organisation's documents: {sources}.",
 	},
 	"tr": {
-		MsgTurnStalled:         "Bu istek ilerlemeyi bıraktı, bu yüzden beklemeyi bıraktım. Yeniden denemeye değer.",
-		MsgEmptyReply:          "Bu isteğe bir yanıt üretemedim. Farklı bir şekilde sormayı dener misiniz?",
-		MsgTurnTimeout:         "Bu, tek bir mesaja ayırabileceğim süreden uzun sürdü, bu yüzden durdum. Daha dar kapsamlı bir istek genellikle sonuçlanır.",
-		MsgTurnCancelled:       "Bu istek ben bitirmeden iptal edildi.",
-		MsgAtCapacity:          "Şu anda kapasitem dolu. Biraz bekleyip yeniden deneyin.",
-		MsgSessionLost:         "Bu isteğin ortasında çalışma oturumumu kaybettim. Yeniden denemek genellikle işe yarar.",
-		MsgGenericFail:         "Benim tarafımda bir sorun oluştu ve bu isteği tamamlayamadım.",
-		MsgProviderAuth:        "Yapay zekâ hizmeti kimlik bilgilerimizi reddetti. Bir yöneticinin model ayarlarını kontrol etmesi gerekiyor.",
-		MsgProviderBusy:        "Yapay zekâ hizmeti şu anda yoğun. Bir dakika sonra yeniden deneyin.",
-		MsgProviderUnavailable: "Yapay zekâ hizmetine şu anda ulaşılamıyor. Birkaç dakika sonra yeniden deneyin.",
-		MsgNotConfigured:       "Yapay zekâ hizmeti bu asistan için henüz yapılandırılmadı, bu yüzden yanıt veremiyor. Bir yöneticinin model ayarlarını kontrol etmesi gerekiyor.",
-		MsgSpendLimit:          "Bu konuşma yapay zekâ kullanım sınırına ulaştı. Bir yönetici sınırı yükseltebilir.",
-		MsgContextTooLarge:     "Bu konuşma, yapay zekâ modelinin tek seferde okuyabileceğinden uzun hale geldi. Yeni bir konuşma başlatmak işe yarar.",
-		MsgAssistantRestarted:  "Asistan yeniden başlatıldığı için bu istek yarıda kaldı. Lütfen mesajınızı yeniden gönderin.",
-		MsgReplyUnverified:     "Not: Şu değerleri bu istek için okunan kayıtlarla doğrulayamadım: {values}.",
-		MsgReplyUncovered:      "Bu yanıtta karşılanmayan kısımlar: {items}.",
-		MsgReplySource:         "Kurum belgelerindeki kaynak: {sources}.",
+		MsgTurnStalled:                   "Bu istek ilerlemeyi bıraktı, bu yüzden beklemeyi bıraktım. Yeniden denemeye değer.",
+		MsgEmptyReply:                    "Bu isteğe bir yanıt üretemedim. Farklı bir şekilde sormayı dener misiniz?",
+		MsgTurnTimeout:                   "Bu, tek bir mesaja ayırabileceğim süreden uzun sürdü, bu yüzden durdum. Daha dar kapsamlı bir istek genellikle sonuçlanır.",
+		MsgTurnCancelled:                 "Bu istek ben bitirmeden iptal edildi.",
+		MsgAtCapacity:                    "Şu anda kapasitem dolu. Biraz bekleyip yeniden deneyin.",
+		MsgSessionLost:                   "Bu isteğin ortasında çalışma oturumumu kaybettim. Yeniden denemek genellikle işe yarar.",
+		MsgGenericFail:                   "Benim tarafımda bir sorun oluştu ve bu isteği tamamlayamadım.",
+		MsgProviderAuth:                  "Yapay zekâ hizmeti kimlik bilgilerimizi reddetti. Bir yöneticinin model ayarlarını kontrol etmesi gerekiyor.",
+		MsgProviderBusy:                  "Yapay zekâ hizmeti şu anda yoğun. Bir dakika sonra yeniden deneyin.",
+		MsgProviderUnavailable:           "Yapay zekâ hizmetine şu anda ulaşılamıyor. Birkaç dakika sonra yeniden deneyin.",
+		MsgNotConfigured:                 "Yapay zekâ hizmeti bu asistan için henüz yapılandırılmadı, bu yüzden yanıt veremiyor. Bir yöneticinin model ayarlarını kontrol etmesi gerekiyor.",
+		MsgSpendLimit:                    "Bu konuşma yapay zekâ kullanım sınırına ulaştı. Bir yönetici sınırı yükseltebilir.",
+		MsgContextTooLarge:               "Bu konuşma, yapay zekâ modelinin tek seferde okuyabileceğinden uzun hale geldi. Yeni bir konuşma başlatmak işe yarar.",
+		MsgAssistantRestarted:            "Asistan yeniden başlatıldığı için bu istek yarıda kaldı. Lütfen mesajınızı yeniden gönderin.",
+		MsgAssistantRestartedAfterAction: "Asistan, bu istek üzerinde işlem yapmaya başladıktan sonra yeniden başlatıldı; bir işlemin iki kez yapılmaması için isteği yeniden çalıştırmadım. Yeniden göndermeden önce lütfen nelerin yapıldığını kontrol edin.",
+		MsgAssistantRestartedTwice:       "Asistan bu istek üzerinde çalışırken iki kez yeniden başlatıldı, bu yüzden denemeyi bıraktım. Lütfen biraz sonra mesajınızı yeniden gönderin; sorun sürerse bir yöneticinin asistanı kontrol etmesi gerekir.",
+		MsgReplyUnverified:               "Not: Şu değerleri bu istek için okunan kayıtlarla doğrulayamadım: {values}.",
+		MsgReplyUncovered:                "Bu yanıtta karşılanmayan kısımlar: {items}.",
+		MsgReplySource:                   "Kurum belgelerindeki kaynak: {sources}.",
 	},
 }
 

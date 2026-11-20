@@ -48,20 +48,22 @@ func humanFailure(err error, lang string) string {
 // says the generic sentence; TestInterruptMessages_EveryReasonHasASentence holds the
 // table complete.
 var interruptMessages = map[domain.TurnInterruptReason]MessageID{
-	domain.TurnInterruptProviderAuth:        MsgProviderAuth,
-	domain.TurnInterruptProviderBusy:        MsgProviderBusy,
-	domain.TurnInterruptProviderUnavailable: MsgProviderUnavailable,
-	domain.TurnInterruptNotConfigured:       MsgNotConfigured,
-	domain.TurnInterruptSpendLimit:          MsgSpendLimit,
-	domain.TurnInterruptContextTooLarge:     MsgContextTooLarge,
-	domain.TurnInterruptAssistantRestarted:  MsgAssistantRestarted,
-	domain.TurnInterruptStalled:             MsgTurnStalled,
-	domain.TurnInterruptTimeout:             MsgTurnTimeout,
-	domain.TurnInterruptCancelled:           MsgTurnCancelled,
-	domain.TurnInterruptAtCapacity:          MsgAtCapacity,
-	domain.TurnInterruptSessionLost:         MsgSessionLost,
-	domain.TurnInterruptEmptyReply:          MsgEmptyReply,
-	domain.TurnInterruptFailed:              MsgGenericFail,
+	domain.TurnInterruptProviderAuth:                  MsgProviderAuth,
+	domain.TurnInterruptProviderBusy:                  MsgProviderBusy,
+	domain.TurnInterruptProviderUnavailable:           MsgProviderUnavailable,
+	domain.TurnInterruptNotConfigured:                 MsgNotConfigured,
+	domain.TurnInterruptSpendLimit:                    MsgSpendLimit,
+	domain.TurnInterruptContextTooLarge:               MsgContextTooLarge,
+	domain.TurnInterruptAssistantRestarted:            MsgAssistantRestarted,
+	domain.TurnInterruptAssistantRestartedAfterAction: MsgAssistantRestartedAfterAction,
+	domain.TurnInterruptAssistantRestartedTwice:       MsgAssistantRestartedTwice,
+	domain.TurnInterruptStalled:                       MsgTurnStalled,
+	domain.TurnInterruptTimeout:                       MsgTurnTimeout,
+	domain.TurnInterruptCancelled:                     MsgTurnCancelled,
+	domain.TurnInterruptAtCapacity:                    MsgAtCapacity,
+	domain.TurnInterruptSessionLost:                   MsgSessionLost,
+	domain.TurnInterruptEmptyReply:                    MsgEmptyReply,
+	domain.TurnInterruptFailed:                        MsgGenericFail,
 }
 
 // providerFaultReasons maps the provider-failure class the LLM gateway recorded on the

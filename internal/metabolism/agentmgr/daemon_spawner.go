@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"sync"
 
 	"github.com/cambrian-sh/core/domain"
@@ -349,4 +350,37 @@ func (m *AgentManager) StopAllDaemons() {
 				"stream", streamID, "err", err)
 		}
 	}
+}
+
+// ListAgentInstances lists every live agent instance with its daemon stream and
+// OS process id (ENG-1634; OperatorConsole/ListAgentInstances), sorted by agent
+// then instance. The daemon registry and the instance table are read under their
+// own locks, one after the other, never nested.
+func (m *AgentManager) ListAgentInstances() []domain.AgentInstanceInfo {
+	streams := map[string]string{}
+	m.daemons.mu.Lock()
+	for stream, st := range m.daemons.byStream {
+		if st.instanceID != "" {
+			streams[st.instanceID] = stream
+		}
+	}
+	m.daemons.mu.Unlock()
+
+	m.InstanceManager.mu.Lock()
+	out := make([]domain.AgentInstanceInfo, 0, len(m.InstanceManager.instances))
+	for id, inst := range m.InstanceManager.instances {
+		info := domain.AgentInstanceInfo{AgentID: inst.AgentID, InstanceID: id, Mode: inst.Mode, StreamID: streams[id]}
+		if cmd := m.InstanceManager.cmds[id]; cmd != nil && cmd.Process != nil {
+			info.PID = cmd.Process.Pid
+		}
+		out = append(out, info)
+	}
+	m.InstanceManager.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AgentID != out[j].AgentID {
+			return out[i].AgentID < out[j].AgentID
+		}
+		return out[i].InstanceID < out[j].InstanceID
+	})
+	return out
 }

@@ -147,6 +147,14 @@ service OperatorConsole {
   // dead job of that version exists, so a repeated requeue changes nothing.
   rpc RequeueDerivationJob(RequeueDerivationJobOpRequest) returns (CommandAck);
 
+  // ENG-1634 (contract 0117): the live agent processes — agent, instance, the daemon
+  // stream it serves ("" for a JIT instance), mode and OS process id (0 when the
+  // handle is unknown) — so an operator can find a process outside the kernel (the
+  // chaos gate's external SIGKILL reads the chat pool worker's pid here). Operator-only
+  // (it discloses the deployment's process layout). Unimplemented without an agent
+  // manager.
+  rpc ListAgentInstances(ListAgentInstancesOpRequest) returns (ListAgentInstancesOpResponse);
+
   // Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
   // stage C; contract 0105, capability "memory-erasure", advertised only when
   // execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
@@ -4985,4 +4993,25 @@ message GetErasureOpRequest {
 
 message GetErasureOpResponse {
   ErasureReceiptOp receipt = 1;
+}
+
+// ListAgentInstances (ENG-1634, contract 0117).
+message ListAgentInstancesOpRequest {
+  // Only this agent's instances; "" = all.
+  string agent_id = 1;
+}
+
+message AgentInstanceOp {
+  string agent_id = 1;
+  string instance_id = 2;
+  // The daemon stream the instance serves ("" for a JIT instance).
+  string stream_id = 3;
+  // "jit" | "daemon" | "dedicated" ...
+  string mode = 4;
+  // The OS process id; 0 when the kernel holds no process handle for it.
+  int32 pid = 5;
+}
+
+message ListAgentInstancesOpResponse {
+  repeated AgentInstanceOp instances = 1;
 }

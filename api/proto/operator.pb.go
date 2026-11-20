@@ -26736,6 +26736,175 @@ func (x *GetErasureOpResponse) GetReceipt() *ErasureReceiptOp {
 	return nil
 }
 
+// ListAgentInstances (ENG-1634, contract 0117).
+type ListAgentInstancesOpRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Only this agent's instances; "" = all.
+	AgentId       string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgentInstancesOpRequest) Reset() {
+	*x = ListAgentInstancesOpRequest{}
+	mi := &file_operator_proto_msgTypes[329]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgentInstancesOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgentInstancesOpRequest) ProtoMessage() {}
+
+func (x *ListAgentInstancesOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[329]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgentInstancesOpRequest.ProtoReflect.Descriptor instead.
+func (*ListAgentInstancesOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{329}
+}
+
+func (x *ListAgentInstancesOpRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+type AgentInstanceOp struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	AgentId    string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	InstanceId string                 `protobuf:"bytes,2,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	// The daemon stream the instance serves ("" for a JIT instance).
+	StreamId string `protobuf:"bytes,3,opt,name=stream_id,json=streamId,proto3" json:"stream_id,omitempty"`
+	// "jit" | "daemon" | "dedicated" ...
+	Mode string `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
+	// The OS process id; 0 when the kernel holds no process handle for it.
+	Pid           int32 `protobuf:"varint,5,opt,name=pid,proto3" json:"pid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentInstanceOp) Reset() {
+	*x = AgentInstanceOp{}
+	mi := &file_operator_proto_msgTypes[330]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentInstanceOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentInstanceOp) ProtoMessage() {}
+
+func (x *AgentInstanceOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[330]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentInstanceOp.ProtoReflect.Descriptor instead.
+func (*AgentInstanceOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{330}
+}
+
+func (x *AgentInstanceOp) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *AgentInstanceOp) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *AgentInstanceOp) GetStreamId() string {
+	if x != nil {
+		return x.StreamId
+	}
+	return ""
+}
+
+func (x *AgentInstanceOp) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *AgentInstanceOp) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+type ListAgentInstancesOpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Instances     []*AgentInstanceOp     `protobuf:"bytes,1,rep,name=instances,proto3" json:"instances,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgentInstancesOpResponse) Reset() {
+	*x = ListAgentInstancesOpResponse{}
+	mi := &file_operator_proto_msgTypes[331]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgentInstancesOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgentInstancesOpResponse) ProtoMessage() {}
+
+func (x *ListAgentInstancesOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[331]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgentInstancesOpResponse.ProtoReflect.Descriptor instead.
+func (*ListAgentInstancesOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{331}
+}
+
+func (x *ListAgentInstancesOpResponse) GetInstances() []*AgentInstanceOp {
+	if x != nil {
+		return x.Instances
+	}
+	return nil
+}
+
 var File_operator_proto protoreflect.FileDescriptor
 
 const file_operator_proto_rawDesc = "" +
@@ -29179,7 +29348,18 @@ const file_operator_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\"L\n" +
 	"\x14GetErasureOpResponse\x124\n" +
-	"\areceipt\x18\x01 \x01(\v2\x1a.cambrian.ErasureReceiptOpR\areceipt2\x98X\n" +
+	"\areceipt\x18\x01 \x01(\v2\x1a.cambrian.ErasureReceiptOpR\areceipt\"8\n" +
+	"\x1bListAgentInstancesOpRequest\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\x90\x01\n" +
+	"\x0fAgentInstanceOp\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1f\n" +
+	"\vinstance_id\x18\x02 \x01(\tR\n" +
+	"instanceId\x12\x1b\n" +
+	"\tstream_id\x18\x03 \x01(\tR\bstreamId\x12\x12\n" +
+	"\x04mode\x18\x04 \x01(\tR\x04mode\x12\x10\n" +
+	"\x03pid\x18\x05 \x01(\x05R\x03pid\"W\n" +
+	"\x1cListAgentInstancesOpResponse\x127\n" +
+	"\tinstances\x18\x01 \x03(\v2\x19.cambrian.AgentInstanceOpR\tinstances2\xfdX\n" +
 	"\x0fOperatorConsole\x128\n" +
 	"\x05Login\x12\x16.cambrian.LoginRequest\x1a\x17.cambrian.LoginResponse\x12M\n" +
 	"\fDescribeAuth\x12\x1d.cambrian.DescribeAuthRequest\x1a\x1e.cambrian.DescribeAuthResponse\x12;\n" +
@@ -29214,7 +29394,8 @@ const file_operator_proto_rawDesc = "" +
 	"\fGetFactChain\x12\x1f.cambrian.GetFactChainOpRequest\x1a .cambrian.GetFactChainOpResponse\x12Z\n" +
 	"\x0fGetFactCoverage\x12\".cambrian.GetFactCoverageOpRequest\x1a#.cambrian.GetFactCoverageOpResponse\x12i\n" +
 	"\x14GetDerivationJournal\x12'.cambrian.GetDerivationJournalOpRequest\x1a(.cambrian.GetDerivationJournalOpResponse\x12U\n" +
-	"\x14RequeueDerivationJob\x12'.cambrian.RequeueDerivationJobOpRequest\x1a\x14.cambrian.CommandAck\x12f\n" +
+	"\x14RequeueDerivationJob\x12'.cambrian.RequeueDerivationJobOpRequest\x1a\x14.cambrian.CommandAck\x12c\n" +
+	"\x12ListAgentInstances\x12%.cambrian.ListAgentInstancesOpRequest\x1a&.cambrian.ListAgentInstancesOpResponse\x12f\n" +
 	"\x13PreviewForgetMemory\x12&.cambrian.PreviewForgetMemoryOpRequest\x1a'.cambrian.PreviewForgetMemoryOpResponse\x12Q\n" +
 	"\fForgetMemory\x12\x1f.cambrian.ForgetMemoryOpRequest\x1a .cambrian.ForgetMemoryOpResponse\x12Q\n" +
 	"\fListErasures\x12\x1f.cambrian.ListErasuresOpRequest\x1a .cambrian.ListErasuresOpResponse\x12K\n" +
@@ -29331,7 +29512,7 @@ func file_operator_proto_rawDescGZIP() []byte {
 	return file_operator_proto_rawDescData
 }
 
-var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 345)
+var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 348)
 var file_operator_proto_goTypes = []any{
 	(*CreateSessionRequest)(nil),               // 0: cambrian.CreateSessionRequest
 	(*CreateSessionResponse)(nil),              // 1: cambrian.CreateSessionResponse
@@ -29662,23 +29843,26 @@ var file_operator_proto_goTypes = []any{
 	(*ListErasuresOpResponse)(nil),             // 326: cambrian.ListErasuresOpResponse
 	(*GetErasureOpRequest)(nil),                // 327: cambrian.GetErasureOpRequest
 	(*GetErasureOpResponse)(nil),               // 328: cambrian.GetErasureOpResponse
-	nil,                                        // 329: cambrian.SetRuntimeConfigRequest.ParamsEntry
-	nil,                                        // 330: cambrian.PipelineNodeMeterOp.PortsEntry
-	nil,                                        // 331: cambrian.WatchConfigOp.DaemonParamsEntry
-	nil,                                        // 332: cambrian.PreviewCandidateOp.CapabilityStatsEntry
-	nil,                                        // 333: cambrian.ConfigSchemaOp.CurrentValuesEntry
-	nil,                                        // 334: cambrian.ConfigSchemaOp.ValueSourceEntry
-	nil,                                        // 335: cambrian.ConfigSchemaOp.OverridesFileEntry
-	nil,                                        // 336: cambrian.ConfigSchemaOp.OverridesFileValueEntry
-	nil,                                        // 337: cambrian.SetConfigOpRequest.ValuesEntry
-	nil,                                        // 338: cambrian.LogFilterOp.AttrEqualsEntry
-	nil,                                        // 339: cambrian.IntegrationOp.SettingsEntry
-	nil,                                        // 340: cambrian.InstallIntegrationOpRequest.SettingsEntry
-	nil,                                        // 341: cambrian.InstallIntegrationOpRequest.SecretsEntry
-	nil,                                        // 342: cambrian.UpdateIntegrationOpRequest.SettingsEntry
-	nil,                                        // 343: cambrian.ErasureReceiptOp.CountsEntry
-	nil,                                        // 344: cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
-	(*timestamppb.Timestamp)(nil),              // 345: google.protobuf.Timestamp
+	(*ListAgentInstancesOpRequest)(nil),        // 329: cambrian.ListAgentInstancesOpRequest
+	(*AgentInstanceOp)(nil),                    // 330: cambrian.AgentInstanceOp
+	(*ListAgentInstancesOpResponse)(nil),       // 331: cambrian.ListAgentInstancesOpResponse
+	nil,                                        // 332: cambrian.SetRuntimeConfigRequest.ParamsEntry
+	nil,                                        // 333: cambrian.PipelineNodeMeterOp.PortsEntry
+	nil,                                        // 334: cambrian.WatchConfigOp.DaemonParamsEntry
+	nil,                                        // 335: cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	nil,                                        // 336: cambrian.ConfigSchemaOp.CurrentValuesEntry
+	nil,                                        // 337: cambrian.ConfigSchemaOp.ValueSourceEntry
+	nil,                                        // 338: cambrian.ConfigSchemaOp.OverridesFileEntry
+	nil,                                        // 339: cambrian.ConfigSchemaOp.OverridesFileValueEntry
+	nil,                                        // 340: cambrian.SetConfigOpRequest.ValuesEntry
+	nil,                                        // 341: cambrian.LogFilterOp.AttrEqualsEntry
+	nil,                                        // 342: cambrian.IntegrationOp.SettingsEntry
+	nil,                                        // 343: cambrian.InstallIntegrationOpRequest.SettingsEntry
+	nil,                                        // 344: cambrian.InstallIntegrationOpRequest.SecretsEntry
+	nil,                                        // 345: cambrian.UpdateIntegrationOpRequest.SettingsEntry
+	nil,                                        // 346: cambrian.ErasureReceiptOp.CountsEntry
+	nil,                                        // 347: cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
+	(*timestamppb.Timestamp)(nil),              // 348: google.protobuf.Timestamp
 }
 var file_operator_proto_depIdxs = []int32{
 	25,  // 0: cambrian.SendTurnOpResponse.reply:type_name -> cambrian.MessageOp
@@ -29688,7 +29872,7 @@ var file_operator_proto_depIdxs = []int32{
 	16,  // 4: cambrian.GetFactChainOpResponse.chain:type_name -> cambrian.FactOp
 	22,  // 5: cambrian.GetFactCoverageOpResponse.versions:type_name -> cambrian.FactVersionCoverageOp
 	25,  // 6: cambrian.ListConversationMessagesOpResponse.messages:type_name -> cambrian.MessageOp
-	329, // 7: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
+	332, // 7: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
 	91,  // 8: cambrian.QueryAuditResponse.entries:type_name -> cambrian.AuditOp
 	58,  // 9: cambrian.SnapshotResponse.plans:type_name -> cambrian.PlanInFlightOp
 	59,  // 10: cambrian.SnapshotResponse.sessions:type_name -> cambrian.SessionSummaryOp
@@ -29698,7 +29882,7 @@ var file_operator_proto_depIdxs = []int32{
 	52,  // 14: cambrian.GetDerivationJournalOpResponse.dead:type_name -> cambrian.DeadDerivationOp
 	53,  // 15: cambrian.GetDerivationJournalOpResponse.counters:type_name -> cambrian.DerivationJournalCountersOp
 	57,  // 16: cambrian.PluginInfoOp.panels:type_name -> cambrian.PluginPanelOp
-	345, // 17: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
+	348, // 17: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
 	70,  // 18: cambrian.OperatorEvent.resync:type_name -> cambrian.ResyncRequired
 	77,  // 19: cambrian.OperatorEvent.agent_ready:type_name -> cambrian.AgentReadyOp
 	79,  // 20: cambrian.OperatorEvent.session_dormant:type_name -> cambrian.SessionDormantOp
@@ -29726,48 +29910,48 @@ var file_operator_proto_depIdxs = []int32{
 	116, // 42: cambrian.OperatorEvent.hitl_resolved:type_name -> cambrian.HITLResolvedOp
 	71,  // 43: cambrian.OperatorEvent.selection:type_name -> cambrian.SelectionEventOp
 	64,  // 44: cambrian.PipelineMetersOp.nodes:type_name -> cambrian.PipelineNodeMeterOp
-	330, // 45: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
-	345, // 46: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
-	345, // 47: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
+	333, // 45: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
+	348, // 46: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
+	348, // 47: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
 	66,  // 48: cambrian.RetentionRunOp.deleted:type_name -> cambrian.RetentionDeletionOp
 	72,  // 49: cambrian.SelectionEventOp.candidates:type_name -> cambrian.SelectionCandidateOp
 	73,  // 50: cambrian.SelectionEventOp.funnel:type_name -> cambrian.GatekeeperFunnelOp
 	74,  // 51: cambrian.GatekeeperFunnelOp.l1:type_name -> cambrian.DeclarationResultOp
 	75,  // 52: cambrian.GatekeeperFunnelOp.l2:type_name -> cambrian.SemanticGateOp
 	76,  // 53: cambrian.GatekeeperFunnelOp.l3:type_name -> cambrian.MeritResultOp
-	345, // 54: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
-	345, // 55: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
+	348, // 54: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
+	348, // 55: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
 	89,  // 56: cambrian.PlanStateOp.steps:type_name -> cambrian.PlanStepOp
 	92,  // 57: cambrian.ToolGrantOp.policy:type_name -> cambrian.ToolPolicyOp
 	93,  // 58: cambrian.ToolOp.grants:type_name -> cambrian.ToolGrantOp
 	94,  // 59: cambrian.ListToolsOpResponse.tools:type_name -> cambrian.ToolOp
-	345, // 60: cambrian.SkillOp.state_changed_at:type_name -> google.protobuf.Timestamp
-	345, // 61: cambrian.SkillOp.last_used_at:type_name -> google.protobuf.Timestamp
+	348, // 60: cambrian.SkillOp.state_changed_at:type_name -> google.protobuf.Timestamp
+	348, // 61: cambrian.SkillOp.last_used_at:type_name -> google.protobuf.Timestamp
 	98,  // 62: cambrian.ListSkillsOpResponse.skills:type_name -> cambrian.SkillOp
-	345, // 63: cambrian.QueryMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
-	345, // 64: cambrian.QueryMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
-	345, // 65: cambrian.QueryMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
-	345, // 66: cambrian.MemoryOp.event_time:type_name -> google.protobuf.Timestamp
-	345, // 67: cambrian.MemoryOp.event_time_end:type_name -> google.protobuf.Timestamp
+	348, // 63: cambrian.QueryMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
+	348, // 64: cambrian.QueryMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
+	348, // 65: cambrian.QueryMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
+	348, // 66: cambrian.MemoryOp.event_time:type_name -> google.protobuf.Timestamp
+	348, // 67: cambrian.MemoryOp.event_time_end:type_name -> google.protobuf.Timestamp
 	101, // 68: cambrian.QueryMemoryResponse.results:type_name -> cambrian.MemoryOp
 	152, // 69: cambrian.QueryMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
-	345, // 70: cambrian.AnswerMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
-	345, // 71: cambrian.AnswerMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
-	345, // 72: cambrian.AnswerMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
-	345, // 73: cambrian.MemoryCitation.event_time:type_name -> google.protobuf.Timestamp
-	345, // 74: cambrian.MemoryCitation.event_time_end:type_name -> google.protobuf.Timestamp
+	348, // 70: cambrian.AnswerMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
+	348, // 71: cambrian.AnswerMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
+	348, // 72: cambrian.AnswerMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
+	348, // 73: cambrian.MemoryCitation.event_time:type_name -> google.protobuf.Timestamp
+	348, // 74: cambrian.MemoryCitation.event_time_end:type_name -> google.protobuf.Timestamp
 	104, // 75: cambrian.AnswerMemoryResponse.citations:type_name -> cambrian.MemoryCitation
 	152, // 76: cambrian.AnswerMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
 	92,  // 77: cambrian.SetToolPolicyRequest.policy:type_name -> cambrian.ToolPolicyOp
-	345, // 78: cambrian.IngestMemoryOpRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	348, // 78: cambrian.IngestMemoryOpRequest.occurred_at:type_name -> google.protobuf.Timestamp
 	110, // 79: cambrian.IngestMemoryOpRequest.parts:type_name -> cambrian.MemoryPartOp
-	345, // 80: cambrian.MemoryPartOp.occurred_at:type_name -> google.protobuf.Timestamp
+	348, // 80: cambrian.MemoryPartOp.occurred_at:type_name -> google.protobuf.Timestamp
 	112, // 81: cambrian.IngestMemoryOpResponse.status:type_name -> cambrian.IngestStatusOp
 	112, // 82: cambrian.GetIngestStatusOpResponse.status:type_name -> cambrian.IngestStatusOp
 	115, // 83: cambrian.ListApprovalsOpResponse.approvals:type_name -> cambrian.ApprovalOp
 	122, // 84: cambrian.ListStandingApprovalsOpResponse.standing:type_name -> cambrian.StandingApprovalOp
 	128, // 85: cambrian.WatchConfigOp.action:type_name -> cambrian.WatchActionOp
-	331, // 86: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
+	334, // 86: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
 	130, // 87: cambrian.WatchConfigOp.last_fires:type_name -> cambrian.WatchFireOp
 	128, // 88: cambrian.WatchConfigOp.actions:type_name -> cambrian.WatchActionOp
 	129, // 89: cambrian.ListWatchesOpResponse.configs:type_name -> cambrian.WatchConfigOp
@@ -29777,7 +29961,7 @@ var file_operator_proto_depIdxs = []int32{
 	129, // 93: cambrian.BacktestWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
 	144, // 94: cambrian.BacktestWatchOpResponse.verdicts:type_name -> cambrian.WatchBacktestVerdictOp
 	146, // 95: cambrian.PreviewRouteOpRequest.candidates:type_name -> cambrian.PreviewCandidateOp
-	332, // 96: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	335, // 96: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
 	76,  // 97: cambrian.PreviewRouteOpResponse.ranked:type_name -> cambrian.MeritResultOp
 	151, // 98: cambrian.AccessDecisionOp.decided_by:type_name -> cambrian.PolicyContributionOp
 	152, // 99: cambrian.ExplainAccessOpResponse.decision:type_name -> cambrian.AccessDecisionOp
@@ -29790,11 +29974,11 @@ var file_operator_proto_depIdxs = []int32{
 	177, // 106: cambrian.SaveGeneratorOpRequest.generator:type_name -> cambrian.GeneratorSpecOp
 	181, // 107: cambrian.SaveMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
 	181, // 108: cambrian.TestMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
-	333, // 109: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
-	334, // 110: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
-	335, // 111: cambrian.ConfigSchemaOp.overrides_file:type_name -> cambrian.ConfigSchemaOp.OverridesFileEntry
-	336, // 112: cambrian.ConfigSchemaOp.overrides_file_value:type_name -> cambrian.ConfigSchemaOp.OverridesFileValueEntry
-	337, // 113: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
+	336, // 109: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
+	337, // 110: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
+	338, // 111: cambrian.ConfigSchemaOp.overrides_file:type_name -> cambrian.ConfigSchemaOp.OverridesFileEntry
+	339, // 112: cambrian.ConfigSchemaOp.overrides_file_value:type_name -> cambrian.ConfigSchemaOp.OverridesFileValueEntry
+	340, // 113: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
 	196, // 114: cambrian.SetConfigOpResponse.outcomes:type_name -> cambrian.ConfigWriteOutcomeOp
 	198, // 115: cambrian.SubmitPlanOpRequest.steps:type_name -> cambrian.AuthoredStepOp
 	200, // 116: cambrian.SubmitPlanOpResponse.issues:type_name -> cambrian.PlanValidationIssueOp
@@ -29809,7 +29993,7 @@ var file_operator_proto_depIdxs = []int32{
 	216, // 125: cambrian.BlastRadiusPreviewOp.affected_agents:type_name -> cambrian.AgentImpactOp
 	217, // 126: cambrian.BlastRadiusPreviewOp.affected_plans:type_name -> cambrian.PlanImpactOp
 	220, // 127: cambrian.LogRecordOp.attrs:type_name -> cambrian.LogAttrOp
-	338, // 128: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
+	341, // 128: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
 	222, // 129: cambrian.QueryLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
 	221, // 130: cambrian.QueryLogsOpResponse.records:type_name -> cambrian.LogRecordOp
 	223, // 131: cambrian.QueryLogsOpResponse.window:type_name -> cambrian.LogWindowOp
@@ -29836,18 +30020,18 @@ var file_operator_proto_depIdxs = []int32{
 	260, // 152: cambrian.ConfirmLinkPairOpRequest.pair:type_name -> cambrian.LinkPairKeyOp
 	252, // 153: cambrian.ConfirmLinkPairOpResponse.confirmations:type_name -> cambrian.LinkOp
 	260, // 154: cambrian.RejectLinkPairOpRequest.pair:type_name -> cambrian.LinkPairKeyOp
-	345, // 155: cambrian.MemoryNotesSummaryOp.updated_at:type_name -> google.protobuf.Timestamp
+	348, // 155: cambrian.MemoryNotesSummaryOp.updated_at:type_name -> google.protobuf.Timestamp
 	269, // 156: cambrian.ListMemoryNotesOpResponse.notes:type_name -> cambrian.MemoryNotesSummaryOp
-	345, // 157: cambrian.MemoryNotesOp.updated_at:type_name -> google.protobuf.Timestamp
-	345, // 158: cambrian.SkillProposalOp.created_at:type_name -> google.protobuf.Timestamp
-	345, // 159: cambrian.SkillProposalOp.decided_at:type_name -> google.protobuf.Timestamp
+	348, // 157: cambrian.MemoryNotesOp.updated_at:type_name -> google.protobuf.Timestamp
+	348, // 158: cambrian.SkillProposalOp.created_at:type_name -> google.protobuf.Timestamp
+	348, // 159: cambrian.SkillProposalOp.decided_at:type_name -> google.protobuf.Timestamp
 	278, // 160: cambrian.ListSkillProposalsOpResponse.proposals:type_name -> cambrian.SkillProposalOp
-	345, // 161: cambrian.SkillLedgerEntryOp.at:type_name -> google.protobuf.Timestamp
+	348, // 161: cambrian.SkillLedgerEntryOp.at:type_name -> google.protobuf.Timestamp
 	284, // 162: cambrian.ListSkillLedgerOpResponse.entries:type_name -> cambrian.SkillLedgerEntryOp
-	345, // 163: cambrian.SkillGrantOp.granted_at:type_name -> google.protobuf.Timestamp
-	345, // 164: cambrian.SkillGrantOp.revoked_at:type_name -> google.protobuf.Timestamp
-	345, // 165: cambrian.SkillAccessRequestOp.requested_at:type_name -> google.protobuf.Timestamp
-	345, // 166: cambrian.SkillAccessRequestOp.decided_at:type_name -> google.protobuf.Timestamp
+	348, // 163: cambrian.SkillGrantOp.granted_at:type_name -> google.protobuf.Timestamp
+	348, // 164: cambrian.SkillGrantOp.revoked_at:type_name -> google.protobuf.Timestamp
+	348, // 165: cambrian.SkillAccessRequestOp.requested_at:type_name -> google.protobuf.Timestamp
+	348, // 166: cambrian.SkillAccessRequestOp.decided_at:type_name -> google.protobuf.Timestamp
 	289, // 167: cambrian.ListSkillGrantsOpResponse.grants:type_name -> cambrian.SkillGrantOp
 	290, // 168: cambrian.ListSkillGrantsOpResponse.requests:type_name -> cambrian.SkillAccessRequestOp
 	296, // 169: cambrian.ListIntegrationCatalogOpResponse.entries:type_name -> cambrian.IntegrationCatalogEntryOp
@@ -29855,7 +30039,7 @@ var file_operator_proto_depIdxs = []int32{
 	298, // 171: cambrian.IntegrationCatalogEntryOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
 	298, // 172: cambrian.IntegrationCatalogEntryOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
 	301, // 173: cambrian.ListIntegrationsOpResponse.integrations:type_name -> cambrian.IntegrationOp
-	339, // 174: cambrian.IntegrationOp.settings:type_name -> cambrian.IntegrationOp.SettingsEntry
+	342, // 174: cambrian.IntegrationOp.settings:type_name -> cambrian.IntegrationOp.SettingsEntry
 	303, // 175: cambrian.IntegrationOp.secrets:type_name -> cambrian.IntegrationSecretStateOp
 	304, // 176: cambrian.IntegrationOp.health:type_name -> cambrian.IntegrationHealthOp
 	298, // 177: cambrian.IntegrationOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
@@ -29863,295 +30047,298 @@ var file_operator_proto_depIdxs = []int32{
 	302, // 179: cambrian.IntegrationOp.containment:type_name -> cambrian.IntegrationContainmentOp
 	298, // 180: cambrian.IntegrationCustomSpecOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
 	298, // 181: cambrian.IntegrationCustomSpecOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
-	340, // 182: cambrian.InstallIntegrationOpRequest.settings:type_name -> cambrian.InstallIntegrationOpRequest.SettingsEntry
-	341, // 183: cambrian.InstallIntegrationOpRequest.secrets:type_name -> cambrian.InstallIntegrationOpRequest.SecretsEntry
+	343, // 182: cambrian.InstallIntegrationOpRequest.settings:type_name -> cambrian.InstallIntegrationOpRequest.SettingsEntry
+	344, // 183: cambrian.InstallIntegrationOpRequest.secrets:type_name -> cambrian.InstallIntegrationOpRequest.SecretsEntry
 	305, // 184: cambrian.InstallIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
-	342, // 185: cambrian.UpdateIntegrationOpRequest.settings:type_name -> cambrian.UpdateIntegrationOpRequest.SettingsEntry
+	345, // 185: cambrian.UpdateIntegrationOpRequest.settings:type_name -> cambrian.UpdateIntegrationOpRequest.SettingsEntry
 	305, // 186: cambrian.UpdateIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
 	196, // 187: cambrian.IntegrationMutationOpResponse.outcome:type_name -> cambrian.ConfigWriteOutcomeOp
 	301, // 188: cambrian.IntegrationMutationOpResponse.integration:type_name -> cambrian.IntegrationOp
 	316, // 189: cambrian.IntegrationTestResultOp.tools:type_name -> cambrian.IntegrationToolOp
-	345, // 190: cambrian.ErasureReceiptOp.erased_at:type_name -> google.protobuf.Timestamp
-	345, // 191: cambrian.ErasureReceiptOp.async_deadline:type_name -> google.protobuf.Timestamp
-	343, // 192: cambrian.ErasureReceiptOp.counts:type_name -> cambrian.ErasureReceiptOp.CountsEntry
+	348, // 190: cambrian.ErasureReceiptOp.erased_at:type_name -> google.protobuf.Timestamp
+	348, // 191: cambrian.ErasureReceiptOp.async_deadline:type_name -> google.protobuf.Timestamp
+	346, // 192: cambrian.ErasureReceiptOp.counts:type_name -> cambrian.ErasureReceiptOp.CountsEntry
 	318, // 193: cambrian.PreviewForgetMemoryOpRequest.selector:type_name -> cambrian.ErasureSelectorOp
 	319, // 194: cambrian.PreviewForgetMemoryOpResponse.candidates:type_name -> cambrian.ErasureCandidateOp
-	345, // 195: cambrian.PreviewForgetMemoryOpResponse.expires_at:type_name -> google.protobuf.Timestamp
-	344, // 196: cambrian.PreviewForgetMemoryOpResponse.counts_by_kind:type_name -> cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
+	348, // 195: cambrian.PreviewForgetMemoryOpResponse.expires_at:type_name -> google.protobuf.Timestamp
+	347, // 196: cambrian.PreviewForgetMemoryOpResponse.counts_by_kind:type_name -> cambrian.PreviewForgetMemoryOpResponse.CountsByKindEntry
 	318, // 197: cambrian.ForgetMemoryOpRequest.selector:type_name -> cambrian.ErasureSelectorOp
 	320, // 198: cambrian.ForgetMemoryOpResponse.receipt:type_name -> cambrian.ErasureReceiptOp
 	320, // 199: cambrian.ListErasuresOpResponse.receipts:type_name -> cambrian.ErasureReceiptOp
 	320, // 200: cambrian.GetErasureOpResponse.receipt:type_name -> cambrian.ErasureReceiptOp
-	147, // 201: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
-	39,  // 202: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
-	41,  // 203: cambrian.OperatorConsole.DescribeAuth:input_type -> cambrian.DescribeAuthRequest
-	45,  // 204: cambrian.OperatorConsole.Logout:input_type -> cambrian.LogoutRequest
-	43,  // 205: cambrian.OperatorConsole.WhoAmI:input_type -> cambrian.WhoAmIRequest
-	60,  // 206: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
-	47,  // 207: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
-	38,  // 208: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
-	35,  // 209: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
-	32,  // 210: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
-	33,  // 211: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
-	33,  // 212: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
-	33,  // 213: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
-	34,  // 214: cambrian.OperatorConsole.CancelRun:input_type -> cambrian.CancelRunRequest
-	26,  // 215: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
-	27,  // 216: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
-	28,  // 217: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
-	29,  // 218: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
-	30,  // 219: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
-	31,  // 220: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
-	0,   // 221: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
-	2,   // 222: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
-	3,   // 223: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
-	4,   // 224: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
-	6,   // 225: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
-	8,   // 226: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
-	9,   // 227: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
-	12,  // 228: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
-	13,  // 229: cambrian.OperatorConsole.ListScheduledTasks:input_type -> cambrian.ListScheduledTasksOpRequest
-	17,  // 230: cambrian.OperatorConsole.ListFacts:input_type -> cambrian.ListFactsOpRequest
-	19,  // 231: cambrian.OperatorConsole.GetFactChain:input_type -> cambrian.GetFactChainOpRequest
-	21,  // 232: cambrian.OperatorConsole.GetFactCoverage:input_type -> cambrian.GetFactCoverageOpRequest
-	49,  // 233: cambrian.OperatorConsole.GetDerivationJournal:input_type -> cambrian.GetDerivationJournalOpRequest
-	54,  // 234: cambrian.OperatorConsole.RequeueDerivationJob:input_type -> cambrian.RequeueDerivationJobOpRequest
-	321, // 235: cambrian.OperatorConsole.PreviewForgetMemory:input_type -> cambrian.PreviewForgetMemoryOpRequest
-	323, // 236: cambrian.OperatorConsole.ForgetMemory:input_type -> cambrian.ForgetMemoryOpRequest
-	325, // 237: cambrian.OperatorConsole.ListErasures:input_type -> cambrian.ListErasuresOpRequest
-	327, // 238: cambrian.OperatorConsole.GetErasure:input_type -> cambrian.GetErasureOpRequest
-	95,  // 239: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
-	97,  // 240: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
-	100, // 241: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
-	156, // 242: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
-	227, // 243: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
-	103, // 244: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
-	106, // 245: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
-	107, // 246: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
-	109, // 247: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
-	113, // 248: cambrian.OperatorConsole.GetIngestStatus:input_type -> cambrian.GetIngestStatusOpRequest
-	60,  // 249: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
-	117, // 250: cambrian.OperatorConsole.WatchMyApprovals:input_type -> cambrian.WatchMyApprovalsOpRequest
-	118, // 251: cambrian.OperatorConsole.ListApprovals:input_type -> cambrian.ListApprovalsOpRequest
-	120, // 252: cambrian.OperatorConsole.AnswerApproval:input_type -> cambrian.AnswerApprovalOpRequest
-	123, // 253: cambrian.OperatorConsole.ListStandingApprovals:input_type -> cambrian.ListStandingApprovalsOpRequest
-	125, // 254: cambrian.OperatorConsole.RevokeStandingApproval:input_type -> cambrian.RevokeStandingApprovalOpRequest
-	126, // 255: cambrian.OperatorConsole.ShareToTeam:input_type -> cambrian.ShareToTeamOpRequest
-	131, // 256: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
-	133, // 257: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
-	134, // 258: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
-	135, // 259: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
-	136, // 260: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
-	232, // 261: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
-	234, // 262: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
-	238, // 263: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
-	229, // 264: cambrian.OperatorConsole.ListNodeItems:input_type -> cambrian.ListNodeItemsOpRequest
-	241, // 265: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
-	243, // 266: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
-	245, // 267: cambrian.OperatorConsole.TransitionPipeline:input_type -> cambrian.TransitionPipelineOpRequest
-	224, // 268: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
-	226, // 269: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
-	139, // 270: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
-	142, // 271: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
-	145, // 272: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
-	150, // 273: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
-	154, // 274: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
-	159, // 275: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
-	162, // 276: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
-	165, // 277: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
-	167, // 278: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
-	169, // 279: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
-	172, // 280: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
-	175, // 281: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
-	190, // 282: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
-	192, // 283: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
-	193, // 284: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
-	194, // 285: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
-	195, // 286: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
-	178, // 287: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
-	179, // 288: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
-	180, // 289: cambrian.OperatorConsole.SetRoleAssignment:input_type -> cambrian.SetRoleAssignmentOpRequest
-	182, // 290: cambrian.OperatorConsole.SaveMCPServer:input_type -> cambrian.SaveMCPServerOpRequest
-	183, // 291: cambrian.OperatorConsole.RemoveMCPServer:input_type -> cambrian.RemoveMCPServerOpRequest
-	184, // 292: cambrian.OperatorConsole.SetMCPServerToken:input_type -> cambrian.SetMCPServerTokenOpRequest
-	185, // 293: cambrian.OperatorConsole.ClearMCPServerToken:input_type -> cambrian.ClearMCPServerTokenOpRequest
-	186, // 294: cambrian.OperatorConsole.TestMCPServer:input_type -> cambrian.TestMCPServerOpRequest
-	253, // 295: cambrian.OperatorConsole.ConfirmLink:input_type -> cambrian.ConfirmLinkOpRequest
-	255, // 296: cambrian.OperatorConsole.RetractLink:input_type -> cambrian.RetractLinkOpRequest
-	256, // 297: cambrian.OperatorConsole.RetractLinksByProducer:input_type -> cambrian.RetractLinksByProducerOpRequest
-	258, // 298: cambrian.OperatorConsole.ListLinkCandidates:input_type -> cambrian.ListLinkCandidatesOpRequest
-	262, // 299: cambrian.OperatorConsole.ListLinkPairs:input_type -> cambrian.ListLinkPairsOpRequest
-	264, // 300: cambrian.OperatorConsole.ConfirmLinkPair:input_type -> cambrian.ConfirmLinkPairOpRequest
-	266, // 301: cambrian.OperatorConsole.RejectLinkPair:input_type -> cambrian.RejectLinkPairOpRequest
-	199, // 302: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
-	203, // 303: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
-	205, // 304: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
-	208, // 305: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
-	213, // 306: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
-	215, // 307: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
-	188, // 308: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
-	189, // 309: cambrian.OperatorConsole.DeleteWatchDeadLetter:input_type -> cambrian.DeleteWatchDeadLetterOpRequest
-	268, // 310: cambrian.OperatorConsole.ListMemoryNotes:input_type -> cambrian.ListMemoryNotesOpRequest
-	271, // 311: cambrian.OperatorConsole.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesOpRequest
-	273, // 312: cambrian.OperatorConsole.SetMemoryNotes:input_type -> cambrian.SetMemoryNotesOpRequest
-	275, // 313: cambrian.OperatorConsole.DeleteMemoryNotes:input_type -> cambrian.DeleteMemoryNotesOpRequest
-	276, // 314: cambrian.OperatorConsole.SetMemoryNotesBudget:input_type -> cambrian.SetMemoryNotesBudgetOpRequest
-	277, // 315: cambrian.OperatorConsole.ListSkillProposals:input_type -> cambrian.ListSkillProposalsOpRequest
-	280, // 316: cambrian.OperatorConsole.DecideSkillProposal:input_type -> cambrian.DecideSkillProposalOpRequest
-	282, // 317: cambrian.OperatorConsole.SetSkillLock:input_type -> cambrian.SetSkillLockOpRequest
-	283, // 318: cambrian.OperatorConsole.ListSkillLedger:input_type -> cambrian.ListSkillLedgerOpRequest
-	286, // 319: cambrian.OperatorConsole.RollbackSkill:input_type -> cambrian.RollbackSkillOpRequest
-	288, // 320: cambrian.OperatorConsole.ListSkillGrants:input_type -> cambrian.ListSkillGrantsOpRequest
-	292, // 321: cambrian.OperatorConsole.GrantSkill:input_type -> cambrian.GrantSkillOpRequest
-	293, // 322: cambrian.OperatorConsole.RevokeSkillGrant:input_type -> cambrian.RevokeSkillGrantOpRequest
-	294, // 323: cambrian.OperatorConsole.ListIntegrationCatalog:input_type -> cambrian.ListIntegrationCatalogOpRequest
-	299, // 324: cambrian.OperatorConsole.ListIntegrations:input_type -> cambrian.ListIntegrationsOpRequest
-	306, // 325: cambrian.OperatorConsole.InstallIntegration:input_type -> cambrian.InstallIntegrationOpRequest
-	307, // 326: cambrian.OperatorConsole.UpdateIntegration:input_type -> cambrian.UpdateIntegrationOpRequest
-	308, // 327: cambrian.OperatorConsole.SetIntegrationSecret:input_type -> cambrian.SetIntegrationSecretOpRequest
-	309, // 328: cambrian.OperatorConsole.ClearIntegrationSecret:input_type -> cambrian.ClearIntegrationSecretOpRequest
-	310, // 329: cambrian.OperatorConsole.SetIntegrationEnabled:input_type -> cambrian.SetIntegrationEnabledOpRequest
-	314, // 330: cambrian.OperatorConsole.TestIntegration:input_type -> cambrian.TestIntegrationOpRequest
-	311, // 331: cambrian.OperatorConsole.RemoveIntegration:input_type -> cambrian.RemoveIntegrationOpRequest
-	312, // 332: cambrian.OperatorConsole.RevertIntegrationToFile:input_type -> cambrian.RevertIntegrationToFileOpRequest
-	313, // 333: cambrian.OperatorConsole.SetIntegrationTrustTier:input_type -> cambrian.SetIntegrationTrustTierOpRequest
-	40,  // 334: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
-	42,  // 335: cambrian.OperatorConsole.DescribeAuth:output_type -> cambrian.DescribeAuthResponse
-	46,  // 336: cambrian.OperatorConsole.Logout:output_type -> cambrian.LogoutResponse
-	44,  // 337: cambrian.OperatorConsole.WhoAmI:output_type -> cambrian.WhoAmIResponse
-	61,  // 338: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
-	48,  // 339: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
-	37,  // 340: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
-	36,  // 341: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
-	37,  // 342: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
-	37,  // 343: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
-	37,  // 344: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
-	37,  // 345: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
-	37,  // 346: cambrian.OperatorConsole.CancelRun:output_type -> cambrian.CommandAck
-	37,  // 347: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
-	37,  // 348: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
-	37,  // 349: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
-	37,  // 350: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
-	37,  // 351: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
-	37,  // 352: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
-	1,   // 353: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
-	37,  // 354: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
-	37,  // 355: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
-	5,   // 356: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
-	7,   // 357: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
-	37,  // 358: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
-	10,  // 359: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
-	24,  // 360: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
-	14,  // 361: cambrian.OperatorConsole.ListScheduledTasks:output_type -> cambrian.ListScheduledTasksOpResponse
-	18,  // 362: cambrian.OperatorConsole.ListFacts:output_type -> cambrian.ListFactsOpResponse
-	20,  // 363: cambrian.OperatorConsole.GetFactChain:output_type -> cambrian.GetFactChainOpResponse
-	23,  // 364: cambrian.OperatorConsole.GetFactCoverage:output_type -> cambrian.GetFactCoverageOpResponse
-	50,  // 365: cambrian.OperatorConsole.GetDerivationJournal:output_type -> cambrian.GetDerivationJournalOpResponse
-	37,  // 366: cambrian.OperatorConsole.RequeueDerivationJob:output_type -> cambrian.CommandAck
-	322, // 367: cambrian.OperatorConsole.PreviewForgetMemory:output_type -> cambrian.PreviewForgetMemoryOpResponse
-	324, // 368: cambrian.OperatorConsole.ForgetMemory:output_type -> cambrian.ForgetMemoryOpResponse
-	326, // 369: cambrian.OperatorConsole.ListErasures:output_type -> cambrian.ListErasuresOpResponse
-	328, // 370: cambrian.OperatorConsole.GetErasure:output_type -> cambrian.GetErasureOpResponse
-	96,  // 371: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
-	99,  // 372: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
-	102, // 373: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
-	158, // 374: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
-	228, // 375: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
-	105, // 376: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
-	37,  // 377: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
-	108, // 378: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
-	111, // 379: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
-	114, // 380: cambrian.OperatorConsole.GetIngestStatus:output_type -> cambrian.GetIngestStatusOpResponse
-	115, // 381: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
-	115, // 382: cambrian.OperatorConsole.WatchMyApprovals:output_type -> cambrian.ApprovalOp
-	119, // 383: cambrian.OperatorConsole.ListApprovals:output_type -> cambrian.ListApprovalsOpResponse
-	121, // 384: cambrian.OperatorConsole.AnswerApproval:output_type -> cambrian.AnswerApprovalOpResponse
-	124, // 385: cambrian.OperatorConsole.ListStandingApprovals:output_type -> cambrian.ListStandingApprovalsOpResponse
-	37,  // 386: cambrian.OperatorConsole.RevokeStandingApproval:output_type -> cambrian.CommandAck
-	127, // 387: cambrian.OperatorConsole.ShareToTeam:output_type -> cambrian.ShareToTeamOpResponse
-	132, // 388: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
-	37,  // 389: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
-	37,  // 390: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
-	37,  // 391: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
-	137, // 392: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
-	233, // 393: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
-	235, // 394: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
-	239, // 395: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
-	231, // 396: cambrian.OperatorConsole.ListNodeItems:output_type -> cambrian.ListNodeItemsOpResponse
-	242, // 397: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
-	244, // 398: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
-	246, // 399: cambrian.OperatorConsole.TransitionPipeline:output_type -> cambrian.TransitionPipelineOpResponse
-	225, // 400: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
-	221, // 401: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
-	140, // 402: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
-	143, // 403: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
-	148, // 404: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
-	153, // 405: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
-	155, // 406: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
-	161, // 407: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
-	164, // 408: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
-	166, // 409: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
-	168, // 410: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
-	171, // 411: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
-	174, // 412: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
-	176, // 413: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
-	191, // 414: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
-	197, // 415: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
-	197, // 416: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
-	197, // 417: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
-	37,  // 418: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
-	197, // 419: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
-	197, // 420: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
-	197, // 421: cambrian.OperatorConsole.SetRoleAssignment:output_type -> cambrian.SetConfigOpResponse
-	197, // 422: cambrian.OperatorConsole.SaveMCPServer:output_type -> cambrian.SetConfigOpResponse
-	197, // 423: cambrian.OperatorConsole.RemoveMCPServer:output_type -> cambrian.SetConfigOpResponse
-	197, // 424: cambrian.OperatorConsole.SetMCPServerToken:output_type -> cambrian.SetConfigOpResponse
-	37,  // 425: cambrian.OperatorConsole.ClearMCPServerToken:output_type -> cambrian.CommandAck
-	187, // 426: cambrian.OperatorConsole.TestMCPServer:output_type -> cambrian.MCPServerTestResultOp
-	254, // 427: cambrian.OperatorConsole.ConfirmLink:output_type -> cambrian.ConfirmLinkOpResponse
-	37,  // 428: cambrian.OperatorConsole.RetractLink:output_type -> cambrian.CommandAck
-	257, // 429: cambrian.OperatorConsole.RetractLinksByProducer:output_type -> cambrian.RetractLinksByProducerOpResponse
-	259, // 430: cambrian.OperatorConsole.ListLinkCandidates:output_type -> cambrian.ListLinkCandidatesOpResponse
-	263, // 431: cambrian.OperatorConsole.ListLinkPairs:output_type -> cambrian.ListLinkPairsOpResponse
-	265, // 432: cambrian.OperatorConsole.ConfirmLinkPair:output_type -> cambrian.ConfirmLinkPairOpResponse
-	267, // 433: cambrian.OperatorConsole.RejectLinkPair:output_type -> cambrian.RejectLinkPairOpResponse
-	201, // 434: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
-	204, // 435: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
-	207, // 436: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
-	212, // 437: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
-	214, // 438: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
-	218, // 439: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
-	37,  // 440: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
-	37,  // 441: cambrian.OperatorConsole.DeleteWatchDeadLetter:output_type -> cambrian.CommandAck
-	270, // 442: cambrian.OperatorConsole.ListMemoryNotes:output_type -> cambrian.ListMemoryNotesOpResponse
-	272, // 443: cambrian.OperatorConsole.GetMemoryNotes:output_type -> cambrian.MemoryNotesOp
-	274, // 444: cambrian.OperatorConsole.SetMemoryNotes:output_type -> cambrian.SetMemoryNotesOpResponse
-	37,  // 445: cambrian.OperatorConsole.DeleteMemoryNotes:output_type -> cambrian.CommandAck
-	37,  // 446: cambrian.OperatorConsole.SetMemoryNotesBudget:output_type -> cambrian.CommandAck
-	279, // 447: cambrian.OperatorConsole.ListSkillProposals:output_type -> cambrian.ListSkillProposalsOpResponse
-	281, // 448: cambrian.OperatorConsole.DecideSkillProposal:output_type -> cambrian.DecideSkillProposalOpResponse
-	37,  // 449: cambrian.OperatorConsole.SetSkillLock:output_type -> cambrian.CommandAck
-	285, // 450: cambrian.OperatorConsole.ListSkillLedger:output_type -> cambrian.ListSkillLedgerOpResponse
-	287, // 451: cambrian.OperatorConsole.RollbackSkill:output_type -> cambrian.RollbackSkillOpResponse
-	291, // 452: cambrian.OperatorConsole.ListSkillGrants:output_type -> cambrian.ListSkillGrantsOpResponse
-	37,  // 453: cambrian.OperatorConsole.GrantSkill:output_type -> cambrian.CommandAck
-	37,  // 454: cambrian.OperatorConsole.RevokeSkillGrant:output_type -> cambrian.CommandAck
-	295, // 455: cambrian.OperatorConsole.ListIntegrationCatalog:output_type -> cambrian.ListIntegrationCatalogOpResponse
-	300, // 456: cambrian.OperatorConsole.ListIntegrations:output_type -> cambrian.ListIntegrationsOpResponse
-	315, // 457: cambrian.OperatorConsole.InstallIntegration:output_type -> cambrian.IntegrationMutationOpResponse
-	315, // 458: cambrian.OperatorConsole.UpdateIntegration:output_type -> cambrian.IntegrationMutationOpResponse
-	315, // 459: cambrian.OperatorConsole.SetIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
-	315, // 460: cambrian.OperatorConsole.ClearIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
-	315, // 461: cambrian.OperatorConsole.SetIntegrationEnabled:output_type -> cambrian.IntegrationMutationOpResponse
-	317, // 462: cambrian.OperatorConsole.TestIntegration:output_type -> cambrian.IntegrationTestResultOp
-	315, // 463: cambrian.OperatorConsole.RemoveIntegration:output_type -> cambrian.IntegrationMutationOpResponse
-	315, // 464: cambrian.OperatorConsole.RevertIntegrationToFile:output_type -> cambrian.IntegrationMutationOpResponse
-	315, // 465: cambrian.OperatorConsole.SetIntegrationTrustTier:output_type -> cambrian.IntegrationMutationOpResponse
-	334, // [334:466] is the sub-list for method output_type
-	202, // [202:334] is the sub-list for method input_type
-	202, // [202:202] is the sub-list for extension type_name
-	202, // [202:202] is the sub-list for extension extendee
-	0,   // [0:202] is the sub-list for field type_name
+	330, // 201: cambrian.ListAgentInstancesOpResponse.instances:type_name -> cambrian.AgentInstanceOp
+	147, // 202: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
+	39,  // 203: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
+	41,  // 204: cambrian.OperatorConsole.DescribeAuth:input_type -> cambrian.DescribeAuthRequest
+	45,  // 205: cambrian.OperatorConsole.Logout:input_type -> cambrian.LogoutRequest
+	43,  // 206: cambrian.OperatorConsole.WhoAmI:input_type -> cambrian.WhoAmIRequest
+	60,  // 207: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
+	47,  // 208: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
+	38,  // 209: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
+	35,  // 210: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
+	32,  // 211: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
+	33,  // 212: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
+	33,  // 213: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
+	33,  // 214: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
+	34,  // 215: cambrian.OperatorConsole.CancelRun:input_type -> cambrian.CancelRunRequest
+	26,  // 216: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
+	27,  // 217: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
+	28,  // 218: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
+	29,  // 219: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
+	30,  // 220: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
+	31,  // 221: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
+	0,   // 222: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
+	2,   // 223: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
+	3,   // 224: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
+	4,   // 225: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
+	6,   // 226: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
+	8,   // 227: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
+	9,   // 228: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
+	12,  // 229: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
+	13,  // 230: cambrian.OperatorConsole.ListScheduledTasks:input_type -> cambrian.ListScheduledTasksOpRequest
+	17,  // 231: cambrian.OperatorConsole.ListFacts:input_type -> cambrian.ListFactsOpRequest
+	19,  // 232: cambrian.OperatorConsole.GetFactChain:input_type -> cambrian.GetFactChainOpRequest
+	21,  // 233: cambrian.OperatorConsole.GetFactCoverage:input_type -> cambrian.GetFactCoverageOpRequest
+	49,  // 234: cambrian.OperatorConsole.GetDerivationJournal:input_type -> cambrian.GetDerivationJournalOpRequest
+	54,  // 235: cambrian.OperatorConsole.RequeueDerivationJob:input_type -> cambrian.RequeueDerivationJobOpRequest
+	329, // 236: cambrian.OperatorConsole.ListAgentInstances:input_type -> cambrian.ListAgentInstancesOpRequest
+	321, // 237: cambrian.OperatorConsole.PreviewForgetMemory:input_type -> cambrian.PreviewForgetMemoryOpRequest
+	323, // 238: cambrian.OperatorConsole.ForgetMemory:input_type -> cambrian.ForgetMemoryOpRequest
+	325, // 239: cambrian.OperatorConsole.ListErasures:input_type -> cambrian.ListErasuresOpRequest
+	327, // 240: cambrian.OperatorConsole.GetErasure:input_type -> cambrian.GetErasureOpRequest
+	95,  // 241: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
+	97,  // 242: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
+	100, // 243: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
+	156, // 244: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
+	227, // 245: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
+	103, // 246: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
+	106, // 247: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
+	107, // 248: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
+	109, // 249: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
+	113, // 250: cambrian.OperatorConsole.GetIngestStatus:input_type -> cambrian.GetIngestStatusOpRequest
+	60,  // 251: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
+	117, // 252: cambrian.OperatorConsole.WatchMyApprovals:input_type -> cambrian.WatchMyApprovalsOpRequest
+	118, // 253: cambrian.OperatorConsole.ListApprovals:input_type -> cambrian.ListApprovalsOpRequest
+	120, // 254: cambrian.OperatorConsole.AnswerApproval:input_type -> cambrian.AnswerApprovalOpRequest
+	123, // 255: cambrian.OperatorConsole.ListStandingApprovals:input_type -> cambrian.ListStandingApprovalsOpRequest
+	125, // 256: cambrian.OperatorConsole.RevokeStandingApproval:input_type -> cambrian.RevokeStandingApprovalOpRequest
+	126, // 257: cambrian.OperatorConsole.ShareToTeam:input_type -> cambrian.ShareToTeamOpRequest
+	131, // 258: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
+	133, // 259: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
+	134, // 260: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
+	135, // 261: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
+	136, // 262: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
+	232, // 263: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
+	234, // 264: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
+	238, // 265: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
+	229, // 266: cambrian.OperatorConsole.ListNodeItems:input_type -> cambrian.ListNodeItemsOpRequest
+	241, // 267: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
+	243, // 268: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
+	245, // 269: cambrian.OperatorConsole.TransitionPipeline:input_type -> cambrian.TransitionPipelineOpRequest
+	224, // 270: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
+	226, // 271: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
+	139, // 272: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
+	142, // 273: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
+	145, // 274: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
+	150, // 275: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
+	154, // 276: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
+	159, // 277: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
+	162, // 278: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
+	165, // 279: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
+	167, // 280: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
+	169, // 281: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
+	172, // 282: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
+	175, // 283: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
+	190, // 284: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
+	192, // 285: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
+	193, // 286: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
+	194, // 287: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
+	195, // 288: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
+	178, // 289: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
+	179, // 290: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
+	180, // 291: cambrian.OperatorConsole.SetRoleAssignment:input_type -> cambrian.SetRoleAssignmentOpRequest
+	182, // 292: cambrian.OperatorConsole.SaveMCPServer:input_type -> cambrian.SaveMCPServerOpRequest
+	183, // 293: cambrian.OperatorConsole.RemoveMCPServer:input_type -> cambrian.RemoveMCPServerOpRequest
+	184, // 294: cambrian.OperatorConsole.SetMCPServerToken:input_type -> cambrian.SetMCPServerTokenOpRequest
+	185, // 295: cambrian.OperatorConsole.ClearMCPServerToken:input_type -> cambrian.ClearMCPServerTokenOpRequest
+	186, // 296: cambrian.OperatorConsole.TestMCPServer:input_type -> cambrian.TestMCPServerOpRequest
+	253, // 297: cambrian.OperatorConsole.ConfirmLink:input_type -> cambrian.ConfirmLinkOpRequest
+	255, // 298: cambrian.OperatorConsole.RetractLink:input_type -> cambrian.RetractLinkOpRequest
+	256, // 299: cambrian.OperatorConsole.RetractLinksByProducer:input_type -> cambrian.RetractLinksByProducerOpRequest
+	258, // 300: cambrian.OperatorConsole.ListLinkCandidates:input_type -> cambrian.ListLinkCandidatesOpRequest
+	262, // 301: cambrian.OperatorConsole.ListLinkPairs:input_type -> cambrian.ListLinkPairsOpRequest
+	264, // 302: cambrian.OperatorConsole.ConfirmLinkPair:input_type -> cambrian.ConfirmLinkPairOpRequest
+	266, // 303: cambrian.OperatorConsole.RejectLinkPair:input_type -> cambrian.RejectLinkPairOpRequest
+	199, // 304: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
+	203, // 305: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
+	205, // 306: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
+	208, // 307: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
+	213, // 308: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
+	215, // 309: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
+	188, // 310: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
+	189, // 311: cambrian.OperatorConsole.DeleteWatchDeadLetter:input_type -> cambrian.DeleteWatchDeadLetterOpRequest
+	268, // 312: cambrian.OperatorConsole.ListMemoryNotes:input_type -> cambrian.ListMemoryNotesOpRequest
+	271, // 313: cambrian.OperatorConsole.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesOpRequest
+	273, // 314: cambrian.OperatorConsole.SetMemoryNotes:input_type -> cambrian.SetMemoryNotesOpRequest
+	275, // 315: cambrian.OperatorConsole.DeleteMemoryNotes:input_type -> cambrian.DeleteMemoryNotesOpRequest
+	276, // 316: cambrian.OperatorConsole.SetMemoryNotesBudget:input_type -> cambrian.SetMemoryNotesBudgetOpRequest
+	277, // 317: cambrian.OperatorConsole.ListSkillProposals:input_type -> cambrian.ListSkillProposalsOpRequest
+	280, // 318: cambrian.OperatorConsole.DecideSkillProposal:input_type -> cambrian.DecideSkillProposalOpRequest
+	282, // 319: cambrian.OperatorConsole.SetSkillLock:input_type -> cambrian.SetSkillLockOpRequest
+	283, // 320: cambrian.OperatorConsole.ListSkillLedger:input_type -> cambrian.ListSkillLedgerOpRequest
+	286, // 321: cambrian.OperatorConsole.RollbackSkill:input_type -> cambrian.RollbackSkillOpRequest
+	288, // 322: cambrian.OperatorConsole.ListSkillGrants:input_type -> cambrian.ListSkillGrantsOpRequest
+	292, // 323: cambrian.OperatorConsole.GrantSkill:input_type -> cambrian.GrantSkillOpRequest
+	293, // 324: cambrian.OperatorConsole.RevokeSkillGrant:input_type -> cambrian.RevokeSkillGrantOpRequest
+	294, // 325: cambrian.OperatorConsole.ListIntegrationCatalog:input_type -> cambrian.ListIntegrationCatalogOpRequest
+	299, // 326: cambrian.OperatorConsole.ListIntegrations:input_type -> cambrian.ListIntegrationsOpRequest
+	306, // 327: cambrian.OperatorConsole.InstallIntegration:input_type -> cambrian.InstallIntegrationOpRequest
+	307, // 328: cambrian.OperatorConsole.UpdateIntegration:input_type -> cambrian.UpdateIntegrationOpRequest
+	308, // 329: cambrian.OperatorConsole.SetIntegrationSecret:input_type -> cambrian.SetIntegrationSecretOpRequest
+	309, // 330: cambrian.OperatorConsole.ClearIntegrationSecret:input_type -> cambrian.ClearIntegrationSecretOpRequest
+	310, // 331: cambrian.OperatorConsole.SetIntegrationEnabled:input_type -> cambrian.SetIntegrationEnabledOpRequest
+	314, // 332: cambrian.OperatorConsole.TestIntegration:input_type -> cambrian.TestIntegrationOpRequest
+	311, // 333: cambrian.OperatorConsole.RemoveIntegration:input_type -> cambrian.RemoveIntegrationOpRequest
+	312, // 334: cambrian.OperatorConsole.RevertIntegrationToFile:input_type -> cambrian.RevertIntegrationToFileOpRequest
+	313, // 335: cambrian.OperatorConsole.SetIntegrationTrustTier:input_type -> cambrian.SetIntegrationTrustTierOpRequest
+	40,  // 336: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
+	42,  // 337: cambrian.OperatorConsole.DescribeAuth:output_type -> cambrian.DescribeAuthResponse
+	46,  // 338: cambrian.OperatorConsole.Logout:output_type -> cambrian.LogoutResponse
+	44,  // 339: cambrian.OperatorConsole.WhoAmI:output_type -> cambrian.WhoAmIResponse
+	61,  // 340: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
+	48,  // 341: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
+	37,  // 342: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
+	36,  // 343: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
+	37,  // 344: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
+	37,  // 345: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
+	37,  // 346: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
+	37,  // 347: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
+	37,  // 348: cambrian.OperatorConsole.CancelRun:output_type -> cambrian.CommandAck
+	37,  // 349: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
+	37,  // 350: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
+	37,  // 351: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
+	37,  // 352: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
+	37,  // 353: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
+	37,  // 354: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
+	1,   // 355: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
+	37,  // 356: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
+	37,  // 357: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
+	5,   // 358: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
+	7,   // 359: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
+	37,  // 360: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
+	10,  // 361: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
+	24,  // 362: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
+	14,  // 363: cambrian.OperatorConsole.ListScheduledTasks:output_type -> cambrian.ListScheduledTasksOpResponse
+	18,  // 364: cambrian.OperatorConsole.ListFacts:output_type -> cambrian.ListFactsOpResponse
+	20,  // 365: cambrian.OperatorConsole.GetFactChain:output_type -> cambrian.GetFactChainOpResponse
+	23,  // 366: cambrian.OperatorConsole.GetFactCoverage:output_type -> cambrian.GetFactCoverageOpResponse
+	50,  // 367: cambrian.OperatorConsole.GetDerivationJournal:output_type -> cambrian.GetDerivationJournalOpResponse
+	37,  // 368: cambrian.OperatorConsole.RequeueDerivationJob:output_type -> cambrian.CommandAck
+	331, // 369: cambrian.OperatorConsole.ListAgentInstances:output_type -> cambrian.ListAgentInstancesOpResponse
+	322, // 370: cambrian.OperatorConsole.PreviewForgetMemory:output_type -> cambrian.PreviewForgetMemoryOpResponse
+	324, // 371: cambrian.OperatorConsole.ForgetMemory:output_type -> cambrian.ForgetMemoryOpResponse
+	326, // 372: cambrian.OperatorConsole.ListErasures:output_type -> cambrian.ListErasuresOpResponse
+	328, // 373: cambrian.OperatorConsole.GetErasure:output_type -> cambrian.GetErasureOpResponse
+	96,  // 374: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
+	99,  // 375: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
+	102, // 376: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
+	158, // 377: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
+	228, // 378: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
+	105, // 379: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
+	37,  // 380: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
+	108, // 381: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
+	111, // 382: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
+	114, // 383: cambrian.OperatorConsole.GetIngestStatus:output_type -> cambrian.GetIngestStatusOpResponse
+	115, // 384: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
+	115, // 385: cambrian.OperatorConsole.WatchMyApprovals:output_type -> cambrian.ApprovalOp
+	119, // 386: cambrian.OperatorConsole.ListApprovals:output_type -> cambrian.ListApprovalsOpResponse
+	121, // 387: cambrian.OperatorConsole.AnswerApproval:output_type -> cambrian.AnswerApprovalOpResponse
+	124, // 388: cambrian.OperatorConsole.ListStandingApprovals:output_type -> cambrian.ListStandingApprovalsOpResponse
+	37,  // 389: cambrian.OperatorConsole.RevokeStandingApproval:output_type -> cambrian.CommandAck
+	127, // 390: cambrian.OperatorConsole.ShareToTeam:output_type -> cambrian.ShareToTeamOpResponse
+	132, // 391: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
+	37,  // 392: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
+	37,  // 393: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
+	37,  // 394: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
+	137, // 395: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
+	233, // 396: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
+	235, // 397: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
+	239, // 398: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
+	231, // 399: cambrian.OperatorConsole.ListNodeItems:output_type -> cambrian.ListNodeItemsOpResponse
+	242, // 400: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
+	244, // 401: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
+	246, // 402: cambrian.OperatorConsole.TransitionPipeline:output_type -> cambrian.TransitionPipelineOpResponse
+	225, // 403: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
+	221, // 404: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
+	140, // 405: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
+	143, // 406: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
+	148, // 407: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
+	153, // 408: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
+	155, // 409: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
+	161, // 410: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
+	164, // 411: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
+	166, // 412: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
+	168, // 413: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
+	171, // 414: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
+	174, // 415: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
+	176, // 416: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
+	191, // 417: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
+	197, // 418: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
+	197, // 419: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
+	197, // 420: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
+	37,  // 421: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
+	197, // 422: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
+	197, // 423: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
+	197, // 424: cambrian.OperatorConsole.SetRoleAssignment:output_type -> cambrian.SetConfigOpResponse
+	197, // 425: cambrian.OperatorConsole.SaveMCPServer:output_type -> cambrian.SetConfigOpResponse
+	197, // 426: cambrian.OperatorConsole.RemoveMCPServer:output_type -> cambrian.SetConfigOpResponse
+	197, // 427: cambrian.OperatorConsole.SetMCPServerToken:output_type -> cambrian.SetConfigOpResponse
+	37,  // 428: cambrian.OperatorConsole.ClearMCPServerToken:output_type -> cambrian.CommandAck
+	187, // 429: cambrian.OperatorConsole.TestMCPServer:output_type -> cambrian.MCPServerTestResultOp
+	254, // 430: cambrian.OperatorConsole.ConfirmLink:output_type -> cambrian.ConfirmLinkOpResponse
+	37,  // 431: cambrian.OperatorConsole.RetractLink:output_type -> cambrian.CommandAck
+	257, // 432: cambrian.OperatorConsole.RetractLinksByProducer:output_type -> cambrian.RetractLinksByProducerOpResponse
+	259, // 433: cambrian.OperatorConsole.ListLinkCandidates:output_type -> cambrian.ListLinkCandidatesOpResponse
+	263, // 434: cambrian.OperatorConsole.ListLinkPairs:output_type -> cambrian.ListLinkPairsOpResponse
+	265, // 435: cambrian.OperatorConsole.ConfirmLinkPair:output_type -> cambrian.ConfirmLinkPairOpResponse
+	267, // 436: cambrian.OperatorConsole.RejectLinkPair:output_type -> cambrian.RejectLinkPairOpResponse
+	201, // 437: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
+	204, // 438: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
+	207, // 439: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
+	212, // 440: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
+	214, // 441: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
+	218, // 442: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
+	37,  // 443: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
+	37,  // 444: cambrian.OperatorConsole.DeleteWatchDeadLetter:output_type -> cambrian.CommandAck
+	270, // 445: cambrian.OperatorConsole.ListMemoryNotes:output_type -> cambrian.ListMemoryNotesOpResponse
+	272, // 446: cambrian.OperatorConsole.GetMemoryNotes:output_type -> cambrian.MemoryNotesOp
+	274, // 447: cambrian.OperatorConsole.SetMemoryNotes:output_type -> cambrian.SetMemoryNotesOpResponse
+	37,  // 448: cambrian.OperatorConsole.DeleteMemoryNotes:output_type -> cambrian.CommandAck
+	37,  // 449: cambrian.OperatorConsole.SetMemoryNotesBudget:output_type -> cambrian.CommandAck
+	279, // 450: cambrian.OperatorConsole.ListSkillProposals:output_type -> cambrian.ListSkillProposalsOpResponse
+	281, // 451: cambrian.OperatorConsole.DecideSkillProposal:output_type -> cambrian.DecideSkillProposalOpResponse
+	37,  // 452: cambrian.OperatorConsole.SetSkillLock:output_type -> cambrian.CommandAck
+	285, // 453: cambrian.OperatorConsole.ListSkillLedger:output_type -> cambrian.ListSkillLedgerOpResponse
+	287, // 454: cambrian.OperatorConsole.RollbackSkill:output_type -> cambrian.RollbackSkillOpResponse
+	291, // 455: cambrian.OperatorConsole.ListSkillGrants:output_type -> cambrian.ListSkillGrantsOpResponse
+	37,  // 456: cambrian.OperatorConsole.GrantSkill:output_type -> cambrian.CommandAck
+	37,  // 457: cambrian.OperatorConsole.RevokeSkillGrant:output_type -> cambrian.CommandAck
+	295, // 458: cambrian.OperatorConsole.ListIntegrationCatalog:output_type -> cambrian.ListIntegrationCatalogOpResponse
+	300, // 459: cambrian.OperatorConsole.ListIntegrations:output_type -> cambrian.ListIntegrationsOpResponse
+	315, // 460: cambrian.OperatorConsole.InstallIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	315, // 461: cambrian.OperatorConsole.UpdateIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	315, // 462: cambrian.OperatorConsole.SetIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
+	315, // 463: cambrian.OperatorConsole.ClearIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
+	315, // 464: cambrian.OperatorConsole.SetIntegrationEnabled:output_type -> cambrian.IntegrationMutationOpResponse
+	317, // 465: cambrian.OperatorConsole.TestIntegration:output_type -> cambrian.IntegrationTestResultOp
+	315, // 466: cambrian.OperatorConsole.RemoveIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	315, // 467: cambrian.OperatorConsole.RevertIntegrationToFile:output_type -> cambrian.IntegrationMutationOpResponse
+	315, // 468: cambrian.OperatorConsole.SetIntegrationTrustTier:output_type -> cambrian.IntegrationMutationOpResponse
+	336, // [336:469] is the sub-list for method output_type
+	203, // [203:336] is the sub-list for method input_type
+	203, // [203:203] is the sub-list for extension type_name
+	203, // [203:203] is the sub-list for extension extendee
+	0,   // [0:203] is the sub-list for field type_name
 }
 
 func init() { file_operator_proto_init() }
@@ -30201,7 +30388,7 @@ func file_operator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_operator_proto_rawDesc), len(file_operator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   345,
+			NumMessages:   348,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

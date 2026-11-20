@@ -227,6 +227,7 @@ writeTargets: *domain.WriteTargets
 Stager: *stagedinputs.Stager
 StepFailures: *domain.StepFailures
 subtasks: *domain.Subtasks
+turnCalls: *domain.TurnCalls
 outboundIdentifiers: *domain.OutboundIdentifierGuard
 untrustedOutput: *domain.UntrustedOutputGuard
 ruleOfTwo: *domain.RuleOfTwoGate

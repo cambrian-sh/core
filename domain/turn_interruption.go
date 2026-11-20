@@ -45,13 +45,19 @@ const (
 	TurnInterruptSpendLimit          TurnInterruptReason = "spend_limit"
 	TurnInterruptContextTooLarge     TurnInterruptReason = "context_too_large"
 	TurnInterruptAssistantRestarted  TurnInterruptReason = "assistant_restarted"
-	TurnInterruptStalled             TurnInterruptReason = "stalled"
-	TurnInterruptTimeout             TurnInterruptReason = "timeout"
-	TurnInterruptCancelled           TurnInterruptReason = "cancelled"
-	TurnInterruptAtCapacity          TurnInterruptReason = "at_capacity"
-	TurnInterruptSessionLost         TurnInterruptReason = "session_lost"
-	TurnInterruptEmptyReply          TurnInterruptReason = "empty_reply"
-	TurnInterruptFailed              TurnInterruptReason = "failed"
+	// ENG-1634 (owner decision 2026-11-20): a turn whose worker was killed is
+	// re-driven once, only when the killed attempt began no side-effecting call.
+	// These two end it instead: the attempt had already begun an action (a re-run
+	// could do it twice), or the re-drive's worker was killed too.
+	TurnInterruptAssistantRestartedAfterAction TurnInterruptReason = "assistant_restarted_after_action"
+	TurnInterruptAssistantRestartedTwice       TurnInterruptReason = "assistant_restarted_twice"
+	TurnInterruptStalled                       TurnInterruptReason = "stalled"
+	TurnInterruptTimeout                       TurnInterruptReason = "timeout"
+	TurnInterruptCancelled                     TurnInterruptReason = "cancelled"
+	TurnInterruptAtCapacity                    TurnInterruptReason = "at_capacity"
+	TurnInterruptSessionLost                   TurnInterruptReason = "session_lost"
+	TurnInterruptEmptyReply                    TurnInterruptReason = "empty_reply"
+	TurnInterruptFailed                        TurnInterruptReason = "failed"
 )
 
 // TurnInterruption is the error a chat turn returns when it ends without a reply.

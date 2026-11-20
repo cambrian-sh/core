@@ -123,11 +123,12 @@ func legacyOperatorWiring(k *Kernel, feed *operator.Spool, proj *operator.Projec
 	add("planeBudget", nil)
 	add("facts", when(k.Memory != nil && k.Memory.FactInspector != nil, k.Memory.FactInspector))
 	add("factStats", when(k.Memory != nil && k.Memory.FactExtractor != nil, k.Memory.FactExtractor))
-	add("derivations", when(k.Memory != nil && k.Memory.Derivations != nil, k.Memory.Derivations)) // ENG-2139, new seam
+	add("derivations", when(k.Memory != nil && k.Memory.Derivations != nil, k.Memory.Derivations))        // ENG-2139, new seam
+	add("agentInstances", when(k.Metabolism != nil && k.Metabolism.Manager != nil, k.Metabolism.Manager)) // ENG-1634, new seam
 	add("forget", k.Server.Forgetter)
 	add("logs", when(k.Logs != nil, k.Logs))
 	add("kernelVersion", KernelVersion)
-	add("contractVersion", "0116")
+	add("contractVersion", "0117")
 	add("plugins", pluginHandshake(k.PluginStatuses))
 	addType("sessionOps", operator.SessionOpsFuncs{})
 	addType("planSubmitter", when(k.SessionMgr != nil && k.Server != nil, planSubmitter{}))

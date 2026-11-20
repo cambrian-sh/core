@@ -273,6 +273,9 @@ var operatorOnlyReads = map[string]bool{
 	// (owner decision 2026-11-16).
 	"ListErasures": true,
 	"GetErasure":   true,
+	// The live agent processes and their OS pids (ENG-1634): the deployment's
+	// process layout, not a member's business.
+	"ListAgentInstances": true,
 }
 
 // selfServiceMethods are the OperatorConsole methods open to every authenticated

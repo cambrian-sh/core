@@ -342,6 +342,9 @@ type ToolExecutor struct {
 	// never repeats a write), labels an approval with the subtask, and records
 	// what the worker did (evidence, read-the-web). nil ⇒ no subtasks.
 	subtasks *Subtasks
+	// turnCalls records the side-effecting calls of chat turns and keys them
+	// turn-scoped (domain/turn_calls.go, ENG-1634). nil ⇒ off.
+	turnCalls *TurnCalls
 	// outboundIdentifiers is the outbound identifier guard (ENG-917,
 	// domain/outbound_identifiers.go; execution.tools.outbound_identifier_guard):
 	// a call that can send outside whose text arguments carry a personal

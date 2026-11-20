@@ -32,3 +32,16 @@ func NewInstance(agentID string) *Instance {
 		Mode:    ModeJIT,
 	}
 }
+
+// AgentInstanceInfo is one live agent process as the operator plane lists it
+// (OperatorConsole/ListAgentInstances, ENG-1634): which agent, which instance,
+// the daemon stream it serves ("" for a JIT instance), and the OS process id —
+// what an operator (and the chaos gate's external SIGKILL) needs to find the
+// process outside the kernel. PID is 0 when the process handle is not known.
+type AgentInstanceInfo struct {
+	AgentID    string
+	InstanceID string
+	StreamID   string
+	Mode       InstanceMode
+	PID        int
+}

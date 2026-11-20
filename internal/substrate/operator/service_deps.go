@@ -169,6 +169,9 @@ type Options struct {
 	// Derivations is the derivation journal GetDerivationJournal / RequeueDerivationJob
 	// read and re-drive (ENG-2139, contract 0113); nil ⇒ Unimplemented.
 	Derivations DerivationJournalSource
+	// AgentInstances lists the live agent processes ListAgentInstances reports
+	// (ENG-1634, contract 0116); nil ⇒ Unimplemented.
+	AgentInstances AgentInstanceSource
 	// Forget is the ADR-0137 forget service (contract 0105); nil or disabled ⇒
 	// the erasure RPCs answer Unimplemented.
 	Forget *forget.Service
@@ -245,6 +248,7 @@ func New(d Deps, o Options) (*Service, error) {
 	s.facts = o.FactInspector
 	s.factStats = o.FactStats
 	s.derivations = o.Derivations
+	s.agentInstances = o.AgentInstances
 	s.forget = o.Forget
 	s.logs = o.LogRing
 	s.convOps = o.ConversationOps

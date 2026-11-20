@@ -166,6 +166,8 @@ type Service struct {
 	factStats FactStatsSource
 	// derivations is the derivation journal (ENG-2139); nil ⇒ its RPCs answer Unimplemented.
 	derivations DerivationJournalSource
+	// agentInstances backs ListAgentInstances (ENG-1634); nil ⇒ Unimplemented.
+	agentInstances AgentInstanceSource
 
 	kernelVersion   string
 	contractVersion string

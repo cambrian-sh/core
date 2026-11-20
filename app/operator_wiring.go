@@ -723,6 +723,12 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 		o.Derivations = k.Memory.Derivations
 		operatorCaps = append(operatorCaps, "derivation-journal")
 	}
+	// Contract 0117 (ENG-1634): the live agent processes with their OS pids
+	// (operator-only), advertised as "agent-instances" when an agent manager runs.
+	if k.Metabolism != nil && k.Metabolism.Manager != nil {
+		o.AgentInstances = k.Metabolism.Manager
+		operatorCaps = append(operatorCaps, "agent-instances")
+	}
 	operatorCaps = append(operatorCaps, "session-lifecycle")
 	// Contract 0105 (ADR-0137 S6, ENG-411 stage C): the compliance erase —
 	// PreviewForgetMemory / ForgetMemory / ListErasures / GetErasure — over the same
@@ -922,7 +928,11 @@ func composeOperator(ctx context.Context, k *Kernel, operatorFeed *operator.Spoo
 	// ask for an EXISTING candidate to be committed, for the lease's run principal;
 	// the candidate must be readable by the agent and the person. Operator plane
 	// unchanged.
-	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0116", operatorCaps
+	// 0117 (2026-11-20, additive; ENG-1634): ListAgentInstances (+ AgentInstanceOp) -
+	// the live agent processes with agent, instance, stream, mode and OS pid,
+	// operator-only, capability "agent-instances"; the chaos gate's external SIGKILL
+	// finds the chat pool worker through it.
+	d.KernelVersion, d.ContractVersion, d.Capabilities = KernelVersion, "0117", operatorCaps
 	// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 	// declared plugin, registered or not — the console needs to distinguish "this
 	// deployment has no such plugin" from "it declined to register".

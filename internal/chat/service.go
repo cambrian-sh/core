@@ -107,7 +107,12 @@ type DelegationEnder interface {
 }
 
 type TurnService struct {
-	store        domain.ConversationStore
+	store domain.ConversationStore
+	// turnCalls is the record of the side-effecting calls each turn begins (the
+	// tool executor's, domain.TurnCalls; ENG-1634). With it a turn whose worker is
+	// killed is re-driven once when the killed attempt began none; nil ⇒ such a
+	// turn ends at once as assistant_restarted, as before.
+	turnCalls    *domain.TurnCalls
 	pool         Dispatcher
 	acquireToken TokenAcquirer
 	// deliverer sends a message outward when the conversation came through an
@@ -277,6 +282,14 @@ func (s *TurnService) clock() time.Time {
 // SetLivenessProbe wires stall detection. Optional: without it a turn is bounded only by
 // TurnTimeout.
 func (s *TurnService) SetLivenessProbe(f func(conversationID string) time.Time) { s.liveness = f }
+
+// SetTurnCalls gives the lane the tool executor's record of what each turn's calls
+// began (domain.TurnCalls, ENG-1634; owner decision 2026-11-20): the turn's lease is
+// tracked while it runs, and a turn whose worker is killed is re-driven ONCE, on the
+// same lease and handoff, only when the killed attempt began no side-effecting call.
+// Otherwise it fails loudly (assistant_restarted_after_action), and a second kill
+// ends it too (assistant_restarted_twice).
+func (s *TurnService) SetTurnCalls(t *domain.TurnCalls) { s.turnCalls = t }
 
 // SetLeaseFaultProbe lets a failed turn read the provider failure the LLM gateway
 // recorded on the turn's lease (ENG-2124): the kernel's own observation of why the
@@ -776,10 +789,29 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 
 	h := s.buildHandoff(turnCtx, conv, req, history, sessionToken)
 	s.addTurnContext(h, tc)
-	resp, err := s.pool.Dispatch(turnCtx, h)
-	// Read while the turn's lease is still held: its release forgets the record.
-	if s.leaseFault != nil && sessionToken != "" {
-		fault = s.leaseFault(domain.LeaseID(sessionToken))
+	lease := domain.LeaseID(sessionToken)
+	if s.turnCalls != nil && lease != "" {
+		s.turnCalls.Track(lease)
+		defer s.turnCalls.Forget(lease)
+	}
+	var resp *domain.Handoff
+	for attempt := 1; ; attempt++ {
+		resp, err = s.pool.Dispatch(turnCtx, h)
+		// Read while the turn's lease is still held: its release forgets the record.
+		if s.leaseFault != nil && lease != "" {
+			fault = s.leaseFault(lease)
+		}
+		if err == nil || stalled.Load() || turn.closed.Load() || timedOut.Load() || turnCtx.Err() != nil {
+			break
+		}
+		redrive, end := s.afterWorkerLoss(req.ConversationID, userMsg.ID, lease, attempt, err, fault, lang)
+		if !redrive {
+			if end != nil {
+				err = end
+			}
+			break
+		}
+		s.emitProgress(ctx, req.ConversationID, userMsg.ID, domain.PhaseWorking, lang)
 	}
 	if err != nil {
 		// Distinguish "we gave up on a wedged turn" from an ordinary cancellation, so the
@@ -981,4 +1013,40 @@ func renderTranscript(history []domain.Message) string {
 		b.WriteString(m.Content)
 	}
 	return b.String()
+}
+
+// afterWorkerLoss decides what a failed dispatch leads to when the worker was
+// killed under the turn (ENG-1634; owner decision 2026-11-20). redrive=true: the
+// killed attempt began no side-effecting call, this was the first loss, and the
+// lane can tell (it tracks the turn's calls) — dispatch the same handoff again on
+// the same lease. Otherwise end, when non-nil, is the loud failure that replaces
+// err: the attempt had already begun an action (a re-run could do it twice), or
+// the re-drive's worker was killed too. A failure that is not a worker loss
+// returns (false, nil): the turn ends with its own error, as before.
+func (s *TurnService) afterWorkerLoss(conversationID, turnID string, lease domain.LeaseID, attempt int, err error,
+	fault domain.ProviderFault, lang string) (redrive bool, end error) {
+	if failureReason(err, fault) != domain.TurnInterruptAssistantRestarted {
+		return false, nil
+	}
+	if s.turnCalls == nil || lease == "" {
+		// Nothing tells what the attempt began: never re-run it blind.
+		return false, nil
+	}
+	if attempt >= 2 {
+		slog.Warn("chat: the re-driven turn's worker was lost too; ending the turn",
+			"conversation", conversationID, "message", turnID, "err", err)
+		return false, &domain.TurnInterruption{Reason: domain.TurnInterruptAssistantRestartedTwice,
+			Message: Message(MsgAssistantRestartedTwice, lang), Cause: err}
+	}
+	if n, tools := s.turnCalls.Begun(lease); n > 0 {
+		slog.Warn("chat: worker lost after the turn began side-effecting calls; not re-driving it",
+			"conversation", conversationID, "message", turnID, "calls", n, "tools", tools, "err", err)
+		return false, &domain.TurnInterruption{Reason: domain.TurnInterruptAssistantRestartedAfterAction,
+			Message: Message(MsgAssistantRestartedAfterAction, lang),
+			Cause:   fmt.Errorf("%w (the killed attempt began %d side-effecting call(s): %s)", err, n, strings.Join(tools, ", "))}
+	}
+	slog.Warn("chat: worker lost under the turn before it began any side-effecting call; re-driving it once",
+		"conversation", conversationID, "message", turnID, "err", err)
+	s.turnCalls.Redrive(lease)
+	return true, nil
 }

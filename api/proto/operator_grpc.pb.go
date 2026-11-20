@@ -52,6 +52,7 @@ const (
 	OperatorConsole_GetFactCoverage_FullMethodName          = "/cambrian.OperatorConsole/GetFactCoverage"
 	OperatorConsole_GetDerivationJournal_FullMethodName     = "/cambrian.OperatorConsole/GetDerivationJournal"
 	OperatorConsole_RequeueDerivationJob_FullMethodName     = "/cambrian.OperatorConsole/RequeueDerivationJob"
+	OperatorConsole_ListAgentInstances_FullMethodName       = "/cambrian.OperatorConsole/ListAgentInstances"
 	OperatorConsole_PreviewForgetMemory_FullMethodName      = "/cambrian.OperatorConsole/PreviewForgetMemory"
 	OperatorConsole_ForgetMemory_FullMethodName             = "/cambrian.OperatorConsole/ForgetMemory"
 	OperatorConsole_ListErasures_FullMethodName             = "/cambrian.OperatorConsole/ListErasures"
@@ -281,6 +282,13 @@ type OperatorConsoleClient interface {
 	// source-version fence. Mutating: command_id + reason, audited. NotFound when no
 	// dead job of that version exists, so a repeated requeue changes nothing.
 	RequeueDerivationJob(ctx context.Context, in *RequeueDerivationJobOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// ENG-1634 (contract 0117): the live agent processes — agent, instance, the daemon
+	// stream it serves ("" for a JIT instance), mode and OS process id (0 when the
+	// handle is unknown) — so an operator can find a process outside the kernel (the
+	// chaos gate's external SIGKILL reads the chat pool worker's pid here). Operator-only
+	// (it discloses the deployment's process layout). Unimplemented without an agent
+	// manager.
+	ListAgentInstances(ctx context.Context, in *ListAgentInstancesOpRequest, opts ...grpc.CallOption) (*ListAgentInstancesOpResponse, error)
 	// Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
 	// stage C; contract 0105, capability "memory-erasure", advertised only when
 	// execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
@@ -1311,6 +1319,16 @@ func (c *operatorConsoleClient) RequeueDerivationJob(ctx context.Context, in *Re
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommandAck)
 	err := c.cc.Invoke(ctx, OperatorConsole_RequeueDerivationJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListAgentInstances(ctx context.Context, in *ListAgentInstancesOpRequest, opts ...grpc.CallOption) (*ListAgentInstancesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAgentInstancesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListAgentInstances_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2462,6 +2480,13 @@ type OperatorConsoleServer interface {
 	// source-version fence. Mutating: command_id + reason, audited. NotFound when no
 	// dead job of that version exists, so a repeated requeue changes nothing.
 	RequeueDerivationJob(context.Context, *RequeueDerivationJobOpRequest) (*CommandAck, error)
+	// ENG-1634 (contract 0117): the live agent processes — agent, instance, the daemon
+	// stream it serves ("" for a JIT instance), mode and OS process id (0 when the
+	// handle is unknown) — so an operator can find a process outside the kernel (the
+	// chaos gate's external SIGKILL reads the chat pool worker's pid here). Operator-only
+	// (it discloses the deployment's process layout). Unimplemented without an agent
+	// manager.
+	ListAgentInstances(context.Context, *ListAgentInstancesOpRequest) (*ListAgentInstancesOpResponse, error)
 	// Memory erasure — the namespace-wide compliance erase (ADR-0137 D3/D9, ENG-411
 	// stage C; contract 0105, capability "memory-erasure", advertised only when
 	// execution.erasure.enabled). Owner decision 2026-11-16: an operator compliance
@@ -3257,6 +3282,9 @@ func (UnimplementedOperatorConsoleServer) GetDerivationJournal(context.Context, 
 }
 func (UnimplementedOperatorConsoleServer) RequeueDerivationJob(context.Context, *RequeueDerivationJobOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequeueDerivationJob not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListAgentInstances(context.Context, *ListAgentInstancesOpRequest) (*ListAgentInstancesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAgentInstances not implemented")
 }
 func (UnimplementedOperatorConsoleServer) PreviewForgetMemory(context.Context, *PreviewForgetMemoryOpRequest) (*PreviewForgetMemoryOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PreviewForgetMemory not implemented")
@@ -4159,6 +4187,24 @@ func _OperatorConsole_RequeueDerivationJob_Handler(srv interface{}, ctx context.
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).RequeueDerivationJob(ctx, req.(*RequeueDerivationJobOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListAgentInstances_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAgentInstancesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListAgentInstances(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListAgentInstances_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListAgentInstances(ctx, req.(*ListAgentInstancesOpRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6058,6 +6104,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RequeueDerivationJob",
 			Handler:    _OperatorConsole_RequeueDerivationJob_Handler,
+		},
+		{
+			MethodName: "ListAgentInstances",
+			Handler:    _OperatorConsole_ListAgentInstances_Handler,
 		},
 		{
 			MethodName: "PreviewForgetMemory",

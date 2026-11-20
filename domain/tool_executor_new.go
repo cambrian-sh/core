@@ -43,6 +43,11 @@ type ToolExecutorControls struct {
 	// app/subtasks.go.
 	LeaseCeiling LeaseToolCeiling
 	Subtasks     *Subtasks
+	// TurnCalls records the side-effecting calls a chat turn begins and keys them
+	// turn-scoped (ENG-1634): the chat lane re-drives a killed turn only when it
+	// began none, and a re-drive's identical call is answered from its stored
+	// result. nil ⇒ no turn is recorded (and none is re-driven).
+	TurnCalls *TurnCalls
 	// OutboundIdentifiers is the outbound identifier guard
 	// (execution.tools.outbound_identifier_guard, default on; ENG-917): a call
 	// that can send outside (egress_send) whose text arguments carry a personal
@@ -84,7 +89,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	if features.Registry != nil || features.Grants != nil || features.authz != nil || features.approval != nil ||
 		features.ceiling != nil || features.unrestricted || features.argValidator != nil ||
 		features.idempotency != nil || features.guards != nil || features.writeTargets != nil ||
-		features.leaseCeiling != nil || features.subtasks != nil || features.outboundIdentifiers != nil ||
+		features.leaseCeiling != nil || features.subtasks != nil || features.turnCalls != nil || features.outboundIdentifiers != nil ||
 		features.untrustedOutput != nil ||
 		features.ruleOfTwo != nil || features.freeQueryOpen {
 		return nil, fmt.Errorf("%w: set on features; pass it in ToolExecutorControls", ErrToolExecutorControl)
@@ -102,6 +107,7 @@ func NewToolExecutor(controls ToolExecutorControls, features ToolExecutor) (*Too
 	te.writeTargets = controls.WriteTargets
 	te.leaseCeiling = controls.LeaseCeiling
 	te.subtasks = controls.Subtasks
+	te.turnCalls = controls.TurnCalls
 	te.outboundIdentifiers = controls.OutboundIdentifiers
 	te.untrustedOutput = controls.UntrustedOutput
 	te.ruleOfTwo = controls.RuleOfTwo
@@ -135,6 +141,14 @@ func (e *ToolExecutor) Idempotency() *IdempotencyCache {
 		return nil
 	}
 	return e.idempotency
+}
+
+// TurnCalls returns the chat turns' side-effecting call record (nil ⇒ none).
+func (e *ToolExecutor) TurnCalls() *TurnCalls {
+	if e == nil {
+		return nil
+	}
+	return e.turnCalls
 }
 
 // Subtasks returns the ADR-0150 subtask registry the executor enforces (nil ⇒ none).

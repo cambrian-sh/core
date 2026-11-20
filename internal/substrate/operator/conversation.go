@@ -85,13 +85,17 @@ var interruptCodes = map[domain.TurnInterruptReason]codes.Code{
 	domain.TurnInterruptAtCapacity:          codes.ResourceExhausted,
 	domain.TurnInterruptProviderUnavailable: codes.Unavailable,
 	domain.TurnInterruptAssistantRestarted:  codes.Unavailable,
-	domain.TurnInterruptSessionLost:         codes.Unavailable,
-	domain.TurnInterruptContextTooLarge:     codes.OutOfRange,
-	domain.TurnInterruptStalled:             codes.DeadlineExceeded,
-	domain.TurnInterruptTimeout:             codes.DeadlineExceeded,
-	domain.TurnInterruptCancelled:           codes.Canceled,
-	domain.TurnInterruptEmptyReply:          codes.Internal,
-	domain.TurnInterruptFailed:              codes.Internal,
+	// ENG-1634: not retryable by the client as is — the person must check what
+	// was done first (Aborted); a second restart is the service failing (Unavailable).
+	domain.TurnInterruptAssistantRestartedAfterAction: codes.Aborted,
+	domain.TurnInterruptAssistantRestartedTwice:       codes.Unavailable,
+	domain.TurnInterruptSessionLost:                   codes.Unavailable,
+	domain.TurnInterruptContextTooLarge:               codes.OutOfRange,
+	domain.TurnInterruptStalled:                       codes.DeadlineExceeded,
+	domain.TurnInterruptTimeout:                       codes.DeadlineExceeded,
+	domain.TurnInterruptCancelled:                     codes.Canceled,
+	domain.TurnInterruptEmptyReply:                    codes.Internal,
+	domain.TurnInterruptFailed:                        codes.Internal,
 }
 
 func interruptCode(r domain.TurnInterruptReason) codes.Code {
